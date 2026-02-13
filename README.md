@@ -18,6 +18,8 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 - **Native launching** + Microsoft account login
 - **Multi-launch support** using **isolated runtime sessions** (run many copies safely)
 
+---
+
 ## Features (Implemented)
 
 ### Instance Management
