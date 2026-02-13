@@ -39,7 +39,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - **CurseForge**
 - Install content directly from Discover into a chosen instance
 
-**CurseForge**
+**CurseForge** (Coming Soon)
 - Fetch project details for detail views
 - Install CurseForge projects into instances
 - API status check (key/network/config troubleshooting)
@@ -107,7 +107,7 @@ A full config editing experience inside the app:
 - Inspector panel (context + suggestions)
 - Helper/intelligence features (formatting + suggestions)
 
-### Presets / Creator Tools
+### Presets / Creator Tools (Half Broken)
 - Presets workflows:
   - Preview preset apply (see what will change)
   - Apply preset to an instance
