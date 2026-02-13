@@ -114,6 +114,16 @@ jobs:
           set -euxo pipefail
           npm run tauri:build -- --target ${{ matrix.target }}
 
+      - name: Ad-hoc sign macOS app (prevents "damaged" warning)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
+          APP="$(ls -1 "$BUNDLE_DIR"/*.app | head -n 1)"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+
       - name: Collect release artifacts
         shell: bash
         run: |
