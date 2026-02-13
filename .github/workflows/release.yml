@@ -114,15 +114,28 @@ jobs:
           set -euxo pipefail
           npm run tauri:build -- --target ${{ matrix.target }}
 
-      - name: Ad-hoc sign macOS app (prevents "damaged" warning)
+      - name: Ad-hoc sign macOS app (avoids "damaged" warning)
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euxo pipefail
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle/macos"
-          APP="$(ls -1 "$BUNDLE_DIR"/*.app | head -n 1)"
+
+          echo "Looking for .app in: $BUNDLE_DIR"
+          ls -la "$BUNDLE_DIR" || true
+
+          APP="$(ls -d "$BUNDLE_DIR"/*.app 2>/dev/null | head -n 1)"
+          if [ -z "${APP:-}" ]; then
+            echo "No .app found at expected path."
+            echo "Searching bundle dir for any .app..."
+            find "src-tauri/target/${{ matrix.target }}/release/bundle" -maxdepth 4 -name "*.app" -print || true
+            exit 1
+          fi
+
+          echo "Signing: $APP"
           codesign --force --deep --sign - "$APP"
           codesign --verify --deep --strict "$APP"
+
 
       - name: Collect release artifacts
         shell: bash
