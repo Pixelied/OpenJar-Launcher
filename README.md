@@ -68,7 +68,7 @@ Screenshots live in `docs/screenshots/` — click any image to view full size.
 
 - **Clean, modern UI** (macOS-friendly look & feel)
 - **Instance management** + import from Vanilla / Prism
-- **Multi-provider discovery**: Modrinth + CurseForge
+- **Multi-provider discovery**: Modrinth + CurseForge (partial / in progress)
 - **Update availability** + **Update all** + **scheduled checks** (Modrinth)
 - **Dependency-aware installs** (Modrinth) + per-instance **lockfile** tracking
 - **Per-mod enable/disable** (rename to `.disabled`)
@@ -151,12 +151,12 @@ Filters include:
   - check for updates later
   - roll back installed content reliably
 
-#### CurseForge (in progress)
+#### CurseForge (partial / in progress)
 
 CurseForge support is partially implemented right now.
 
 Available today (may vary a bit depending on your build/UI):
-- API status + diagnostics (helps verify your API key + network + basic config)
+- API status + diagnostics (helps verify your API key + network + basic config; for devs) 
 - Project detail fetching (used for detail views)
 
 What’s next:
