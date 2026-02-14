@@ -1,3 +1,4 @@
+````md
 # OpenJar Launcher
 
 **OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher / “Creator Studio”** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
@@ -14,8 +15,8 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Instance Management](#instance-management)
   - [Import / Export](#import--export)
   - [Discover + Install (Multi-provider)](#discover--install-multi-provider)
+  - [Updates + Update Availability (Modrinth)](#updates--update-availability-modrinth)
   - [Installed Mods (Per instance)](#installed-mods-per-instance)
-  - [Updates (Modrinth)](#updates-modrinth)
   - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
   - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
   - [Launching](#launching)
@@ -25,7 +26,6 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Presets / Creator Tools (experimental)](#presets--creator-tools-experimental)
 - [Where your data lives](#where-your-data-lives)
-- [CurseForge API Key](#curseforge-api-key)
 - [Tech Stack](#tech-stack)
 - [Platform support & testing](#platform-support--testing)
 - [Dev Setup](#dev-setup)
@@ -70,9 +70,9 @@ Screenshots live in `docs/screenshots/` — click any image to view full size.
 - **Clean, modern UI** (macOS-friendly look & feel)
 - **Instance management** + import from Vanilla / Prism
 - **Multi-provider discovery**: Modrinth + CurseForge
+- **Update availability** + **Update all** + **scheduled checks** (Modrinth)
 - **Dependency-aware installs** (Modrinth) + per-instance **lockfile** tracking
 - **Per-mod enable/disable** (rename to `.disabled`)
-- **Updates** (Modrinth) + “Update all”
 - **Config Editor** experience (file browser + editors + helpers)
 - **Snapshots / rollback** tooling (for installed content)
 - **Native launching** + Microsoft account login
@@ -168,6 +168,46 @@ Note:
 
 ---
 
+### Updates + Update Availability (Modrinth)
+
+This is one of OpenJar’s “creator studio” features: instead of guessing what’s outdated, OpenJar keeps an eye on your installed Modrinth mods and shows updates in a way that’s fast to act on.
+
+Where you see updates:
+- **Per instance (Maintenance card):**
+  - “Refresh” checks that instance’s installed Modrinth mods.
+  - You get a quick list like `current → latest`.
+  - “Update all” updates every mod in that instance that has an update available.
+- **Global Updates page (Update availability dashboard):**
+  - Shows which instances have updates, how many, and when they were last checked.
+  - Lets you “Open instance” or “Recheck” from the dashboard.
+  - Adds a badge in the sidebar when updates are available.
+
+Scheduled checks (so you don’t have to remember):
+- You can set a **Check cadence**:
+  - Disabled, Every hour, Every 3 hours, Every 6 hours, Every 12 hours, Daily, Weekly
+- The Updates page shows:
+  - **Last run** (when the last scheduled/manual check happened)
+  - **Next run** (when the next scheduled check will happen)
+- “Check now” runs a full check immediately.
+
+Update-all safety (so updates don’t feel risky):
+- When you use **Update all**, OpenJar automatically creates a **snapshot** first (installed content snapshot).
+  - If an update breaks your setup, you can roll back your installed content with one click.
+  - Snapshots cover installed content (mods/packs/datapacks + lockfile), not full world saves (world saves are handled by World Backups).
+
+Optional auto-apply (for people who want it):
+- You can choose **Auto-apply** behavior:
+  - **Never auto-apply**
+  - **Only opt-in instances** (instances you’ve explicitly marked as safe to auto-update)
+  - **All instances**
+- You can also choose **when auto-apply is allowed**:
+  - **Scheduled runs only** (safe default)
+  - **Scheduled + Check now** (also auto-applies when you manually press “Check now”)
+
+In short: you get “what’s outdated?”, “update it all”, and “keep it maintained automatically” — without losing the ability to undo.
+
+---
+
 ### Installed Mods (Per instance)
 
 Keep track of what’s installed, and quickly disable something that’s causing crashes.
@@ -179,16 +219,6 @@ Keep track of what’s installed, and quickly disable something that’s causing
   - (Currently enable/disable is supported for **mods** only.)
 - Lockfile tracking (`lock.json` stored inside the instance folder)
   - Stores provider IDs + chosen version + filename + hashes + enabled/disabled state
-
----
-
-### Updates (Modrinth)
-
-Stay current without playing “guess which mod broke my game.”
-
-- Check for updates for installed Modrinth mods
-- “Update all” flow
-- Before update-all, OpenJar creates a snapshot (see below) so you can roll back if something breaks
 
 ---
 
@@ -237,10 +267,8 @@ What it does:
 How you control it (per instance):
 - Backup interval (minutes)
   - Example: every 10 minutes OpenJar zips your world and stores a backup
-  - Default: **10 minutes**
 - Retention count (per world)
   - Example: keep the last 3 backups of each world, delete older ones automatically
-  - Default: **1 backup per world**
 
 World rollback (restore a backup):
 - Choose a backup (most recent or a specific one)
