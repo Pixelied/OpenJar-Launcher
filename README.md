@@ -20,7 +20,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 
 ---
 
-## Features (Implemented)
+## Features
 
 ### Instance Management
 - Create, list, update, delete instances
