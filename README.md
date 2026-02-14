@@ -364,14 +364,6 @@ Privacy note: OpenJar doesn’t upload your instances, worlds, or configs anywhe
 
 ---
 
-## CurseForge API Key
-
-CurseForge requests require an API key:
-
-- Set `MPM_CURSEFORGE_API_KEY` in your environment before running/building.
-
----
-
 ## Tech Stack
 
 - **Tauri v1** + **Rust** backend
