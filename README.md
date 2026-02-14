@@ -152,14 +152,19 @@ Filters include:
   - check for updates later
   - roll back installed content reliably
 
-#### CurseForge (partial / in progress)
+#### CurseForge (in progress)
 
-What currently exists (may vary depending on your build/UI state):
-- API status check (key/network/config troubleshooting)
-- Project detail fetch for detail views
+CurseForge support is partially implemented right now.
+
+Available today (may vary a bit depending on your build/UI):
+- API status + diagnostics (helps verify your API key + network + basic config)
+- Project detail fetching (used for detail views)
+
+What’s next:
+- Full install + download flows are already being wired up, but parts of the UI may still feel incomplete until everything is fully connected end-to-end.
 
 Note:
-- Install flows exist behind the scenes, but some UI wiring may still feel incomplete.
+- I’m currently waiting on CurseForge to approve/send my API access, so some CurseForge features are intentionally not fully enabled yet.
 
 ---
 
