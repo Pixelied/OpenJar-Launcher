@@ -167,43 +167,57 @@ Note:
 
 ---
 
-### Updates + Update Availability (Modrinth)
+### Updates + Update Availability (Modrinth only, for now...)
 
-This is one of OpenJar’s “creator studio” features: instead of guessing what’s outdated, OpenJar keeps an eye on your installed Modrinth mods and shows updates in a way that’s fast to act on.
+This feature is specifically about **keeping your installed Modrinth mods up to date**. OpenJar checks the exact mod versions you have installed (from your instance `lock.json`), compares them to Modrinth’s latest available versions for your Minecraft version + loader, then lets you update everything in a controlled way.
+
+What “Refresh / Check” actually does:
+- Looks at the mods currently installed in that instance (provider = Modrinth)
+- For each mod, checks if there’s a newer compatible version available on Modrinth
+- Shows you a clear per-mod result like:
+  - `Sodium 0.5.11 → 0.5.13`
+  - `Fabric API 0.97.0 → 0.98.1`
+- Does not change anything until you choose to apply updates
 
 Where you see updates:
-- **Per instance (Maintenance card):**
-  - “Refresh” checks that instance’s installed Modrinth mods.
-  - You get a quick list like `current → latest`.
-  - “Update all” updates every mod in that instance that has an update available.
-- **Global Updates page (Update availability dashboard):**
-  - Shows which instances have updates, how many, and when they were last checked.
-  - Lets you “Open instance” or “Recheck” from the dashboard.
-  - Adds a badge in the sidebar when updates are available.
+
+Per instance (Maintenance card):
+- **Refresh** checks *that instance’s installed Modrinth mods*
+- You get a quick list of mods that have updates available (current → latest)
+- **Update all** downloads and replaces every mod in that instance that has an update available
+  - It only touches mods that are tracked in the lockfile (so it doesn’t “randomly” update unknown files)
+
+Global Updates page (Update availability dashboard):
+- Shows which **instances** have mod updates available, and **how many**
+- Shows **last checked** and **next scheduled check**
+- Lets you jump into an instance (“Open instance”) or run a new check (“Recheck”)
+- Adds a sidebar badge when any instance has mod updates waiting
 
 Scheduled checks (so you don’t have to remember):
-- You can set a **Check cadence**:
+- Set a **Check cadence**:
   - Disabled, Every hour, Every 3 hours, Every 6 hours, Every 12 hours, Daily, Weekly
 - The Updates page shows:
-  - **Last run** (when the last scheduled/manual check happened)
-  - **Next run** (when the next scheduled check will happen)
-- “Check now” runs a full check immediately.
+  - **Last run** (last scheduled/manual check)
+  - **Next run** (next scheduled check)
+- **Check now** triggers a full mod update check immediately
 
 Update-all safety (so updates don’t feel risky):
-- When you use **Update all**, OpenJar automatically creates a **snapshot** first (installed content snapshot).
-  - If an update breaks your setup, you can roll back your installed content with one click.
-  - Snapshots cover installed content (mods/packs/datapacks + lockfile), not full world saves (world saves are handled by World Backups).
+- When you hit **Update all**, OpenJar creates a **snapshot first**
+- If an updated mod breaks your game, you can roll back your *installed content* with one click
+- Snapshots cover installed content (mods/packs/datapacks + lockfile), not full world saves (world saves are handled by World Backups)
 
-Optional auto-apply (for people who want it):
-- You can choose **Auto-apply** behavior:
-  - **Never auto-apply**
-  - **Only opt-in instances** (instances you’ve explicitly marked as safe to auto-update)
+Optional auto-apply (choose “notify me” vs “do it for me”):
+- Choose what happens when a scheduled check finds mod updates:
+  - **Check only (notify):** OpenJar will show the badge + update list, but you must click **Update all** to actually update the mods.
+  - **Auto-apply updates:** OpenJar will check **and** automatically update the mods for you.
+- Choose where auto-apply is allowed:
+  - **Only opt-in instances** (instances you’ve explicitly marked as OK to auto-update)
   - **All instances**
-- You can also choose **when auto-apply is allowed**:
-  - **Scheduled runs only** (safe default)
-  - **Scheduled + Check now** (also auto-applies when you manually press “Check now”)
+- Choose when auto-apply can run:
+  - **Scheduled runs only** (recommended)
+  - **Scheduled + “Check now”** (manual checks can also auto-update)
 
-In short: you get “what’s outdated?”, “update it all”, and “keep it maintained automatically” — without losing the ability to undo.
+In short: OpenJar tells you exactly which **mods** are outdated, lets you **update all** in one click, can **check on a schedule**, and gives you a snapshot so you can undo if something goes wrong.
 
 ---
 
