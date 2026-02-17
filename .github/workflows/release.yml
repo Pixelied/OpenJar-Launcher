@@ -152,16 +152,26 @@ jobs:
             }
           };
 
-          const maybeDecodeBase64 = (input) => {
+          const decodeBase64 = (input) => {
             const compact = String(input || "").replace(/\s+/g, "");
-            if (!compact || compact.length < 24) return String(input || "");
-            if (!/^[A-Za-z0-9+/=]+$/.test(compact)) return String(input || "");
-            try {
-              const decoded = Buffer.from(compact, "base64").toString("utf8");
-              return decoded && decoded.trim() ? decoded : String(input || "");
-            } catch {
-              return String(input || "");
+            if (!compact || compact.length < 16) return "";
+            const variants = [compact];
+            if (/^[A-Za-z0-9_-]+={0,2}$/.test(compact)) {
+              const std = compact.replace(/-/g, "+").replace(/_/g, "/");
+              const pad = std.length % 4 === 0 ? std : `${std}${"=".repeat(4 - (std.length % 4))}`;
+              variants.push(pad);
             }
+            for (const variant of variants) {
+              if (!/^[A-Za-z0-9+/=]+$/.test(variant)) continue;
+              try {
+                const decoded = Buffer.from(variant, "base64").toString("utf8");
+                if (!decoded || !decoded.trim()) continue;
+                const printable = decoded.replace(/[ -~\n\r\t]/g, "");
+                if (printable.length > decoded.length * 0.2) continue;
+                return decoded;
+              } catch {}
+            }
+            return "";
           };
 
           const normalizeText = (input) => {
@@ -171,35 +181,49 @@ jobs:
             return stripWrapping(s).trim();
           };
 
-          const extractPubKey = (raw) => {
-            const attempts = [];
-            const first = normalizeText(raw);
-            attempts.push(first);
-            attempts.push(normalizeText(maybeDecodeBase64(first)));
+          const buildCandidates = (raw) => {
+            const seen = new Set();
+            const queue = [normalizeText(raw)];
+            const out = [];
+            while (queue.length) {
+              const cur = normalizeText(queue.shift());
+              if (!cur || seen.has(cur)) continue;
+              seen.add(cur);
+              out.push(cur);
+              if (out.length > 16) break;
+              const uri = normalizeText(decodeUriSafely(cur));
+              if (uri && !seen.has(uri)) queue.push(uri);
+              const b64 = normalizeText(decodeBase64(cur));
+              if (b64 && !seen.has(b64)) queue.push(b64);
+            }
+            return out;
+          };
 
-            for (const attempt of attempts) {
+          const extractPubKey = (raw) => {
+            for (const attempt of buildCandidates(raw)) {
               const lines = attempt
                 .split(/\r?\n/)
                 .map((line) => line.trim())
                 .filter(Boolean);
-              const lineHit = lines.find((line) => /^RW[A-Za-z0-9+/=]+$/.test(line));
+              const lineHit = lines.find((line) => /^RW[A-Za-z0-9+/_=-]+$/.test(line));
               if (lineHit) return lineHit;
-              const inlineHit = attempt.match(/RW[A-Za-z0-9+/=]{20,}/);
+              const inlineHit = attempt.match(/RW[A-Za-z0-9+/_=-]{20,}/);
               if (inlineHit) return inlineHit[0];
             }
             return "";
           };
 
           const extractPrivateKey = (raw) => {
-            const attempts = [];
-            const first = normalizeText(raw);
-            attempts.push(first);
-            attempts.push(normalizeText(maybeDecodeBase64(first)));
-            return attempts.find((entry) => entry.includes("untrusted comment: minisign secret key:")) || "";
+            return (
+              buildCandidates(raw).find((entry) =>
+                entry.includes("untrusted comment: minisign secret key:")
+              ) || ""
+            );
           };
 
           const rawPub = process.env.TAURI_UPDATER_PUBKEY || process.env.TAURI_UPDATER_PUBLIC_KEY || "";
-          const pub = extractPubKey(rawPub);
+          const parsedPub = extractPubKey(rawPub);
+          const pub = parsedPub.replace(/-/g, "+").replace(/_/g, "/");
           if (!pub || !/^RW[A-Za-z0-9+/=]+$/.test(pub)) {
             const preview = normalizeText(rawPub).slice(0, 48);
             throw new Error(
