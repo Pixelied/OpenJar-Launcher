@@ -375,6 +375,9 @@ jobs:
           echo "Using bundle dir: $BUNDLE_DIR"
 
           shopt -s nullglob
+          sanitize_name() {
+            printf '%s' "$1" | tr ' ' '.'
+          }
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             APPS=("$BUNDLE_DIR/macos/"*.app)
@@ -385,7 +388,8 @@ jobs:
             fi
             APP="${APPS[0]}"
             APP_BASENAME="$(basename "$APP" .app)"
-            OUT="dist-artifacts/${APP_BASENAME}_${TAG}_${LABEL}.app.zip"
+            OUT_NAME="$(sanitize_name "${APP_BASENAME}_${TAG}_${LABEL}.app.zip")"
+            OUT="dist-artifacts/${OUT_NAME}"
             ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT"
             echo "Created: $OUT"
           elif [ "${{ runner.os }}" = "Windows" ]; then
@@ -399,7 +403,8 @@ jobs:
                 base="$(basename "$f")"
                 ext="${base##*.}"
                 stem="${base%.*}"
-                cp -f "$f" "dist-artifacts/${stem}_${TAG}_${LABEL}.${ext}"
+                out_name="$(sanitize_name "${stem}_${TAG}_${LABEL}.${ext}")"
+                cp -f "$f" "dist-artifacts/${out_name}"
               fi
             done
           else
@@ -412,14 +417,19 @@ jobs:
                 base="$(basename "$f")"
                 ext="${base##*.}"
                 stem="${base%.*}"
-                cp -f "$f" "dist-artifacts/${stem}_${TAG}_${LABEL}.${ext}"
+                out_name="$(sanitize_name "${stem}_${TAG}_${LABEL}.${ext}")"
+                cp -f "$f" "dist-artifacts/${out_name}"
               fi
             done
           fi
 
-          # Keep updater artifacts when present.
+          # Keep only updater payload archives/signatures (exclude control/data and alternate bundles).
           while IFS= read -r -d '' f; do
             base="$(basename "$f")"
+            case "$base" in
+              *.app.tar.gz|*.app.tar.gz.sig|*.AppImage.tar.gz|*.AppImage.tar.gz.sig|*.msi.zip|*.msi.zip.sig) ;;
+              *) continue ;;
+            esac
             if [[ "$base" == *.tar.gz.sig ]]; then
               out="${base%.tar.gz.sig}_${TAG}_${LABEL}.tar.gz.sig"
             elif [[ "$base" == *.tar.gz ]]; then
@@ -435,6 +445,7 @@ jobs:
               stem="${base%.*}"
               out="${stem}_${TAG}_${LABEL}.${ext}"
             fi
+            out="$(sanitize_name "$out")"
             cp -f "$f" "dist-artifacts/$out"
           done < <(find "$BUNDLE_DIR" -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) -print0)
 
