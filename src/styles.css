@@ -958,7 +958,7 @@ button, input, select { font-family: inherit; }
   position: relative;
   z-index: 1;
 }
-.projectIcon{
+.projectHero .projectIcon{
   width: 84px;
   height: 84px;
   border-radius: 22px;
@@ -1076,7 +1076,18 @@ button, input, select { font-family: inherit; }
   top: -2px;
   z-index: 3;
   padding: 2px 0 8px;
-  background: linear-gradient(180deg, var(--panel2) 66%, transparent);
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 999px;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.projectTabSticky .segmented{
+  box-shadow: none;
+  filter: drop-shadow(0 5px 10px rgba(0, 0, 0, 0.16));
 }
 .projectSections{
   display: grid;
@@ -1095,8 +1106,8 @@ button, input, select { font-family: inherit; }
 }
 .projectOverviewCols{
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+  gap: 14px;
   align-items: start;
 }
 .projectOverviewCol{
@@ -1333,7 +1344,75 @@ button, input, select { font-family: inherit; }
   padding-right: 2px;
 }
 .projectSectionDesc .projectBodyText{
-  max-height: 220px;
+  max-height: none;
+  overflow: visible;
+}
+.projectMarkdown{
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.projectMarkdown > :first-child{
+  margin-top: 0;
+}
+.projectMarkdown > :last-child{
+  margin-bottom: 0;
+}
+.projectMarkdown p,
+.projectMarkdown ul,
+.projectMarkdown ol,
+.projectMarkdown pre,
+.projectMarkdown blockquote{
+  margin: 0 0 0.7em;
+}
+.projectMarkdown ul,
+.projectMarkdown ol{
+  padding-left: 1.2em;
+}
+.projectMarkdown code{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgba(127,127,127,0.14);
+  border: 1px solid var(--stroke);
+  border-radius: 6px;
+  padding: 0.05em 0.35em;
+}
+.projectMarkdown pre code{
+  display: block;
+  padding: 0.6em 0.7em;
+}
+.projectMarkdown a{
+  color: var(--accent-text);
+  text-decoration: underline;
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+.projectMarkdown img{
+  max-width: 100% !important;
+  width: auto !important;
+  height: auto !important;
+  display: block;
+  border-radius: 12px;
+}
+.projectMarkdown iframe,
+.projectMarkdown video{
+  max-width: 100%;
+}
+.projectRichHtml table{
+  width: 100% !important;
+  max-width: 100%;
+  border-collapse: collapse;
+}
+.projectRichHtml tbody,
+.projectRichHtml tr{
+  display: block;
+  width: 100%;
+}
+.projectRichHtml td,
+.projectRichHtml th{
+  display: block;
+  width: 100% !important;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
 }
 .projectChangelogText{
   max-height: 180px;
@@ -1384,7 +1463,7 @@ button, input, select { font-family: inherit; }
   .projectHero{
     grid-template-columns: 1fr;
   }
-  .projectIcon{
+  .projectHero .projectIcon{
     width: 74px;
     height: 74px;
   }

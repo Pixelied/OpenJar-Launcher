@@ -24,6 +24,7 @@ import type {
   LaunchMethod,
   Loader,
   MicrosoftLoginState,
+  ContentUpdateCheckResult,
   ModUpdateCheckResult,
   OpenInstancePathResult,
   RevealConfigEditorFileResult,
@@ -34,6 +35,7 @@ import type {
   ReadInstanceLogsResult,
   RunningInstance,
   SnapshotMeta,
+  UpdateAllContentResult,
   UpdateAllResult,
   WorldConfigFileEntry,
   ReadWorldConfigFileResult,
@@ -154,10 +156,22 @@ export function checkModrinthUpdates(input: {
   return invoke("check_modrinth_updates", { args: input });
 }
 
+export function checkInstanceContentUpdates(input: {
+  instanceId: string;
+}): Promise<ContentUpdateCheckResult> {
+  return invoke("check_instance_content_updates", { args: input });
+}
+
 export function updateAllModrinthMods(input: {
   instanceId: string;
 }): Promise<UpdateAllResult> {
   return invoke("update_all_modrinth_mods", { args: input });
+}
+
+export function updateAllInstanceContent(input: {
+  instanceId: string;
+}): Promise<UpdateAllContentResult> {
+  return invoke("update_all_instance_content", { args: input });
 }
 
 export function searchDiscoverContent(input: {
@@ -189,6 +203,20 @@ export function launchInstance(input: {
 
 export function getLauncherSettings(): Promise<LauncherSettings> {
   return invoke("get_launcher_settings");
+}
+
+export function getDevModeState(): Promise<boolean> {
+  return invoke("get_dev_mode_state");
+}
+
+export function setDevCurseforgeApiKey(input: {
+  key: string;
+}): Promise<string> {
+  return invoke("set_dev_curseforge_api_key", { args: input });
+}
+
+export function clearDevCurseforgeApiKey(): Promise<string> {
+  return invoke("clear_dev_curseforge_api_key");
 }
 
 export function getCurseforgeApiStatus(): Promise<CurseforgeApiStatus> {
@@ -257,6 +285,16 @@ export function exportInstanceModsZip(input: {
 
 export function getSelectedAccountDiagnostics(): Promise<AccountDiagnostics> {
   return invoke("get_selected_account_diagnostics");
+}
+
+export function applySelectedAccountAppearance(input: {
+  applySkin?: boolean;
+  skinSource?: string | null;
+  skinVariant?: string | null;
+  applyCape?: boolean;
+  capeId?: string | null;
+}): Promise<AccountDiagnostics> {
+  return invoke("apply_selected_account_appearance", { args: input });
 }
 
 export function openInstancePath(input: {

@@ -4,6 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
 import { open as shellOpen } from "@tauri-apps/api/shell";
 import { convertFileSrc } from "@tauri-apps/api/tauri";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import type {
   AccountDiagnostics,
   CreateInstanceFromModpackFileResult,
@@ -30,6 +34,8 @@ import type {
   InstanceLogSourceApi,
   RunningInstance,
   BeginMicrosoftLoginResult,
+  ContentUpdateCheckResult,
+  ContentUpdateInfo,
   MicrosoftLoginState,
   InstallPlanPreview,
   Instance,
@@ -39,18 +45,20 @@ import type {
   JavaRuntimeCandidate,
   LaunchResult,
   Loader,
-  ModUpdateCheckResult,
   SnapshotMeta,
 } from "./types";
 import {
+  applySelectedAccountAppearance,
   beginMicrosoftLogin,
   cancelInstanceLaunch,
-  checkModrinthUpdates,
+  clearDevCurseforgeApiKey,
+  checkInstanceContentUpdates,
   createInstance,
   createInstanceFromModpackFile,
   deleteInstance,
   exportPresetsJson,
   exportInstanceModsZip,
+  getDevModeState,
   getCurseforgeApiStatus,
   getCurseforgeProjectDetail,
   getSelectedAccountDiagnostics,
@@ -82,12 +90,13 @@ import {
   openInstancePath,
   searchDiscoverContent,
   selectLauncherAccount,
+  setDevCurseforgeApiKey,
   setLauncherSettings,
   setInstanceIcon,
   setInstalledModEnabled,
   stopRunningInstance,
   detectJavaRuntimes,
-  updateAllModrinthMods,
+  updateAllInstanceContent,
   updateInstance,
 } from "./tauri";
 import {
@@ -112,7 +121,7 @@ import {
   type LogSeverity,
 } from "./lib/logAnalysis";
 
-type Route = "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings";
+type Route = "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
 type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
 type MotionPreset = "calm" | "standard" | "expressive";
@@ -184,9 +193,9 @@ type ScheduledUpdateCheckEntry = {
   instance_id: string;
   instance_name: string;
   checked_at: string;
-  checked_mods: number;
+  checked_entries: number;
   update_count: number;
-  updates: ModUpdateCheckResult["updates"];
+  updates: ContentUpdateInfo[];
   error?: string | null;
 };
 
@@ -266,6 +275,7 @@ type AccountSkinOption = {
   id: string;
   label: string;
   skin_url: string;
+  variant?: string | null;
   preview_url?: string | null;
   group: "saved" | "default";
   origin: "profile" | "custom" | "default";
@@ -1116,6 +1126,7 @@ const DEFAULT_SKIN_LIBRARY: AccountSkinOption[] = [
     id: "default:steve",
     label: "Steve",
     skin_url: "https://mc-heads.net/skin/Steve",
+    variant: "classic",
     preview_url: "https://mc-heads.net/body/Steve/right",
     group: "default",
     origin: "default",
@@ -1124,6 +1135,7 @@ const DEFAULT_SKIN_LIBRARY: AccountSkinOption[] = [
     id: "default:alex",
     label: "Alex",
     skin_url: "https://mc-heads.net/skin/Alex",
+    variant: "slim",
     preview_url: "https://mc-heads.net/body/Alex/right",
     group: "default",
     origin: "default",
@@ -1204,15 +1216,35 @@ function toReadableBody(markdown?: string | null) {
     .trim();
 }
 
-function toReadableHtml(html?: string | null) {
-  if (!html) return "";
-  return html
-    .replace(/\r\n/g, "\n")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+function MarkdownBlock({ text, className }: { text: string; className?: string }) {
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+function RichTextBlock({ text, className }: { text: string; className?: string }) {
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        components={{
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 const DISCOVER_SORT_OPTIONS: { value: ModrinthIndex; label: string }[] = [
@@ -2698,15 +2730,17 @@ export default function App() {
   }
 
   async function refreshLauncherData() {
-    const [settings, accounts, running] = await Promise.all([
+    const [settings, accounts, running, devMode] = await Promise.all([
       getLauncherSettings(),
       listLauncherAccounts(),
       listRunningInstances(),
+      getDevModeState().catch(() => false),
     ]);
     setLauncherSettingsState(settings);
     setLauncherAccounts(accounts);
     const runningSafe = normalizeRunningInstancesPayload(running);
     setRunningInstances((prev) => (sameRunningInstances(prev, runningSafe) ? prev : runningSafe));
+    setIsDevMode(Boolean(devMode));
     setJavaPathDraft(settings.java_path ?? "");
     setOauthClientIdDraft(settings.oauth_client_id ?? "");
     setLaunchMethodPick(settings.default_launch_method ?? "native");
@@ -2988,6 +3022,40 @@ export default function App() {
       const nextIdx = (currentIdx + 1) % capeOptions.length;
       return capeOptions[nextIdx]?.id ?? "none";
     });
+  }
+
+  async function onApplySelectedAppearance() {
+    if (!selectedLauncherAccountId) {
+      setLauncherErr("Connect and select a Microsoft account first.");
+      return;
+    }
+    const skinSource = String(selectedAccountSkin?.skin_url ?? "").trim();
+    if (!skinSource) {
+      setLauncherErr("Select a skin first.");
+      return;
+    }
+    setLauncherErr(null);
+    setAccountAppearanceBusy(true);
+    try {
+      const diag = await applySelectedAccountAppearance({
+        applySkin: true,
+        skinSource,
+        skinVariant: selectedAccountSkin?.variant ?? null,
+        applyCape: true,
+        capeId: selectedAccountCape?.id === "none" ? null : selectedAccountCape?.id ?? null,
+      });
+      setAccountDiagnostics(diag);
+      setInstallNotice(
+        selectedAccountCape?.id === "none"
+          ? "Applied skin and cleared active cape."
+          : "Applied skin and cape to your Minecraft profile."
+      );
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+    } finally {
+      setAccountAppearanceBusy(false);
+    }
   }
 
   function onRemoveSelectedCustomSkin() {
@@ -3397,6 +3465,11 @@ export default function App() {
   const [msCodePromptVisible, setMsCodePromptVisible] = useState(false);
   const [msCodeCopied, setMsCodeCopied] = useState(false);
   const [javaPathDraft, setJavaPathDraft] = useState("");
+  const [isDevMode, setIsDevMode] = useState(false);
+  const [devCurseforgeKeyDraft, setDevCurseforgeKeyDraft] = useState("");
+  const [devCurseforgeKeyBusy, setDevCurseforgeKeyBusy] = useState(false);
+  const [devCurseforgeNotice, setDevCurseforgeNotice] = useState<string | null>(null);
+  const [devCurseforgeNoticeIsError, setDevCurseforgeNoticeIsError] = useState(false);
   const [curseforgeApiStatus, setCurseforgeApiStatus] = useState<CurseforgeApiStatus | null>(null);
   const [curseforgeApiBusy, setCurseforgeApiBusy] = useState(false);
   const [oauthClientIdDraft, setOauthClientIdDraft] = useState("");
@@ -3479,6 +3552,7 @@ export default function App() {
   const [skinViewerErr, setSkinViewerErr] = useState<string | null>(null);
   const [skinViewerPreparing, setSkinViewerPreparing] = useState(false);
   const [skinViewerBusy, setSkinViewerBusy] = useState(false);
+  const [accountAppearanceBusy, setAccountAppearanceBusy] = useState(false);
   const [skinViewerEpoch, setSkinViewerEpoch] = useState(0);
   const accountSkinViewerStageRef = useRef<HTMLDivElement | null>(null);
   const accountSkinViewerCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -3490,7 +3564,7 @@ export default function App() {
   const skinViewerNameTagTextRef = useRef<string | null>(null);
   const lastLoadedSkinSrcRef = useRef<string | null>(null);
   const lastLoadedCapeSrcRef = useRef<string | null>(null);
-  const [updateCheck, setUpdateCheck] = useState<ModUpdateCheckResult | null>(null);
+  const [updateCheck, setUpdateCheck] = useState<ContentUpdateCheckResult | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
   const [updateAllBusy, setUpdateAllBusy] = useState(false);
   const [updateErr, setUpdateErr] = useState<string | null>(null);
@@ -3500,9 +3574,40 @@ export default function App() {
     try {
       const raw = localStorage.getItem("mpm.scheduledUpdates.v1");
       if (!raw) return {};
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as Record<string, any>;
       if (!parsed || typeof parsed !== "object") return {};
-      return parsed as Record<string, ScheduledUpdateCheckEntry>;
+      const next: Record<string, ScheduledUpdateCheckEntry> = {};
+      for (const [instanceId, row] of Object.entries(parsed)) {
+        if (!row || typeof row !== "object") continue;
+        const updatesRaw = Array.isArray((row as any).updates) ? (row as any).updates : [];
+        const updates: ContentUpdateInfo[] = updatesRaw
+          .filter((item: any) => item && typeof item === "object")
+          .map((item: any) => ({
+            source: String(item.source ?? "modrinth"),
+            content_type: String(item.content_type ?? "mods"),
+            project_id: String(item.project_id ?? ""),
+            name: String(item.name ?? ""),
+            current_version_id: String(item.current_version_id ?? ""),
+            current_version_number: String(item.current_version_number ?? ""),
+            latest_version_id: String(item.latest_version_id ?? ""),
+            latest_version_number: String(item.latest_version_number ?? ""),
+            enabled: item.enabled !== false,
+            target_worlds: Array.isArray(item.target_worlds)
+              ? item.target_worlds.map((w: any) => String(w ?? "")).filter(Boolean)
+              : [],
+          }))
+          .filter((item) => Boolean(item.project_id));
+        next[instanceId] = {
+          instance_id: String((row as any).instance_id ?? instanceId),
+          instance_name: String((row as any).instance_name ?? "Instance"),
+          checked_at: String((row as any).checked_at ?? new Date(0).toISOString()),
+          checked_entries: Number((row as any).checked_entries ?? (row as any).checked_mods ?? 0),
+          update_count: Number((row as any).update_count ?? updates.length),
+          updates,
+          error: (row as any).error ? String((row as any).error) : null,
+        };
+      }
+      return next;
     } catch {
       return {};
     }
@@ -3775,8 +3880,57 @@ export default function App() {
     }
   }
 
+  async function onSaveDevCurseforgeKey() {
+    const key = devCurseforgeKeyDraft.trim();
+    if (!key) {
+      setLauncherErr("Enter a CurseForge API key first.");
+      setDevCurseforgeNotice("Enter a CurseForge API key first.");
+      setDevCurseforgeNoticeIsError(true);
+      return;
+    }
+    setDevCurseforgeKeyBusy(true);
+    setLauncherErr(null);
+    setDevCurseforgeNotice(null);
+    try {
+      const message = await setDevCurseforgeApiKey({ key });
+      setDevCurseforgeKeyDraft("");
+      await refreshCurseforgeApiStatus();
+      setDevCurseforgeNotice(message);
+      setDevCurseforgeNoticeIsError(false);
+      setInstallNotice(message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setDevCurseforgeNotice(msg);
+      setDevCurseforgeNoticeIsError(true);
+    } finally {
+      setDevCurseforgeKeyBusy(false);
+    }
+  }
+
+  async function onClearDevCurseforgeKey() {
+    setDevCurseforgeKeyBusy(true);
+    setLauncherErr(null);
+    setDevCurseforgeNotice(null);
+    try {
+      const message = await clearDevCurseforgeApiKey();
+      setDevCurseforgeKeyDraft("");
+      await refreshCurseforgeApiStatus();
+      setDevCurseforgeNotice(message);
+      setDevCurseforgeNoticeIsError(false);
+      setInstallNotice(message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setDevCurseforgeNotice(msg);
+      setDevCurseforgeNoticeIsError(true);
+    } finally {
+      setDevCurseforgeKeyBusy(false);
+    }
+  }
+
   useEffect(() => {
-    if (route !== "settings") return;
+    if (route !== "dev") return;
     if (curseforgeApiStatus || curseforgeApiBusy) return;
     refreshCurseforgeApiStatus().catch(() => null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3815,6 +3969,9 @@ export default function App() {
   const accountSkinOptions = useMemo<AccountSkinOption[]>(() => {
     const out: AccountSkinOption[] = [];
     const seen = new Set<string>();
+    const activeProfileSkin = (accountDiagnostics?.skins ?? []).find((skin) =>
+      String(skin.state ?? "").trim().toLowerCase() === "active"
+    );
 
     const pushOption = (next: AccountSkinOption) => {
       const key = next.skin_url.trim().toLowerCase();
@@ -3829,6 +3986,7 @@ export default function App() {
         id: "saved:primary",
         label: accountDiagnostics?.minecraft_username?.trim() || "Current skin",
         skin_url: primarySkin,
+        variant: activeProfileSkin?.variant ?? null,
         group: "saved",
         origin: "profile",
       });
@@ -3843,6 +4001,7 @@ export default function App() {
         id: `saved:${String(skin.id ?? skinUrl)}`,
         label,
         skin_url: skinUrl,
+        variant: variant || null,
         group: "saved",
         origin: "profile",
       });
@@ -3855,6 +4014,7 @@ export default function App() {
         id: `custom:${skin.id}`,
         label: skin.label || "Custom skin",
         skin_url: raw,
+        variant: null,
         group: "saved",
         origin: "custom",
       });
@@ -4130,7 +4290,19 @@ export default function App() {
         setOffset(res.offset);
       }
     } catch (e: any) {
-      setDiscoverErr(e?.toString?.() ?? String(e));
+      const msg = e?.toString?.() ?? String(e);
+      const lower = msg.toLowerCase();
+      if (
+        discoverSource === "curseforge" &&
+        (lower.includes("curseforge is not configured for this build") ||
+          lower.includes("curseforge api key is not configured for this build"))
+      ) {
+        setDiscoverErr(
+          `${msg} For local dev, export MPM_CURSEFORGE_API_KEY and restart tauri:dev. Release builds should include the injected key.`
+        );
+      } else {
+        setDiscoverErr(msg);
+      }
     } finally {
       setDiscoverBusy(false);
     }
@@ -5268,7 +5440,7 @@ export default function App() {
 
   function storeScheduledUpdateResult(
     inst: Instance,
-    result: ModUpdateCheckResult | null,
+    result: ContentUpdateCheckResult | null,
     checkedAtIso?: string,
     errorMessage?: string | null
   ) {
@@ -5279,7 +5451,7 @@ export default function App() {
         instance_id: inst.id,
         instance_name: inst.name,
         checked_at: checkedAt,
-        checked_mods: result?.checked_mods ?? 0,
+        checked_entries: result?.checked_entries ?? 0,
         update_count: result?.update_count ?? 0,
         updates: result?.updates ?? [],
         error: errorMessage ? String(errorMessage) : null,
@@ -5296,14 +5468,14 @@ export default function App() {
     const checkedAt = new Date().toISOString();
     let completed = 0;
     let autoAppliedInstances = 0;
-    let autoAppliedMods = 0;
+    let autoAppliedEntries = 0;
     const canAutoApplyInRun = updateAutoApplyMode !== "never" && (
       reason === "scheduled" || updateApplyScope === "scheduled_and_manual"
     );
     try {
       for (const inst of instances) {
         try {
-          const result = await checkModrinthUpdates({ instanceId: inst.id });
+          const result = await checkInstanceContentUpdates({ instanceId: inst.id });
           const shouldAutoApplyForInstance =
             canAutoApplyInRun &&
             result.update_count > 0 &&
@@ -5312,10 +5484,10 @@ export default function App() {
                 Boolean(inst.settings?.auto_update_installed_content)));
           if (shouldAutoApplyForInstance) {
             try {
-              const applyResult = await updateAllModrinthMods({ instanceId: inst.id });
+              const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
               autoAppliedInstances += 1;
-              autoAppliedMods += Math.max(0, applyResult.updated_mods ?? 0);
-              const refreshed = await checkModrinthUpdates({ instanceId: inst.id });
+              autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
+              const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
               storeScheduledUpdateResult(inst, refreshed, checkedAt, null);
               if (route === "instance" && selectedId === inst.id) {
                 setUpdateCheck(refreshed);
@@ -5352,12 +5524,12 @@ export default function App() {
       if (reason === "manual") {
         const autoAppliedMsg =
           autoAppliedInstances > 0
-            ? ` Auto-applied ${autoAppliedMods} update${autoAppliedMods === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
+            ? ` Auto-applied ${autoAppliedEntries} update${autoAppliedEntries === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
             : "";
         setInstallNotice(`Checked ${completed} instance${completed === 1 ? "" : "s"} for updates.${autoAppliedMsg}`);
       } else if (autoAppliedInstances > 0) {
         setInstallNotice(
-          `Auto-applied ${autoAppliedMods} update${autoAppliedMods === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
+          `Auto-applied ${autoAppliedEntries} update${autoAppliedEntries === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
         );
       }
     } catch (err: any) {
@@ -5374,11 +5546,11 @@ export default function App() {
     setUpdateBusy(true);
     setUpdateErr(null);
     try {
-      const res = await checkModrinthUpdates({ instanceId: inst.id });
+      const res = await checkInstanceContentUpdates({ instanceId: inst.id });
       setUpdateCheck(res);
       storeScheduledUpdateResult(inst, res, new Date().toISOString(), null);
       if (res.update_count === 0) {
-        setInstallNotice("All Modrinth mods are up to date.");
+        setInstallNotice("All tracked content is up to date.");
       } else {
         setInstallNotice(
           `${res.update_count} update${res.update_count === 1 ? "" : "s"} available.`
@@ -5398,13 +5570,13 @@ export default function App() {
     setUpdateErr(null);
     setError(null);
     try {
-      const res = await updateAllModrinthMods({ instanceId: inst.id });
+      const res = await updateAllInstanceContent({ instanceId: inst.id });
       await refreshInstalledMods(inst.id);
-      const refreshed = await checkModrinthUpdates({ instanceId: inst.id });
+      const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
       setUpdateCheck(refreshed);
       storeScheduledUpdateResult(inst, refreshed, new Date().toISOString(), null);
       setInstallNotice(
-        `Updated ${res.updated_mods} mod${res.updated_mods === 1 ? "" : "s"} (${refreshed.update_count} remaining).`
+        `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} (${refreshed.update_count} remaining).`
       );
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
@@ -6901,55 +7073,6 @@ export default function App() {
               </div>
 
               <div>
-                <div className="settingTitle">CurseForge API (Setup)</div>
-                <div className="settingSub">
-                  CurseForge search/install requires an official API key. Release builds can include a maintainer-injected key, while local development can still use `MPM_CURSEFORGE_API_KEY` (or `CURSEFORGE_API_KEY`).
-                </div>
-                <div className="row">
-                  <button className="btn" onClick={() => void refreshCurseforgeApiStatus()} disabled={curseforgeApiBusy}>
-                    {curseforgeApiBusy ? "Checking…" : "Check key status"}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() =>
-                      void openExternalLink("https://support.curseforge.com/support/solutions/articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key")
-                    }
-                  >
-                    Get API key
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => void openExternalLink("https://docs.curseforge.com/rest-api/")}
-                  >
-                    API docs
-                  </button>
-                </div>
-                {curseforgeApiStatus ? (
-                  <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                    <div className="chip">
-                      {curseforgeApiStatus.validated
-                        ? "Connected"
-                        : curseforgeApiStatus.configured
-                          ? "Configured but not validated"
-                          : "Not configured"}
-                    </div>
-                    <div className={curseforgeApiStatus.validated ? "noticeBox" : "errorBox"}>
-                      {curseforgeApiStatus.message}
-                    </div>
-                    {curseforgeApiStatus.configured ? (
-                      <div className="muted">
-                        Source: {curseforgeApiStatus.env_var ?? "Unknown"} · Key: {curseforgeApiStatus.key_hint ?? "hidden"}
-                      </div>
-                    ) : (
-                      <div className="muted">
-                        For local development only: `export MPM_CURSEFORGE_API_KEY=\"your_key_here\"` then restart `tauri:dev`.
-                      </div>
-                    )}
-                  </div>
-                ) : null}
-              </div>
-
-              <div>
                 <button className="btn" onClick={() => setShowAdvancedClientId((v) => !v)}>
                   {showAdvancedClientId ? "Hide advanced OAuth settings" : "Show advanced OAuth settings"}
                 </button>
@@ -6982,13 +7105,92 @@ export default function App() {
       );
     }
 
+    if (route === "dev") {
+      return (
+        <div className="page">
+          <div style={{ maxWidth: 980 }}>
+            <div className="h1">Developer</div>
+            <div className="p">
+              Diagnostics and maintainer tools. This section is visible only when `MPM_DEV_MODE=1`.
+            </div>
+
+            <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
+              <div style={{ fontWeight: 980, fontSize: 14 }}>CurseForge diagnostics</div>
+              <div className="settingSub" style={{ marginTop: 8 }}>
+                Release builds can use an injected key. In dev mode you can save a local key in secure keychain storage.
+              </div>
+              <input
+                className="input"
+                type="password"
+                value={devCurseforgeKeyDraft}
+                onChange={(e) => setDevCurseforgeKeyDraft(e.target.value)}
+                placeholder="Paste CurseForge API key for local dev"
+                style={{ marginTop: 8 }}
+              />
+              <div className="row">
+                <button className="btn primary" onClick={() => void onSaveDevCurseforgeKey()} disabled={devCurseforgeKeyBusy}>
+                  {devCurseforgeKeyBusy ? "Saving…" : "Save key"}
+                </button>
+                <button className="btn" onClick={() => void onClearDevCurseforgeKey()} disabled={devCurseforgeKeyBusy}>
+                  Clear saved key
+                </button>
+                <button className="btn" onClick={() => void refreshCurseforgeApiStatus()} disabled={curseforgeApiBusy}>
+                  {curseforgeApiBusy ? "Checking…" : "Check key status"}
+                </button>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    void openExternalLink("https://support.curseforge.com/support/solutions/articles/9000208346-about-the-curseforge-api-and-how-to-apply-for-a-key")
+                  }
+                >
+                  Get API key
+                </button>
+                <button className="btn" onClick={() => void openExternalLink("https://docs.curseforge.com/rest-api/")}>
+                  API docs
+                </button>
+              </div>
+              {curseforgeApiStatus ? (
+                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                  <div className="chip">
+                    {curseforgeApiStatus.validated
+                      ? "Connected"
+                      : curseforgeApiStatus.configured
+                        ? "Configured but not validated"
+                        : "Not configured"}
+                  </div>
+                  <div className={curseforgeApiStatus.validated ? "noticeBox" : "errorBox"}>
+                    {curseforgeApiStatus.message}
+                  </div>
+                  {curseforgeApiStatus.configured ? (
+                    <div className="muted">
+                      Source: {curseforgeApiStatus.env_var ?? "Unknown"} · Key: {curseforgeApiStatus.key_hint ?? "hidden"}
+                    </div>
+                  ) : (
+                    <div className="muted">
+                      You can save a key above or use env var fallback: `export MPM_CURSEFORGE_API_KEY=\"your_key_here\"` then restart `tauri:dev`.
+                    </div>
+                  )}
+                </div>
+              ) : null}
+              {devCurseforgeNotice ? (
+                <div className={devCurseforgeNoticeIsError ? "errorBox" : "noticeBox"} style={{ marginTop: 10 }}>
+                  {devCurseforgeNotice}
+                </div>
+              ) : null}
+              {launcherErr ? <div className="errorBox" style={{ marginTop: 10 }}>{launcherErr}</div> : null}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     if (route === "updates") {
       return (
         <div className="page">
           <div style={{ maxWidth: 1100 }}>
             <div className="h1">Updates available</div>
             <div className="p">
-              Scheduled checks for installed Modrinth content with optional auto-apply rules.
+              Scheduled checks for installed content across providers with optional auto-apply rules.
             </div>
 
             <div className="card updatesScreenSummaryCard">
@@ -7089,7 +7291,7 @@ export default function App() {
                       <div className="errorBox" style={{ marginTop: 8 }}>{row.error}</div>
                     ) : row.update_count === 0 ? (
                       <div className="noticeBox" style={{ marginTop: 8 }}>
-                        Up to date ({row.checked_mods} mod{row.checked_mods === 1 ? "" : "s"} checked).
+                        Up to date ({row.checked_entries} entr{row.checked_entries === 1 ? "y" : "ies"} checked).
                       </div>
                     ) : (
                       <div className="updatesList" style={{ marginTop: 8 }}>
@@ -7097,8 +7299,12 @@ export default function App() {
                           {row.update_count} update{row.update_count === 1 ? "" : "s"} available
                         </div>
                         {row.updates.slice(0, 8).map((u) => (
-                          <div key={`${row.instance_id}:${u.project_id}`} className="updatesListRow">
-                            <div className="updatesListName">{u.name}</div>
+                          <div key={`${row.instance_id}:${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
+                            <div className="updatesListName">
+                              {u.name}
+                              <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
+                              <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
+                            </div>
                             <div className="updatesListMeta">
                               {u.current_version_number} → {u.latest_version_number}
                             </div>
@@ -8842,14 +9048,14 @@ export default function App() {
                           <button
                             className="btn"
                             onClick={() => onCheckUpdates(inst)}
-                            disabled={updateBusy || updateAllBusy || instanceContentType !== "mods"}
+                            disabled={updateBusy || updateAllBusy}
                           >
                             {updateBusy ? "Checking…" : "Refresh"}
                           </button>
                           <button
                             className="btn primary"
                             onClick={() => onUpdateAll(inst)}
-                            disabled={updateAllBusy || updateBusy || instanceContentType !== "mods" || (updateCheck?.update_count ?? 0) === 0}
+                            disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
                           >
                             {updateAllBusy ? "Updating…" : `Update all${updateCheck?.update_count ? ` (${updateCheck.update_count})` : ""}`}
                           </button>
@@ -8894,18 +9100,22 @@ export default function App() {
 
                     {updateErr ? <div className="errorBox" style={{ marginTop: 4 }}>{updateErr}</div> : null}
 
-                    {instanceContentType === "mods" && updateCheck ? (
+                    {updateCheck ? (
                       <div className="card updatesCard">
                         <div className="updatesCardTitle">
                           {updateCheck.update_count === 0
-                            ? `Checked ${updateCheck.checked_mods} mod${updateCheck.checked_mods === 1 ? "" : "s"} - all up to date`
+                            ? `Checked ${updateCheck.checked_entries} entr${updateCheck.checked_entries === 1 ? "y" : "ies"} - all up to date`
                             : `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} available`}
                         </div>
                         {updateCheck.update_count > 0 ? (
                           <div className="updatesList">
                             {updateCheck.updates.slice(0, 8).map((u) => (
-                              <div key={u.project_id} className="updatesListRow">
-                                <div className="updatesListName">{u.name}</div>
+                              <div key={`${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
+                                <div className="updatesListName">
+                                  {u.name}
+                                  <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
+                                  <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
+                                </div>
                                 <div className="updatesListMeta">
                                   {u.current_version_number} → {u.latest_version_number}
                                 </div>
@@ -10299,6 +10509,13 @@ export default function App() {
                   </div>
                 ) : null}
                 <div className="accountSkinViewerActions">
+                  <button
+                    className="btn primary"
+                    onClick={() => void onApplySelectedAppearance()}
+                    disabled={accountAppearanceBusy || !selectedLauncherAccountId || !selectedAccountSkin}
+                  >
+                    {accountAppearanceBusy ? "Applying…" : "Apply skin & cape in-game"}
+                  </button>
                   <button className="btn" onClick={onCycleAccountCape} disabled={capeOptions.length <= 1}>
                     Change cape
                   </button>
@@ -10829,6 +11046,11 @@ export default function App() {
         </NavButton>
 
         <div className="navBottom">
+          {isDevMode ? (
+            <NavButton active={route === "dev"} label="Dev" onClick={() => setRoute("dev")}>
+              <Icon name="sparkles" className="navIcon" />
+            </NavButton>
+          ) : null}
           <NavButton className="profileBounce" active={route === "account"} label="Account" onClick={() => setRoute("account")}>
             <Icon name="user" className="navIcon navAnimUser" />
           </NavButton>
@@ -11139,7 +11361,7 @@ export default function App() {
                 <div className="p" style={{ marginTop: 4 }}>
                   Source: {installTarget.source}. Type: {installTarget.contentType}.
                   {installTarget.contentType === "mods"
-                    ? " The app will pick the latest compatible version (loader + game version). Modrinth installs include required dependency resolution."
+                    ? " The app will pick the latest compatible version (loader + game version) and install required dependencies when available."
                     : installTarget.contentType === "datapacks"
                       ? " Datapacks install into world datapacks folders. Direct install targets all detected worlds on that instance."
                       : " The app will install the latest compatible file and track it in lockfile."}
@@ -11256,7 +11478,11 @@ export default function App() {
       ) : null}
 
       {projectOpen || projectBusy || projectErr ? (
-        <Modal title={projectOpen?.title ?? (projectBusy ? "Loading…" : "Mod details")} onClose={closeProjectOverlays}>
+        <Modal
+          title={projectOpen?.title ?? (projectBusy ? "Loading…" : "Mod details")}
+          onClose={closeProjectOverlays}
+          size="wide"
+        >
           <div className="modalBody">
             {projectErr ? <div className="errorBox">{projectErr}</div> : null}
             {projectBusy && !projectOpen ? (
@@ -11380,9 +11606,10 @@ export default function App() {
 
                         <div className="card projectSectionCard projectSectionDesc">
                           <div className="projectSectionTitle">Description</div>
-                          <pre className="projectBodyText">
-                            {toReadableBody(projectOpen.body) || projectOpen.description}
-                          </pre>
+                          <MarkdownBlock
+                            className="projectBodyText projectMarkdown"
+                            text={projectOpen.body?.trim() ? projectOpen.body : projectOpen.description}
+                          />
                         </div>
 
                         <div className="card projectSectionCard projectSectionLinks">
@@ -11584,6 +11811,7 @@ export default function App() {
         <Modal
           title={curseforgeOpen?.title ?? (curseforgeBusy ? "Loading…" : "CurseForge details")}
           onClose={closeProjectOverlays}
+          size="wide"
         >
           <div className="modalBody">
             {curseforgeErr ? <div className="errorBox">{curseforgeErr}</div> : null}
@@ -11683,9 +11911,10 @@ export default function App() {
                     <div className="projectOverviewCol">
                       <div className="card projectSectionCard projectSectionDesc">
                         <div className="projectSectionTitle">Description</div>
-                        <pre className="projectBodyText">
-                          {toReadableHtml(curseforgeOpen.description) || curseforgeOpen.summary}
-                        </pre>
+                        <RichTextBlock
+                          className="projectBodyText projectMarkdown projectRichHtml"
+                          text={curseforgeOpen.description || curseforgeOpen.summary}
+                        />
                       </div>
                     </div>
                     <div className="projectOverviewCol">

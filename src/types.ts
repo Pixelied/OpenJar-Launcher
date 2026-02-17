@@ -78,6 +78,34 @@ export type UpdateAllResult = {
   updated_mods: number;
 };
 
+export type ContentUpdateInfo = {
+  source: "modrinth" | "curseforge" | string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  project_id: string;
+  name: string;
+  current_version_id: string;
+  current_version_number: string;
+  latest_version_id: string;
+  latest_version_number: string;
+  enabled: boolean;
+  target_worlds: string[];
+};
+
+export type ContentUpdateCheckResult = {
+  checked_entries: number;
+  update_count: number;
+  updates: ContentUpdateInfo[];
+  warnings: string[];
+};
+
+export type UpdateAllContentResult = {
+  checked_entries: number;
+  updated_entries: number;
+  warnings: string[];
+  by_source: Record<string, number>;
+  by_content_type: Record<string, number>;
+};
+
 export type LaunchResult = {
   method: "prism" | "native" | string;
   launch_id?: string | null;

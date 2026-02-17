@@ -4,7 +4,7 @@ use chrono::{DateTime, Local};
 use base64::Engine as _;
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
-use reqwest::blocking::{Client, Response};
+use reqwest::blocking::{multipart, Client, Response};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -23,6 +23,7 @@ use zip::ZipArchive;
 const USER_AGENT: &str = "ModpackManager/0.0.1 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
 const LEGACY_KEYRING_SERVICES: [&str; 2] = ["com.adrien.modpackmanager", "modpack-manager"];
+const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
 const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
 const MS_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const MS_DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
@@ -37,6 +38,7 @@ const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com/v1";
 const CURSEFORGE_GAME_ID_MINECRAFT: i64 = 432;
 const BUILT_IN_CURSEFORGE_API_KEY_ENV: &str = "MPM_CURSEFORGE_API_KEY_BUILTIN";
 const BUILT_IN_CURSEFORGE_API_KEY: Option<&str> = option_env!("MPM_CURSEFORGE_API_KEY_BUILTIN");
+const DEV_RUNTIME_CURSEFORGE_API_KEY_ENV: &str = "MPM_CURSEFORGE_API_KEY_DEV_RUNTIME";
 const MAX_LOCAL_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORLD_BACKUP_INTERVAL_MINUTES: u32 = 10;
 const DEFAULT_WORLD_BACKUP_RETENTION_COUNT: u32 = 1;
@@ -54,11 +56,24 @@ fn curseforge_api_key() -> Option<String> {
 }
 
 fn curseforge_api_key_with_source() -> Option<(String, String)> {
-    for key in ["MPM_CURSEFORGE_API_KEY", "CURSEFORGE_API_KEY"] {
+    for key in [
+        DEV_RUNTIME_CURSEFORGE_API_KEY_ENV,
+        "MPM_CURSEFORGE_API_KEY",
+        "CURSEFORGE_API_KEY",
+    ] {
         if let Ok(v) = std::env::var(key) {
             let trimmed = v.trim().to_string();
             if !trimmed.is_empty() {
                 return Some((trimmed, key.to_string()));
+            }
+        }
+    }
+    if is_dev_mode_enabled() {
+        match keyring_get_dev_curseforge_key() {
+            Ok(Some(v)) => return Some((v, "dev:keyring".to_string())),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("dev curseforge key read failed: {e}");
             }
         }
     }
@@ -73,6 +88,49 @@ fn curseforge_api_key_with_source() -> Option<(String, String)> {
 
 fn missing_curseforge_key_message() -> String {
     "CurseForge API key is not configured for this build.".to_string()
+}
+
+fn discover_missing_curseforge_key_message() -> String {
+    "CurseForge is not configured for this build. Release builds can use an injected key; for local dev set MPM_CURSEFORGE_API_KEY and restart."
+        .to_string()
+}
+
+fn is_dev_mode_enabled() -> bool {
+    let raw = std::env::var("MPM_DEV_MODE").unwrap_or_default();
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn load_dev_curseforge_key_into_runtime_env(app: &tauri::AppHandle) {
+    if !is_dev_mode_enabled() {
+        return;
+    }
+    if let Ok(v) = std::env::var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV) {
+        if !v.trim().is_empty() {
+            return;
+        }
+    }
+    match keyring_get_dev_curseforge_key() {
+        Ok(Some(v)) => {
+            std::env::set_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV, v);
+            return;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("dev curseforge keyring preload failed: {e}");
+        }
+    }
+    match read_dev_curseforge_key_file(app) {
+        Ok(Some(v)) => {
+            std::env::set_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV, v);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("dev curseforge file preload failed: {e}");
+        }
+    }
 }
 
 fn mask_secret(secret: &str) -> String {
@@ -375,6 +433,25 @@ struct SetLauncherSettingsArgs {
     update_auto_apply_mode: Option<String>,
     #[serde(alias = "updateApplyScope", default)]
     update_apply_scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetDevCurseforgeApiKeyArgs {
+    key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplySelectedAccountAppearanceArgs {
+    #[serde(alias = "applySkin", default)]
+    apply_skin: bool,
+    #[serde(alias = "skinSource", default)]
+    skin_source: Option<String>,
+    #[serde(alias = "skinVariant", default)]
+    skin_variant: Option<String>,
+    #[serde(alias = "applyCape", default)]
+    apply_cape: bool,
+    #[serde(alias = "capeId", default)]
+    cape_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -803,6 +880,18 @@ struct CurseforgeFile {
     game_versions: Vec<String>,
     #[serde(default)]
     hashes: Vec<CurseforgeFileHash>,
+    #[serde(default)]
+    dependencies: Vec<CurseforgeFileDependency>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct CurseforgeFileDependency {
+    #[serde(default)]
+    #[serde(rename = "modId")]
+    mod_id: i64,
+    #[serde(default)]
+    #[serde(rename = "relationType")]
+    relation_type: i64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -861,6 +950,37 @@ struct ModUpdateCheckResult {
 struct UpdateAllResult {
     checked_mods: usize,
     updated_mods: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContentUpdateInfo {
+    source: String,
+    content_type: String,
+    project_id: String,
+    name: String,
+    current_version_id: String,
+    current_version_number: String,
+    latest_version_id: String,
+    latest_version_number: String,
+    enabled: bool,
+    target_worlds: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ContentUpdateCheckResult {
+    checked_entries: usize,
+    update_count: usize,
+    updates: Vec<ContentUpdateInfo>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UpdateAllContentResult {
+    checked_entries: usize,
+    updated_entries: usize,
+    warnings: Vec<String>,
+    by_source: HashMap<String, usize>,
+    by_content_type: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1279,6 +1399,39 @@ fn launcher_token_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, Strin
 
 fn launcher_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join("cache"))
+}
+
+fn launcher_dev_curseforge_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(launcher_dir(app)?.join("dev_curseforge_api_key.txt"))
+}
+
+fn read_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    let p = launcher_dev_curseforge_key_path(app)?;
+    if !p.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&p).map_err(|e| format!("read dev curseforge key file failed: {e}"))?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed))
+}
+
+fn write_dev_curseforge_key_file(app: &tauri::AppHandle, key: &str) -> Result<(), String> {
+    let p = launcher_dev_curseforge_key_path(app)?;
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
+    }
+    fs::write(&p, key).map_err(|e| format!("write dev curseforge key file failed: {e}"))
+}
+
+fn clear_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<(), String> {
+    let p = launcher_dev_curseforge_key_path(app)?;
+    if p.exists() {
+        fs::remove_file(&p).map_err(|e| format!("clear dev curseforge key file failed: {e}"))?;
+    }
+    Ok(())
 }
 
 fn keyring_username_for_account(account_id: &str) -> String {
@@ -3190,6 +3343,40 @@ fn keyring_set_refresh_token(account_id: &str, refresh_token: &str) -> Result<()
         .map_err(|e| format!("keyring write failed: {e}"))
 }
 
+fn keyring_get_dev_curseforge_key() -> Result<Option<String>, String> {
+    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        .map_err(|e| format!("keyring init failed: {e}"))?;
+    match entry.get_password() {
+        Ok(value) => {
+            let trimmed = value.trim().to_string();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed))
+            }
+        }
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(e) => Err(format!("keyring read failed: {e}")),
+    }
+}
+
+fn keyring_set_dev_curseforge_key(value: &str) -> Result<(), String> {
+    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        .map_err(|e| format!("keyring init failed: {e}"))?;
+    entry
+        .set_password(value)
+        .map_err(|e| format!("keyring write failed: {e}"))
+}
+
+fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
+    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        .map_err(|e| format!("keyring init failed: {e}"))?;
+    match entry.delete_credential() {
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
+        Err(e) => Err(format!("keyring delete failed: {e}")),
+    }
+}
+
 fn persist_refresh_token(
     app: &tauri::AppHandle,
     account_id: &str,
@@ -3625,6 +3812,116 @@ fn fetch_minecraft_profile(client: &Client, mc_access_token: &str) -> Result<McP
         .map_err(|e| format!("parse Minecraft profile failed: {e}"))
 }
 
+fn normalize_skin_variant(input: Option<&str>) -> &'static str {
+    match input.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "slim" | "alex" => "slim",
+        _ => "classic",
+    }
+}
+
+fn parse_http_error_with_body(resp: Response) -> String {
+    let status = resp.status();
+    let body = resp.text().unwrap_or_default();
+    let snippet = body.chars().take(280).collect::<String>();
+    if snippet.is_empty() {
+        format!("status {status}")
+    } else {
+        format!("status {status}: {snippet}")
+    }
+}
+
+fn apply_minecraft_skin(
+    client: &Client,
+    mc_access_token: &str,
+    skin_source: &str,
+    skin_variant: Option<&str>,
+) -> Result<(), String> {
+    let source = skin_source.trim();
+    if source.is_empty() {
+        return Err("Skin source is empty.".to_string());
+    }
+    let variant = normalize_skin_variant(skin_variant);
+    let url = format!("{MC_PROFILE_URL}/skins");
+
+    let resp = if source.starts_with("http://") || source.starts_with("https://") {
+        let json = serde_json::json!({
+            "variant": variant,
+            "url": source,
+        });
+        client
+            .post(&url)
+            .bearer_auth(mc_access_token)
+            .json(&json)
+            .send()
+            .map_err(|e| format!("set skin via URL failed: {e}"))?
+    } else {
+        let path = PathBuf::from(source);
+        if !path.exists() || !path.is_file() {
+            return Err("Selected skin file does not exist.".to_string());
+        }
+        let bytes = fs::read(&path).map_err(|e| format!("read skin file failed: {e}"))?;
+        if bytes.is_empty() {
+            return Err("Skin file is empty.".to_string());
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("skin.png")
+            .to_string();
+        let part = multipart::Part::bytes(bytes)
+            .file_name(file_name)
+            .mime_str("image/png")
+            .map_err(|e| format!("prepare skin upload failed: {e}"))?;
+        let form = multipart::Form::new()
+            .text("variant", variant.to_string())
+            .part("file", part);
+        client
+            .post(&url)
+            .bearer_auth(mc_access_token)
+            .multipart(form)
+            .send()
+            .map_err(|e| format!("upload skin failed: {e}"))?
+    };
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Minecraft skin update failed ({})",
+            parse_http_error_with_body(resp)
+        ));
+    }
+    Ok(())
+}
+
+fn apply_minecraft_cape(client: &Client, mc_access_token: &str, cape_id: Option<&str>) -> Result<(), String> {
+    let url = format!("{MC_PROFILE_URL}/capes/active");
+    let trimmed = cape_id.unwrap_or("").trim();
+
+    let resp = if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+        client
+            .delete(&url)
+            .bearer_auth(mc_access_token)
+            .send()
+            .map_err(|e| format!("clear active cape failed: {e}"))?
+    } else {
+        let json = serde_json::json!({ "capeId": trimmed });
+        client
+            .put(&url)
+            .bearer_auth(mc_access_token)
+            .json(&json)
+            .send()
+            .map_err(|e| format!("set active cape failed: {e}"))?
+    };
+
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Minecraft cape update failed ({})",
+            parse_http_error_with_body(resp)
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_fabric_loader_version(client: &Client, mc_version: &str) -> Result<String, String> {
     let url = format!("https://meta.fabricmc.net/v2/versions/loader/{mc_version}");
     let resp = client
@@ -3967,58 +4264,174 @@ fn fetch_project_title(client: &Client, project_id: &str) -> Option<String> {
     }
 }
 
-fn distinct_modrinth_projects(lock: &Lockfile) -> Vec<LockEntry> {
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut out: Vec<LockEntry> = Vec::new();
-    for entry in &lock.entries {
-        if !entry.source.eq_ignore_ascii_case("modrinth") {
-            continue;
-        }
-        if normalize_lock_content_type(&entry.content_type) != "mods" {
-            continue;
-        }
-        if seen.insert(entry.project_id.clone()) {
-            out.push(entry.clone());
-        }
-    }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    out
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateScope {
+    AllContent,
+    ModrinthModsOnly,
 }
 
-fn check_modrinth_updates_inner(
+fn is_updatable_content_type(content_type: &str) -> bool {
+    matches!(
+        normalize_lock_content_type(content_type).as_str(),
+        "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+    )
+}
+
+fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool {
+    let source = entry.source.trim().to_lowercase();
+    let content_type = normalize_lock_content_type(&entry.content_type);
+    if !is_updatable_content_type(&content_type) {
+        return false;
+    }
+    match scope {
+        UpdateScope::AllContent => source == "modrinth" || source == "curseforge",
+        UpdateScope::ModrinthModsOnly => source == "modrinth" && content_type == "mods",
+    }
+}
+
+fn check_instance_content_updates_inner(
     client: &Client,
     instance: &Instance,
     lock: &Lockfile,
-) -> Result<ModUpdateCheckResult, String> {
-    let projects = distinct_modrinth_projects(lock);
-    let checked_mods = projects.len();
-    let mut updates: Vec<ModUpdateInfo> = Vec::new();
+    scope: UpdateScope,
+) -> Result<ContentUpdateCheckResult, String> {
+    let mut updates: Vec<ContentUpdateInfo> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut checked_entries = 0usize;
 
-    for entry in projects {
-        let versions = fetch_project_versions(client, &entry.project_id)?;
-        let Some(latest) = pick_compatible_version(versions, instance) else {
+    let has_cf_entries = lock
+        .entries
+        .iter()
+        .any(|e| entry_allowed_in_update_scope(e, scope) && e.source.eq_ignore_ascii_case("curseforge"));
+    let cf_key = curseforge_api_key();
+    if has_cf_entries && cf_key.is_none() {
+        warnings.push(
+            "CurseForge key unavailable, skipped CurseForge update checks for this instance."
+                .to_string(),
+        );
+    }
+
+    for entry in &lock.entries {
+        if !entry_allowed_in_update_scope(entry, scope) {
             continue;
-        };
-        if latest.id == entry.version_id {
+        }
+        checked_entries += 1;
+
+        if entry.pinned_version.as_ref().map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            warnings.push(format!(
+                "Skipped pinned entry '{}' ({})",
+                entry.name, entry.project_id
+            ));
             continue;
         }
 
-        updates.push(ModUpdateInfo {
-            project_id: entry.project_id,
-            name: entry.name,
-            current_version_id: entry.version_id,
-            current_version_number: entry.version_number,
-            latest_version_id: latest.id,
-            latest_version_number: latest.version_number,
-        });
+        let source = entry.source.trim().to_lowercase();
+        let content_type = normalize_lock_content_type(&entry.content_type);
+
+        if source == "modrinth" {
+            let versions = fetch_project_versions(client, &entry.project_id)?;
+            let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type) else {
+                warnings.push(format!(
+                    "No compatible Modrinth update found for '{}' ({})",
+                    entry.name, entry.project_id
+                ));
+                continue;
+            };
+            if latest.id == entry.version_id {
+                continue;
+            }
+            updates.push(ContentUpdateInfo {
+                source: "modrinth".to_string(),
+                content_type,
+                project_id: entry.project_id.clone(),
+                name: entry.name.clone(),
+                current_version_id: entry.version_id.clone(),
+                current_version_number: entry.version_number.clone(),
+                latest_version_id: latest.id,
+                latest_version_number: latest.version_number,
+                enabled: entry.enabled,
+                target_worlds: entry.target_worlds.clone(),
+            });
+            continue;
+        }
+
+        if source == "curseforge" {
+            let Some(api_key) = cf_key.as_deref() else {
+                continue;
+            };
+            let mod_id = parse_curseforge_project_id(&entry.project_id)?;
+            let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
+            files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+            files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+            let Some(latest) = files.into_iter().next() else {
+                warnings.push(format!(
+                    "No compatible CurseForge update found for '{}' ({})",
+                    entry.name, entry.project_id
+                ));
+                continue;
+            };
+            let latest_version_id = format!("cf_file:{}", latest.id);
+            if latest_version_id == entry.version_id {
+                continue;
+            }
+            updates.push(ContentUpdateInfo {
+                source: "curseforge".to_string(),
+                content_type,
+                project_id: entry.project_id.clone(),
+                name: entry.name.clone(),
+                current_version_id: entry.version_id.clone(),
+                current_version_number: entry.version_number.clone(),
+                latest_version_id,
+                latest_version_number: if latest.display_name.trim().is_empty() {
+                    latest.file_name
+                } else {
+                    latest.display_name
+                },
+                enabled: entry.enabled,
+                target_worlds: entry.target_worlds.clone(),
+            });
+        }
     }
 
-    updates.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(ModUpdateCheckResult {
-        checked_mods,
+    updates.sort_by(|a, b| {
+        let by_name = a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        if by_name != std::cmp::Ordering::Equal {
+            return by_name;
+        }
+        let by_source = a.source.cmp(&b.source);
+        if by_source != std::cmp::Ordering::Equal {
+            return by_source;
+        }
+        a.project_id.cmp(&b.project_id)
+    });
+    Ok(ContentUpdateCheckResult {
+        checked_entries,
         update_count: updates.len(),
         updates,
+        warnings,
     })
+}
+
+fn content_updates_to_modrinth_result(content: ContentUpdateCheckResult) -> ModUpdateCheckResult {
+    let mut updates: Vec<ModUpdateInfo> = content
+        .updates
+        .into_iter()
+        .filter(|u| u.source == "modrinth" && u.content_type == "mods")
+        .map(|u| ModUpdateInfo {
+            project_id: u.project_id,
+            name: u.name,
+            current_version_id: u.current_version_id,
+            current_version_number: u.current_version_number,
+            latest_version_id: u.latest_version_id,
+            latest_version_number: u.latest_version_number,
+        })
+        .collect();
+    updates.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    ModUpdateCheckResult {
+        checked_mods: content.checked_entries,
+        update_count: updates.len(),
+        updates,
+    }
 }
 
 fn normalize_discover_content_type(input: &str) -> String {
@@ -4079,6 +4492,90 @@ fn parse_cf_hashes(file: &CurseforgeFile) -> HashMap<String, String> {
         }
     }
     out
+}
+
+fn fetch_curseforge_project(client: &Client, api_key: &str, mod_id: i64) -> Result<CurseforgeMod, String> {
+    let mod_resp = client
+        .get(format!("{}/mods/{}", CURSEFORGE_API_BASE, mod_id))
+        .header("Accept", "application/json")
+        .header("x-api-key", api_key)
+        .send()
+        .map_err(|e| format!("CurseForge project lookup failed: {e}"))?;
+    if !mod_resp.status().is_success() {
+        return Err(format!(
+            "CurseForge project lookup failed with status {}",
+            mod_resp.status()
+        ));
+    }
+    Ok(mod_resp
+        .json::<CurseforgeModResponse>()
+        .map_err(|e| format!("parse CurseForge project failed: {e}"))?
+        .data)
+}
+
+fn fetch_curseforge_files(client: &Client, api_key: &str, mod_id: i64) -> Result<Vec<CurseforgeFile>, String> {
+    let files_resp = client
+        .get(format!(
+            "{}/mods/{}/files?pageSize=80&index=0",
+            CURSEFORGE_API_BASE, mod_id
+        ))
+        .header("Accept", "application/json")
+        .header("x-api-key", api_key)
+        .send()
+        .map_err(|e| format!("CurseForge files lookup failed: {e}"))?;
+    if !files_resp.status().is_success() {
+        return Err(format!(
+            "CurseForge files lookup failed with status {}",
+            files_resp.status()
+        ));
+    }
+    Ok(files_resp
+        .json::<CurseforgeFilesResponse>()
+        .map_err(|e| format!("parse CurseForge files failed: {e}"))?
+        .data)
+}
+
+fn curseforge_relation_is_required(relation_type: i64) -> bool {
+    relation_type == 3
+}
+
+fn resolve_curseforge_dependency_chain(
+    client: &Client,
+    api_key: &str,
+    instance: &Instance,
+    root_mod_id: i64,
+) -> Result<Vec<i64>, String> {
+    let mut ordered: Vec<i64> = Vec::new();
+    let mut queue: VecDeque<i64> = VecDeque::new();
+    let mut visited: HashSet<i64> = HashSet::new();
+    queue.push_back(root_mod_id);
+
+    while let Some(mod_id) = queue.pop_front() {
+        if !visited.insert(mod_id) {
+            continue;
+        }
+        ordered.push(mod_id);
+        let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
+        files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+        files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+        let Some(file) = files.into_iter().next() else {
+            return Err(format!(
+                "No compatible CurseForge file found for dependency project {} ({} + {})",
+                mod_id, instance.loader, instance.mc_version
+            ));
+        };
+        for dep in file.dependencies {
+            if dep.mod_id <= 0 || !curseforge_relation_is_required(dep.relation_type) {
+                continue;
+            }
+            if !visited.contains(&dep.mod_id) {
+                queue.push_back(dep.mod_id);
+            }
+        }
+    }
+
+    ordered.reverse();
+    Ok(ordered)
 }
 
 fn discover_content_type_from_modrinth_project_type(project_type: &str) -> String {
@@ -4355,43 +4852,8 @@ fn install_curseforge_content_inner(
     }
     let mod_id = parse_curseforge_project_id(project_id)?;
     let project_key = format!("cf:{mod_id}");
-
-    let mod_resp = client
-        .get(format!("{}/mods/{}", CURSEFORGE_API_BASE, mod_id))
-        .header("Accept", "application/json")
-        .header("x-api-key", api_key)
-        .send()
-        .map_err(|e| format!("CurseForge project lookup failed: {e}"))?;
-    if !mod_resp.status().is_success() {
-        return Err(format!(
-            "CurseForge project lookup failed with status {}",
-            mod_resp.status()
-        ));
-    }
-    let project = mod_resp
-        .json::<CurseforgeModResponse>()
-        .map_err(|e| format!("parse CurseForge project failed: {e}"))?
-        .data;
-
-    let files_resp = client
-        .get(format!(
-            "{}/mods/{}/files?pageSize=80&index=0",
-            CURSEFORGE_API_BASE, mod_id
-        ))
-        .header("Accept", "application/json")
-        .header("x-api-key", api_key)
-        .send()
-        .map_err(|e| format!("CurseForge files lookup failed: {e}"))?;
-    if !files_resp.status().is_success() {
-        return Err(format!(
-            "CurseForge files lookup failed with status {}",
-            files_resp.status()
-        ));
-    }
-    let mut files = files_resp
-        .json::<CurseforgeFilesResponse>()
-        .map_err(|e| format!("parse CurseForge files failed: {e}"))?
-        .data;
+    let project = fetch_curseforge_project(client, api_key, mod_id)?;
+    let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
     files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
     files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
     let file = files.into_iter().next().ok_or_else(|| {
@@ -4871,7 +5333,7 @@ fn search_curseforge_discover(
     args: &SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
     let api_key = curseforge_api_key()
-        .ok_or_else(missing_curseforge_key_message)?;
+        .ok_or_else(discover_missing_curseforge_key_message)?;
     let content_type = normalize_discover_content_type(&args.content_type);
     let class_ids = curseforge_class_ids_for_content_type(&content_type);
     let sort_field = discover_index_sort_field(&args.index);
@@ -6157,6 +6619,56 @@ fn get_launcher_settings(app: tauri::AppHandle) -> Result<LauncherSettings, Stri
 }
 
 #[tauri::command]
+fn get_dev_mode_state() -> Result<bool, String> {
+    Ok(is_dev_mode_enabled())
+}
+
+#[tauri::command]
+fn set_dev_curseforge_api_key(app: tauri::AppHandle, args: SetDevCurseforgeApiKeyArgs) -> Result<String, String> {
+    if !is_dev_mode_enabled() {
+        return Err("Dev mode is disabled. Set MPM_DEV_MODE=1 and restart.".to_string());
+    }
+    let trimmed = args.key.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("API key cannot be empty.".to_string());
+    }
+    std::env::set_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV, &trimmed);
+    let mut notes: Vec<String> = Vec::new();
+    if let Err(e) = keyring_set_dev_curseforge_key(&trimmed) {
+        notes.push(format!("Secure keychain save failed ({e})."));
+    }
+    write_dev_curseforge_key_file(&app, &trimmed)?;
+    if notes.is_empty() {
+        Ok("Saved dev CurseForge API key. It is active immediately for this app session.".to_string())
+    } else {
+        Ok(format!(
+            "Saved dev CurseForge API key to local fallback file and activated it. {}",
+            notes.join(" ")
+        ))
+    }
+}
+
+#[tauri::command]
+fn clear_dev_curseforge_api_key(app: tauri::AppHandle) -> Result<String, String> {
+    if !is_dev_mode_enabled() {
+        return Err("Dev mode is disabled. Set MPM_DEV_MODE=1 and restart.".to_string());
+    }
+    std::env::remove_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV);
+    let mut notes: Vec<String> = Vec::new();
+    if let Err(e) = keyring_delete_dev_curseforge_key() {
+        notes.push(format!("Keychain clear failed ({e})."));
+    }
+    if let Err(e) = clear_dev_curseforge_key_file(&app) {
+        notes.push(format!("Local fallback clear failed ({e})."));
+    }
+    if notes.is_empty() {
+        Ok("Cleared saved dev CurseForge API key.".to_string())
+    } else {
+        Ok(format!("Cleared runtime key. {}", notes.join(" ")))
+    }
+}
+
+#[tauri::command]
 fn get_curseforge_api_status() -> Result<CurseforgeApiStatus, String> {
     let Some((api_key, source)) = curseforge_api_key_with_source() else {
         return Ok(CurseforgeApiStatus {
@@ -6164,7 +6676,7 @@ fn get_curseforge_api_status() -> Result<CurseforgeApiStatus, String> {
             env_var: None,
             key_hint: None,
             validated: false,
-            message: "No CurseForge API key configured for this build. Maintainers can inject MPM_CURSEFORGE_API_KEY_BUILTIN at build time, or set MPM_CURSEFORGE_API_KEY for local development.".to_string(),
+            message: "No CurseForge API key configured for this build. Maintainers can inject MPM_CURSEFORGE_API_KEY_BUILTIN at build time, use Dev mode secure key storage, or set MPM_CURSEFORGE_API_KEY for local development.".to_string(),
         });
     };
 
@@ -7832,6 +8344,36 @@ fn get_selected_account_diagnostics(app: tauri::AppHandle) -> Result<AccountDiag
 }
 
 #[tauri::command]
+fn apply_selected_account_appearance(
+    app: tauri::AppHandle,
+    args: ApplySelectedAccountAppearanceArgs,
+) -> Result<AccountDiagnostics, String> {
+    if !args.apply_skin && !args.apply_cape {
+        return Err("Nothing to apply. Select skin and/or cape first.".to_string());
+    }
+
+    let settings = read_launcher_settings(&app)?;
+    let client = build_http_client()?;
+    let (_, mc_access_token) = build_selected_microsoft_auth(&app, &client, &settings)?;
+
+    if args.apply_skin {
+        let source = args
+            .skin_source
+            .as_deref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| "No skin selected to apply.".to_string())?;
+        apply_minecraft_skin(&client, &mc_access_token, source, args.skin_variant.as_deref())?;
+    }
+
+    if args.apply_cape {
+        apply_minecraft_cape(&client, &mc_access_token, args.cape_id.as_deref())?;
+    }
+
+    get_selected_account_diagnostics(app)
+}
+
+#[tauri::command]
 fn export_instance_mods_zip(
     app: tauri::AppHandle,
     args: ExportInstanceModsZipArgs,
@@ -8466,6 +9008,9 @@ fn install_curseforge_mod_inner(
     let api_key = curseforge_api_key()
         .ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
+    let root_mod_id = parse_curseforge_project_id(&args.project_id)?;
+    let install_order = resolve_curseforge_dependency_chain(&client, &api_key, &instance, root_mod_id)?;
+    let total_actions = install_order.len().max(1);
 
     emit_install_progress(
         &app,
@@ -8474,9 +9019,13 @@ fn install_curseforge_mod_inner(
             project_id: args.project_id.clone(),
             stage: "resolving".to_string(),
             downloaded: 0,
-            total: Some(1),
+            total: Some(total_actions as u64),
             percent: Some(0.0),
-            message: Some("Resolving CurseForge file…".to_string()),
+            message: Some(if total_actions > 1 {
+                "Resolving CurseForge dependency chain…".to_string()
+            } else {
+                "Resolving CurseForge file…".to_string()
+            }),
         },
     );
 
@@ -8484,35 +9033,51 @@ fn install_curseforge_mod_inner(
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
     }
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let mut root_entry: Option<LockEntry> = None;
+    for (idx, mod_id) in install_order.iter().enumerate() {
+        let is_root = *mod_id == root_mod_id;
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "downloading".to_string(),
+                downloaded: idx as u64,
+                total: Some(total_actions as u64),
+                percent: Some(((idx as f64) / (total_actions as f64) * 100.0).clamp(0.0, 99.0)),
+                message: Some(if is_root {
+                    "Installing selected CurseForge mod…".to_string()
+                } else {
+                    format!("Installing required dependency {}/{}…", idx + 1, total_actions)
+                }),
+            },
+        );
 
-    emit_install_progress(
-        &app,
-        InstallProgressEvent {
-            instance_id: args.instance_id.clone(),
-            project_id: args.project_id.clone(),
-            stage: "downloading".to_string(),
-            downloaded: 0,
-            total: Some(1),
-            percent: Some(10.0),
-            message: Some("Downloading file…".to_string()),
-        },
-    );
-    let entry = install_curseforge_content_inner(
-        &instance,
-        &instance_dir,
-        &mut lock,
-        &client,
-        &api_key,
-        &args.project_id,
-        args.project_title.as_deref(),
-        "mods",
-        &[],
-    )?;
+        let entry = install_curseforge_content_inner(
+            &instance,
+            &instance_dir,
+            &mut lock,
+            &client,
+            &api_key,
+            &mod_id.to_string(),
+            if is_root {
+                args.project_title.as_deref()
+            } else {
+                None
+            },
+            "mods",
+            &[],
+        )?;
+        if is_root {
+            root_entry = Some(entry);
+        }
+    }
 
-    lock.entries.push(entry.clone());
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+
+    let entry = root_entry.ok_or_else(|| "Failed to resolve selected CurseForge project".to_string())?;
 
     emit_install_progress(
         &app,
@@ -8520,10 +9085,17 @@ fn install_curseforge_mod_inner(
             instance_id: args.instance_id.clone(),
             project_id: args.project_id,
             stage: "completed".to_string(),
-            downloaded: 1,
-            total: Some(1),
+            downloaded: total_actions as u64,
+            total: Some(total_actions as u64),
             percent: Some(100.0),
-            message: Some("CurseForge install complete".to_string()),
+            message: Some(if total_actions > 1 {
+                format!(
+                    "CurseForge install complete ({} required dependencies)",
+                    total_actions.saturating_sub(1)
+                )
+            } else {
+                "CurseForge install complete".to_string()
+            }),
         },
     );
 
@@ -8629,6 +9201,97 @@ fn import_local_mod_file(
 }
 
 #[tauri::command]
+fn check_instance_content_updates(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<ContentUpdateCheckResult, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let client = build_http_client()?;
+    check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)
+}
+
+fn update_all_instance_content_inner(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<UpdateAllContentResult, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let client = build_http_client()?;
+    let check = check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)?;
+
+    if !check.updates.is_empty() {
+        let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
+    }
+    let mut updated_entries = 0usize;
+    let mut warnings = check.warnings.clone();
+    let mut by_source: HashMap<String, usize> = HashMap::new();
+    let mut by_content_type: HashMap<String, usize> = HashMap::new();
+
+    for update in &check.updates {
+        let install_result = install_discover_content_inner(
+            app.clone(),
+            &InstallDiscoverContentArgs {
+                instance_id: args.instance_id.clone(),
+                source: update.source.clone(),
+                project_id: update.project_id.clone(),
+                project_title: Some(update.name.clone()),
+                content_type: update.content_type.clone(),
+                target_worlds: update.target_worlds.clone(),
+            },
+            None,
+        );
+
+        match install_result {
+            Ok(installed) => {
+                if update.content_type == "mods" && !update.enabled {
+                    let disable_res = set_installed_mod_enabled(
+                        app.clone(),
+                        SetInstalledModEnabledArgs {
+                            instance_id: args.instance_id.clone(),
+                            version_id: installed.version_id,
+                            enabled: false,
+                        },
+                    );
+                    if let Err(err) = disable_res {
+                        warnings.push(format!(
+                            "Updated '{}' but failed to keep it disabled: {}",
+                            update.name, err
+                        ));
+                    }
+                }
+                updated_entries += 1;
+                *by_source.entry(update.source.clone()).or_insert(0) += 1;
+                *by_content_type
+                    .entry(update.content_type.clone())
+                    .or_insert(0) += 1;
+            }
+            Err(err) => {
+                warnings.push(format!("Failed to update '{}': {}", update.name, err));
+            }
+        }
+    }
+
+    Ok(UpdateAllContentResult {
+        checked_entries: check.checked_entries,
+        updated_entries,
+        warnings,
+        by_source,
+        by_content_type,
+    })
+}
+
+#[tauri::command]
+fn update_all_instance_content(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<UpdateAllContentResult, String> {
+    update_all_instance_content_inner(app, args)
+}
+
+#[tauri::command]
 fn check_modrinth_updates(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
@@ -8636,14 +9299,14 @@ fn check_modrinth_updates(
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
-
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("build http client failed: {e}"))?;
-
-    check_modrinth_updates_inner(&client, &instance, &lock)
+    let client = build_http_client()?;
+    let content = check_instance_content_updates_inner(
+        &client,
+        &instance,
+        &lock,
+        UpdateScope::ModrinthModsOnly,
+    )?;
+    Ok(content_updates_to_modrinth_result(content))
 }
 
 #[tauri::command]
@@ -8654,33 +9317,36 @@ fn update_all_modrinth_mods(
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
-
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("build http client failed: {e}"))?;
-
-    let check = check_modrinth_updates_inner(&client, &instance, &lock)?;
+    let client = build_http_client()?;
+    let check = check_instance_content_updates_inner(
+        &client,
+        &instance,
+        &lock,
+        UpdateScope::ModrinthModsOnly,
+    )?;
     if !check.updates.is_empty() {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
     }
     let mut updated_mods = 0usize;
     for update in &check.updates {
-        install_modrinth_mod_inner(
+        match install_discover_content_inner(
             app.clone(),
-            InstallModrinthModArgs {
+            &InstallDiscoverContentArgs {
                 instance_id: args.instance_id.clone(),
+                source: "modrinth".to_string(),
                 project_id: update.project_id.clone(),
                 project_title: Some(update.name.clone()),
+                content_type: "mods".to_string(),
+                target_worlds: vec![],
             },
             None,
-        )?;
-        updated_mods += 1;
+        ) {
+            Ok(_) => updated_mods += 1,
+            Err(_) => {}
+        }
     }
-
     Ok(UpdateAllResult {
-        checked_mods: check.checked_mods,
+        checked_mods: check.checked_entries,
         updated_mods,
     })
 }
@@ -9305,6 +9971,10 @@ fn set_installed_mod_enabled(
 fn main() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .setup(|app| {
+            load_dev_curseforge_key_into_runtime_env(&app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_instances,
             create_instance,
@@ -9320,6 +9990,8 @@ fn main() {
             install_modrinth_mod,
             install_curseforge_mod,
             preview_modrinth_install,
+            check_instance_content_updates,
+            update_all_instance_content,
             check_modrinth_updates,
             update_all_modrinth_mods,
             import_local_mod_file,
@@ -9327,6 +9999,9 @@ fn main() {
             set_installed_mod_enabled,
             launch_instance,
             get_launcher_settings,
+            get_dev_mode_state,
+            set_dev_curseforge_api_key,
+            clear_dev_curseforge_api_key,
             get_curseforge_api_status,
             set_launcher_settings,
             list_launcher_accounts,
@@ -9353,6 +10028,7 @@ fn main() {
             export_presets_json,
             import_presets_json,
             get_selected_account_diagnostics,
+            apply_selected_account_appearance,
             open_instance_path,
             reveal_config_editor_file,
             export_instance_mods_zip
