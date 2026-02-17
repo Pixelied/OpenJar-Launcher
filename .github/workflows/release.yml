@@ -596,8 +596,5 @@ jobs:
             --expected-version "${GITHUB_REF_NAME#v}" \
             --require-platforms "darwin-aarch64,darwin-x86_64,windows-aarch64,windows-x86_64,linux-x86_64" \
             --check-urls \
-            --auth-token "$GITHUB_TOKEN" \
             --retries 5 \
             --retry-delay-ms 2500
-        env:
-          GITHUB_TOKEN: ${{ secrets.UPDATER_RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
