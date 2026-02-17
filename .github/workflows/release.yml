@@ -52,6 +52,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Sync app versions from release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/sync-release-version.mjs --tag "$GITHUB_REF_NAME"
+
       - name: Setup Node 20 (npm cache)
         uses: actions/setup-node@v4
         with:

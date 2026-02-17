@@ -236,6 +236,10 @@ type AppUpdaterState = {
   pub_date?: string | null;
 };
 
+function normalizeVersionLabel(value: string | null | undefined) {
+  return String(value ?? "").trim().replace(/^v/i, "");
+}
+
 function emptyLaunchHealthChecks(): LaunchHealthChecks {
   return {
     auth: false,
@@ -5683,7 +5687,9 @@ export default function App() {
       const nextState: AppUpdaterState = {
         checked_at: new Date().toISOString(),
         current_version: String(currentVersion || "unknown"),
-        available: Boolean(result?.shouldUpdate),
+        available:
+          Boolean(result?.shouldUpdate) &&
+          normalizeVersionLabel(latestVersion) !== normalizeVersionLabel(String(currentVersion || "")),
         latest_version: latestVersion,
         release_notes: releaseNotes,
         pub_date: pubDate,
