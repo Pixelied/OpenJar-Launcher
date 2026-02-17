@@ -907,6 +907,7 @@ const ACCOUNT_DIAGNOSTICS_CACHE_KEY = "mpm.account.diagnostics_cache.v1";
 const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
 const APP_UPDATER_AUTOCHECK_KEY = "mpm.appUpdater.autoCheck.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
+const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
 const SKIN_IMAGE_FETCH_TIMEOUT_MS = 4500;
 const SKIN_VIEWER_LOAD_TIMEOUT_MS = 7000;
 const SKIN_THUMB_3D_SIZE = 220;
@@ -3549,6 +3550,7 @@ export default function App() {
   const [appUpdaterBusy, setAppUpdaterBusy] = useState(false);
   const [appUpdaterInstallBusy, setAppUpdaterInstallBusy] = useState(false);
   const [appUpdaterLastError, setAppUpdaterLastError] = useState<string | null>(null);
+  const [appUpdateBannerDismissedKey, setAppUpdateBannerDismissedKey] = useState<string | null>(null);
   const [appUpdaterAutoCheck, setAppUpdaterAutoCheck] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem(APP_UPDATER_AUTOCHECK_KEY);
@@ -5755,6 +5757,37 @@ export default function App() {
     appUpdaterAutoCheckStartedRef.current = true;
     void onCheckAppUpdate({ silent: true });
   }, [appUpdaterAutoCheck]);
+
+  const appUpdateBannerStateKey = useMemo(
+    () =>
+      [
+        appUpdaterBusy ? "checking" : "idle",
+        appUpdaterInstallBusy ? "installing" : "not-installing",
+        appUpdaterLastError ? `error:${appUpdaterLastError}` : "no-error",
+        appUpdaterState
+          ? [
+              appUpdaterState.checked_at,
+              appUpdaterState.current_version,
+              appUpdaterState.available ? "available" : "not-available",
+              appUpdaterState.latest_version ?? "",
+              appUpdaterState.pub_date ?? "",
+            ].join("|")
+          : "no-state",
+      ].join("|"),
+    [appUpdaterBusy, appUpdaterInstallBusy, appUpdaterLastError, appUpdaterState]
+  );
+
+  useEffect(() => {
+    setAppUpdateBannerDismissedKey(null);
+  }, [appUpdateBannerStateKey]);
+
+  useEffect(() => {
+    if (appUpdaterBusy || appUpdaterInstallBusy) return;
+    const timer = window.setTimeout(() => {
+      setAppUpdateBannerDismissedKey(appUpdateBannerStateKey);
+    }, APP_UPDATE_BANNER_AUTO_HIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [appUpdateBannerStateKey, appUpdaterBusy, appUpdaterInstallBusy]);
 
   function onResetUiSettings() {
     const next = defaultUiSettingsSnapshot();
@@ -10837,8 +10870,10 @@ export default function App() {
   }
 
   const appUpdateAvailable = Boolean(appUpdaterState?.available);
-  const appUpdateBannerVisible =
+  const appUpdateBannerVisibleRaw =
     appUpdaterBusy || appUpdaterInstallBusy || Boolean(appUpdaterState) || Boolean(appUpdaterLastError);
+  const appUpdateBannerVisible =
+    appUpdateBannerVisibleRaw && appUpdateBannerDismissedKey !== appUpdateBannerStateKey;
   const appUpdateBannerTitle = appUpdaterInstallBusy
     ? "Installing app update…"
     : appUpdaterBusy
