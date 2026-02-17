@@ -1,7 +1,10 @@
-use crate::modpack::layers::make_base_spec;
-use crate::modpack::types::{ModEntry, SeedDevResult};
+use crate::modpack::layers::{make_base_spec, normalize_entry_for_add};
+use crate::modpack::types::{ModEntry, ModpackSpec, SeedDevResult};
 
-pub fn seed_dev_data(app: &tauri::AppHandle, instance_name: Option<&str>) -> Result<SeedDevResult, String> {
+pub fn seed_dev_data(
+    app: &tauri::AppHandle,
+    instance_name: Option<&str>,
+) -> Result<(SeedDevResult, ModpackSpec), String> {
     if !crate::is_dev_mode_enabled() {
         return Err("Dev seed is only available when MPM_DEV_MODE=1".to_string());
     }
@@ -53,7 +56,7 @@ pub fn seed_dev_data(app: &tauri::AppHandle, instance_name: Option<&str>) -> Res
 
     if let Some(layer) = spec.layers.iter_mut().find(|l| l.id == "layer_user") {
         layer.entries_delta.add = vec![
-            ModEntry {
+            normalize_entry_for_add(ModEntry {
                 provider: "modrinth".to_string(),
                 project_id: "AANobbMI".to_string(), // Sodium project ID
                 slug: Some("Sodium".to_string()),
@@ -68,8 +71,8 @@ pub fn seed_dev_data(app: &tauri::AppHandle, instance_name: Option<&str>) -> Res
                 optional: false,
                 target_scope: "instance".to_string(),
                 target_worlds: vec![],
-            },
-            ModEntry {
+            }),
+            normalize_entry_for_add(ModEntry {
                 provider: "modrinth".to_string(),
                 project_id: "P7dR8mSH".to_string(), // Fabric API
                 slug: Some("Fabric API".to_string()),
@@ -84,13 +87,14 @@ pub fn seed_dev_data(app: &tauri::AppHandle, instance_name: Option<&str>) -> Res
                 optional: false,
                 target_scope: "instance".to_string(),
                 target_worlds: vec![],
-            },
+            }),
         ];
     }
 
-    Ok(SeedDevResult {
-        created_spec_id: spec.id,
+    let result = SeedDevResult {
+        created_spec_id: spec.id.clone(),
         created_instance_id: instance.id,
         message: "Dev seed modpack + instance prepared.".to_string(),
-    })
+    };
+    Ok((result, spec))
 }

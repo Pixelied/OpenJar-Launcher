@@ -96,6 +96,28 @@ pub fn reduce_layers(spec: &ModpackSpec) -> (Vec<ModEntry>, Vec<ResolutionConfli
     (out, conflicts, warnings)
 }
 
+pub fn normalize_entry_for_add(mut entry: ModEntry) -> ModEntry {
+    entry.content_type = normalize_content_type(&entry.content_type);
+    entry.provider = entry.provider.trim().to_lowercase();
+    entry.project_id = entry.project_id.trim().to_string();
+    if entry.provider != "modrinth" && entry.provider != "curseforge" {
+        entry.provider = "modrinth".to_string();
+    }
+    if entry.content_type != "datapacks" {
+        entry.target_scope = "instance".to_string();
+        entry.target_worlds.clear();
+    } else {
+        entry.target_scope = "world".to_string();
+    }
+    if entry.channel_policy.trim().is_empty() {
+        entry.channel_policy = "stable".to_string();
+    }
+    if entry.fallback_policy.trim().is_empty() {
+        entry.fallback_policy = "inherit".to_string();
+    }
+    entry
+}
+
 pub fn diff_entries(current: &[ModEntry], next: &[ModEntry]) -> (Vec<ModEntry>, Vec<EntryKey>, Vec<ModEntry>) {
     let current_map = current
         .iter()

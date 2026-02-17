@@ -1,5 +1,4 @@
 use crate::modpack::types::{InstanceModpackLinkState, LockSnapshot, ModpackSpec, ModpackStoreV1, ResolutionPlan};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,11 +6,6 @@ const STORE_FILE: &str = "store.v1.json";
 const STORE_DIR: &str = "modpack_maker";
 const MAX_PLANS: usize = 250;
 const MAX_LOCK_SNAPSHOTS: usize = 250;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorePathInfo {
-    pub path: String,
-}
 
 pub fn store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let base = app

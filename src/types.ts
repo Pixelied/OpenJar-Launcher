@@ -440,3 +440,248 @@ export type PresetApplyResult = {
   snapshot_id?: string | null;
   by_content_type: Record<string, number>;
 };
+
+export type EntryKey = {
+  provider: "modrinth" | "curseforge" | string;
+  project_id: string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+};
+
+export type ModEntry = {
+  provider: "modrinth" | "curseforge" | string;
+  project_id: string;
+  slug?: string | null;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  required: boolean;
+  pin?: string | null;
+  channel_policy: "stable" | "beta" | "alpha" | "inherit" | string;
+  fallback_policy: "strict" | "smart" | "loose" | "inherit" | string;
+  replacement_group?: string | null;
+  notes?: string | null;
+  disabled_by_default?: boolean;
+  optional?: boolean;
+  target_scope?: "instance" | "world" | string;
+  target_worlds?: string[];
+};
+
+export type EntriesDelta = {
+  add: ModEntry[];
+  remove: EntryKey[];
+  override: ModEntry[];
+};
+
+export type LayerSource = {
+  kind: string;
+  source?: string | null;
+  project_id?: string | null;
+  spec_id?: string | null;
+  imported_at?: string | null;
+};
+
+export type Layer = {
+  id: string;
+  name: string;
+  source?: LayerSource | null;
+  is_frozen?: boolean;
+  entries_delta: EntriesDelta;
+};
+
+export type Profile = {
+  id: string;
+  name: string;
+  optional_entry_states: Record<string, boolean>;
+};
+
+export type ResolutionSettings = {
+  global_fallback_mode: "strict" | "smart" | "loose" | string;
+  channel_allowance: "stable" | "beta" | "alpha" | string;
+  allow_cross_minor: boolean;
+  allow_cross_major: boolean;
+  prefer_stable: boolean;
+  max_fallback_distance: number;
+  dependency_mode: "detect_only" | "auto_add" | string;
+  partial_apply_unsafe?: boolean;
+};
+
+export type ModpackSpec = {
+  id: string;
+  name: string;
+  description?: string | null;
+  tags?: string[];
+  created_at: string;
+  updated_at: string;
+  layers: Layer[];
+  profiles: Profile[];
+  settings: ResolutionSettings;
+};
+
+export type TargetInstanceSnapshot = {
+  id: string;
+  name: string;
+  mc_version: string;
+  loader: Loader | string;
+  loader_version?: string | null;
+  java_version?: string | null;
+};
+
+export type ResolvedMod = {
+  source: "modrinth" | "curseforge" | string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  project_id: string;
+  name: string;
+  version_id: string;
+  version_number: string;
+  filename: string;
+  download_url?: string | null;
+  curseforge_file_id?: number | null;
+  hashes?: Record<string, string>;
+  enabled: boolean;
+  target_worlds: string[];
+  rationale_text: string;
+  added_by_dependency?: boolean;
+  required?: boolean;
+};
+
+export type FailedMod = {
+  source: "modrinth" | "curseforge" | string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  project_id: string;
+  name: string;
+  reason_code:
+    | "NoCompatibleMinecraftVersion"
+    | "NoCompatibleLoader"
+    | "OnlyPrereleaseAvailable"
+    | "DependencyMissing"
+    | "DependencyIncompatible"
+    | "ProviderError"
+    | "ProjectNotFound"
+    | "DownloadNotAvailable"
+    | "ConflictBlocked"
+    | string;
+  reason_text: string;
+  actionable_hint: string;
+  constraints_snapshot: string;
+  required: boolean;
+};
+
+export type ResolutionConflict = {
+  code: string;
+  message: string;
+  keys: string[];
+};
+
+export type ResolutionPlan = {
+  id: string;
+  modpack_id: string;
+  modpack_updated_at_stamp: string;
+  target: TargetInstanceSnapshot;
+  profile_id?: string | null;
+  settings: ResolutionSettings;
+  resolved_mods: ResolvedMod[];
+  failed_mods: FailedMod[];
+  conflicts: ResolutionConflict[];
+  warnings: string[];
+  confidence_score: number;
+  confidence_label: "High" | "Medium" | "Risky" | string;
+  created_at: string;
+};
+
+export type LockSnapshotEntry = {
+  source: "modrinth" | "curseforge" | string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  project_id: string;
+  name: string;
+  version_id: string;
+  version_number: string;
+  enabled: boolean;
+  target_worlds: string[];
+};
+
+export type LockSnapshot = {
+  id: string;
+  instance_id: string;
+  plan_id: string;
+  created_at: string;
+  entries: LockSnapshotEntry[];
+  instance_snapshot_id?: string | null;
+};
+
+export type InstanceModpackLinkState = {
+  instance_id: string;
+  mode: "linked" | "unlinked" | string;
+  modpack_id: string;
+  profile_id?: string | null;
+  last_plan_id?: string | null;
+  last_lock_snapshot_id?: string | null;
+  last_applied_at?: string | null;
+  last_confidence_label?: string | null;
+};
+
+export type DriftItem = {
+  source: "modrinth" | "curseforge" | string;
+  content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
+  project_id: string;
+  name: string;
+  expected_version?: string | null;
+  current_version?: string | null;
+};
+
+export type DriftReport = {
+  instance_id: string;
+  status: "in_sync" | "drifted" | "unlinked" | "no_snapshot" | string;
+  added: DriftItem[];
+  removed: DriftItem[];
+  version_changed: DriftItem[];
+  created_at: string;
+};
+
+export type LayerDiffResult = {
+  layer_id?: string | null;
+  added: ModEntry[];
+  removed: EntryKey[];
+  overridden: ModEntry[];
+  conflicts: ResolutionConflict[];
+  warnings: string[];
+};
+
+export type MigrationSkippedItem = {
+  id: string;
+  name: string;
+  reason: string;
+};
+
+export type MigrationReport = {
+  migrated_count: number;
+  skipped_count: number;
+  skipped_items: MigrationSkippedItem[];
+  created_spec_ids: string[];
+};
+
+export type ModpackApplyResult = {
+  message: string;
+  applied_entries: number;
+  skipped_entries: number;
+  failed_entries: number;
+  snapshot_id?: string | null;
+  plan_id: string;
+  lock_snapshot_id?: string | null;
+  warnings: string[];
+};
+
+export type InstanceModpackStatus = {
+  instance_id: string;
+  link?: InstanceModpackLinkState | null;
+  last_plan?: ResolutionPlan | null;
+  drift?: DriftReport | null;
+};
+
+export type SpecIoResult = {
+  path: string;
+  items: number;
+};
+
+export type SeedDevResult = {
+  created_spec_id: string;
+  created_instance_id: string;
+  message: string;
+};

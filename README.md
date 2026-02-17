@@ -1,6 +1,6 @@
 # OpenJar Launcher
 
-**OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher / “Creator Studio”** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
+**OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher with a spec-driven Modpack Maker** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
 
 It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
 
@@ -14,7 +14,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Instance Management](#instance-management)
   - [Import / Export](#import--export)
   - [Discover + Install (Multi-provider)](#discover--install-multi-provider)
-  - [Updates + Update Availability (Modrinth)](#updates--update-availability-modrinth)
+  - [Updates + Update Availability (Multi-provider)](#updates--update-availability-multi-provider)
   - [Installed Mods (Per instance)](#installed-mods-per-instance)
   - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
   - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
@@ -23,7 +23,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Microsoft Account / Auth (Native Launch)](#microsoft-account--auth-native-launch)
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
-  - [Presets / Creator Tools (experimental)](#presets--creator-tools-experimental)
+  - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
 - [Where your data lives](#where-your-data-lives)
 - [Tech Stack](#tech-stack)
 - [Platform support & testing](#platform-support--testing)
@@ -68,9 +68,9 @@ Screenshots live in `docs/screenshots/` — click any image to view full size.
 
 - **Clean, modern UI** (macOS-friendly look & feel)
 - **Instance management** + import from Vanilla / Prism
-- **Multi-provider discovery**: Modrinth + CurseForge (partial / in progress)
-- **Update availability** + **Update all** + **scheduled checks** (Modrinth)
-- **Dependency-aware installs** (Modrinth) + per-instance **lockfile** tracking
+- **Multi-provider discovery**: Modrinth + CurseForge
+- **Update availability** + **Update all** + **scheduled checks** across providers/content types
+- **Dependency-aware installs** + per-instance **lockfile** tracking
 - **Per-mod enable/disable** (rename to `.disabled`)
 - **Config Editor** experience (file browser + editors + helpers)
 - **Snapshots / rollback** tooling (for installed content)
@@ -134,7 +134,7 @@ Find content and install it straight into an instance.
 
 Discover/search supports:
 - **Modrinth**
-- **CurseForge** (partial / in progress)
+- **CurseForge**
 
 Filters include:
 - Content type: mods / resourcepacks / shaderpacks / datapacks / modpacks
@@ -151,29 +151,21 @@ Filters include:
   - check for updates later
   - roll back installed content reliably
 
-#### CurseForge (partial / in progress)
+#### CurseForge
 
-CurseForge support is partially implemented right now.
-
-Available today (may vary a bit depending on your build/UI):
-- API status + diagnostics (helps verify your API key + network + basic config; for devs) 
-- Project detail fetching (used for detail views)
-
-What’s next:
-- Full install + download flows are already being wired up, but parts of the UI may still feel incomplete until everything is fully connected end-to-end.
-
-Note:
-- I’m currently waiting on CurseForge to approve/send my API access, so some CurseForge features are intentionally not fully enabled yet.
+- Installs are supported through the same lockfile/update model as Modrinth.
+- In local dev, key diagnostics are available in the hidden Dev section (`MPM_DEV_MODE=1`).
+- Release builds are expected to use build-injected key configuration.
 
 ---
 
-### Updates + Update Availability (Modrinth only, for now...)
+### Updates + Update Availability (Multi-provider)
 
-This feature is specifically about **keeping your installed Modrinth mods up to date**. OpenJar checks the exact mod versions you have installed (from your instance `lock.json`), compares them to Modrinth’s latest available versions for your Minecraft version + loader, then lets you update everything in a controlled way.
+This feature keeps installed content up to date across **Modrinth + CurseForge** and across supported content types tracked in `lock.json` (mods/resourcepacks/shaderpacks/datapacks).
 
 What “Refresh / Check” actually does:
-- Looks at the mods currently installed in that instance (provider = Modrinth)
-- For each mod, checks if there’s a newer compatible version available on Modrinth
+- Looks at tracked content entries currently installed in that instance
+- For each entry, checks for a newer compatible provider version/file
 - Shows you a clear per-mod result like:
   - `Sodium 0.5.11 → 0.5.13`
   - `Fabric API 0.97.0 → 0.98.1`
@@ -182,10 +174,9 @@ What “Refresh / Check” actually does:
 Where you see updates:
 
 Per instance (Maintenance card):
-- **Refresh** checks *that instance’s installed Modrinth mods*
-- You get a quick list of mods that have updates available (current → latest)
-- **Update all** downloads and replaces every mod in that instance that has an update available
-  - It only touches mods that are tracked in the lockfile (so it doesn’t “randomly” update unknown files)
+- **Refresh** checks tracked content in the selected instance
+- You get a quick list of updates available (current → latest)
+- **Update all** applies updates for tracked entries only
 
 Global Updates page (Update availability dashboard):
 - Shows which **instances** have mod updates available, and **how many**
@@ -382,15 +373,29 @@ Editing tools:
 
 ---
 
-### Presets / Creator Tools (experimental)
+### Modpack Maker (Spec / Resolve / Apply)
 
-This area is wired but still marked as “in progress.”
+Creator Studio -> **Creator** is OpenJar’s built-in modpack builder.  
+It helps you build a real modpack (not just a random list), preview what will happen for a specific instance, and apply safely with rollback support.
 
-- Preview preset apply (see what will change before applying)
-- Apply preset to an instance
-- Export presets to JSON
-- Import presets from JSON
-- Provider modpack template import is wired
+How to use it:
+- Create or open a modpack in **Creator Studio -> Creator**
+- Add content in the editor (quick add) or click **Open in Discover** for full browsing/filtering
+- Choose the target instance and run **Preview + apply** to see exactly what will install
+- Review results first: compatible installs, failures, conflicts, and confidence level
+- Apply in **Linked** mode (track + re-align later) or **One-time** mode, with snapshot + rollback safety
+
+What makes it unique:
+- **Layered packs** so your pack stays organized:
+  - `Template` = base pack
+  - `User Additions` = your main add/remove list
+  - `Overrides` = explicit conflict fixes or final wins
+- **Open in Discover workflow** that adds search results straight into the selected modpack layer
+- **Unified entries list + inspector** so you can quickly review and edit per-entry settings
+- **Explain-first preview** with clear reasons when something fails (no silent changes)
+- **Profiles** (like Lite / Recommended / Full) to toggle optional content cleanly
+- **Linked mode + drift detection** to keep instances aligned over time
+- **Reversible applies** with lock snapshots and one-click rollback
 
 ---
 

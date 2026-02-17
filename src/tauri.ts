@@ -34,7 +34,16 @@ import type {
   RollbackResult,
   ReadInstanceLogsResult,
   RunningInstance,
+  SeedDevResult,
+  SpecIoResult,
   SnapshotMeta,
+  ModpackSpec,
+  LayerDiffResult,
+  ResolutionPlan,
+  ModpackApplyResult,
+  InstanceModpackStatus,
+  DriftReport,
+  MigrationReport,
   UpdateAllContentResult,
   UpdateAllResult,
   WorldConfigFileEntry,
@@ -425,4 +434,146 @@ export function importPresetsJson(input: {
   inputPath: string;
 }): Promise<unknown> {
   return invoke("import_presets_json", { args: input });
+}
+
+export function listModpackSpecs(): Promise<ModpackSpec[]> {
+  return invoke("list_modpack_specs");
+}
+
+export function getModpackSpec(input: {
+  modpackId: string;
+}): Promise<ModpackSpec> {
+  return invoke("get_modpack_spec", { args: input });
+}
+
+export function upsertModpackSpec(input: {
+  spec: ModpackSpec;
+}): Promise<ModpackSpec> {
+  return invoke("upsert_modpack_spec", { args: input });
+}
+
+export function duplicateModpackSpec(input: {
+  modpackId: string;
+  newName?: string;
+}): Promise<ModpackSpec> {
+  return invoke("duplicate_modpack_spec", { args: input });
+}
+
+export function deleteModpackSpec(input: {
+  modpackId: string;
+}): Promise<boolean> {
+  return invoke("delete_modpack_spec", { args: input });
+}
+
+export function importModpackSpecJson(input: {
+  inputPath: string;
+}): Promise<SpecIoResult> {
+  return invoke("import_modpack_spec_json", { args: input });
+}
+
+export function exportModpackSpecJson(input: {
+  modpackId: string;
+  outputPath: string;
+}): Promise<SpecIoResult> {
+  return invoke("export_modpack_spec_json", { args: input });
+}
+
+export function importModpackLayerFromProvider(input: {
+  modpackId: string;
+  layerName: string;
+  source: "modrinth" | "curseforge" | string;
+  projectId: string;
+  projectTitle?: string;
+}): Promise<ModpackSpec> {
+  return invoke("import_modpack_layer_from_provider", { args: input });
+}
+
+export function importModpackLayerFromSpec(input: {
+  targetModpackId: string;
+  sourceModpackId: string;
+  layerName: string;
+}): Promise<ModpackSpec> {
+  return invoke("import_modpack_layer_from_spec", { args: input });
+}
+
+export function previewTemplateLayerUpdate(input: {
+  modpackId: string;
+  layerId: string;
+}): Promise<LayerDiffResult> {
+  return invoke("preview_template_layer_update", { args: input });
+}
+
+export function applyTemplateLayerUpdate(input: {
+  modpackId: string;
+  layerId: string;
+}): Promise<ModpackSpec> {
+  return invoke("apply_template_layer_update", { args: input });
+}
+
+export function resolveModpackForInstance(input: {
+  modpackId: string;
+  instanceId: string;
+  profileId?: string;
+  settings?: ResolutionPlan["settings"];
+}): Promise<ResolutionPlan> {
+  return invoke("resolve_modpack_for_instance", { args: input });
+}
+
+export function applyModpackPlan(input: {
+  planId: string;
+  linkMode?: "linked" | "unlinked" | string;
+  partialApplyUnsafe?: boolean;
+}): Promise<ModpackApplyResult> {
+  return invoke("apply_modpack_plan", { args: input });
+}
+
+export function getInstanceModpackStatus(input: {
+  instanceId: string;
+}): Promise<InstanceModpackStatus> {
+  return invoke("get_instance_modpack_status", { args: input });
+}
+
+export function detectInstanceModpackDrift(input: {
+  instanceId: string;
+}): Promise<DriftReport> {
+  return invoke("detect_instance_modpack_drift", { args: input });
+}
+
+export function realignInstanceToModpack(input: {
+  instanceId: string;
+}): Promise<ModpackApplyResult> {
+  return invoke("realign_instance_to_modpack", { args: input });
+}
+
+export function previewUpdateModpackFromInstance(input: {
+  instanceId: string;
+  modpackId: string;
+}): Promise<LayerDiffResult> {
+  return invoke("preview_update_modpack_from_instance", { args: input });
+}
+
+export function applyUpdateModpackFromInstance(input: {
+  instanceId: string;
+  modpackId: string;
+  layerName?: string;
+}): Promise<ModpackSpec> {
+  return invoke("apply_update_modpack_from_instance", { args: input });
+}
+
+export function rollbackInstanceToLastModpackSnapshot(input: {
+  instanceId: string;
+}): Promise<RollbackResult> {
+  return invoke("rollback_instance_to_last_modpack_snapshot", { args: input });
+}
+
+export function migrateLegacyCreatorPresets(input: {
+  payload: unknown;
+}): Promise<MigrationReport> {
+  return invoke("migrate_legacy_creator_presets", { args: input });
+}
+
+export function seedDevModpackData(input?: {
+  instanceName?: string;
+}): Promise<SeedDevResult> {
+  return invoke("seed_dev_modpack_data", { args: input ?? {} });
 }

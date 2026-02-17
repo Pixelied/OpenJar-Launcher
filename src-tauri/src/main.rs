@@ -20,6 +20,8 @@ use tauri::Manager;
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
+mod modpack;
+
 const USER_AGENT: &str = "ModpackManager/0.0.1 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
 const LEGACY_KEYRING_SERVICES: [&str; 2] = ["com.adrien.modpackmanager", "modpack-manager"];
@@ -7817,72 +7819,41 @@ fn preview_preset_apply(
     args: PreviewPresetApplyArgs,
 ) -> Result<PresetApplyPreview, String> {
     let instances_dir = app_instances_dir(&app)?;
-    let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
-    let existing_worlds: HashSet<String> = list_instance_world_names(&instance_dir)?.into_iter().collect();
-    let use_all_worlds_for_datapacks = args
-        .preset
-        .settings
-        .datapack_target_policy
-        .trim()
-        .eq_ignore_ascii_case("all_worlds");
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let client = build_http_client()?;
+    let spec = modpack::legacy_creator_preset_to_spec(&args.preset);
+    let plan = modpack::resolver::resolve_modpack(
+        &client,
+        &instance,
+        &spec,
+        Some("recommended"),
+        Some(spec.settings.clone()),
+    )?;
 
-    let mut installable = 0usize;
-    let mut skipped_disabled = 0usize;
-    let mut missing_world_targets = Vec::new();
-    let mut provider_warnings = Vec::new();
-    let mut seen = HashSet::new();
-    let mut duplicates = 0usize;
-
-    let has_cf = args
-        .preset
-        .entries
+    let skipped_disabled = args.preset.entries.iter().filter(|e| !e.enabled).count();
+    let installable = plan.resolved_mods.len();
+    let missing_world_targets = plan
+        .failed_mods
         .iter()
-        .any(|e| e.source.eq_ignore_ascii_case("curseforge") && e.enabled);
-    if has_cf && curseforge_api_key().is_none() {
-        provider_warnings.push("CurseForge API key is not configured for this build. CurseForge entries cannot be installed.".to_string());
-    }
+        .filter(|f| {
+            f.reason_code.eq_ignore_ascii_case("NoWorldTargets")
+                || f.reason_text.to_lowercase().contains("world")
+        })
+        .map(|f| format!("{} ({})", f.name, f.project_id))
+        .collect::<Vec<_>>();
 
-    for entry in &args.preset.entries {
-        if !entry.enabled {
-            skipped_disabled += 1;
-            continue;
-        }
-        let content_type = normalize_lock_content_type(&entry.content_type);
-        let key = format!(
-            "{}:{}:{}:{}",
-            entry.source.to_lowercase(),
-            content_type,
-            entry.project_id.to_lowercase(),
-            entry.target_worlds.join("|")
-        );
-        if !seen.insert(key) {
-            duplicates += 1;
-        }
+    let mut provider_warnings = plan.warnings.clone();
+    provider_warnings.extend(
+        plan.failed_mods
+            .iter()
+            .filter(|f| f.required)
+            .map(|f| format!("{}: {}", f.name, f.reason_text)),
+    );
+    provider_warnings.sort();
+    provider_warnings.dedup();
 
-        if content_type == "datapacks" {
-            let mut missing = false;
-            if entry.target_worlds.is_empty() {
-                if !use_all_worlds_for_datapacks {
-                    missing = true;
-                }
-            } else {
-                for world in &entry.target_worlds {
-                    if !existing_worlds.contains(world) {
-                        missing = true;
-                        break;
-                    }
-                }
-            }
-            if missing {
-                missing_world_targets.push(format!("{} ({})", entry.title, entry.project_id));
-                continue;
-            }
-        }
-        installable += 1;
-    }
-
-    let valid = missing_world_targets.is_empty() && provider_warnings.is_empty();
+    let duplicates = plan.conflicts.len();
+    let valid = plan.failed_mods.iter().all(|f| !f.required);
     Ok(PresetApplyPreview {
         valid,
         installable_entries: installable,
@@ -7898,99 +7869,39 @@ fn apply_preset_to_instance(
     app: tauri::AppHandle,
     args: ApplyPresetToInstanceArgs,
 ) -> Result<PresetApplyResult, String> {
-    let preview = preview_preset_apply(
-        app.clone(),
-        PreviewPresetApplyArgs {
-            instance_id: args.instance_id.clone(),
-            preset: args.preset.clone(),
-        },
-    )?;
-    if !preview.valid {
-        let mut reasons = Vec::new();
-        if !preview.provider_warnings.is_empty() {
-            reasons.push(preview.provider_warnings.join("; "));
-        }
-        if !preview.missing_world_targets.is_empty() {
-            reasons.push(format!(
-                "Missing datapack targets: {}",
-                preview.missing_world_targets.join(", ")
-            ));
-        }
-        return Err(reasons.join(" | "));
-    }
-
     let instances_dir = app_instances_dir(&app)?;
-    let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let mut snapshot_id: Option<String> = None;
-    let snapshot_requested = args.preset.settings.snapshot_before_apply;
-    if snapshot_requested && preview.installable_entries > 0 {
-        let snapshot = create_instance_snapshot(&instances_dir, &args.instance_id, "before-apply-preset")?;
-        snapshot_id = Some(snapshot.id);
-    }
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let client = build_http_client()?;
+    let spec = modpack::legacy_creator_preset_to_spec(&args.preset);
+    let plan = modpack::resolver::resolve_modpack(
+        &client,
+        &instance,
+        &spec,
+        Some("recommended"),
+        Some(spec.settings.clone()),
+    )?;
 
-    let mut installed = 0usize;
-    let mut skipped = 0usize;
-    let mut failed = 0usize;
+    let legacy_skipped = args.preset.entries.iter().filter(|e| !e.enabled).count();
+    let (result, _lock_snapshot, _link) = modpack::apply::apply_plan_to_instance(
+        &app,
+        &plan,
+        "unlinked",
+        false,
+    )?;
+
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
-    let all_worlds = list_instance_world_names(&instances_dir.join(&args.instance_id)).unwrap_or_default();
-    let use_all_worlds_for_datapacks = args
-        .preset
-        .settings
-        .datapack_target_policy
-        .trim()
-        .eq_ignore_ascii_case("all_worlds");
-    for entry in &args.preset.entries {
-        if !entry.enabled {
-            skipped += 1;
-            continue;
-        }
-        let content_type = normalize_lock_content_type(&entry.content_type);
-        let resolved_target_worlds = if content_type == "datapacks"
-            && entry.target_worlds.is_empty()
-            && use_all_worlds_for_datapacks
-        {
-            all_worlds.clone()
-        } else {
-            entry.target_worlds.clone()
-        };
-        let result = install_discover_content_inner(
-            app.clone(),
-            &InstallDiscoverContentArgs {
-                instance_id: args.instance_id.clone(),
-                source: entry.source.clone(),
-                project_id: entry.project_id.clone(),
-                project_title: Some(entry.title.clone()),
-                content_type: content_type.clone(),
-                target_worlds: resolved_target_worlds,
-            },
-            None,
-        );
-        match result {
-            Ok(_) => {
-                installed += 1;
-                *by_content_type.entry(content_type).or_insert(0) += 1;
-            }
-            Err(_) => {
-                failed += 1;
-            }
-        }
+    for item in &plan.resolved_mods {
+        *by_content_type
+            .entry(normalize_lock_content_type(&item.content_type))
+            .or_insert(0) += 1;
     }
 
     Ok(PresetApplyResult {
-        message: if failed == 0 {
-            format!("Applied preset '{}' successfully.", args.preset.name)
-        } else {
-            format!(
-                "Applied preset '{}' with {} failed entr{}.",
-                args.preset.name,
-                failed,
-                if failed == 1 { "y" } else { "ies" }
-            )
-        },
-        installed_entries: installed,
-        skipped_entries: skipped,
-        failed_entries: failed,
-        snapshot_id,
+        message: result.message,
+        installed_entries: result.applied_entries,
+        skipped_entries: result.skipped_entries + legacy_skipped,
+        failed_entries: result.failed_entries,
+        snapshot_id: result.snapshot_id,
         by_content_type,
     })
 }
@@ -10063,6 +9974,27 @@ fn main() {
             install_discover_content,
             preview_preset_apply,
             apply_preset_to_instance,
+            modpack::list_modpack_specs,
+            modpack::get_modpack_spec,
+            modpack::upsert_modpack_spec,
+            modpack::duplicate_modpack_spec,
+            modpack::delete_modpack_spec,
+            modpack::import_modpack_spec_json,
+            modpack::export_modpack_spec_json,
+            modpack::import_modpack_layer_from_provider,
+            modpack::import_modpack_layer_from_spec,
+            modpack::preview_template_layer_update,
+            modpack::apply_template_layer_update,
+            modpack::resolve_modpack_for_instance,
+            modpack::apply_modpack_plan,
+            modpack::get_instance_modpack_status,
+            modpack::detect_instance_modpack_drift,
+            modpack::realign_instance_to_modpack,
+            modpack::preview_update_modpack_from_instance,
+            modpack::apply_update_modpack_from_instance,
+            modpack::rollback_instance_to_last_modpack_snapshot,
+            modpack::migrate_legacy_creator_presets,
+            modpack::seed_dev_modpack_data,
             get_curseforge_project_detail,
             import_provider_modpack_template,
             export_presets_json,

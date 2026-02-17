@@ -45,6 +45,7 @@ import type {
   JavaRuntimeCandidate,
   LaunchResult,
   Loader,
+  ModpackSpec,
   SnapshotMeta,
 } from "./types";
 import {
@@ -87,6 +88,8 @@ import {
   previewModrinthInstall,
   readInstanceLogs,
   readLocalImageDataUrl,
+  listModpackSpecs,
+  getModpackSpec,
   openInstancePath,
   searchDiscoverContent,
   selectLauncherAccount,
@@ -95,6 +98,7 @@ import {
   setInstanceIcon,
   setInstalledModEnabled,
   stopRunningInstance,
+  upsertModpackSpec,
   detectJavaRuntimes,
   updateAllInstanceContent,
   updateInstance,
@@ -110,6 +114,8 @@ import {
 } from "./modrinth";
 import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
 import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
+import ModpackMaker from "./pages/ModpackMaker";
+import InstanceModpackCard from "./components/InstanceModpackCard";
 import {
   analyzeLogLines,
   analyzeLogText,
@@ -150,9 +156,28 @@ type InstallTarget = {
   projectId: string;
   title: string;
   contentType: DiscoverContentType;
+  slug?: string | null;
   targetWorlds?: string[];
   iconUrl?: string | null;
   description?: string | null;
+};
+
+type DiscoverAddContext = {
+  modpackId: string;
+  modpackName: string;
+  layerId?: string | null;
+  layerName?: string | null;
+};
+
+type DiscoverAddTrayItem = {
+  id: string;
+  title: string;
+  projectId: string;
+  source: DiscoverSource;
+  contentType: DiscoverContentType;
+  modpackName: string;
+  layerName: string;
+  addedAt: string;
 };
 
 type InstanceLaunchStateEvent = {
@@ -863,6 +888,7 @@ function normalizeMinecraftUuid(uuid?: string | null) {
 
 const SKIN_HEAD_CACHE_MAX = 120;
 const ACCOUNT_DIAGNOSTICS_CACHE_KEY = "mpm.account.diagnostics_cache.v1";
+const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
 const SKIN_IMAGE_FETCH_TIMEOUT_MS = 4500;
 const SKIN_VIEWER_LOAD_TIMEOUT_MS = 7000;
 const SKIN_THUMB_3D_SIZE = 220;
@@ -2787,6 +2813,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, instanceSettingsOpen, instanceSettingsSection, javaRuntimeCandidates.length, javaRuntimeBusy]);
 
+  // Deprecated legacy Creator bridge state (kept for compatibility/migration only).
   const [presets, setPresets] = useState<UserPreset[]>([]);
   const [presetNameDraft, setPresetNameDraft] = useState("");
   const [presetBusy, setPresetBusy] = useState(false);
@@ -3411,6 +3438,34 @@ export default function App() {
 
   const [installTarget, setInstallTarget] = useState<InstallTarget | null>(null);
   const [installInstanceQuery, setInstallInstanceQuery] = useState("");
+  const [modpackAddTarget, setModpackAddTarget] = useState<InstallTarget | null>(null);
+  const [modpackAddSpecs, setModpackAddSpecs] = useState<ModpackSpec[]>([]);
+  const [modpackAddSpecId, setModpackAddSpecId] = useState("");
+  const [modpackAddLayerId, setModpackAddLayerId] = useState("");
+  const [modpackAddRequired, setModpackAddRequired] = useState(true);
+  const [modpackAddEnabledByDefault, setModpackAddEnabledByDefault] = useState(true);
+  const [modpackAddChannelPolicy, setModpackAddChannelPolicy] = useState<"stable" | "beta" | "alpha">("stable");
+  const [modpackAddFallbackPolicy, setModpackAddFallbackPolicy] = useState<"inherit" | "strict" | "smart" | "loose">("inherit");
+  const [modpackAddPinnedVersion, setModpackAddPinnedVersion] = useState("");
+  const [modpackAddNotes, setModpackAddNotes] = useState("");
+  const [modpackAddSpecsBusy, setModpackAddSpecsBusy] = useState(false);
+  const [modpackAddBusy, setModpackAddBusy] = useState(false);
+  const [modpackAddErr, setModpackAddErr] = useState<string | null>(null);
+  const [discoverAddContext, setDiscoverAddContext] = useState<DiscoverAddContext | null>(null);
+  const [discoverAddTrayItems, setDiscoverAddTrayItems] = useState<DiscoverAddTrayItem[]>([]);
+  const [discoverAddTrayExpanded, setDiscoverAddTrayExpanded] = useState(true);
+  const [discoverAddTraySticky, setDiscoverAddTraySticky] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(DISCOVER_ADD_TRAY_STICKY_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const discoverAddContextKeyRef = useRef<string | null>(null);
+  const selectedModpackAddSpec = useMemo(
+    () => modpackAddSpecs.find((spec) => spec.id === modpackAddSpecId) ?? null,
+    [modpackAddSpecs, modpackAddSpecId]
+  );
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectErr, setProjectErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Instance | null>(null);
@@ -3817,6 +3872,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("mpm.scheduledUpdates.v1", JSON.stringify(scheduledUpdateEntriesByInstance));
   }, [scheduledUpdateEntriesByInstance]);
+
+  useEffect(() => {
+    localStorage.setItem(DISCOVER_ADD_TRAY_STICKY_KEY, discoverAddTraySticky ? "1" : "0");
+  }, [discoverAddTraySticky]);
 
   useEffect(() => {
     if (!installNotice) {
@@ -4277,6 +4336,7 @@ export default function App() {
   }
 
   async function runSearch(newOffset: number) {
+    const query = q.trim();
     setDiscoverErr(null);
     setDiscoverBusy(true);
     try {
@@ -4284,7 +4344,7 @@ export default function App() {
         const windowLimit = Math.max(limit, newOffset + limit, 30);
         const [datapacksRes, modpacksRes] = await Promise.all([
           searchDiscoverContent({
-            query: q,
+            query,
             loaders: [],
             gameVersion: filterVersion,
             categories: filterCategories,
@@ -4295,7 +4355,7 @@ export default function App() {
             contentType: "datapacks",
           }).catch(() => ({ hits: [], total_hits: 0, offset: 0, limit: windowLimit })),
           searchDiscoverContent({
-            query: q,
+            query,
             loaders: [],
             gameVersion: filterVersion,
             categories: filterCategories,
@@ -4321,7 +4381,7 @@ export default function App() {
         setOffset(newOffset);
       } else {
         const res = await searchDiscoverContent({
-          query: q,
+          query,
           loaders: discoverContentType === "mods" ? filterLoaders : [],
           gameVersion: filterVersion,
           categories: filterCategories,
@@ -4360,6 +4420,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, index, limit, filterLoaders, filterVersion, filterCategories, discoverSource, discoverContentType]);
 
+  useEffect(() => {
+    if (!discoverAddContext) {
+      discoverAddContextKeyRef.current = null;
+      setDiscoverAddTrayItems([]);
+      setDiscoverAddTrayExpanded(true);
+      return;
+    }
+    const nextKey = `${discoverAddContext.modpackId}:${discoverAddContext.layerId ?? ""}`;
+    if (discoverAddContextKeyRef.current !== nextKey) {
+      setDiscoverAddTrayItems([]);
+      setDiscoverAddTrayExpanded(true);
+    }
+    discoverAddContextKeyRef.current = nextKey;
+  }, [discoverAddContext]);
+
   async function runTemplateSearch(newOffset: number, queryOverride?: string) {
     setTemplateErr(null);
     setTemplateBusy(true);
@@ -4393,6 +4468,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, modpacksStudioTab, templateQueryDebounced, templateSource, templateType, filterVersion, filterCategories, index, limit]);
 
+  // Deprecated legacy Creator bridge helpers (kept until compatibility window ends).
   function ensureCreatorDraft(inst: Instance | null): UserPreset {
     if (creatorDraft) return creatorDraft;
     const draft: UserPreset = {
@@ -4588,6 +4664,135 @@ export default function App() {
       setCurseforgeErr(e?.toString?.() ?? String(e));
     } finally {
       setCurseforgeBusy(false);
+    }
+  }
+
+  function defaultModpackLayerId(spec: ModpackSpec): string {
+    if (!spec.layers.length) return "";
+    const byId = spec.layers.find((layer) => layer.id === "layer_user");
+    if (byId) return byId.id;
+    const byName = spec.layers.find((layer) => layer.name.trim().toLowerCase().includes("user"));
+    if (byName) return byName.id;
+    return spec.layers[0]?.id ?? "";
+  }
+
+  async function openAddToModpack(
+    target: InstallTarget,
+    preferred?: { modpackId?: string | null; layerId?: string | null }
+  ) {
+    closeProjectOverlays();
+    setModpackAddTarget(target);
+    setModpackAddErr(null);
+    setModpackAddRequired(true);
+    setModpackAddEnabledByDefault(true);
+    setModpackAddChannelPolicy("stable");
+    setModpackAddFallbackPolicy("inherit");
+    setModpackAddPinnedVersion("");
+    setModpackAddNotes(target.title ?? "");
+
+    setModpackAddSpecsBusy(true);
+    try {
+      const specs = await listModpackSpecs();
+      setModpackAddSpecs(specs);
+      if (!specs.length) {
+        setModpackAddSpecId("");
+        setModpackAddLayerId("");
+        return;
+      }
+      const preferredSpecId = preferred?.modpackId ?? discoverAddContext?.modpackId ?? null;
+      const preferredLayerId = preferred?.layerId ?? discoverAddContext?.layerId ?? null;
+      const preferredSpec = preferredSpecId ? specs.find((spec) => spec.id === preferredSpecId) : null;
+      const existingSelected = specs.find((spec) => spec.id === modpackAddSpecId);
+      const chosenSpec = preferredSpec ?? existingSelected ?? specs[0];
+      const chosenLayerId =
+        preferredLayerId && chosenSpec.layers.some((layer) => layer.id === preferredLayerId)
+          ? preferredLayerId
+          : defaultModpackLayerId(chosenSpec);
+      setModpackAddSpecId(chosenSpec.id);
+      setModpackAddLayerId(chosenLayerId);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setModpackAddErr(msg);
+      setModpackAddSpecs([]);
+      setModpackAddSpecId("");
+      setModpackAddLayerId("");
+    } finally {
+      setModpackAddSpecsBusy(false);
+    }
+  }
+
+  async function onAddDiscoverTargetToModpack() {
+    const target = modpackAddTarget;
+    if (!target) return;
+    if (!modpackAddSpecId) {
+      setModpackAddErr("Select a modpack first.");
+      return;
+    }
+    if (target.contentType === "modpacks") {
+      setModpackAddErr("Modpack templates should be imported as layers, not added as a single entry.");
+      return;
+    }
+
+    setModpackAddBusy(true);
+    setModpackAddErr(null);
+    try {
+      const spec = await getModpackSpec({ modpackId: modpackAddSpecId });
+      const layerId = modpackAddLayerId || defaultModpackLayerId(spec);
+      const layerIndex = spec.layers.findIndex((layer) => layer.id === layerId);
+      if (layerIndex < 0) {
+        throw new Error("Selected layer was not found on this modpack.");
+      }
+      const layer = spec.layers[layerIndex];
+      if (layer.is_frozen) {
+        throw new Error(`Layer "${layer.name}" is frozen. Unfreeze it before adding new entries.`);
+      }
+
+      spec.layers[layerIndex].entries_delta.add.push({
+        provider: target.source === "curseforge" ? "curseforge" : "modrinth",
+        project_id: target.projectId,
+        slug: target.slug ?? null,
+        content_type: target.contentType,
+        required: modpackAddRequired,
+        pin: modpackAddPinnedVersion.trim() ? modpackAddPinnedVersion.trim() : null,
+        channel_policy: modpackAddChannelPolicy,
+        fallback_policy: modpackAddFallbackPolicy,
+        replacement_group: null,
+        notes: modpackAddNotes.trim() || target.title || target.projectId,
+        disabled_by_default: !modpackAddEnabledByDefault,
+        optional: !modpackAddRequired,
+        target_scope: "instance",
+        target_worlds: [],
+      });
+      spec.updated_at = new Date().toISOString();
+
+      await upsertModpackSpec({ spec });
+      setDiscoverAddContext({
+        modpackId: spec.id,
+        modpackName: spec.name,
+        layerId: layer.id,
+        layerName: layer.name,
+      });
+      setDiscoverAddTrayItems((prev) =>
+        [
+          {
+            id: `${target.source}:${target.projectId}:${Date.now()}`,
+            title: target.title || target.projectId,
+            projectId: target.projectId,
+            source: target.source,
+            contentType: target.contentType,
+            modpackName: spec.name,
+            layerName: layer.name,
+            addedAt: new Date().toISOString(),
+          },
+          ...prev,
+        ].slice(0, 24)
+      );
+      setInstallNotice(`Added "${target.title}" to "${spec.name}" (${layer.name}).`);
+      setModpackAddTarget(null);
+    } catch (e: any) {
+      setModpackAddErr(e?.toString?.() ?? String(e));
+    } finally {
+      setModpackAddBusy(false);
     }
   }
 
@@ -7620,764 +7825,22 @@ export default function App() {
     }
 
     if (route === "modpacks") {
-      const selectedInst = instances.find((i) => i.id === selectedId) ?? null;
-      const creator = creatorDraft;
-      const creatorEntries = creator?.entries ?? [];
-      const creatorEnabledCount = creatorEntries.filter((e) => e.enabled !== false).length;
-      const creatorDisabledCount = creatorEntries.length - creatorEnabledCount;
-      const creatorDatapackCount = creatorEntries.filter(
-        (e) => normalizeCreatorEntryType(e.content_type as string) === "datapacks"
-      ).length;
-      const creatorMissingProjectCount = creatorEntries.filter(
-        (e) => !String(e.project_id ?? "").trim()
-      ).length;
-      const creatorMissingWorldTargetCount = creatorEntries.filter(
-        (e) =>
-          normalizeCreatorEntryType(e.content_type as string) === "datapacks" &&
-          (e.target_worlds?.length ?? 0) === 0 &&
-          creator?.settings?.datapack_target_policy !== "all_worlds"
-      ).length;
-      const creatorGroups = ["mods", "resourcepacks", "shaderpacks", "datapacks", "modpacks"]
-        .map((type) => ({
-          type,
-          label: creatorEntryTypeLabel(type),
-          entries: creatorEntries
-            .map((entry, idx) => ({ entry, idx }))
-            .filter(({ entry }) => normalizeCreatorEntryType(entry.content_type as string) === type),
-        }))
-        .filter((g) => g.entries.length > 0);
-      const creatorIssues = creatorEntries.flatMap((entry, idx) => {
-        const issues: { id: string; text: string; severity: "warning" | "error" }[] = [];
-        if (!String(entry.project_id ?? "").trim()) {
-          issues.push({
-            id: `missing-project:${idx}`,
-            text: `Entry #${idx + 1} is missing a project ID.`,
-            severity: "error",
-          });
-        }
-        if (
-          normalizeCreatorEntryType(entry.content_type as string) === "datapacks" &&
-          (entry.target_worlds?.length ?? 0) === 0 &&
-          creator?.settings?.datapack_target_policy !== "all_worlds"
-        ) {
-          issues.push({
-            id: `missing-world-target:${idx}`,
-            text: `Datapack "${entry.title || `#${idx + 1}`}" has no world target.`,
-            severity: "warning",
-          });
-        }
-        return issues;
-      });
-      const creatorCanApplyDraft = Boolean(
-        selectedInst && creatorEntries.length > 0 && creatorIssues.length === 0
-      );
-      const templatePage = Math.floor(templateOffset / limit) + 1;
-      const templatePages = Math.max(1, Math.ceil(templateTotalHits / limit));
       return (
-        <div style={{ maxWidth: 1240 }}>
+        <div style={{ maxWidth: 1320 }}>
           <div className="h1">Creator Studio</div>
-          <div className="p">Creator studio for mods, shaderpacks, resourcepacks, datapacks, and imported modpack templates.</div>
+          <div className="p">Modpack Maker workflow: preview, resolve, apply, rollback, and drift detection.</div>
 
           <div className="topRow" style={{ marginTop: 12 }}>
             <SegmentedControl
-              value={modpacksStudioTab}
+              value={modpacksStudioTab === "config" ? "config" : "creator"}
               onChange={(v) => setModpacksStudioTab((v as any) ?? "creator")}
               options={[
                 { value: "creator", label: "Creator" },
-                { value: "templates", label: "Discover Templates" },
-                { value: "saved", label: "Saved Presets" },
                 { value: "config", label: "Config Editor" },
               ]}
               variant="scroll"
             />
           </div>
-
-          {modpacksStudioTab === "creator" ? (
-            <div className="creatorStudioMain creatorStudioSingle">
-              <div className="card creatorTopBarCard">
-                <div className="creatorSectionTitleRow">
-                  <div className="creatorSectionTitle">Quick Start</div>
-                  <span className="chip subtle">{selectedInst ? `Instance: ${selectedInst.name}` : "No instance selected"}</span>
-                </div>
-                <div className="muted creatorGuideText">
-                  Add content from Discover Templates or Discover, then configure and validate before applying.
-                </div>
-                <div className="creatorActionRow">
-                  <button className="btn primary" onClick={() => setModpacksStudioTab("templates")}>
-                    Add from templates
-                  </button>
-                  <button className="btn" onClick={() => setRoute("discover")}>
-                    Open discover
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => selectedInst && onCreatePresetFromInstance(selectedInst)}
-                    disabled={presetBusy || !selectedInst}
-                    title={selectedInst ? "Capture selected instance into draft" : "Select an instance first"}
-                  >
-                    Capture selected instance
-                  </button>
-                </div>
-                <div className="creatorStatsRow">
-                  <span className="chip subtle">Entries: {creatorEntries.length}</span>
-                  <span className="chip subtle">Enabled: {creatorEnabledCount}</span>
-                  <span className="chip subtle">Disabled: {creatorDisabledCount}</span>
-                  <span className="chip subtle">Datapacks: {creatorDatapackCount}</span>
-                  <span className="chip subtle">Worlds found: {instanceWorlds.length}</span>
-                </div>
-              </div>
-
-              <div className="card creatorSectionCard">
-                <div className="creatorSectionTitleRow">
-                  <div className="creatorSectionTitle">Step 1 · Preset Setup</div>
-                  <span className="chip subtle">{creator?.name?.trim() ? "Named" : "Needs name"}</span>
-                </div>
-                <div className="creatorMetaGrid">
-                  <label className="creatorField">
-                    <span className="creatorFieldLabel">Preset name</span>
-                    <input
-                      className="input creatorNameInput"
-                      value={creator?.name ?? ""}
-                      onChange={(e) =>
-                        updateCreatorDraft((current) => ({ ...current, name: e.target.value }))
-                      }
-                      placeholder="Preset name"
-                    />
-                  </label>
-                  <div className="creatorField">
-                    <span className="creatorFieldLabel">Selected instance</span>
-                    <div className="creatorInlineValue">
-                      {selectedInst ? selectedInst.name : "No instance selected"}
-                    </div>
-                    <div className="muted creatorTinyText">
-                      Datapack world targets come from this instance.
-                    </div>
-                  </div>
-                </div>
-
-                <div className="creatorActionRow">
-                  <button className="btn" onClick={() => onAddCreatorBlankEntry(selectedInst)}>
-                    Add blank entry
-                  </button>
-                  <button className="btn" onClick={() => setModpacksStudioTab("templates")}>
-                    Browse templates
-                  </button>
-                  <button className="btn" onClick={() => setRoute("discover")}>
-                    Browse discover
-                  </button>
-                </div>
-
-                <div className="creatorSettingsGrid">
-                  <div className="creatorField">
-                    <span className="creatorFieldLabel">Dependencies</span>
-                    <MenuSelect
-                      value={(creator?.settings?.dependency_policy as string) || "required"}
-                      labelPrefix="Deps"
-                      options={[
-                        { value: "required", label: "Required only" },
-                        { value: "none", label: "Disable deps" },
-                      ]}
-                      onChange={(v) =>
-                        updateCreatorDraft((current) => ({
-                          ...current,
-                          settings: { ...defaultPresetSettings(), ...(current.settings ?? {}), dependency_policy: v },
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="creatorField">
-                    <span className="creatorFieldLabel">Conflict behavior</span>
-                    <MenuSelect
-                      value={(creator?.settings?.conflict_strategy as string) || "replace"}
-                      labelPrefix="Conflicts"
-                      options={[
-                        { value: "replace", label: "Replace existing" },
-                        { value: "keep", label: "Keep existing" },
-                      ]}
-                      onChange={(v) =>
-                        updateCreatorDraft((current) => ({
-                          ...current,
-                          settings: { ...defaultPresetSettings(), ...(current.settings ?? {}), conflict_strategy: v },
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="creatorField">
-                    <span className="creatorFieldLabel">Datapack targeting</span>
-                    <MenuSelect
-                      value={(creator?.settings?.datapack_target_policy as string) || "choose_worlds"}
-                      labelPrefix="Datapacks"
-                      options={[
-                        { value: "choose_worlds", label: "Choose worlds" },
-                        { value: "all_worlds", label: "All worlds" },
-                      ]}
-                      onChange={(v) =>
-                        updateCreatorDraft((current) => ({
-                          ...current,
-                          settings: { ...defaultPresetSettings(), ...(current.settings ?? {}), datapack_target_policy: v },
-                        }))
-                      }
-                    />
-                  </div>
-                  <div className="creatorField">
-                    <span className="creatorFieldLabel">Safety</span>
-                    <button
-                      className={`btn ${(creator?.settings?.snapshot_before_apply ?? true) ? "primary" : ""}`}
-                      onClick={() =>
-                        updateCreatorDraft((current) => ({
-                          ...current,
-                          settings: {
-                            ...defaultPresetSettings(),
-                            ...(current.settings ?? {}),
-                            snapshot_before_apply: !(current.settings?.snapshot_before_apply ?? true),
-                          },
-                        }))
-                      }
-                    >
-                      Snapshot before apply: {(creator?.settings?.snapshot_before_apply ?? true) ? "On" : "Off"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card creatorSectionCard">
-                <div className="creatorSectionTitleRow">
-                  <div className="creatorSectionTitle">Step 2 · Draft Entries</div>
-                  <span className="chip subtle">Apply order follows this list</span>
-                </div>
-                {!creator || creator.entries.length === 0 ? (
-                  <div className="creatorEmptyState">
-                    <div className="muted">No entries yet. Add items from Discover or Discover Templates.</div>
-                    <div className="creatorEmptyActions">
-                      <button className="btn" onClick={() => setModpacksStudioTab("templates")}>Open templates</button>
-                      <button className="btn" onClick={() => setRoute("discover")}>Open discover</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="creatorGroupsWrap">
-                    {creatorGroups.map((group) => (
-                      <div key={group.type} className="creatorTypeGroup">
-                        <div className="creatorTypeGroupHeader">
-                          <div className="creatorTypeGroupTitle">{group.label}</div>
-                          <span className="chip subtle">{group.entries.length}</span>
-                        </div>
-                        <div className="creatorTypeGroupList">
-                          {group.entries.map(({ entry, idx }) => {
-                            const isDatapack = normalizeCreatorEntryType(entry.content_type as string) === "datapacks";
-                            const selectedWorlds = entry.target_worlds ?? [];
-                            const selectedWorldCount = selectedWorlds.length;
-                            const hasIssue =
-                              !String(entry.project_id ?? "").trim() ||
-                              (isDatapack &&
-                                selectedWorldCount === 0 &&
-                                creator?.settings?.datapack_target_policy !== "all_worlds");
-                            return (
-                              <div key={`${entry.source}:${entry.project_id}:${idx}`} className="card creatorEntryCard">
-                                <div className="creatorEntryHead">
-                                  <div className="creatorEntryHeadLeft">
-                                    <div className="creatorEntryIndex">#{idx + 1}</div>
-                                    <div className="creatorEntryName">{entry.title || "Untitled entry"}</div>
-                                    <span className={`chip ${entry.enabled === false ? "subtle" : ""}`}>
-                                      {entry.enabled === false ? "Disabled" : "Enabled"}
-                                    </span>
-                                    <span className="chip subtle">{entry.source}</span>
-                                    {hasIssue ? <span className="chip">Needs attention</span> : null}
-                                  </div>
-                                  <div className="creatorEntryActions">
-                                    <button className="btn" disabled={idx === 0} onClick={() => moveCreatorEntry(idx, -1)}>
-                                      Up
-                                    </button>
-                                    <button
-                                      className="btn"
-                                      disabled={idx >= creatorEntries.length - 1}
-                                      onClick={() => moveCreatorEntry(idx, 1)}
-                                    >
-                                      Down
-                                    </button>
-                                    <button
-                                      className={`btn ${entry.enabled === false ? "" : "primary"}`}
-                                      onClick={() =>
-                                        updateCreatorDraft((current) => ({
-                                          ...current,
-                                          entries: current.entries.map((x, i) =>
-                                            i === idx ? { ...x, enabled: !(x.enabled !== false) } : x
-                                          ),
-                                        }))
-                                      }
-                                    >
-                                      {entry.enabled === false ? "Enable" : "Disable"}
-                                    </button>
-                                    <button
-                                      className="btn danger"
-                                      onClick={() =>
-                                        updateCreatorDraft((current) => ({
-                                          ...current,
-                                          entries: current.entries.filter((_, i) => i !== idx),
-                                        }))
-                                      }
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                </div>
-
-                                <div className="creatorEntryGrid">
-                                  <div className="creatorEntryRow">
-                                    <label className="creatorField creatorFieldGrow">
-                                      <span className="creatorFieldLabel">Title</span>
-                                      <input
-                                        className="input creatorInputGrow"
-                                        value={entry.title}
-                                        onChange={(e) =>
-                                          updateCreatorDraft((current) => ({
-                                            ...current,
-                                            entries: current.entries.map((x, i) =>
-                                              i === idx ? { ...x, title: e.target.value } : x
-                                            ),
-                                          }))
-                                        }
-                                        placeholder="Display title"
-                                      />
-                                    </label>
-                                    <label className="creatorField creatorFieldGrow">
-                                      <span className="creatorFieldLabel">Project ID</span>
-                                      <input
-                                        className="input creatorInputGrow"
-                                        value={entry.project_id}
-                                        onChange={(e) =>
-                                          updateCreatorDraft((current) => ({
-                                            ...current,
-                                            entries: current.entries.map((x, i) =>
-                                              i === idx ? { ...x, project_id: e.target.value } : x
-                                            ),
-                                          }))
-                                        }
-                                        placeholder="modrinth slug/project or curseforge project ID"
-                                      />
-                                    </label>
-                                  </div>
-
-                                  <div className="creatorEntryRow">
-                                    <div className="creatorField">
-                                      <span className="creatorFieldLabel">Source</span>
-                                      <MenuSelect
-                                        value={entry.source}
-                                        labelPrefix="Source"
-                                        options={[
-                                          { value: "modrinth", label: "Modrinth" },
-                                          { value: "curseforge", label: "CurseForge" },
-                                        ]}
-                                        onChange={(v) =>
-                                          updateCreatorDraft((current) => ({
-                                            ...current,
-                                            entries: current.entries.map((x, i) =>
-                                              i === idx ? { ...x, source: v } : x
-                                            ),
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                    <div className="creatorField">
-                                      <span className="creatorFieldLabel">Content type</span>
-                                      <MenuSelect
-                                        value={(entry.content_type as string) ?? "mods"}
-                                        labelPrefix="Type"
-                                        options={[
-                                          { value: "mods", label: "Mods" },
-                                          { value: "resourcepacks", label: "Resourcepacks" },
-                                          { value: "shaderpacks", label: "Shaderpacks" },
-                                          { value: "datapacks", label: "Datapacks" },
-                                          { value: "modpacks", label: "Modpacks (template)" },
-                                        ]}
-                                        onChange={(v) =>
-                                          updateCreatorDraft((current) => ({
-                                            ...current,
-                                            entries: current.entries.map((x, i) =>
-                                              i === idx
-                                                ? {
-                                                    ...x,
-                                                    content_type: v,
-                                                    target_scope: v === "datapacks" ? "world" : "instance",
-                                                    target_worlds: v === "datapacks" ? x.target_worlds ?? [] : [],
-                                                  }
-                                                : x
-                                            ),
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                    <label className="creatorField creatorFieldGrow">
-                                      <span className="creatorFieldLabel">Pinned version (optional)</span>
-                                      <input
-                                        className="input creatorInputGrow"
-                                        value={entry.pinned_version ?? ""}
-                                        onChange={(e) =>
-                                          updateCreatorDraft((current) => ({
-                                            ...current,
-                                            entries: current.entries.map((x, i) =>
-                                              i === idx ? { ...x, pinned_version: e.target.value.trim() || null } : x
-                                            ),
-                                          }))
-                                        }
-                                        placeholder="Leave blank for latest compatible"
-                                      />
-                                    </label>
-                                  </div>
-
-                                  {isDatapack ? (
-                                    <div className="creatorDatapackSection">
-                                      <div className="creatorWorldTools">
-                                        <div
-                                          className={`creatorWorldHelp ${
-                                            selectedWorldCount === 0 &&
-                                            creator?.settings?.datapack_target_policy !== "all_worlds"
-                                              ? "warn"
-                                              : ""
-                                          }`}
-                                        >
-                                          Datapacks install into `saves/&lt;world&gt;/datapacks`.
-                                        </div>
-                                        <div className="creatorWorldActions">
-                                          <button
-                                            className="btn"
-                                            disabled={instanceWorlds.length === 0}
-                                            onClick={() =>
-                                              updateCreatorDraft((current) => ({
-                                                ...current,
-                                                entries: current.entries.map((x, i) =>
-                                                  i === idx
-                                                    ? {
-                                                        ...x,
-                                                        target_scope: "world",
-                                                        target_worlds: instanceWorlds.map((w) => w.id),
-                                                      }
-                                                    : x
-                                                ),
-                                              }))
-                                            }
-                                          >
-                                            All worlds
-                                          </button>
-                                          <button
-                                            className="btn"
-                                            disabled={selectedWorldCount === 0}
-                                            onClick={() =>
-                                              updateCreatorDraft((current) => ({
-                                                ...current,
-                                                entries: current.entries.map((x, i) =>
-                                                  i === idx ? { ...x, target_scope: "world", target_worlds: [] } : x
-                                                ),
-                                              }))
-                                            }
-                                          >
-                                            Clear
-                                          </button>
-                                          <span className="muted">{selectedWorldCount} selected</span>
-                                        </div>
-                                      </div>
-                                      {instanceWorlds.length === 0 ? (
-                                        <div className="muted">No worlds found in selected instance yet.</div>
-                                      ) : (
-                                        <div className="creatorWorldChips">
-                                          {instanceWorlds.map((world) => {
-                                            const active = selectedWorlds.includes(world.id);
-                                            return (
-                                              <button
-                                                key={`${entry.project_id}:${world.id}`}
-                                                className={`creatorWorldChip ${active ? "on" : ""}`}
-                                                onClick={() =>
-                                                  updateCreatorDraft((current) => ({
-                                                    ...current,
-                                                    entries: current.entries.map((x, i) => {
-                                                      if (i !== idx) return x;
-                                                      const currentWorlds = x.target_worlds ?? [];
-                                                      const has = currentWorlds.includes(world.id);
-                                                      return {
-                                                        ...x,
-                                                        target_scope: "world",
-                                                        target_worlds: has
-                                                          ? currentWorlds.filter((w) => w !== world.id)
-                                                          : [...currentWorlds, world.id],
-                                                      };
-                                                    }),
-                                                  }))
-                                                }
-                                              >
-                                                {world.name}
-                                              </button>
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="card creatorSectionCard creatorValidationCard">
-                <div className="creatorSectionTitle">Step 3 · Validate and Save</div>
-                <div className="creatorChecklist creatorChecklistGrid">
-                  <div className={`creatorChecklistItem ${creatorEntries.length > 0 ? "ok" : ""}`}>
-                    Entries added: {creatorEntries.length}
-                  </div>
-                  <div className={`creatorChecklistItem ${creatorMissingProjectCount === 0 ? "ok" : "bad"}`}>
-                    Missing project IDs: {creatorMissingProjectCount}
-                  </div>
-                  <div className={`creatorChecklistItem ${creatorMissingWorldTargetCount === 0 ? "ok" : "bad"}`}>
-                    Datapacks missing world targets: {creatorMissingWorldTargetCount}
-                  </div>
-                </div>
-                {creatorIssues.length > 0 ? (
-                  <div className="creatorIssuesList">
-                    {creatorIssues.slice(0, 8).map((issue) => (
-                      <div
-                        key={issue.id}
-                        className={`creatorIssueRow ${issue.severity === "error" ? "error" : "warn"}`}
-                      >
-                        {issue.text}
-                      </div>
-                    ))}
-                    {creatorIssues.length > 8 ? (
-                      <div className="muted">+{creatorIssues.length - 8} more issue(s)</div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div className="creatorHealthyText">No blocking issues found in this draft.</div>
-                )}
-
-                {presetPreview ? (
-                  <div className="creatorPreviewBox">
-                    <div className="creatorPreviewTitle">Latest preview</div>
-                    <div className="creatorPreviewRow">Installable: {presetPreview.installable_entries}</div>
-                    <div className="creatorPreviewRow">Disabled skipped: {presetPreview.skipped_disabled_entries}</div>
-                    <div className="creatorPreviewRow">Duplicates: {presetPreview.duplicate_entries}</div>
-                  </div>
-                ) : (
-                  <div className="muted creatorTinyText">Run preview to validate provider compatibility and target mapping before apply.</div>
-                )}
-
-                <div className="creatorFooterActions creatorFooterActionsRow">
-                  <button className="btn primary" onClick={onSaveCreatorToPresets}>
-                    Save draft
-                  </button>
-                  <button
-                    className="btn"
-                    disabled={!selectedInst || !creator}
-                    onClick={() => creator && selectedInst && onPreviewPresetApply(creator, selectedInst)}
-                  >
-                    Preview on selected instance
-                  </button>
-                  <button
-                    className="btn primary"
-                    disabled={!creatorCanApplyDraft}
-                    onClick={() => creator && selectedInst && onApplyPresetToInstance(creator, selectedInst)}
-                  >
-                    Apply draft now
-                  </button>
-                </div>
-
-                <div className="creatorInlineTips">
-                  <div className="creatorSideTipsTitle">Quick tips</div>
-                  <div className="creatorSideTip">Use Discover Templates for modpack/datapack starters, then edit here.</div>
-                  <div className="creatorSideTip">Use Up and Down on entries to tune apply order.</div>
-                  <div className="creatorSideTip">Pinned version keeps a specific release while the rest can float to latest compatible.</div>
-                </div>
-              </div>
-            </div>
-          ) : null}
-
-          {modpacksStudioTab === "templates" ? (
-            <>
-              <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
-                <div className="row" style={{ marginBottom: 10 }}>
-                  <SegmentedControl
-                    value={templateType}
-                    onChange={(v) => {
-                      setTemplateType((v as any) ?? "modpacks");
-                      setTemplateOffset(0);
-                    }}
-                    options={[
-                      { value: "modpacks", label: "Modpacks" },
-                      { value: "datapacks", label: "Datapacks" },
-                    ]}
-                  />
-                  <MenuSelect
-                    value={templateSource}
-                    labelPrefix="Source"
-                    options={DISCOVER_SOURCE_OPTIONS}
-                    onChange={(v) => setTemplateSource((v as DiscoverSource) ?? "all")}
-                  />
-                </div>
-                <div className="row">
-                  <input
-                    className="input"
-                    value={templateQuery}
-                    onChange={(e) => setTemplateQuery(e.target.value)}
-                    placeholder={templateType === "modpacks" ? "Search modpack templates…" : "Search datapacks…"}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") runTemplateSearch(0, templateQuery);
-                    }}
-                  />
-                  <button className="btn primary" onClick={() => runTemplateSearch(0, templateQuery)} disabled={templateBusy}>
-                    {templateBusy ? "Searching…" : "Search"}
-                  </button>
-                </div>
-                {templateErr ? <div className="errorBox" style={{ marginTop: 10 }}>{templateErr}</div> : null}
-              </div>
-
-              <div className="resultsGrid" style={{ marginTop: 14 }}>
-                {templateHits.map((h) => (
-                  <div key={`${h.source}:${h.project_id}`} className="resultCard">
-                    <div className="resultIcon">{h.icon_url ? <img src={h.icon_url} alt="" /> : <div>⬚</div>}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="resultTitle">{h.title}</div>
-                      <div className="resultDesc">{h.description}</div>
-                      <div className="resultMetaRow">
-                        <span className="chip subtle">{h.source}</span>
-                        <span className="chip">{h.content_type}</span>
-                      </div>
-                    </div>
-                    <div className="resultActions">
-                      <button className="btn" onClick={() => addHitToCreator(h, selectedInst)}>
-                        Add to creator
-                      </button>
-                      <button className="btn primary" onClick={() => importTemplateFromHit(h, selectedInst)} disabled={presetBusy}>
-                        {h.content_type === "modpacks" ? "Import template" : "Quick add"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!templateBusy && templateHits.length === 0 ? (
-                  <div className="card" style={{ padding: 16, borderRadius: 22, color: "var(--muted)" }}>
-                    No results.
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="pager">
-                <button
-                  className="btn"
-                  onClick={() => runTemplateSearch(Math.max(0, templateOffset - limit), templateQuery)}
-                  disabled={templateBusy || templateOffset === 0}
-                >
-                  ← Prev
-                </button>
-                <div style={{ color: "var(--muted)", fontWeight: 950 }}>
-                  Page {templatePage} / {templatePages}
-                </div>
-                <button
-                  className="btn"
-                  onClick={() => runTemplateSearch(Math.min((templatePages - 1) * limit, templateOffset + limit), templateQuery)}
-                  disabled={templateBusy || templateOffset + limit >= templateTotalHits}
-                >
-                  Next →
-                </button>
-              </div>
-            </>
-          ) : null}
-
-          {modpacksStudioTab === "saved" ? (
-            <>
-              <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
-                <div style={{ fontWeight: 980 }}>Preset JSON</div>
-                <div className="row" style={{ marginTop: 10 }}>
-                  <button className="btn" onClick={onImportPresets} disabled={presetIoBusy}>
-                    {presetIoBusy ? "Working…" : "Import presets JSON"}
-                  </button>
-                  <button className="btn" onClick={onExportPresets} disabled={presetIoBusy || presets.length === 0}>
-                    {presetIoBusy ? "Working…" : "Export presets JSON"}
-                  </button>
-                </div>
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Shareable format: `mpm-presets/v2` JSON.
-                </div>
-              </div>
-
-              <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
-                <div style={{ fontWeight: 980 }}>Saved presets</div>
-                {presets.length === 0 ? (
-                  <div className="muted" style={{ marginTop: 10 }}>No presets yet.</div>
-                ) : (
-                  <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
-                    {presets.map((preset) => (
-                      <div key={preset.id} className="card" style={{ padding: 12, borderRadius: 14 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                          <div>
-                            <div style={{ fontWeight: 900 }}>{preset.name}</div>
-                            <div className="muted">
-                              {preset.entries.length} entries · from {preset.source_instance_name}
-                            </div>
-                          </div>
-                          <div className="row">
-                            <button
-                              className="btn"
-                              onClick={() => selectedInst && onPreviewPresetApply(preset, selectedInst)}
-                              disabled={presetPreviewBusy || !selectedInst}
-                              title={selectedInst ? "Preview apply" : "Select an instance first"}
-                            >
-                              Preview
-                            </button>
-                            <button
-                              className="btn primary"
-                              onClick={() => selectedInst && onApplyPresetToInstance(preset, selectedInst)}
-                              disabled={presetBusy || !selectedInst}
-                              title={selectedInst ? `Apply to ${selectedInst.name}` : "Select an instance first"}
-                            >
-                              Apply
-                            </button>
-                            <button
-                              className="btn"
-                              onClick={() => {
-                                setCreatorDraft({
-                                  ...preset,
-                                  id: `preset_${Date.now()}`,
-                                  name: `${preset.name} copy`,
-                                });
-                                setModpacksStudioTab("creator");
-                              }}
-                            >
-                              Edit copy
-                            </button>
-                            <button
-                              className="btn danger"
-                              onClick={() => setPresets((prev) => prev.filter((p) => p.id !== preset.id))}
-                              disabled={presetBusy}
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {presetPreview ? (
-                  <div className="card" style={{ marginTop: 12, padding: 12, borderRadius: 12 }}>
-                    <div style={{ fontWeight: 900 }}>Last preview</div>
-                    <div className="muted" style={{ marginTop: 6 }}>
-                      installable: {presetPreview.installable_entries} · disabled: {presetPreview.skipped_disabled_entries} · duplicates: {presetPreview.duplicate_entries}
-                    </div>
-                    {presetPreview.provider_warnings.length ? (
-                      <div className="errorBox" style={{ marginTop: 8 }}>{presetPreview.provider_warnings.join(" | ")}</div>
-                    ) : null}
-                    {presetPreview.missing_world_targets.length ? (
-                      <div className="errorBox" style={{ marginTop: 8 }}>
-                        Missing datapack targets: {presetPreview.missing_world_targets.join(", ")}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            </>
-          ) : null}
 
           {modpacksStudioTab === "config" ? (
             <div style={{ marginTop: 14 }}>
@@ -8389,7 +7852,23 @@ export default function App() {
                 runningInstanceIds={runningInstances.map((run) => run.instance_id)}
               />
             </div>
-          ) : null}
+          ) : (
+            <div style={{ marginTop: 14 }}>
+              <ModpackMaker
+                instances={instances}
+                selectedInstanceId={selectedId}
+                onSelectInstance={setSelectedId}
+                onOpenDiscover={(context) => {
+                  setDiscoverAddContext(context ?? null);
+                  setDiscoverAddTrayExpanded(true);
+                  setRoute("discover");
+                }}
+                isDevMode={isDevMode}
+                onNotice={(message) => setInstallNotice(message)}
+                onError={(message) => setError(message)}
+              />
+            </div>
+          )}
         </div>
       );
     }
@@ -8409,6 +7888,93 @@ export default function App() {
         <div style={{ maxWidth: 1400 }}>
           <div className="h1">Discover content</div>
           <div className="p">Search Modrinth + CurseForge and install directly into instances.</div>
+          {discoverAddContext ? (
+            <div className={`discoverAddTray${discoverAddTraySticky ? " discoverAddTraySticky" : ""}`}>
+              <div className="discoverAddTrayHeader">
+                <div>
+                  <div className="discoverAddTrayTitle">
+                    Adding to {discoverAddContext.modpackName}
+                    {discoverAddContext.layerName ? ` / ${discoverAddContext.layerName}` : ""}
+                  </div>
+                  <div className="discoverAddTraySub">
+                    Use <strong>Add to modpack</strong> on any result. This tray tracks what you added in this session.
+                  </div>
+                </div>
+                <div className="discoverAddTrayActions">
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRoute("modpacks");
+                      setModpacksStudioTab("creator");
+                    }}
+                  >
+                    Open Creator Studio
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => setDiscoverAddTrayExpanded((prev) => !prev)}
+                    title="Show or hide added items."
+                  >
+                    {discoverAddTrayExpanded ? "Hide additions" : "Show additions"}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
+                    title="Keep this tray pinned while you scroll results."
+                  >
+                    {discoverAddTraySticky ? "Unpin tray" : "Pin tray"}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setDiscoverAddContext(null);
+                      setDiscoverAddTrayItems([]);
+                    }}
+                  >
+                    Clear add target
+                  </button>
+                </div>
+              </div>
+
+              <div className="discoverAddTrayStats">
+                <span className="chip subtle">Added this session: {discoverAddTrayItems.length}</span>
+                <span className="chip subtle">Target layer: {discoverAddContext.layerName ?? "Default"}</span>
+                {discoverAddTrayItems[0] ? (
+                  <span className="chip subtle">Last added: {formatDateTime(discoverAddTrayItems[0].addedAt, "just now")}</span>
+                ) : (
+                  <span className="chip subtle">No items added yet</span>
+                )}
+              </div>
+
+              {discoverAddTrayExpanded ? (
+                <div className="discoverAddTrayList">
+                  {discoverAddTrayItems.length === 0 ? (
+                    <div className="discoverAddTrayEmpty">
+                      Add content from Discover results and it will appear here.
+                    </div>
+                  ) : (
+                    discoverAddTrayItems.slice(0, 8).map((item) => (
+                      <div key={item.id} className="discoverAddTrayItem">
+                        <div className="discoverAddTrayItemMain">
+                          <div className="discoverAddTrayItemTitle">{item.title}</div>
+                          <div className="discoverAddTrayItemMeta">
+                            {item.projectId} · {item.source} · {item.contentType} · {item.layerName}
+                          </div>
+                        </div>
+                        <span className="chip subtle">{formatDateTime(item.addedAt, "just now")}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              ) : null}
+
+              {discoverAddTrayItems.length > 8 ? (
+                <div className="discoverAddTrayOverflow muted">
+                  Showing latest 8 of {discoverAddTrayItems.length} items.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="topRow" style={{ marginBottom: 10 }}>
             <SegmentedControl
@@ -8428,7 +7994,10 @@ export default function App() {
               <input
                 className="input"
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  if (discoverErr) setDiscoverErr(null);
+                }}
                 placeholder={discoverPlaceholder}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") runSearch(0);
@@ -8601,10 +8170,28 @@ export default function App() {
                   </button>
                   <button
                     className="btn"
-                    onClick={() => addHitToCreator(h, selectedInst)}
-                    title="Add this item to Modpacks & Presets creator"
+                    onClick={() =>
+                      openAddToModpack({
+                        source: h.source === "curseforge" ? "curseforge" : "modrinth",
+                        projectId: h.project_id,
+                        title: h.title,
+                        contentType:
+                          (h.content_type as DiscoverContentType) === "modpacks"
+                            ? "modpacks"
+                            : ((h.content_type as DiscoverContentType) ?? discoverContentType),
+                        slug: h.slug ?? null,
+                        iconUrl: h.icon_url,
+                        description: h.description,
+                      }, discoverAddContext ? { modpackId: discoverAddContext.modpackId, layerId: discoverAddContext.layerId ?? null } : undefined)
+                    }
+                    title={
+                      h.content_type === "modpacks"
+                        ? "Import modpacks as template layers from Creator Studio"
+                        : "Add to a Modpack Maker layer"
+                    }
+                    disabled={h.content_type === "modpacks"}
                   >
-                    Add to creator
+                    Add to modpack
                   </button>
                   <button
                     className="btn primary installAction"
@@ -9018,6 +8605,14 @@ export default function App() {
                     <></>
                   )}
                 </div>
+              </div>
+
+              <div style={{ marginTop: 12 }}>
+                <InstanceModpackCard
+                  instance={inst}
+                  onNotice={(message) => setInstallNotice(message)}
+                  onError={(message) => setError(message)}
+                />
               </div>
 
               {instanceTab === "content" ? (
@@ -11544,6 +11139,177 @@ export default function App() {
         </Modal>
       ) : null}
 
+      {modpackAddTarget ? (
+        <Modal title="Add to modpack" size="wide" onClose={() => setModpackAddTarget(null)}>
+          <div className="modalBody">
+            <div className="installModHeader">
+              <div className="resultIcon" style={{ width: 56, height: 56, borderRadius: 16 }}>
+                {modpackAddTarget.iconUrl ? <img src={modpackAddTarget.iconUrl} alt="" /> : <div>⬚</div>}
+              </div>
+              <div>
+                <div className="h3" style={{ margin: 0 }}>{modpackAddTarget.title}</div>
+                <div className="p" style={{ marginTop: 4 }}>
+                  Add this discover result to a Modpack Maker layer. Type: {modpackAddTarget.contentType}. Source: {modpackAddTarget.source}.
+                </div>
+              </div>
+            </div>
+
+            {modpackAddErr ? <div className="errorBox">{modpackAddErr}</div> : null}
+
+            {modpackAddSpecsBusy ? (
+              <div className="card" style={{ marginTop: 10, padding: 12, borderRadius: 14 }}>
+                Loading modpacks...
+              </div>
+            ) : modpackAddSpecs.length === 0 ? (
+              <div className="card" style={{ marginTop: 10, padding: 12, borderRadius: 14 }}>
+                <div style={{ fontWeight: 900 }}>No modpack specs found.</div>
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Create a modpack in Creator Studio first, then return to Discover and add entries here.
+                </div>
+                <div className="row" style={{ marginTop: 10 }}>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setModpackAddTarget(null);
+                      setRoute("modpacks");
+                      setModpacksStudioTab("creator");
+                    }}
+                  >
+                    Open Creator Studio
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="card" style={{ marginTop: 10, padding: 12, borderRadius: 14 }}>
+                <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                  <label style={{ display: "grid", gap: 6 }}>
+                    <span className="muted">Modpack</span>
+                    <select
+                      className="input"
+                      value={modpackAddSpecId}
+                      onChange={(e) => {
+                        const nextId = e.target.value;
+                        setModpackAddSpecId(nextId);
+                        const nextSpec = modpackAddSpecs.find((spec) => spec.id === nextId);
+                        setModpackAddLayerId(nextSpec ? defaultModpackLayerId(nextSpec) : "");
+                      }}
+                      title="Target modpack spec."
+                    >
+                      {modpackAddSpecs.map((spec) => (
+                        <option key={spec.id} value={spec.id}>{spec.name}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label style={{ display: "grid", gap: 6 }}>
+                    <span className="muted">Layer</span>
+                    <select
+                      className="input"
+                      value={modpackAddLayerId}
+                      onChange={(e) => setModpackAddLayerId(e.target.value)}
+                      title="User Additions is the normal place to add mods."
+                    >
+                      {(selectedModpackAddSpec?.layers ?? []).map((layer) => (
+                        <option key={layer.id} value={layer.id}>
+                          {layer.name}{layer.is_frozen ? " (frozen)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <div className="row" style={{ gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                  <label style={{ display: "grid", gap: 6, minWidth: 180 }}>
+                    <span className="muted">Requirement</span>
+                    <select
+                      className="input"
+                      value={modpackAddRequired ? "required" : "optional"}
+                      onChange={(e) => setModpackAddRequired(e.target.value === "required")}
+                    >
+                      <option value="required">Required</option>
+                      <option value="optional">Optional</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, minWidth: 180 }}>
+                    <span className="muted">Default state</span>
+                    <select
+                      className="input"
+                      value={modpackAddEnabledByDefault ? "enabled" : "disabled"}
+                      onChange={(e) => setModpackAddEnabledByDefault(e.target.value === "enabled")}
+                    >
+                      <option value="enabled">Enabled</option>
+                      <option value="disabled">Disabled</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, minWidth: 180 }}>
+                    <span className="muted">Channel policy</span>
+                    <select
+                      className="input"
+                      value={modpackAddChannelPolicy}
+                      onChange={(e) => setModpackAddChannelPolicy((e.target.value as any) ?? "stable")}
+                    >
+                      <option value="stable">Stable only</option>
+                      <option value="beta">Allow beta</option>
+                      <option value="alpha">Allow alpha</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "grid", gap: 6, minWidth: 180 }}>
+                    <span className="muted">Fallback policy</span>
+                    <select
+                      className="input"
+                      value={modpackAddFallbackPolicy}
+                      onChange={(e) => setModpackAddFallbackPolicy((e.target.value as any) ?? "inherit")}
+                    >
+                      <option value="inherit">Inherit global</option>
+                      <option value="strict">Strict</option>
+                      <option value="smart">Smart</option>
+                      <option value="loose">Loose</option>
+                    </select>
+                  </label>
+                </div>
+
+                <details style={{ marginTop: 10 }}>
+                  <summary style={{ cursor: "pointer" }}>Advanced entry options</summary>
+                  <div style={{ marginTop: 8, display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span className="muted">Pinned version/file id</span>
+                      <input
+                        className="input"
+                        value={modpackAddPinnedVersion}
+                        onChange={(e) => setModpackAddPinnedVersion(e.target.value)}
+                        placeholder="Optional"
+                      />
+                    </label>
+                    <label style={{ display: "grid", gap: 6 }}>
+                      <span className="muted">Notes</span>
+                      <input
+                        className="input"
+                        value={modpackAddNotes}
+                        onChange={(e) => setModpackAddNotes(e.target.value)}
+                        placeholder="Optional"
+                      />
+                    </label>
+                  </div>
+                </details>
+              </div>
+            )}
+          </div>
+
+          <div className="footerBar">
+            <button className="btn" onClick={() => setModpackAddTarget(null)} disabled={modpackAddBusy}>
+              Close
+            </button>
+            <button
+              className="btn primary"
+              onClick={() => void onAddDiscoverTargetToModpack()}
+              disabled={modpackAddBusy || modpackAddSpecsBusy || modpackAddSpecs.length === 0}
+            >
+              {modpackAddBusy ? "Adding..." : "Add to modpack"}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
       {projectOpen || projectBusy || projectErr ? (
         <Modal
           title={projectOpen?.title ?? (projectBusy ? "Loading…" : "Mod details")}
@@ -11853,6 +11619,25 @@ export default function App() {
               Close
             </button>
             <button
+              className="btn"
+              disabled={!projectOpen || projectOpenContentType === "modpacks"}
+              title={projectOpen ? (projectOpenContentType === "modpacks" ? "Import modpacks as template layers from Creator Studio" : "Add this project to a modpack layer") : "Loading..."}
+              onClick={() => {
+                if (!projectOpen) return;
+                void openAddToModpack({
+                  source: "modrinth",
+                  projectId: projectOpen.id,
+                  title: projectOpen.title,
+                  contentType: projectOpenContentType,
+                  slug: projectOpen.slug ?? null,
+                  iconUrl: projectOpen.icon_url,
+                  description: projectOpen.description,
+                }, discoverAddContext ? { modpackId: discoverAddContext.modpackId, layerId: discoverAddContext.layerId ?? null } : undefined);
+              }}
+            >
+              Add to modpack
+            </button>
+            <button
               className="btn primary installAction"
               disabled={!projectOpen || projectOpenContentType === "modpacks"}
               title={projectOpen ? (projectOpenContentType === "modpacks" ? "Use Import template in Modpacks & Presets" : "Install to an instance") : "Loading..."}
@@ -12062,6 +11847,25 @@ export default function App() {
           <div className="footerBar">
             <button className="btn" onClick={closeProjectOverlays}>
               Close
+            </button>
+            <button
+              className="btn"
+              disabled={!curseforgeOpen || curseforgeOpenContentType === "modpacks"}
+              title={curseforgeOpen ? (curseforgeOpenContentType === "modpacks" ? "Import modpacks as template layers from Creator Studio" : "Add this project to a modpack layer") : "Loading..."}
+              onClick={() => {
+                if (!curseforgeOpen) return;
+                void openAddToModpack({
+                  source: "curseforge",
+                  projectId: curseforgeOpen.project_id,
+                  title: curseforgeOpen.title,
+                  contentType: curseforgeOpenContentType,
+                  slug: curseforgeOpen.slug ?? null,
+                  iconUrl: curseforgeOpen.icon_url,
+                  description: curseforgeOpen.summary,
+                }, discoverAddContext ? { modpackId: discoverAddContext.modpackId, layerId: discoverAddContext.layerId ?? null } : undefined);
+              }}
+            >
+              Add to modpack
             </button>
             <button
               className="btn primary installAction"
