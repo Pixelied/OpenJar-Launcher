@@ -56,7 +56,8 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = requireArg(args, "root");
   const repo = requireArg(args, "repo");
-  const tag = requireArg(args, "tag");
+  const releaseTag = requireArg(args, "release-tag");
+  const assetTag = typeof args["asset-tag"] === "string" ? args["asset-tag"] : releaseTag;
   const outName = typeof args.out === "string" ? args.out : "latest.json";
 
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
@@ -95,7 +96,7 @@ function main() {
     const encodedName = encodeURIComponent(fileName);
     platforms[platform] = {
       signature,
-      url: `https://github.com/${repo}/releases/download/${tag}/${encodedName}`,
+      url: `https://github.com/${repo}/releases/download/${assetTag}/${encodedName}`,
     };
     seen.add(platform);
   }
@@ -104,10 +105,10 @@ function main() {
     throw new Error("No signed updater archives matched expected naming pattern.");
   }
 
-  const version = tag.startsWith("v") ? tag.slice(1) : tag;
+  const version = releaseTag.startsWith("v") ? releaseTag.slice(1) : releaseTag;
   const manifest = {
     version,
-    notes: `OpenJar Launcher ${tag}`,
+    notes: `OpenJar Launcher ${releaseTag}`,
     pub_date: new Date().toISOString(),
     platforms,
   };

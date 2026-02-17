@@ -88,7 +88,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   const root = requireArg(args, "root");
   const fileName = typeof args.file === "string" ? args.file : "latest.json";
-  const tag = requireArg(args, "tag");
+  const assetTag = requireArg(args, "asset-tag");
+  const expectedVersion = typeof args["expected-version"] === "string" ? args["expected-version"] : "";
   const checkUrls = Boolean(args["check-urls"]);
   const authToken = typeof args["auth-token"] === "string" ? args["auth-token"] : "";
   const retries = Number.parseInt(String(args.retries || "3"), 10);
@@ -118,6 +119,9 @@ async function main() {
   }
   if (!manifest.platforms || typeof manifest.platforms !== "object") {
     throw new Error("Manifest missing object: platforms");
+  }
+  if (expectedVersion && String(manifest.version).trim() !== expectedVersion) {
+    throw new Error(`Manifest version ${manifest.version} does not match expected ${expectedVersion}`);
   }
 
   const platformEntries = Object.entries(manifest.platforms);
@@ -150,8 +154,8 @@ async function main() {
     }
 
     const url = new URL(entry.url);
-    if (!url.pathname.includes(`/releases/download/${tag}/`)) {
-      throw new Error(`Manifest URL does not target tag ${tag} for platform ${platform}`);
+    if (!url.pathname.includes(`/releases/download/${assetTag}/`)) {
+      throw new Error(`Manifest URL does not target updater tag ${assetTag} for platform ${platform}`);
     }
     const assetName = decodeURIComponent(path.basename(url.pathname));
     if (!localBasenames.has(assetName)) {
