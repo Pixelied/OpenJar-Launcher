@@ -6903,7 +6903,7 @@ export default function App() {
               <div>
                 <div className="settingTitle">CurseForge API (Setup)</div>
                 <div className="settingSub">
-                  CurseForge search/install requires an official API key. This app reads `MPM_CURSEFORGE_API_KEY` (or `CURSEFORGE_API_KEY`) from your environment.
+                  CurseForge search/install requires an official API key. Release builds can include a maintainer-injected key, while local development can still use `MPM_CURSEFORGE_API_KEY` (or `CURSEFORGE_API_KEY`).
                 </div>
                 <div className="row">
                   <button className="btn" onClick={() => void refreshCurseforgeApiStatus()} disabled={curseforgeApiBusy}>
@@ -6942,7 +6942,7 @@ export default function App() {
                       </div>
                     ) : (
                       <div className="muted">
-                        macOS/zsh example: `export MPM_CURSEFORGE_API_KEY=\"your_key_here\"` then restart `tauri:dev`.
+                        For local development only: `export MPM_CURSEFORGE_API_KEY=\"your_key_here\"` then restart `tauri:dev`.
                       </div>
                     )}
                   </div>

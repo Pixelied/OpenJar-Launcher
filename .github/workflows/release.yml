@@ -38,6 +38,7 @@ jobs:
 
     env:
       CI: "true"
+      MPM_CURSEFORGE_API_KEY_BUILTIN: ${{ secrets.MPM_CURSEFORGE_API_KEY_BUILTIN }}
 
     steps:
       - name: Checkout

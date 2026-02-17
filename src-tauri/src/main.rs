@@ -35,6 +35,8 @@ const MC_PROFILE_URL: &str = "https://api.minecraftservices.com/minecraft/profil
 const DEFAULT_MS_PUBLIC_CLIENT_ID: &str = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb";
 const CURSEFORGE_API_BASE: &str = "https://api.curseforge.com/v1";
 const CURSEFORGE_GAME_ID_MINECRAFT: i64 = 432;
+const BUILT_IN_CURSEFORGE_API_KEY_ENV: &str = "MPM_CURSEFORGE_API_KEY_BUILTIN";
+const BUILT_IN_CURSEFORGE_API_KEY: Option<&str> = option_env!("MPM_CURSEFORGE_API_KEY_BUILTIN");
 const MAX_LOCAL_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORLD_BACKUP_INTERVAL_MINUTES: u32 = 10;
 const DEFAULT_WORLD_BACKUP_RETENTION_COUNT: u32 = 1;
@@ -60,7 +62,17 @@ fn curseforge_api_key_with_source() -> Option<(String, String)> {
             }
         }
     }
+    if let Some(v) = BUILT_IN_CURSEFORGE_API_KEY {
+        let trimmed = v.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some((trimmed, format!("build:{BUILT_IN_CURSEFORGE_API_KEY_ENV}")));
+        }
+    }
     None
+}
+
+fn missing_curseforge_key_message() -> String {
+    "CurseForge API key is not configured for this build.".to_string()
 }
 
 fn mask_secret(secret: &str) -> String {
@@ -4859,7 +4871,7 @@ fn search_curseforge_discover(
     args: &SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
     let api_key = curseforge_api_key()
-        .ok_or_else(|| "CurseForge API key missing. Set MPM_CURSEFORGE_API_KEY.".to_string())?;
+        .ok_or_else(missing_curseforge_key_message)?;
     let content_type = normalize_discover_content_type(&args.content_type);
     let class_ids = curseforge_class_ids_for_content_type(&content_type);
     let sort_field = discover_index_sort_field(&args.index);
@@ -6152,7 +6164,7 @@ fn get_curseforge_api_status() -> Result<CurseforgeApiStatus, String> {
             env_var: None,
             key_hint: None,
             validated: false,
-            message: "No CurseForge API key configured. Set MPM_CURSEFORGE_API_KEY (or CURSEFORGE_API_KEY) and restart the app.".to_string(),
+            message: "No CurseForge API key configured for this build. Maintainers can inject MPM_CURSEFORGE_API_KEY_BUILTIN at build time, or set MPM_CURSEFORGE_API_KEY for local development.".to_string(),
         });
     };
 
@@ -7207,7 +7219,7 @@ fn install_discover_content_inner(
 
     let new_entry = if source == "curseforge" {
         let api_key = curseforge_api_key()
-            .ok_or_else(|| "CurseForge API key missing. Set MPM_CURSEFORGE_API_KEY.".to_string())?;
+            .ok_or_else(missing_curseforge_key_message)?;
         install_curseforge_content_inner(
             &instance,
             &instance_dir,
@@ -7276,7 +7288,7 @@ fn preview_preset_apply(
         .iter()
         .any(|e| e.source.eq_ignore_ascii_case("curseforge") && e.enabled);
     if has_cf && curseforge_api_key().is_none() {
-        provider_warnings.push("CurseForge API key missing. CurseForge entries cannot be installed.".to_string());
+        provider_warnings.push("CurseForge API key is not configured for this build. CurseForge entries cannot be installed.".to_string());
     }
 
     for entry in &args.preset.entries {
@@ -7499,7 +7511,7 @@ fn get_curseforge_project_detail(
     args: GetCurseforgeProjectArgs,
 ) -> Result<CurseforgeProjectDetail, String> {
     let api_key = curseforge_api_key()
-        .ok_or_else(|| "CurseForge API key missing. Set MPM_CURSEFORGE_API_KEY.".to_string())?;
+        .ok_or_else(missing_curseforge_key_message)?;
     let project_id = parse_curseforge_project_id(&args.project_id)?;
     let client = build_http_client()?;
 
@@ -7609,7 +7621,7 @@ fn import_provider_modpack_template(
     let client = build_http_client()?;
     if source == "curseforge" {
         let api_key = curseforge_api_key()
-            .ok_or_else(|| "CurseForge API key missing. Set MPM_CURSEFORGE_API_KEY.".to_string())?;
+            .ok_or_else(missing_curseforge_key_message)?;
         return import_curseforge_modpack_template_inner(
             &client,
             &api_key,
@@ -8452,7 +8464,7 @@ fn install_curseforge_mod_inner(
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instances_dir.join(&instance.id);
     let api_key = curseforge_api_key()
-        .ok_or_else(|| "CurseForge API key missing. Set MPM_CURSEFORGE_API_KEY.".to_string())?;
+        .ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
 
     emit_install_progress(
