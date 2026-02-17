@@ -397,9 +397,21 @@ jobs:
               *) echo "$LABEL" ;;
             esac
           }
+          installer_platform_label() {
+            case "$LABEL" in
+              macos-arm64) echo "macos-apple-silicon" ;;
+              macos-intel) echo "macos-intel" ;;
+              windows) echo "windows-x64" ;;
+              windows-arm64) echo "windows-arm64" ;;
+              linux) echo "linux-x64" ;;
+              *) echo "$LABEL" ;;
+            esac
+          }
 
           PLATFORM="$(platform_id)"
           PREFIX="openjar-launcher_${TAG}_${PLATFORM}"
+          INSTALLER_PLATFORM="$(installer_platform_label)"
+          INSTALLER_PREFIX="OpenJar-Launcher_${TAG}_${INSTALLER_PLATFORM}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             APPS=("$BUNDLE_DIR/macos/"*.app)
@@ -409,7 +421,7 @@ jobs:
               exit 1
             fi
             APP="${APPS[0]}"
-            OUT_NAME="$(sanitize_name "${PREFIX}_installer.zip")"
+            OUT_NAME="$(sanitize_name "${INSTALLER_PREFIX}_installer.zip")"
             OUT="dist-artifacts/${OUT_NAME}"
             ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT"
             echo "Created: $OUT"
@@ -420,7 +432,7 @@ jobs:
               find "$BUNDLE_DIR" -maxdepth 4 -type f -name "*.exe" -print || true
               exit 1
             fi
-            out_name="$(sanitize_name "${PREFIX}_installer.exe")"
+            out_name="$(sanitize_name "${INSTALLER_PREFIX}_installer.exe")"
             cp -f "$installer" "dist-artifacts/${out_name}"
           else
             installer="$(pick_first_file "$BUNDLE_DIR"/appimage/*.AppImage || true)"
@@ -429,7 +441,7 @@ jobs:
               find "$BUNDLE_DIR" -maxdepth 4 -type f -name "*.AppImage" -print || true
               exit 1
             fi
-            out_name="$(sanitize_name "${PREFIX}_installer.AppImage")"
+            out_name="$(sanitize_name "${INSTALLER_PREFIX}_installer.AppImage")"
             cp -f "$installer" "dist-artifacts/${out_name}"
           fi
 
@@ -522,7 +534,7 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/**/openjar-launcher_*_installer.*
+            release-assets/**/OpenJar-Launcher_*_installer.*
             release-assets/**/openjar-launcher_*_updater.*
             release-assets/latest.json
         env:
