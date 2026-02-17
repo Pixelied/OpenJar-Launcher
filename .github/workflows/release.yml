@@ -152,26 +152,29 @@ jobs:
             }
           };
 
-          const decodeBase64 = (input) => {
+          const decodeBase64Variants = (input) => {
             const compact = String(input || "").replace(/\s+/g, "");
-            if (!compact || compact.length < 16) return "";
-            const variants = [compact];
-            if (/^[A-Za-z0-9_-]+={0,2}$/.test(compact)) {
-              const std = compact.replace(/-/g, "+").replace(/_/g, "/");
-              const pad = std.length % 4 === 0 ? std : `${std}${"=".repeat(4 - (std.length % 4))}`;
-              variants.push(pad);
-            }
-            for (const variant of variants) {
-              if (!/^[A-Za-z0-9+/=]+$/.test(variant)) continue;
+            if (!compact || compact.length < 8) return [];
+            const candidates = new Set();
+            const addWithPadding = (value) => {
+              if (!value) return;
+              if (!/^[A-Za-z0-9+/=]+$/.test(value)) return;
+              candidates.add(value);
+              const rem = value.length % 4;
+              if (rem !== 0) candidates.add(`${value}${"=".repeat(4 - rem)}`);
+            };
+            addWithPadding(compact);
+            addWithPadding(compact.replace(/-/g, "+").replace(/_/g, "/"));
+
+            const out = [];
+            for (const variant of candidates) {
               try {
                 const decoded = Buffer.from(variant, "base64").toString("utf8");
                 if (!decoded || !decoded.trim()) continue;
-                const printable = decoded.replace(/[ -~\n\r\t]/g, "");
-                if (printable.length > decoded.length * 0.2) continue;
-                return decoded;
+                out.push(decoded);
               } catch {}
             }
-            return "";
+            return out;
           };
 
           const normalizeText = (input) => {
@@ -193,8 +196,10 @@ jobs:
               if (out.length > 16) break;
               const uri = normalizeText(decodeUriSafely(cur));
               if (uri && !seen.has(uri)) queue.push(uri);
-              const b64 = normalizeText(decodeBase64(cur));
-              if (b64 && !seen.has(b64)) queue.push(b64);
+              for (const decoded of decodeBase64Variants(cur)) {
+                const next = normalizeText(decoded);
+                if (next && !seen.has(next)) queue.push(next);
+              }
             }
             return out;
           };
@@ -205,8 +210,10 @@ jobs:
                 .split(/\r?\n/)
                 .map((line) => line.trim())
                 .filter(Boolean);
-              const lineHit = lines.find((line) => /^RW[A-Za-z0-9+/_=-]+$/.test(line));
-              if (lineHit) return lineHit;
+              const lineHit = lines
+                .map((line) => line.match(/RW[A-Za-z0-9+/_=-]{20,}/))
+                .find(Boolean);
+              if (lineHit) return lineHit[0];
               const inlineHit = attempt.match(/RW[A-Za-z0-9+/_=-]{20,}/);
               if (inlineHit) return inlineHit[0];
             }
