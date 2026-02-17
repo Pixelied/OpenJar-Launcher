@@ -565,7 +565,19 @@ jobs:
         with:
           repository: ${{ env.UPDATER_REPO }}
           tag_name: ${{ env.UPDATER_TAG }}
-          name: Updater assets ${{ github.ref_name }}
+          name: Internal updater assets for ${{ github.ref_name }}
+          body: |
+            ⚠️ Internal release for OpenJar Launcher auto-update infrastructure.
+
+            This release contains signed updater payloads consumed automatically by the in-app updater.
+            It is not intended for manual installation.
+
+            If you want to download/install OpenJar Launcher yourself, use the normal release:
+            https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+
+            Included here:
+            - `openjar-launcher_*_auto-update-only_updater.*` payload archives
+            - matching `.sig` signature files used by Tauri updater verification
           generate_release_notes: false
           fail_on_unmatched_files: true
           files: |
