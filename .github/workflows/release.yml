@@ -498,6 +498,14 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
+      - name: Checkout (manifest scripts)
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -514,7 +522,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node -e 'const fs=require("fs"); const path=require("path"); const root="release-assets"; const repo=process.env.GITHUB_REPOSITORY; const tag=process.env.GITHUB_REF_NAME; if(!repo||!tag){ throw new Error("Missing GITHUB_REPOSITORY or GITHUB_REF_NAME"); } const version=tag.startsWith("v")?tag.slice(1):tag; const walk=(dir)=>{ const out=[]; for (const item of fs.readdirSync(dir,{withFileTypes:true})) { const full=path.join(dir,item.name); if(item.isDirectory()) out.push(...walk(full)); else if(item.isFile()) out.push(full); } return out; }; const files=walk(root).map((full)=>path.relative(root,full).replace(/\\\\/g,"/")); const updaterArchives=files.filter((f)=>/_auto-update-only_updater\.(tar\.gz|zip)$/.test(path.basename(f))); const platforms={}; const platformMap={ "macos-apple-silicon":"darwin-aarch64", "macos-intel":"darwin-x86_64", "windows-arm64":"windows-aarch64", "windows-x64":"windows-x86_64", "linux-x64":"linux-x86_64" }; const pattern=/^openjar-launcher_v[^_]+_(macos-apple-silicon|macos-intel|windows-arm64|windows-x64|linux-x64)_auto-update-only_updater\.(tar\.gz|zip)$/; for (const archive of updaterArchives) { const fileName=path.basename(archive); const match=fileName.match(pattern); if(!match) continue; const platform=platformMap[match[1]]; if(!platform) continue; const sigPath=archive+".sig"; const fullSig=path.join(root,sigPath); if(!fs.existsSync(fullSig)) continue; const signature=fs.readFileSync(fullSig,"utf8").trim(); if(!signature) continue; const encodedFileName=encodeURIComponent(fileName); platforms[platform]={ signature, url:"https://github.com/"+repo+"/releases/download/"+tag+"/"+encodedFileName }; } if (Object.keys(platforms).length===0) { throw new Error("No signed updater artifacts found for latest.json generation."); } const manifest={ version, notes:"OpenJar Launcher "+tag, pub_date:new Date().toISOString(), platforms }; const outPath=path.join(root,"latest.json"); fs.writeFileSync(outPath, JSON.stringify(manifest,null,2)+"\n","utf8"); console.log("Wrote "+outPath); console.log(JSON.stringify(manifest,null,2));'
+          node scripts/generate-latest-json.mjs \
+            --root release-assets \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --out latest.json
+
+      - name: Validate latest.json (structure + local asset mapping)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/validate-latest-json.mjs \
+            --root release-assets \
+            --file latest.json \
+            --tag "$GITHUB_REF_NAME" \
+            --require-platforms "darwin-aarch64,darwin-x86_64,windows-aarch64,windows-x86_64,linux-x86_64"
 
       - name: Create/Update GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
@@ -526,5 +548,21 @@ jobs:
             release-assets/**/OpenJar-Launcher_*_installer.*
             release-assets/**/openjar-launcher_*_updater.*
             release-assets/latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate published updater URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/validate-latest-json.mjs \
+            --root release-assets \
+            --file latest.json \
+            --tag "$GITHUB_REF_NAME" \
+            --require-platforms "darwin-aarch64,darwin-x86_64,windows-aarch64,windows-x86_64,linux-x86_64" \
+            --check-urls \
+            --auth-token "$GITHUB_TOKEN" \
+            --retries 5 \
+            --retry-delay-ms 2500
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
