@@ -163,8 +163,22 @@ jobs:
               const rem = value.length % 4;
               if (rem !== 0) candidates.add(`${value}${"=".repeat(4 - rem)}`);
             };
-            addWithPadding(compact);
-            addWithPadding(compact.replace(/-/g, "+").replace(/_/g, "/"));
+            const addVariants = (value) => {
+              if (!value) return;
+              addWithPadding(value);
+              addWithPadding(value.replace(/-/g, "+").replace(/_/g, "/"));
+            };
+
+            addVariants(compact);
+            const marker = compact.match(/base64[:,]/i);
+            if (marker) {
+              addVariants(compact.slice(marker.index + marker[0].length));
+            }
+
+            const tokenMatches = compact.match(/[A-Za-z0-9+/_=-]{16,}/g) || [];
+            for (const token of tokenMatches) {
+              addVariants(token);
+            }
 
             const out = [];
             for (const variant of candidates) {
