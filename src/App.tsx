@@ -11006,6 +11006,13 @@ export default function App() {
               >
                 {appUpdaterBusy ? "Checking…" : "Check now"}
               </button>
+              <button
+                className="btn subtle"
+                onClick={() => setAppUpdateBannerDismissedKey(appUpdateBannerStateKey)}
+                disabled={appUpdaterBusy || appUpdaterInstallBusy}
+              >
+                Dismiss
+              </button>
               {appUpdateAvailable ? (
                 <button
                   className="btn primary"
