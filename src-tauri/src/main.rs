@@ -3830,6 +3830,36 @@ fn parse_http_error_with_body(resp: Response) -> String {
     }
 }
 
+fn upload_minecraft_skin_png_bytes(
+    client: &Client,
+    mc_access_token: &str,
+    variant: &str,
+    bytes: Vec<u8>,
+    file_name: String,
+) -> Result<(), String> {
+    let url = format!("{MC_PROFILE_URL}/skins");
+    let part = multipart::Part::bytes(bytes)
+        .file_name(file_name)
+        .mime_str("image/png")
+        .map_err(|e| format!("prepare skin upload failed: {e}"))?;
+    let form = multipart::Form::new()
+        .text("variant", variant.to_string())
+        .part("file", part);
+    let resp = client
+        .post(&url)
+        .bearer_auth(mc_access_token)
+        .multipart(form)
+        .send()
+        .map_err(|e| format!("upload skin failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "Minecraft skin upload failed ({})",
+            parse_http_error_with_body(resp)
+        ));
+    }
+    Ok(())
+}
+
 fn apply_minecraft_skin(
     client: &Client,
     mc_access_token: &str,
@@ -3842,18 +3872,48 @@ fn apply_minecraft_skin(
     }
     let variant = normalize_skin_variant(skin_variant);
     let url = format!("{MC_PROFILE_URL}/skins");
-
-    let resp = if source.starts_with("http://") || source.starts_with("https://") {
+    if source.starts_with("http://") || source.starts_with("https://") {
         let json = serde_json::json!({
             "variant": variant,
             "url": source,
         });
-        client
+        let by_url = client
             .post(&url)
             .bearer_auth(mc_access_token)
             .json(&json)
             .send()
-            .map_err(|e| format!("set skin via URL failed: {e}"))?
+            .map_err(|e| format!("set skin via URL failed: {e}"))?;
+        if by_url.status().is_success() {
+            return Ok(());
+        }
+        let by_url_err = parse_http_error_with_body(by_url);
+        let downloaded = client
+            .get(source)
+            .header("Accept", "image/png,image/*;q=0.9,*/*;q=0.2")
+            .send()
+            .map_err(|e| format!("download skin URL failed after URL apply failed ({by_url_err}): {e}"))?;
+        if !downloaded.status().is_success() {
+            return Err(format!(
+                "Skin URL apply failed ({by_url_err}) and fallback download failed ({})",
+                parse_http_error_with_body(downloaded)
+            ));
+        }
+        let bytes = downloaded
+            .bytes()
+            .map_err(|e| format!("read downloaded skin bytes failed: {e}"))?
+            .to_vec();
+        if bytes.is_empty() {
+            return Err(format!("Skin URL apply failed ({by_url_err}) and downloaded image was empty."));
+        }
+        let file_name = source
+            .split('/')
+            .next_back()
+            .map(|s| s.split('?').next().unwrap_or(s))
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("skin.png")
+            .to_string();
+        upload_minecraft_skin_png_bytes(client, mc_access_token, variant, bytes, file_name)
+            .map_err(|e| format!("Skin URL apply failed ({by_url_err}); fallback upload failed: {e}"))
     } else {
         let path = PathBuf::from(source);
         if !path.exists() || !path.is_file() {
@@ -3869,28 +3929,8 @@ fn apply_minecraft_skin(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("skin.png")
             .to_string();
-        let part = multipart::Part::bytes(bytes)
-            .file_name(file_name)
-            .mime_str("image/png")
-            .map_err(|e| format!("prepare skin upload failed: {e}"))?;
-        let form = multipart::Form::new()
-            .text("variant", variant.to_string())
-            .part("file", part);
-        client
-            .post(&url)
-            .bearer_auth(mc_access_token)
-            .multipart(form)
-            .send()
-            .map_err(|e| format!("upload skin failed: {e}"))?
-    };
-
-    if !resp.status().is_success() {
-        return Err(format!(
-            "Minecraft skin update failed ({})",
-            parse_http_error_with_body(resp)
-        ));
+        upload_minecraft_skin_png_bytes(client, mc_access_token, variant, bytes, file_name)
     }
-    Ok(())
 }
 
 fn apply_minecraft_cape(client: &Client, mc_access_token: &str, cape_id: Option<&str>) -> Result<(), String> {

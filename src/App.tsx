@@ -275,6 +275,7 @@ type AccountSkinOption = {
   id: string;
   label: string;
   skin_url: string;
+  apply_source?: string | null;
   variant?: string | null;
   preview_url?: string | null;
   group: "saved" | "default";
@@ -291,6 +292,7 @@ type SavedCustomSkin = {
   id: string;
   label: string;
   skin_path: string;
+  preview_data_url?: string | null;
 };
 
 type InstanceLaunchHooksDraft = {
@@ -2999,10 +3001,12 @@ export default function App() {
         filters: [{ name: "Minecraft skin", extensions: ["png"] }],
       });
       if (!picked || Array.isArray(picked)) return;
+      const previewDataUrl = await resolveLocalImageDataUrl(picked);
       const entry: SavedCustomSkin = {
         id: `custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         label: basenameWithoutExt(picked),
         skin_path: picked,
+        preview_data_url: previewDataUrl,
       };
       setCustomSkins((prev) => [entry, ...prev.filter((row) => row.skin_path !== entry.skin_path)]);
       setSelectedAccountSkinId(`custom:${entry.id}`);
@@ -3024,16 +3028,23 @@ export default function App() {
     });
   }
 
+  function onPlaySkinViewerEmote() {
+    skinViewerEmoteTriggerRef.current?.("random");
+  }
+
   async function onApplySelectedAppearance() {
     if (!selectedLauncherAccountId) {
-      setLauncherErr("Connect and select a Microsoft account first.");
+      setSkinViewerErr("Connect and select a Microsoft account first.");
       return;
     }
-    const skinSource = String(selectedAccountSkin?.skin_url ?? "").trim();
+    const skinSource = String(
+      selectedAccountSkin?.apply_source ?? selectedAccountSkin?.skin_url ?? ""
+    ).trim();
     if (!skinSource) {
-      setLauncherErr("Select a skin first.");
+      setSkinViewerErr("Select a skin first.");
       return;
     }
+    setSkinViewerErr(null);
     setLauncherErr(null);
     setAccountAppearanceBusy(true);
     try {
@@ -3050,9 +3061,10 @@ export default function App() {
           ? "Applied skin and cleared active cape."
           : "Applied skin and cape to your Minecraft profile."
       );
+      skinViewerEmoteTriggerRef.current?.("celebrate");
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
-      setLauncherErr(msg);
+      setSkinViewerErr(msg);
     } finally {
       setAccountAppearanceBusy(false);
     }
@@ -3492,6 +3504,7 @@ export default function App() {
           id: String(item?.id ?? "").trim() || `custom:${Math.random().toString(36).slice(2)}`,
           label: String(item?.label ?? "").trim() || "Custom skin",
           skin_path: String(item?.skin_path ?? "").trim(),
+          preview_data_url: String(item?.preview_data_url ?? "").trim() || null,
         }))
         .filter((item) => item.skin_path);
     } catch {
@@ -3559,6 +3572,7 @@ export default function App() {
   const accountSkinViewerRef = useRef<SkinViewer | null>(null);
   const accountSkinViewerResizeRef = useRef<ResizeObserver | null>(null);
   const skinViewerInputCleanupRef = useRef<(() => void) | null>(null);
+  const skinViewerEmoteTriggerRef = useRef<((mode?: "random" | "celebrate") => void) | null>(null);
   const skinTextureCacheRef = useRef<Map<string, string>>(new Map());
   const capeTextureCacheRef = useRef<Map<string, string>>(new Map());
   const skinViewerNameTagTextRef = useRef<string | null>(null);
@@ -3744,6 +3758,33 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem("mpm.account.custom_skins.v1", JSON.stringify(customSkins));
+  }, [customSkins]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const missing = customSkins.filter(
+      (item) => item.skin_path && !String(item.preview_data_url ?? "").trim()
+    );
+    if (missing.length === 0) return;
+    (async () => {
+      const updates: Record<string, string> = {};
+      for (const item of missing) {
+        const dataUrl = await resolveLocalImageDataUrl(item.skin_path);
+        if (!dataUrl) continue;
+        updates[item.id] = dataUrl;
+      }
+      if (cancelled || Object.keys(updates).length === 0) return;
+      setCustomSkins((prev) =>
+        prev.map((item) =>
+          updates[item.id]
+            ? { ...item, preview_data_url: updates[item.id] }
+            : item
+        )
+      );
+    })().catch(() => null);
+    return () => {
+      cancelled = true;
+    };
   }, [customSkins]);
 
   useEffect(() => {
@@ -3974,7 +4015,7 @@ export default function App() {
     );
 
     const pushOption = (next: AccountSkinOption) => {
-      const key = next.skin_url.trim().toLowerCase();
+      const key = String(next.apply_source ?? next.skin_url).trim().toLowerCase();
       if (!key || seen.has(key)) return;
       seen.add(key);
       out.push(next);
@@ -3986,6 +4027,7 @@ export default function App() {
         id: "saved:primary",
         label: accountDiagnostics?.minecraft_username?.trim() || "Current skin",
         skin_url: primarySkin,
+        apply_source: primarySkin,
         variant: activeProfileSkin?.variant ?? null,
         group: "saved",
         origin: "profile",
@@ -4001,6 +4043,7 @@ export default function App() {
         id: `saved:${String(skin.id ?? skinUrl)}`,
         label,
         skin_url: skinUrl,
+        apply_source: skinUrl,
         variant: variant || null,
         group: "saved",
         origin: "profile",
@@ -4010,11 +4053,14 @@ export default function App() {
     for (const skin of customSkins) {
       const raw = String(skin.skin_path ?? "").trim();
       if (!raw) continue;
+      const preview = String(skin.preview_data_url ?? "").trim();
       pushOption({
         id: `custom:${skin.id}`,
         label: skin.label || "Custom skin",
-        skin_url: raw,
+        skin_url: preview || toLocalIconSrc(raw) || raw,
+        apply_source: raw,
         variant: null,
+        preview_url: preview || null,
         group: "saved",
         origin: "custom",
       });
@@ -6255,6 +6301,7 @@ export default function App() {
       setSkinViewerPreparing(false);
       setSkinViewerBusy(false);
       skinViewerNameTagTextRef.current = null;
+      skinViewerEmoteTriggerRef.current = null;
       return;
     }
     const stage = accountSkinViewerStageRef.current;
@@ -6354,8 +6401,7 @@ export default function App() {
         emoteState.lastInteractionAt = now;
         if (!emoteState.name) queueNextEmote(now, minDelayMs);
       };
-      const startRandomEmote = () => {
-        const next = emoteNames[Math.floor(Math.random() * emoteNames.length)] ?? "wave";
+      const startEmote = (next: (typeof emoteNames)[number]) => {
         emoteState.name = next;
         emoteState.startedAt = performance.now();
         emoteState.durationMs =
@@ -6378,6 +6424,18 @@ export default function App() {
                           : next === "headPop"
                             ? 2400
                           : 1400;
+      };
+      const startRandomEmote = () => {
+        const next = emoteNames[Math.floor(Math.random() * emoteNames.length)] ?? "wave";
+        startEmote(next);
+      };
+      skinViewerEmoteTriggerRef.current = (mode = "random") => {
+        markInteraction(2200);
+        if (mode === "celebrate") {
+          startEmote("celebrate");
+        } else {
+          startRandomEmote();
+        }
       };
       const tapState = {
         pointerId: -1,
@@ -6682,6 +6740,7 @@ export default function App() {
         skinViewerInputCleanupRef.current = null;
         resizeObserver.disconnect();
         viewer.dispose();
+        skinViewerEmoteTriggerRef.current = null;
       }
     };
 
@@ -6709,6 +6768,7 @@ export default function App() {
       accountSkinViewerRef.current?.dispose();
       accountSkinViewerRef.current = null;
       skinViewerNameTagTextRef.current = null;
+      skinViewerEmoteTriggerRef.current = null;
     };
   }, [showSkinViewer, route]);
 
@@ -7198,7 +7258,7 @@ export default function App() {
                 <div>
                   <div className="settingTitle">Schedule: {updateCadenceLabel(updateCheckCadence)}</div>
                   <div className="settingSub">
-                    Last run: {scheduledUpdateLastRunAt ? formatDate(scheduledUpdateLastRunAt) : "Never"} · Next run: {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDate(nextScheduledUpdateRunAt) : "Pending first check"}
+                    Last run: {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"} · Next run: {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check") : "Pending first check"}
                   </div>
                   <div className="settingSub" style={{ marginTop: 6 }}>
                     Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})
@@ -10515,6 +10575,13 @@ export default function App() {
                     disabled={accountAppearanceBusy || !selectedLauncherAccountId || !selectedAccountSkin}
                   >
                     {accountAppearanceBusy ? "Applying…" : "Apply skin & cape in-game"}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={onPlaySkinViewerEmote}
+                    disabled={!skinPreviewEnabled || skinViewerPreparing}
+                  >
+                    Play emote
                   </button>
                   <button className="btn" onClick={onCycleAccountCape} disabled={capeOptions.length <= 1}>
                     Change cape
