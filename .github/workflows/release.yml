@@ -152,45 +152,6 @@ jobs:
             }
           };
 
-          const decodeBase64Variants = (input) => {
-            const compact = String(input || "").replace(/\s+/g, "");
-            if (!compact || compact.length < 8) return [];
-            const candidates = new Set();
-            const addWithPadding = (value) => {
-              if (!value) return;
-              if (!/^[A-Za-z0-9+/=]+$/.test(value)) return;
-              candidates.add(value);
-              const rem = value.length % 4;
-              if (rem !== 0) candidates.add(`${value}${"=".repeat(4 - rem)}`);
-            };
-            const addVariants = (value) => {
-              if (!value) return;
-              addWithPadding(value);
-              addWithPadding(value.replace(/-/g, "+").replace(/_/g, "/"));
-            };
-
-            addVariants(compact);
-            const marker = compact.match(/base64[:,]/i);
-            if (marker) {
-              addVariants(compact.slice(marker.index + marker[0].length));
-            }
-
-            const tokenMatches = compact.match(/[A-Za-z0-9+/_=-]{16,}/g) || [];
-            for (const token of tokenMatches) {
-              addVariants(token);
-            }
-
-            const out = [];
-            for (const variant of candidates) {
-              try {
-                const decoded = Buffer.from(variant, "base64").toString("utf8");
-                if (!decoded || !decoded.trim()) continue;
-                out.push(decoded);
-              } catch {}
-            }
-            return out;
-          };
-
           const normalizeText = (input) => {
             let s = stripWrapping(input);
             s = s.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
@@ -198,53 +159,101 @@ jobs:
             return stripWrapping(s).trim();
           };
 
+          const normalizeBase64 = (input) => {
+            const compact = String(input || "").replace(/\s+/g, "");
+            if (!compact) return "";
+            const standard = compact.replace(/-/g, "+").replace(/_/g, "/");
+            if (!/^[A-Za-z0-9+/=]+$/.test(standard)) return "";
+            const rem = standard.length % 4;
+            if (rem === 1) return "";
+            return rem === 0 ? standard : `${standard}${"=".repeat(4 - rem)}`;
+          };
+
+          const decodeBase64IfClear = (input) => {
+            let value = normalizeText(input);
+            const dataUri = value.match(/^data:[^,]*;base64,(.+)$/i);
+            if (dataUri) value = dataUri[1].trim();
+            const marker = value.match(/^base64[:,](.+)$/i);
+            if (marker) value = marker[1].trim();
+            if (!/^[A-Za-z0-9+/_=\s-]+$/.test(value)) return "";
+            const normalized = normalizeBase64(value);
+            if (!normalized) return "";
+            try {
+              const decoded = normalizeText(Buffer.from(normalized, "base64").toString("utf8"));
+              if (!decoded) return "";
+              if (!/(?:^|\n)\s*untrusted comment:|RW[A-Za-z0-9+/_=-]{20,}/i.test(decoded)) return "";
+              return decoded;
+            } catch {
+              return "";
+            }
+          };
+
           const buildCandidates = (raw) => {
             const seen = new Set();
-            const queue = [normalizeText(raw)];
             const out = [];
-            while (queue.length) {
-              const cur = normalizeText(queue.shift());
-              if (!cur || seen.has(cur)) continue;
-              seen.add(cur);
-              out.push(cur);
-              if (out.length > 16) break;
-              const uri = normalizeText(decodeUriSafely(cur));
-              if (uri && !seen.has(uri)) queue.push(uri);
-              for (const decoded of decodeBase64Variants(cur)) {
-                const next = normalizeText(decoded);
-                if (next && !seen.has(next)) queue.push(next);
+            const push = (value) => {
+              const normalized = normalizeText(value);
+              if (!normalized || seen.has(normalized)) return;
+              seen.add(normalized);
+              out.push(normalized);
+            };
+            push(raw);
+            push(decodeUriSafely(raw));
+            for (const candidate of [...out]) {
+              push(decodeBase64IfClear(candidate));
+            }
+            for (const candidate of [...out]) {
+              push(decodeBase64IfClear(candidate));
+            }
+            return out.slice(0, 12);
+          };
+
+          const extractPubKeyLine = (candidate) => {
+            const lines = normalizeText(candidate)
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean);
+            for (const line of lines) {
+              if (/^RW[A-Za-z0-9+/_=-]{20,}$/.test(line)) return line;
+            }
+            const inlineHit = normalizeText(candidate).match(/RW[A-Za-z0-9+/_=-]{20,}/);
+            return inlineHit ? inlineHit[0] : "";
+          };
+
+          const parsePrivateKeyBlock = (candidate) => {
+            const lines = normalizeText(candidate)
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean);
+            for (let i = 0; i < lines.length; i += 1) {
+              const comment = lines[i];
+              if (!/^untrusted comment:\s*(?:mini|r)sign(?:\s+encrypted)?\s+secret key:?$/i.test(comment)) {
+                continue;
               }
+              const keyLine = lines.slice(i + 1).find((line) => /^RW[A-Za-z0-9+/_=-]{20,}$/.test(line));
+              if (!keyLine) continue;
+              const normalizedKeyLine = normalizeBase64(keyLine);
+              if (!normalizedKeyLine || !normalizedKeyLine.startsWith("RW")) continue;
+              const commentType = /rsign/i.test(comment)
+                ? "rsign"
+                : /minisign/i.test(comment)
+                  ? "minisign"
+                  : "unknown";
+              return {
+                decoded: `${comment}\n${normalizedKeyLine}`,
+                commentType,
+              };
             }
-            return out;
+            return null;
           };
 
-          const extractPubKey = (raw) => {
-            for (const attempt of buildCandidates(raw)) {
-              const lines = attempt
-                .split(/\r?\n/)
-                .map((line) => line.trim())
-                .filter(Boolean);
-              const lineHit = lines
-                .map((line) => line.match(/RW[A-Za-z0-9+/_=-]{20,}/))
-                .find(Boolean);
-              if (lineHit) return lineHit[0];
-              const inlineHit = attempt.match(/RW[A-Za-z0-9+/_=-]{20,}/);
-              if (inlineHit) return inlineHit[0];
-            }
-            return "";
-          };
-
-          const extractPrivateKey = (raw) => {
-            return (
-              buildCandidates(raw).find((entry) =>
-                /untrusted comment:\s*(?:mini|r)sign(?:\s+encrypted)?\s+secret key:?/i.test(entry)
-              ) || ""
-            );
-          };
+          const shortHash = (value) =>
+            crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex").slice(0, 16);
 
           const rawPub = process.env.TAURI_UPDATER_PUBKEY || process.env.TAURI_UPDATER_PUBLIC_KEY || "";
-          const parsedPub = extractPubKey(rawPub);
-          const pub = parsedPub.replace(/-/g, "+").replace(/_/g, "/");
+          const pubCandidates = buildCandidates(rawPub);
+          const pubLine = pubCandidates.map(extractPubKeyLine).find(Boolean) || "";
+          const pub = normalizeBase64(pubLine);
           if (!pub || !/^RW[A-Za-z0-9+/=]+$/.test(pub)) {
             const preview = normalizeText(rawPub).slice(0, 48);
             throw new Error(
@@ -253,24 +262,20 @@ jobs:
           }
 
           const rawPriv = process.env.TAURI_PRIVATE_KEY || "";
-          const priv = extractPrivateKey(rawPriv);
-          if (!priv) {
+          const privCandidates = buildCandidates(rawPriv);
+          const parsedPriv = privCandidates.map(parsePrivateKeyBlock).find(Boolean) || null;
+          if (!parsedPriv) {
             throw new Error("Could not parse TAURI_PRIVATE_KEY into minisign/rsign secret key content.");
           }
+          const privDecoded = parsedPriv.decoded;
+          const privCommentType = parsedPriv.commentType;
+          const privEncoded = Buffer.from(privDecoded, "utf8").toString("base64");
 
           const envFile = process.env.GITHUB_ENV;
           if (!envFile) {
             throw new Error("GITHUB_ENV is not set; cannot export normalized TAURI_PRIVATE_KEY.");
           }
-          let delimiter = `TAURI_KEY_${crypto.randomUUID().replace(/-/g, "")}`;
-          while (priv.includes(delimiter)) {
-            delimiter = `TAURI_KEY_${crypto.randomUUID().replace(/-/g, "")}`;
-          }
-          fs.appendFileSync(
-            envFile,
-            `TAURI_PRIVATE_KEY<<${delimiter}\n${priv}\n${delimiter}\n`,
-            "utf8"
-          );
+          fs.appendFileSync(envFile, `TAURI_PRIVATE_KEY=${privEncoded}\n`, "utf8");
 
           const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
           config.tauri = config.tauri || {};
@@ -278,6 +283,11 @@ jobs:
           config.tauri.updater.pubkey = pub;
           fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
           console.log("Normalized updater key material and injected updater pubkey.");
+          console.log(`[diag] updater pubkey matches ^RW: ${/^RW[A-Za-z0-9+/=]+$/.test(pub)}`);
+          console.log(`[diag] updater pubkey length: ${pub.length}, sha256: ${shortHash(pub)}`);
+          console.log(`[diag] private key comment type: ${privCommentType}`);
+          console.log(`[diag] private key decoded length: ${privDecoded.length}, sha256: ${shortHash(privDecoded)}`);
+          console.log(`[diag] private key encoded length: ${privEncoded.length}, sha256: ${shortHash(privEncoded)}`);
           NODE
 
       - name: Rust cache
