@@ -87,18 +87,7 @@ jobs:
             exit 0
           fi
           if [[ "$CONF" == *.json ]]; then
-            node <<'NODE'
-            const fs = require("fs");
-            const confPath = "src-tauri/tauri.conf.json";
-            const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
-            config.tauri = config.tauri || {};
-            config.tauri.bundle = config.tauri.bundle || {};
-            config.tauri.bundle.targets = ["app"];
-            config.tauri.updater = config.tauri.updater || {};
-            config.tauri.updater.active = false;
-            fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-            console.log("Set CI bundle.targets=[\"app\"] and updater.active=false");
-            NODE
+            node -e 'const fs=require("fs"); const confPath="src-tauri/tauri.conf.json"; const config=JSON.parse(fs.readFileSync(confPath,"utf8")); config.tauri=config.tauri||{}; config.tauri.bundle=config.tauri.bundle||{}; config.tauri.bundle.targets=["app"]; config.tauri.updater=config.tauri.updater||{}; config.tauri.updater.active=false; fs.writeFileSync(confPath, JSON.stringify(config,null,2)+"\n","utf8"); console.log("Set CI bundle.targets=[\\\"app\\\"] and updater.active=false");'
           else
             perl -0777 -i -pe '
               s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app"]/g;
