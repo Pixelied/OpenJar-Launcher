@@ -918,8 +918,10 @@ const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
 const APP_UPDATER_AUTOCHECK_KEY = "mpm.appUpdater.autoCheck.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
+const APP_UPDATE_BANNER_ANIMATION_MS = 320;
 const SKIN_IMAGE_FETCH_TIMEOUT_MS = 4500;
 const SKIN_VIEWER_LOAD_TIMEOUT_MS = 7000;
+const ACCOUNT_DIAGNOSTICS_TIMEOUT_MS = 20000;
 const SKIN_THUMB_3D_SIZE = 220;
 const SKIN_THUMB_FRAMING_VERSION = "v2";
 const skinHeadRenderCache = new Map<string, string>();
@@ -2826,11 +2828,17 @@ export default function App() {
     setAccountDiagnosticsBusy(true);
     setAccountDiagnosticsErr(null);
     try {
-      const info = await getSelectedAccountDiagnostics();
+      const info = await withTimeout(
+        getSelectedAccountDiagnostics(),
+        ACCOUNT_DIAGNOSTICS_TIMEOUT_MS
+      );
       setAccountDiagnostics(info);
       return info;
     } catch (e: any) {
-      const msg = e?.toString?.() ?? String(e);
+      const raw = e?.toString?.() ?? String(e);
+      const msg = String(raw).toLowerCase().includes("timeout")
+        ? "Account check timed out. Your network may be blocking Microsoft/Xbox services (common on school/work Wi-Fi). Try another network or reconnect your account."
+        : raw;
       setAccountDiagnosticsErr(msg);
       return null;
     } finally {
@@ -3576,6 +3584,8 @@ export default function App() {
   const [appUpdaterInstallBusy, setAppUpdaterInstallBusy] = useState(false);
   const [appUpdaterLastError, setAppUpdaterLastError] = useState<string | null>(null);
   const [appUpdateBannerDismissedKey, setAppUpdateBannerDismissedKey] = useState<string | null>(null);
+  const [appUpdateBannerMounted, setAppUpdateBannerMounted] = useState(false);
+  const [appUpdateBannerExiting, setAppUpdateBannerExiting] = useState(false);
   const [appUpdaterAutoCheck, setAppUpdaterAutoCheck] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem(APP_UPDATER_AUTOCHECK_KEY);
@@ -6384,7 +6394,7 @@ export default function App() {
 
   useEffect(() => {
     if (route !== "account") return;
-    if (!selectedLauncherAccountId || accountDiagnosticsBusy || accountDiagnostics) return;
+    if (!selectedLauncherAccountId || accountDiagnosticsBusy || accountDiagnostics || accountDiagnosticsErr) return;
 
     let cancelled = false;
     let handle: number | null = null;
@@ -6415,7 +6425,7 @@ export default function App() {
         window.clearTimeout(handle);
       }
     };
-  }, [route, selectedLauncherAccountId, accountDiagnosticsBusy, accountDiagnostics]);
+  }, [route, selectedLauncherAccountId, accountDiagnosticsBusy, accountDiagnostics, accountDiagnosticsErr]);
 
   useEffect(() => {
     return () => {
@@ -10952,6 +10962,21 @@ export default function App() {
     ? `Last checked ${formatDateTime(appUpdaterState.checked_at, "just now")}`
     : "Use Check now to verify updates.";
 
+  useEffect(() => {
+    if (appUpdateBannerVisible) {
+      setAppUpdateBannerMounted(true);
+      setAppUpdateBannerExiting(false);
+      return;
+    }
+    if (!appUpdateBannerMounted) return;
+    setAppUpdateBannerExiting(true);
+    const timer = window.setTimeout(() => {
+      setAppUpdateBannerMounted(false);
+      setAppUpdateBannerExiting(false);
+    }, APP_UPDATE_BANNER_ANIMATION_MS);
+    return () => window.clearTimeout(timer);
+  }, [appUpdateBannerVisible, appUpdateBannerMounted]);
+
   return (
     <div className="appWrap">
       <aside className="navRail">
@@ -11044,11 +11069,11 @@ export default function App() {
       </aside>
 
       <main className="content">
-        {appUpdateBannerVisible ? (
+        {appUpdateBannerMounted ? (
           <div
             className={`appUpdateBanner card ${appUpdateAvailable ? "available" : ""} ${
               appUpdaterBusy ? "checking" : ""
-            } ${appUpdaterLastError ? "error" : ""}`}
+            } ${appUpdaterLastError ? "error" : ""} ${appUpdateBannerExiting ? "exit" : "enter"}`}
           >
             <div className="appUpdateBannerMain">
               <div className="appUpdateBannerTitle">{appUpdateBannerTitle}</div>
@@ -11086,7 +11111,7 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {error ? <div className="errorBox" style={{ marginTop: 0, marginBottom: 12 }}>{error}</div> : null}
+        {error ? <div className="errorBox topStatusBanner" style={{ marginTop: 0, marginBottom: 12 }}>{error}</div> : null}
         {renderContent()}
       </main>
 

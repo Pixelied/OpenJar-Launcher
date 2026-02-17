@@ -561,6 +561,14 @@ button, input, select { font-family: inherit; }
   background: color-mix(in srgb, var(--panel2) 86%, var(--surface) 14%);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+  will-change: transform, opacity;
+}
+.appUpdateBanner.enter{
+  animation: topBannerIn 320ms cubic-bezier(0.22, 0.9, 0.18, 1) both;
+}
+.appUpdateBanner.exit{
+  animation: topBannerOut 240ms cubic-bezier(0.4, 0.0, 1, 1) both;
+  pointer-events: none;
 }
 .appUpdateBanner.available{
   border-color: color-mix(in srgb, var(--accent-ring) 85%, transparent);
@@ -595,6 +603,9 @@ button, input, select { font-family: inherit; }
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+.topStatusBanner{
+  animation: topBannerIn 260ms cubic-bezier(0.22, 0.9, 0.18, 1) both;
 }
 .h1{ font-size: 22px; font-weight: 980; letter-spacing: -0.02em; }
 .h2{ font-size: 18px; font-weight: 950; letter-spacing: -0.02em; margin: 0; }
@@ -748,6 +759,16 @@ button, input, select { font-family: inherit; }
 @keyframes dangerPop { from { opacity:0; transform: translateY(12px) scale(0.975) } to { opacity:1; transform: translateY(0px) scale(1) } }
 @keyframes pageEnter { from { opacity:0; transform: translateY(10px); } to { opacity:1; transform: translateY(0); } }
 @keyframes panelRise { from { opacity:0; transform: translateY(6px) scale(0.994); } to { opacity:1; transform: translateY(0) scale(1); } }
+@keyframes topBannerIn { from { opacity:0; transform: translateY(calc(-100% - 18px)) scale(0.985); } to { opacity:1; transform: translateY(0) scale(1); } }
+@keyframes topBannerOut { from { opacity:1; transform: translateY(0) scale(1); } to { opacity:0; transform: translateY(calc(-100% - 18px)) scale(0.99); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .appUpdateBanner.enter,
+  .appUpdateBanner.exit,
+  .topStatusBanner{
+    animation: fadeIn 120ms ease-out both;
+  }
+}
 
 .modalBody{
   padding: var(--density-panel-pad) 22px 22px;
