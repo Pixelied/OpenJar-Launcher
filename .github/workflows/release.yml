@@ -237,7 +237,7 @@ jobs:
           const extractPrivateKey = (raw) => {
             return (
               buildCandidates(raw).find((entry) =>
-                entry.includes("untrusted comment: minisign secret key:")
+                /untrusted comment:\s*(?:mini|r)sign(?:\s+encrypted)?\s+secret key:?/i.test(entry)
               ) || ""
             );
           };
@@ -255,7 +255,7 @@ jobs:
           const rawPriv = process.env.TAURI_PRIVATE_KEY || "";
           const priv = extractPrivateKey(rawPriv);
           if (!priv) {
-            throw new Error("Could not parse TAURI_PRIVATE_KEY into minisign secret key content.");
+            throw new Error("Could not parse TAURI_PRIVATE_KEY into minisign/rsign secret key content.");
           }
 
           const privateKeyPath = path.join(".tauri-ci", "updater.private.key");
