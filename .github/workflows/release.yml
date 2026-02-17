@@ -208,16 +208,28 @@ jobs:
             return out.slice(0, 12);
           };
 
-          const extractPubKeyLine = (candidate) => {
+          const parsePublicKeyBox = (candidate) => {
             const lines = normalizeText(candidate)
               .split(/\r?\n/)
               .map((line) => line.trim())
               .filter(Boolean);
-            for (const line of lines) {
-              if (/^RW[A-Za-z0-9+/_=-]{20,}$/.test(line)) return line;
-            }
-            const inlineHit = normalizeText(candidate).match(/RW[A-Za-z0-9+/_=-]{20,}/);
-            return inlineHit ? inlineHit[0] : "";
+            const rwLine =
+              lines.find((line) => /^RW[A-Za-z0-9+/_=-]{20,}$/.test(line)) ||
+              (normalizeText(candidate).match(/RW[A-Za-z0-9+/_=-]{20,}/) || [])[0] ||
+              "";
+            if (!rwLine) return null;
+
+            const normalizedRwLine = normalizeBase64(rwLine);
+            if (!normalizedRwLine || !/^RW[A-Za-z0-9+/=]+$/.test(normalizedRwLine)) return null;
+
+            const commentLine =
+              lines.find((line) => /^untrusted comment:\s*.+$/i.test(line)) ||
+              "untrusted comment: minisign public key";
+
+            return {
+              decoded: `${commentLine}\n${normalizedRwLine}`,
+              rwLine: normalizedRwLine,
+            };
           };
 
           const parsePrivateKeyBlock = (candidate) => {
@@ -252,14 +264,16 @@ jobs:
 
           const rawPub = process.env.TAURI_UPDATER_PUBKEY || process.env.TAURI_UPDATER_PUBLIC_KEY || "";
           const pubCandidates = buildCandidates(rawPub);
-          const pubLine = pubCandidates.map(extractPubKeyLine).find(Boolean) || "";
-          const pub = normalizeBase64(pubLine);
-          if (!pub || !/^RW[A-Za-z0-9+/=]+$/.test(pub)) {
+          const parsedPub = pubCandidates.map(parsePublicKeyBox).find(Boolean) || null;
+          if (!parsedPub) {
             const preview = normalizeText(rawPub).slice(0, 48);
             throw new Error(
               `Could not parse updater pubkey. Expected minisign public key line starting with RW. Got prefix: "${preview}".`
             );
           }
+          const pubRw = parsedPub.rwLine;
+          const pubDecoded = parsedPub.decoded;
+          const pubEncoded = Buffer.from(pubDecoded, "utf8").toString("base64");
 
           const rawPriv = process.env.TAURI_PRIVATE_KEY || "";
           const privCandidates = buildCandidates(rawPriv);
@@ -280,11 +294,13 @@ jobs:
           const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
           config.tauri = config.tauri || {};
           config.tauri.updater = config.tauri.updater || {};
-          config.tauri.updater.pubkey = pub;
+          config.tauri.updater.pubkey = pubEncoded;
           fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
           console.log("Normalized updater key material and injected updater pubkey.");
-          console.log(`[diag] updater pubkey matches ^RW: ${/^RW[A-Za-z0-9+/=]+$/.test(pub)}`);
-          console.log(`[diag] updater pubkey length: ${pub.length}, sha256: ${shortHash(pub)}`);
+          console.log(`[diag] updater pubkey matches ^RW: ${/^RW[A-Za-z0-9+/=]+$/.test(pubRw)}`);
+          console.log(`[diag] updater pubkey rw length: ${pubRw.length}, sha256: ${shortHash(pubRw)}`);
+          console.log(`[diag] updater pubkey decoded length: ${pubDecoded.length}, sha256: ${shortHash(pubDecoded)}`);
+          console.log(`[diag] updater pubkey encoded length: ${pubEncoded.length}, sha256: ${shortHash(pubEncoded)}`);
           console.log(`[diag] private key comment type: ${privCommentType}`);
           console.log(`[diag] private key decoded length: ${privDecoded.length}, sha256: ${shortHash(privDecoded)}`);
           console.log(`[diag] private key encoded length: ${privEncoded.length}, sha256: ${shortHash(privEncoded)}`);
