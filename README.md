@@ -358,7 +358,7 @@ Core workflow:
 - Instance picker dropdown
 - Optional world picker (lists worlds in `saves/`)
 - Config file browser (lists config files)
-- Reveal/open files in Finder
+- Reveal/open files in your file manager (Finder/Explorer/etc.)
 
 Editing tools:
 - Read and save files
@@ -401,7 +401,7 @@ What makes it unique:
 
 ## Where your data lives
 
-OpenJar keeps your data **on your computer** in your OS app data directory (Tauri app data). Each instance is just a normal folder structure you can open in Finder.
+OpenJar keeps your data **on your computer** in your OS app data directory (Tauri app data). Each instance is just a normal folder structure you can open in your file manager.
 
 Per instance you’ll typically see:
 
@@ -426,13 +426,20 @@ Privacy note: OpenJar doesn’t upload your instances, worlds, or configs anywhe
 
 ## Platform support & testing
 
-OpenJar Launcher is **built and tested primarily on macOS** and is optimized to run smoothly on Mac.
+OpenJar Launcher is **macOS-first** (highest-priority platform), with cross-platform builds for Linux and Windows.
 
-Because it’s built on **Tauri + Rust**, it should also work on Windows (and likely Linux), but those platforms are not as heavily tested yet.
+Current build targets:
+- macOS Intel (`x86_64-apple-darwin`)
+- macOS Apple Silicon (`aarch64-apple-darwin`)
+- Linux x64 (`x86_64-unknown-linux-gnu`)
+- Windows x64 (`x86_64-pc-windows-msvc`, intended for Windows 11)
 
-- macOS: actively tested / primary target
-- Windows: expected to work, but less tested
-- Linux: likely workable, currently unverified
+CI now runs a Tauri build matrix for all of the targets above and uploads artifacts per platform.
+
+Known limitations:
+- Windows CI runs on GitHub-hosted Windows Server images, not a full Windows 11 desktop session.
+- Linux desktop runtime depends on WebKitGTK/libsoup2 packages available on the target distro.
+- macOS receives the most day-to-day manual testing.
 
 If you try Windows/Linux and run into issues, please open a GitHub Issue with:
 - OS + version (and whether it’s Intel/AMD or ARM)

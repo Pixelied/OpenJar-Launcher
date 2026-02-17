@@ -699,7 +699,7 @@ export default function ModpacksConfigEditor({
   const openInFinderTitle =
     scope === "instance"
       ? "This file is localStorage-backed. Opens the instance folder."
-      : "Reveal this file in Finder.";
+      : "Reveal this file in your file manager.";
   const siblingContents = useMemo(() => {
     if (!activeInstance || !activePath) return [];
     if (scope === "instance") {
@@ -950,7 +950,7 @@ export default function ModpacksConfigEditor({
                   disabled={!activePath}
                   title={openInFinderTitle}
                 >
-                  Open in Finder
+                  Open location
                 </button>
                 <button
                   className="btn"

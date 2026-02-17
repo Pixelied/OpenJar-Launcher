@@ -5539,7 +5539,22 @@ fn sort_discover_hits(hits: &mut [DiscoverSearchHit], index: &str) {
 
 fn home_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
-        std::env::var_os("USERPROFILE").map(PathBuf::from)
+        if let Some(profile) = std::env::var_os("USERPROFILE") {
+            let candidate = PathBuf::from(profile);
+            if !candidate.as_os_str().is_empty() {
+                return Some(candidate);
+            }
+        }
+        let drive = std::env::var_os("HOMEDRIVE");
+        let path = std::env::var_os("HOMEPATH");
+        if let (Some(drive), Some(path)) = (drive, path) {
+            let joined = format!("{}{}", drive.to_string_lossy(), path.to_string_lossy());
+            let candidate = PathBuf::from(joined);
+            if !candidate.as_os_str().is_empty() {
+                return Some(candidate);
+            }
+        }
+        None
     } else {
         std::env::var_os("HOME").map(PathBuf::from)
     }
@@ -5553,16 +5568,38 @@ fn prism_root_dir() -> Result<PathBuf, String> {
         }
     }
 
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if cfg!(target_os = "macos") {
         if let Some(home) = home_dir() {
-            return Ok(home.join("Library").join("Application Support").join("PrismLauncher"));
+            candidates.push(home.join("Library").join("Application Support").join("PrismLauncher"));
         }
     } else if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            return Ok(PathBuf::from(appdata).join("PrismLauncher"));
+            candidates.push(PathBuf::from(appdata).join("PrismLauncher"));
+        }
+        if let Some(home) = home_dir() {
+            candidates.push(home.join("AppData").join("Roaming").join("PrismLauncher"));
         }
     } else if let Some(home) = home_dir() {
-        return Ok(home.join(".local").join("share").join("PrismLauncher"));
+        candidates.push(home.join(".local").join("share").join("PrismLauncher"));
+        candidates.push(
+            home.join(".var")
+                .join("app")
+                .join("org.prismlauncher.PrismLauncher")
+                .join("data")
+                .join("PrismLauncher"),
+        );
+    }
+
+    if let Some(existing) = candidates
+        .iter()
+        .find(|p| p.exists() && p.is_dir())
+        .cloned()
+    {
+        return Ok(existing);
+    }
+    if let Some(default_candidate) = candidates.into_iter().next() {
+        return Ok(default_candidate);
     }
 
     Err("Failed to resolve Prism Launcher root. Set MPM_PRISM_ROOT.".into())
@@ -5650,19 +5687,37 @@ fn parse_loader_from_hint(input: &str) -> String {
 }
 
 fn vanilla_minecraft_dir() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
     if cfg!(target_os = "macos") {
-        return home_dir().map(|home| {
-            home.join("Library")
-                .join("Application Support")
-                .join("minecraft")
-        });
-    }
-    if cfg!(target_os = "windows") {
-        if let Some(appdata) = std::env::var_os("APPDATA") {
-            return Some(PathBuf::from(appdata).join(".minecraft"));
+        if let Some(home) = home_dir() {
+            candidates.push(
+                home.join("Library")
+                    .join("Application Support")
+                    .join("minecraft"),
+            );
         }
+    } else if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA") {
+            candidates.push(PathBuf::from(appdata).join(".minecraft"));
+        }
+        if let Some(home) = home_dir() {
+            candidates.push(home.join("AppData").join("Roaming").join(".minecraft"));
+        }
+    } else if let Some(home) = home_dir() {
+        candidates.push(home.join(".minecraft"));
+        candidates.push(
+            home.join(".var")
+                .join("app")
+                .join("com.mojang.Minecraft")
+                .join(".minecraft"),
+        );
     }
-    home_dir().map(|home| home.join(".minecraft"))
+
+    candidates
+        .iter()
+        .find(|p| p.exists() && p.is_dir())
+        .cloned()
+        .or_else(|| candidates.into_iter().next())
 }
 
 fn detect_latest_release_version_from_dir(mc_dir: &Path) -> Option<String> {
@@ -6340,14 +6395,14 @@ fn detect_java_runtimes_inner() -> Vec<JavaRuntimeCandidate> {
             maybe_add_java_candidate(PathBuf::from(path), &mut map);
         }
 
-        if let Ok(home) = std::env::var("HOME") {
-            let sdkman_root = PathBuf::from(&home).join(".sdkman").join("candidates").join("java");
+        if let Some(home) = home_dir() {
+            let sdkman_root = home.join(".sdkman").join("candidates").join("java");
             if let Ok(entries) = fs::read_dir(sdkman_root) {
                 for ent in entries.flatten() {
                     maybe_add_java_candidate(ent.path().join("bin").join("java"), &mut map);
                 }
             }
-            let asdf_root = PathBuf::from(&home).join(".asdf").join("installs").join("java");
+            let asdf_root = home.join(".asdf").join("installs").join("java");
             if let Ok(entries) = fs::read_dir(asdf_root) {
                 for ent in entries.flatten() {
                     maybe_add_java_candidate(ent.path().join("bin").join("java"), &mut map);
@@ -6365,9 +6420,8 @@ fn detect_java_runtimes_inner() -> Vec<JavaRuntimeCandidate> {
                 maybe_add_java_candidate(p, &mut map);
             }
         }
-        let user_vm_root = std::env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join("Library").join("Java").join("JavaVirtualMachines"));
+        let user_vm_root = home_dir()
+            .map(|h| h.join("Library").join("Java").join("JavaVirtualMachines"));
         if let Some(vm_root) = user_vm_root {
             if let Ok(entries) = fs::read_dir(vm_root) {
                 for ent in entries.flatten() {
@@ -6566,10 +6620,73 @@ fn launch_prism_instance(prism_root: &Path, prism_instance_id: &str) -> Result<(
                 launch_arg.clone(),
             ],
         ));
+        attempts.push((
+            OsString::from("PrismLauncher.exe"),
+            vec![
+                OsString::from("--dir"),
+                root.clone(),
+                OsString::from("--launch"),
+                launch_arg.clone(),
+            ],
+        ));
+        attempts.push((
+            OsString::from("prismlauncher"),
+            vec![
+                OsString::from("--dir"),
+                root.clone(),
+                OsString::from("--launch"),
+                launch_arg.clone(),
+            ],
+        ));
+        for env_key in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
+            if let Some(base) = std::env::var_os(env_key) {
+                let base = PathBuf::from(base);
+                for exe in ["prismlauncher.exe", "PrismLauncher.exe"] {
+                    attempts.push((
+                        base.join("Programs").join("PrismLauncher").join(exe).into_os_string(),
+                        vec![
+                            OsString::from("--dir"),
+                            root.clone(),
+                            OsString::from("--launch"),
+                            launch_arg.clone(),
+                        ],
+                    ));
+                    attempts.push((
+                        base.join("PrismLauncher").join(exe).into_os_string(),
+                        vec![
+                            OsString::from("--dir"),
+                            root.clone(),
+                            OsString::from("--launch"),
+                            launch_arg.clone(),
+                        ],
+                    ));
+                }
+            }
+        }
     } else {
         attempts.push((
             OsString::from("prismlauncher"),
             vec![
+                OsString::from("--dir"),
+                root.clone(),
+                OsString::from("--launch"),
+                launch_arg.clone(),
+            ],
+        ));
+        attempts.push((
+            OsString::from("PrismLauncher"),
+            vec![
+                OsString::from("--dir"),
+                root.clone(),
+                OsString::from("--launch"),
+                launch_arg.clone(),
+            ],
+        ));
+        attempts.push((
+            OsString::from("flatpak"),
+            vec![
+                OsString::from("run"),
+                OsString::from("org.prismlauncher.PrismLauncher"),
                 OsString::from("--dir"),
                 root.clone(),
                 OsString::from("--launch"),
@@ -7267,7 +7384,7 @@ fn reveal_config_editor_file(
             revealed_file,
             virtual_file: false,
             message: if revealed_file {
-                "Revealed file in Finder.".to_string()
+                "Revealed file in your file manager.".to_string()
             } else {
                 "Opened containing folder.".to_string()
             },
