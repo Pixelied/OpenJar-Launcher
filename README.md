@@ -36,8 +36,8 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 Screenshots live in `docs/screenshots/` — click any image to view full size.
 
 <p align="center">
-  <a href="docs/screenshots/instances.png">
-    <img src="docs/screenshots/instances.png" width="49%" alt="Instances" />
+  <a href="docs/screenshots/modpack maker.png">
+    <img src="docs/screenshots/modpack maker.png" width="49%" alt="Instances" />
   </a>
   <a href="docs/screenshots/instance%20content.png">
     <img src="docs/screenshots/instance%20content.png" width="49%" alt="Instance Content" />

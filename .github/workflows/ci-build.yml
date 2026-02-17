@@ -32,6 +32,10 @@ jobs:
             label: windows-x64
             target: x86_64-pc-windows-msvc
 
+          - os: windows-latest
+            label: windows-arm64
+            target: aarch64-pc-windows-msvc
+
           - os: ubuntu-22.04
             label: linux-x64
             target: x86_64-unknown-linux-gnu
@@ -71,7 +75,7 @@ jobs:
             wget \
             file
 
-      - name: Disable DMG bundling on macOS (ship zipped .app instead)
+      - name: Disable DMG bundling on macOS (ship zipped .app)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -181,6 +185,27 @@ jobs:
               fi
             done
           fi
+
+          # Keep updater artifacts when present.
+          while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            if [[ "$base" == *.tar.gz.sig ]]; then
+              out="${base%.tar.gz.sig}_${RUN_TAG}_${LABEL}.tar.gz.sig"
+            elif [[ "$base" == *.tar.gz ]]; then
+              out="${base%.tar.gz}_${RUN_TAG}_${LABEL}.tar.gz"
+            elif [[ "$base" == *.zip.sig ]]; then
+              out="${base%.zip.sig}_${RUN_TAG}_${LABEL}.zip.sig"
+            elif [[ "$base" == *.zip ]]; then
+              out="${base%.zip}_${RUN_TAG}_${LABEL}.zip"
+            elif [[ "$base" == *.sig ]]; then
+              out="${base%.sig}_${RUN_TAG}_${LABEL}.sig"
+            else
+              ext="${base##*.}"
+              stem="${base%.*}"
+              out="${stem}_${RUN_TAG}_${LABEL}.${ext}"
+            fi
+            cp -f "$f" "dist-artifacts/$out"
+          done < <(find "$BUNDLE_DIR" -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) -print0)
 
           test -n "$(ls -A dist-artifacts)"
 

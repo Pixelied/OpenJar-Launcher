@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "OpenJar Launcher",
-    "version": "0.0.1"
+    "version": "0.1.1"
   },
   "tauri": {
     "allowlist": {
@@ -18,6 +18,9 @@
       },
       "shell": {
         "open": true
+      },
+      "process": {
+        "relaunch": true
       }
     },
     "windows": [
@@ -30,6 +33,14 @@
     ],
     "security": {
       "csp": null
+    },
+    "updater": {
+      "active": true,
+      "dialog": false,
+      "endpoints": [
+        "https://github.com/Pixelied/OpenJar-Launcher/releases/latest/download/latest.json"
+      ],
+      "pubkey": "RWQHhXdg2WbVaK2xK7oUy76gYUVQ4k+X3XERa81oSDtHX9BIFaOZLaZg"
     },
     "bundle": {
       "active": true,

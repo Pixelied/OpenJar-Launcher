@@ -1,6 +1,6 @@
 [package]
 name = "modpack-manager"
-version = "0.0.1"
+version = "0.1.1"
 description = "OpenJar Launcher"
 authors = ["OpenJar Launcher Contributors"]
 edition = "2021"
@@ -10,7 +10,7 @@ rust-version = "1.70"
 tauri-build = { version = "1.5", features = [] }
 
 [dependencies]
-tauri = { version = "1.6", features = [ "shell-open", "dialog-open", "dialog-save" ] }
+tauri = { version = "1.6", features = [ "updater", "process-relaunch", "shell-open", "dialog-open", "dialog-save" ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "native-tls"] }

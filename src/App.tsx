@@ -4,6 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
 import { open as shellOpen } from "@tauri-apps/api/shell";
 import { convertFileSrc } from "@tauri-apps/api/tauri";
+import { getVersion } from "@tauri-apps/api/app";
+import { checkUpdate, installUpdate } from "@tauri-apps/api/updater";
+import { relaunch } from "@tauri-apps/api/process";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
@@ -222,6 +225,15 @@ type ScheduledUpdateCheckEntry = {
   update_count: number;
   updates: ContentUpdateInfo[];
   error?: string | null;
+};
+
+type AppUpdaterState = {
+  checked_at: string;
+  current_version: string;
+  available: boolean;
+  latest_version?: string | null;
+  release_notes?: string | null;
+  pub_date?: string | null;
 };
 
 function emptyLaunchHealthChecks(): LaunchHealthChecks {
@@ -889,6 +901,8 @@ function normalizeMinecraftUuid(uuid?: string | null) {
 const SKIN_HEAD_CACHE_MAX = 120;
 const ACCOUNT_DIAGNOSTICS_CACHE_KEY = "mpm.account.diagnostics_cache.v1";
 const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
+const APP_UPDATER_AUTOCHECK_KEY = "mpm.appUpdater.autoCheck.v1";
+const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const SKIN_IMAGE_FETCH_TIMEOUT_MS = 4500;
 const SKIN_VIEWER_LOAD_TIMEOUT_MS = 7000;
 const SKIN_THUMB_3D_SIZE = 220;
@@ -3526,6 +3540,20 @@ export default function App() {
   const [runningInstances, setRunningInstances] = useState<RunningInstance[]>([]);
   const [launcherErr, setLauncherErr] = useState<string | null>(null);
   const [launcherBusy, setLauncherBusy] = useState(false);
+  const [appVersion, setAppVersion] = useState("unknown");
+  const [appUpdaterState, setAppUpdaterState] = useState<AppUpdaterState | null>(null);
+  const [appUpdaterBusy, setAppUpdaterBusy] = useState(false);
+  const [appUpdaterInstallBusy, setAppUpdaterInstallBusy] = useState(false);
+  const [appUpdaterLastError, setAppUpdaterLastError] = useState<string | null>(null);
+  const [appUpdaterAutoCheck, setAppUpdaterAutoCheck] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem(APP_UPDATER_AUTOCHECK_KEY);
+      return raw == null ? true : raw === "1";
+    } catch {
+      return true;
+    }
+  });
+  const appUpdaterAutoCheckStartedRef = useRef(false);
   const [msLoginSessionId, setMsLoginSessionId] = useState<string | null>(null);
   const [msLoginState, setMsLoginState] = useState<MicrosoftLoginState | null>(null);
   const [msCodePrompt, setMsCodePrompt] = useState<MicrosoftCodePrompt | null>(null);
@@ -3876,6 +3904,27 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(DISCOVER_ADD_TRAY_STICKY_KEY, discoverAddTraySticky ? "1" : "0");
   }, [discoverAddTraySticky]);
+
+  useEffect(() => {
+    localStorage.setItem(APP_UPDATER_AUTOCHECK_KEY, appUpdaterAutoCheck ? "1" : "0");
+  }, [appUpdaterAutoCheck]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const version = await getVersion();
+        if (!cancelled && version) {
+          setAppVersion(String(version));
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!installNotice) {
@@ -5610,6 +5659,97 @@ export default function App() {
     }
   }
 
+  async function onCheckAppUpdate(options?: { silent?: boolean }) {
+    const silent = options?.silent === true;
+    setAppUpdaterBusy(true);
+    if (!silent) {
+      setLauncherErr(null);
+    }
+    setAppUpdaterLastError(null);
+    try {
+      const currentVersion = await getVersion().catch(() => appVersion || "unknown");
+      if (currentVersion && currentVersion !== appVersion) {
+        setAppVersion(currentVersion);
+      }
+      const result = await checkUpdate();
+      const manifest = (result as any)?.manifest ?? {};
+      const latestVersionRaw = String(manifest?.version ?? "").trim();
+      const latestVersion = latestVersionRaw || null;
+      const releaseNotesRaw = String(manifest?.body ?? manifest?.notes ?? "").trim();
+      const releaseNotes = releaseNotesRaw || null;
+      const pubDateRaw = String(manifest?.date ?? manifest?.pub_date ?? "").trim();
+      const pubDate = pubDateRaw || null;
+
+      const nextState: AppUpdaterState = {
+        checked_at: new Date().toISOString(),
+        current_version: String(currentVersion || "unknown"),
+        available: Boolean(result?.shouldUpdate),
+        latest_version: latestVersion,
+        release_notes: releaseNotes,
+        pub_date: pubDate,
+      };
+      setAppUpdaterState(nextState);
+      setAppUpdaterLastError(null);
+
+      if (!silent) {
+        if (nextState.available) {
+          setInstallNotice(
+            `App update available${nextState.latest_version ? `: v${nextState.latest_version}` : ""}.`
+          );
+        } else {
+          setInstallNotice(`OpenJar Launcher is up to date (v${nextState.current_version}).`);
+        }
+      }
+    } catch (e: any) {
+      const raw = e?.toString?.() ?? String(e);
+      const lower = raw.toLowerCase();
+      const guidance =
+        lower.includes("updater is disabled") ||
+        lower.includes("updater disabled") ||
+        lower.includes("pubkey") ||
+        lower.includes("signature") ||
+        lower.includes("endpoints") ||
+        lower.includes("404") ||
+        lower.includes("latest.json")
+          ? "App updater is not fully configured for this build yet. Configure updater pubkey/endpoints and publish signed release metadata."
+          : raw;
+      setAppUpdaterLastError(guidance);
+      if (!silent) {
+        setLauncherErr(guidance);
+      }
+    } finally {
+      setAppUpdaterBusy(false);
+    }
+  }
+
+  async function onInstallAppUpdate() {
+    if (!appUpdaterState?.available) return;
+    const latest = appUpdaterState.latest_version ? `v${appUpdaterState.latest_version}` : "the latest version";
+    const confirmed = window.confirm(
+      `Install ${latest} now? OpenJar Launcher will restart after update.`
+    );
+    if (!confirmed) return;
+    setAppUpdaterInstallBusy(true);
+    setLauncherErr(null);
+    try {
+      await installUpdate();
+      setInstallNotice("App update installed. Restarting now…");
+      await relaunch();
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setAppUpdaterLastError(msg);
+    } finally {
+      setAppUpdaterInstallBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!appUpdaterAutoCheck || appUpdaterAutoCheckStartedRef.current) return;
+    appUpdaterAutoCheckStartedRef.current = true;
+    void onCheckAppUpdate({ silent: true });
+  }, [appUpdaterAutoCheck]);
+
   function onResetUiSettings() {
     const next = defaultUiSettingsSnapshot();
     clearUiSettingsStorage();
@@ -5901,6 +6041,16 @@ export default function App() {
     return () => {
       off.then((unlisten) => unlisten()).catch(() => null);
     };
+  }, []);
+
+  useEffect(() => {
+    const off = listen(APP_MENU_CHECK_FOR_UPDATES_EVENT, () => {
+      void onCheckAppUpdate({ silent: false });
+    });
+    return () => {
+      off.then((unlisten) => unlisten()).catch(() => null);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -7271,6 +7421,55 @@ export default function App() {
                     ]}
                   />
                 </div>
+              </div>
+
+              <div>
+                <div className="settingTitle">App updates</div>
+                <div className="settingSub">
+                  Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
+                </div>
+                <div className="row">
+                  <span className="chip subtle">Current: v{appVersion || "unknown"}</span>
+                  {appUpdaterState ? (
+                    <span className="chip subtle">
+                      Last check: {formatDateTime(appUpdaterState.checked_at, "Never")}
+                    </span>
+                  ) : null}
+                  {appUpdaterState?.available ? (
+                    <span className="chip">Update: v{appUpdaterState.latest_version ?? "new"}</span>
+                  ) : appUpdaterState ? (
+                    <span className="chip subtle">Up to date</span>
+                  ) : null}
+                </div>
+                <div className="row" style={{ marginTop: 8 }}>
+                  <button
+                    className="btn"
+                    onClick={() => void onCheckAppUpdate({ silent: false })}
+                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                  >
+                    {appUpdaterBusy ? "Checking…" : "Check app updates"}
+                  </button>
+                  <button
+                    className={`btn ${appUpdaterState?.available ? "primary" : ""}`}
+                    onClick={() => void onInstallAppUpdate()}
+                    disabled={!appUpdaterState?.available || appUpdaterBusy || appUpdaterInstallBusy}
+                  >
+                    {appUpdaterInstallBusy ? "Installing…" : "Install update + restart"}
+                  </button>
+                  <button
+                    className={`btn ${appUpdaterAutoCheck ? "primary" : ""}`}
+                    onClick={() => setAppUpdaterAutoCheck((prev) => !prev)}
+                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                  >
+                    Auto-check on launch: {appUpdaterAutoCheck ? "On" : "Off"}
+                  </button>
+                </div>
+                {appUpdaterState?.release_notes ? (
+                  <div className="muted" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                    {appUpdaterState.release_notes.slice(0, 280)}
+                    {appUpdaterState.release_notes.length > 280 ? "…" : ""}
+                  </div>
+                ) : null}
               </div>
 
               <div>
@@ -10631,6 +10830,26 @@ export default function App() {
     );
   }
 
+  const appUpdateAvailable = Boolean(appUpdaterState?.available);
+  const appUpdateBannerVisible =
+    appUpdaterBusy || appUpdaterInstallBusy || Boolean(appUpdaterState) || Boolean(appUpdaterLastError);
+  const appUpdateBannerTitle = appUpdaterInstallBusy
+    ? "Installing app update…"
+    : appUpdaterBusy
+      ? "Checking for OpenJar Launcher updates…"
+      : appUpdaterLastError
+        ? "App update check failed"
+      : appUpdateAvailable
+        ? `Update available${appUpdaterState?.latest_version ? `: v${appUpdaterState.latest_version}` : ""}`
+        : appUpdaterState
+          ? `OpenJar Launcher is up to date (v${appUpdaterState.current_version || appVersion}).`
+          : "App updates";
+  const appUpdateBannerMeta = appUpdaterLastError
+    ? appUpdaterLastError
+    : appUpdaterState?.checked_at
+    ? `Last checked ${formatDateTime(appUpdaterState.checked_at, "just now")}`
+    : "Use Check now to verify updates.";
+
   return (
     <div className="appWrap">
       <aside className="navRail">
@@ -10723,6 +10942,41 @@ export default function App() {
       </aside>
 
       <main className="content">
+        {appUpdateBannerVisible ? (
+          <div
+            className={`appUpdateBanner card ${appUpdateAvailable ? "available" : ""} ${
+              appUpdaterBusy ? "checking" : ""
+            } ${appUpdaterLastError ? "error" : ""}`}
+          >
+            <div className="appUpdateBannerMain">
+              <div className="appUpdateBannerTitle">{appUpdateBannerTitle}</div>
+              <div className="appUpdateBannerMeta">
+                {appUpdateBannerMeta}
+                {appUpdaterState?.pub_date
+                  ? ` • Published ${formatDateTime(appUpdaterState.pub_date, "Unknown date")}`
+                  : ""}
+              </div>
+            </div>
+            <div className="appUpdateBannerActions">
+              <button
+                className="btn"
+                onClick={() => void onCheckAppUpdate({ silent: false })}
+                disabled={appUpdaterBusy || appUpdaterInstallBusy}
+              >
+                {appUpdaterBusy ? "Checking…" : "Check now"}
+              </button>
+              {appUpdateAvailable ? (
+                <button
+                  className="btn primary"
+                  onClick={() => void onInstallAppUpdate()}
+                  disabled={appUpdaterInstallBusy || appUpdaterBusy}
+                >
+                  {appUpdaterInstallBusy ? "Installing…" : "Update now"}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
         {error ? <div className="errorBox" style={{ marginTop: 0, marginBottom: 12 }}>{error}</div> : null}
         {renderContent()}
       </main>

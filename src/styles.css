@@ -546,6 +546,56 @@ button, input, select { font-family: inherit; }
   padding: 14px 22px 22px;
   overflow: auto;
 }
+.appUpdateBanner{
+  position: sticky;
+  top: 0;
+  z-index: 28;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: color-mix(in srgb, var(--stroke2) 85%, transparent);
+  background: color-mix(in srgb, var(--panel2) 86%, var(--surface) 14%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.appUpdateBanner.available{
+  border-color: color-mix(in srgb, var(--accent-ring) 85%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 56%, var(--panel2) 44%);
+}
+.appUpdateBanner.checking{
+  border-color: color-mix(in srgb, var(--accent-ring) 72%, var(--stroke2));
+}
+.appUpdateBanner.error{
+  border-color: rgba(248,113,113,0.30);
+  background: rgba(248,113,113,0.10);
+}
+.appUpdateBannerMain{
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.appUpdateBannerTitle{
+  font-size: 13px;
+  font-weight: 940;
+  letter-spacing: -0.01em;
+}
+.appUpdateBannerMeta{
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 760;
+  line-height: 1.35;
+}
+.appUpdateBannerActions{
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 .h1{ font-size: 22px; font-weight: 980; letter-spacing: -0.02em; }
 .h2{ font-size: 18px; font-weight: 950; letter-spacing: -0.02em; margin: 0; }
 .h3{ font-size: 16px; font-weight: 900; letter-spacing: -0.01em; }

@@ -32,6 +32,10 @@ jobs:
             label: windows
             target: x86_64-pc-windows-msvc
 
+          - os: windows-latest
+            label: windows-arm64
+            target: aarch64-pc-windows-msvc
+
           - os: ubuntu-22.04
             label: linux
             target: x86_64-unknown-linux-gnu
@@ -39,6 +43,9 @@ jobs:
     env:
       CI: "true"
       MPM_CURSEFORGE_API_KEY_BUILTIN: ${{ secrets.MPM_CURSEFORGE_API_KEY_BUILTIN }}
+      TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+      TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
 
     steps:
       - name: Checkout
@@ -73,7 +80,7 @@ jobs:
           pkg-config --modversion libsoup-2.4
           pkg-config --modversion webkit2gtk-4.0
 
-      - name: Disable DMG bundling on macOS (ship zipped .app instead)
+      - name: Disable DMG bundling on macOS (ship zipped .app + updater artifacts)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -85,20 +92,53 @@ jobs:
             echo "No tauri.conf.json/json5 found; skipping patch."
             exit 0
           fi
-          echo "Patching $CONF to disable DMG (set bundle.targets to [\"app\"])."
+          echo "Patching $CONF to disable DMG (set bundle.targets to [\"app\", \"updater\"])."
           # Best-effort patch that works for common JSON/JSON5 shapes without requiring json5 tooling:
-          # 1) If targets is an array, replace its contents with "app"
-          # 2) If targets is a string (e.g., "all"), set it to ["app"]
+          # 1) If targets is an array, replace its contents with app + updater
+          # 2) If targets is a string (e.g., "all"), set it to ["app", "updater"]
           perl -0777 -i -pe '
-            s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app"]/g;
-            s/"targets"\s*:\s*"all"/"targets": ["app"]/g;
-            s/"targets"\s*:\s*"dmg"/"targets": ["app"]/g;
+            s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app", "updater"]/g;
+            s/"targets"\s*:\s*"all"/"targets": ["app", "updater"]/g;
+            s/"targets"\s*:\s*"dmg"/"targets": ["app", "updater"]/g;
           ' "$CONF"
 
       - name: Setup Rust (stable) + target
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Validate updater signing key
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_PRIVATE_KEY:-}" ]; then
+            echo "Missing TAURI_PRIVATE_KEY secret. Updater bundles require signing."
+            exit 1
+          fi
+          if [ -z "${TAURI_UPDATER_PUBKEY:-}" ]; then
+            echo "Missing TAURI_UPDATER_PUBKEY secret. Release binaries must embed updater pubkey."
+            exit 1
+          fi
+
+      - name: Inject updater public key for release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const confPath = "src-tauri/tauri.conf.json";
+          const key = String(process.env.TAURI_UPDATER_PUBKEY || "").trim();
+          if (!key) {
+            throw new Error("TAURI_UPDATER_PUBKEY is empty");
+          }
+          const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
+          config.tauri = config.tauri || {};
+          config.tauri.updater = config.tauri.updater || {};
+          config.tauri.updater.pubkey = key;
+          fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+          console.log("Injected updater pubkey into tauri.conf.json for this build.");
+          NODE
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -208,15 +248,38 @@ jobs:
             done
           fi
 
+          # Keep updater artifacts when present.
+          while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            if [[ "$base" == *.tar.gz.sig ]]; then
+              out="${base%.tar.gz.sig}_${TAG}_${LABEL}.tar.gz.sig"
+            elif [[ "$base" == *.tar.gz ]]; then
+              out="${base%.tar.gz}_${TAG}_${LABEL}.tar.gz"
+            elif [[ "$base" == *.zip.sig ]]; then
+              out="${base%.zip.sig}_${TAG}_${LABEL}.zip.sig"
+            elif [[ "$base" == *.zip ]]; then
+              out="${base%.zip}_${TAG}_${LABEL}.zip"
+            elif [[ "$base" == *.sig ]]; then
+              out="${base%.sig}_${TAG}_${LABEL}.sig"
+            else
+              ext="${base##*.}"
+              stem="${base%.*}"
+              out="${stem}_${TAG}_${LABEL}.${ext}"
+            fi
+            cp -f "$f" "dist-artifacts/$out"
+          done < <(find "$BUNDLE_DIR" -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) -print0)
+
           # Sanity: only keep real distributables
           find dist-artifacts -type f \
             ! -name "*.dmg" \
             ! -name "*.zip" \
+            ! -name "*.tar.gz" \
             ! -name "*.AppImage" \
             ! -name "*.deb" \
             ! -name "*.rpm" \
             ! -name "*.msi" \
             ! -name "*.exe" \
+            ! -name "*.sig" \
             -delete || true
 
           echo "Final artifacts:"
@@ -250,6 +313,79 @@ jobs:
           find release-assets -type f -maxdepth 3 -print
           test -n "$(find release-assets -type f -maxdepth 3 -print -quit)"
 
+      - name: Generate latest.json updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+
+          const root = "release-assets";
+          const repo = process.env.GITHUB_REPOSITORY;
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!repo || !tag) {
+            throw new Error("Missing GITHUB_REPOSITORY or GITHUB_REF_NAME");
+          }
+          const version = tag.startsWith("v") ? tag.slice(1) : tag;
+
+          function walk(dir) {
+            const out = [];
+            for (const item of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, item.name);
+              if (item.isDirectory()) out.push(...walk(full));
+              else if (item.isFile()) out.push(full);
+            }
+            return out;
+          }
+
+          const files = walk(root).map((full) => path.relative(root, full).replace(/\\/g, "/"));
+          const updaterArchives = files.filter((f) => f.endsWith(".tar.gz") || f.endsWith(".zip"));
+          const platforms = {};
+
+          function detectPlatform(fileName) {
+            if (fileName.includes("_macos-arm64.tar.gz")) return "darwin-aarch64";
+            if (fileName.includes("_macos-intel.tar.gz")) return "darwin-x86_64";
+            if (fileName.includes("_windows-arm64.tar.gz") || fileName.includes("_windows-arm64.zip")) return "windows-aarch64";
+            if (fileName.includes("_windows-x64.tar.gz") || fileName.includes("_windows.tar.gz")) return "windows-x86_64";
+            if (fileName.includes("_windows-x64.zip") || fileName.includes("_windows.zip")) return "windows-x86_64";
+            if (fileName.includes("_linux-x64.tar.gz") || fileName.includes("_linux.tar.gz")) return "linux-x86_64";
+            return null;
+          }
+
+          for (const archive of updaterArchives) {
+            const platform = detectPlatform(archive);
+            if (!platform) continue;
+            const sigPath = `${archive}.sig`;
+            const fullSig = path.join(root, sigPath);
+            if (!fs.existsSync(fullSig)) continue;
+            const signature = fs.readFileSync(fullSig, "utf8").trim();
+            if (!signature) continue;
+            const fileName = path.basename(archive);
+            const encodedFileName = encodeURIComponent(fileName);
+            platforms[platform] = {
+              signature,
+              url: `https://github.com/${repo}/releases/download/${tag}/${encodedFileName}`,
+            };
+          }
+
+          if (Object.keys(platforms).length === 0) {
+            throw new Error("No signed updater artifacts found for latest.json generation.");
+          }
+
+          const manifest = {
+            version,
+            notes: `OpenJar Launcher ${tag}`,
+            pub_date: new Date().toISOString(),
+            platforms,
+          };
+
+          const outPath = path.join(root, "latest.json");
+          fs.writeFileSync(outPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+          console.log(`Wrote ${outPath}`);
+          console.log(JSON.stringify(manifest, null, 2));
+          NODE
+
       - name: Create/Update GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
         with:
@@ -258,10 +394,13 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             release-assets/**/*.zip
+            release-assets/**/*.tar.gz
             release-assets/**/*.AppImage
             release-assets/**/*.deb
             release-assets/**/*.rpm
             release-assets/**/*.msi
             release-assets/**/*.exe
+            release-assets/**/*.sig
+            release-assets/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

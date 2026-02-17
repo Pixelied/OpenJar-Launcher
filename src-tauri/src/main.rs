@@ -17,12 +17,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 use tauri::Manager;
+use tauri::{CustomMenuItem, Menu, MenuItem, Submenu};
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
 mod modpack;
 
-const USER_AGENT: &str = "ModpackManager/0.0.1 (Tauri)";
+const USER_AGENT: &str = "ModpackManager/0.1.1 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
 const LEGACY_KEYRING_SERVICES: [&str; 2] = ["com.adrien.modpackmanager", "modpack-manager"];
 const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
@@ -44,6 +45,67 @@ const DEV_RUNTIME_CURSEFORGE_API_KEY_ENV: &str = "MPM_CURSEFORGE_API_KEY_DEV_RUN
 const MAX_LOCAL_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORLD_BACKUP_INTERVAL_MINUTES: u32 = 10;
 const DEFAULT_WORLD_BACKUP_RETENTION_COUNT: u32 = 1;
+const MENU_CHECK_FOR_UPDATES_ID: &str = "menu_check_for_updates";
+const APP_MENU_CHECK_FOR_UPDATES_EVENT: &str = "app_menu_check_for_updates";
+
+fn updater_check_menu_item() -> CustomMenuItem {
+    CustomMenuItem::new(MENU_CHECK_FOR_UPDATES_ID.to_string(), "Check for Updates...")
+}
+
+#[cfg(target_os = "macos")]
+fn build_main_menu(app_name: &str) -> Menu {
+    let app_submenu = Submenu::new(
+        app_name,
+        Menu::new()
+            .add_native_item(MenuItem::About(
+                app_name.to_string(),
+                tauri::AboutMetadata::default(),
+            ))
+            .add_native_item(MenuItem::Separator)
+            .add_item(updater_check_menu_item())
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Services)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Hide)
+            .add_native_item(MenuItem::HideOthers)
+            .add_native_item(MenuItem::ShowAll)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Quit),
+    );
+
+    let file_submenu = Submenu::new("File", Menu::new().add_native_item(MenuItem::CloseWindow));
+    let edit_submenu = Submenu::new(
+        "Edit",
+        Menu::new()
+            .add_native_item(MenuItem::Undo)
+            .add_native_item(MenuItem::Redo)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::Cut)
+            .add_native_item(MenuItem::Copy)
+            .add_native_item(MenuItem::Paste)
+            .add_native_item(MenuItem::SelectAll),
+    );
+    let view_submenu = Submenu::new("View", Menu::new().add_native_item(MenuItem::EnterFullScreen));
+    let window_submenu = Submenu::new(
+        "Window",
+        Menu::new()
+            .add_native_item(MenuItem::Minimize)
+            .add_native_item(MenuItem::Zoom)
+            .add_native_item(MenuItem::Separator)
+            .add_native_item(MenuItem::CloseWindow),
+    );
+    Menu::new()
+        .add_submenu(app_submenu)
+        .add_submenu(file_submenu)
+        .add_submenu(edit_submenu)
+        .add_submenu(view_submenu)
+        .add_submenu(window_submenu)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn build_main_menu(app_name: &str) -> Menu {
+    Menu::os_default(app_name)
+}
 
 fn modrinth_api_base() -> String {
     std::env::var("MPM_MODRINTH_API_BASE")
@@ -10038,6 +10100,18 @@ fn set_installed_mod_enabled(
 
 fn main() {
     tauri::Builder::default()
+        .menu(build_main_menu("OpenJar Launcher"))
+        .on_menu_event(|event| {
+            if event.menu_item_id() != MENU_CHECK_FOR_UPDATES_ID {
+                return;
+            }
+            let app = event.window().app_handle();
+            if let Some(window) = app.get_window("main") {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            let _ = app.emit_all(APP_MENU_CHECK_FOR_UPDATES_EVENT, ());
+        })
         .manage(AppState::default())
         .setup(|app| {
             load_dev_curseforge_key_into_runtime_env(&app.handle());
