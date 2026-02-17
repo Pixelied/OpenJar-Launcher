@@ -75,8 +75,7 @@ jobs:
             wget \
             file
 
-      - name: Disable DMG bundling on macOS (ship zipped .app)
-        if: runner.os == 'macOS'
+      - name: Normalize CI bundle config (disable updater; app bundle only)
         shell: bash
         run: |
           set -euo pipefail
@@ -87,11 +86,27 @@ jobs:
             echo "No tauri.conf.json/json5 found; skipping patch."
             exit 0
           fi
-          perl -0777 -i -pe '
-            s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app"]/g;
-            s/"targets"\s*:\s*"all"/"targets": ["app"]/g;
-            s/"targets"\s*:\s*"dmg"/"targets": ["app"]/g;
-          ' "$CONF"
+          if [[ "$CONF" == *.json ]]; then
+            node <<'NODE'
+            const fs = require("fs");
+            const confPath = "src-tauri/tauri.conf.json";
+            const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
+            config.tauri = config.tauri || {};
+            config.tauri.bundle = config.tauri.bundle || {};
+            config.tauri.bundle.targets = ["app"];
+            config.tauri.updater = config.tauri.updater || {};
+            config.tauri.updater.active = false;
+            fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+            console.log("Set CI bundle.targets=[\"app\"] and updater.active=false");
+            NODE
+          else
+            perl -0777 -i -pe '
+              s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app"]/g;
+              s/"targets"\s*:\s*"all"/"targets": ["app"]/g;
+              s/"targets"\s*:\s*"dmg"/"targets": ["app"]/g;
+              s/"active"\s*:\s*true/"active": false/g if /"updater"\s*:/s;
+            ' "$CONF"
+          fi
 
       - name: Setup Rust (stable) + target
         uses: dtolnay/rust-toolchain@stable
