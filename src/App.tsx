@@ -369,6 +369,8 @@ function defaultInstanceSettings(): InstanceSettings {
     force_vsync: false,
     world_backup_interval_minutes: 10,
     world_backup_retention_count: 1,
+    snapshot_retention_count: 5,
+    snapshot_max_age_days: 14,
   };
 }
 
@@ -397,6 +399,12 @@ function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): In
   const backupRetention = Number.isFinite(Number(merged.world_backup_retention_count))
     ? Math.max(1, Math.min(2, Math.round(Number(merged.world_backup_retention_count))))
     : 1;
+  const snapshotRetention = Number.isFinite(Number(merged.snapshot_retention_count))
+    ? Math.max(1, Math.min(20, Math.round(Number(merged.snapshot_retention_count))))
+    : 5;
+  const snapshotMaxAgeDays = Number.isFinite(Number(merged.snapshot_max_age_days))
+    ? Math.max(1, Math.min(90, Math.round(Number(merged.snapshot_max_age_days))))
+    : 14;
   return {
     ...merged,
     notes: String(merged.notes ?? ""),
@@ -406,6 +414,8 @@ function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): In
     memory_mb: normalizedMemory,
     world_backup_interval_minutes: backupInterval,
     world_backup_retention_count: backupRetention,
+    snapshot_retention_count: snapshotRetention,
+    snapshot_max_age_days: snapshotMaxAgeDays,
   };
 }
 
@@ -1392,6 +1402,21 @@ const WORLD_BACKUP_INTERVAL_OPTIONS: { value: string; label: string }[] = [
 const WORLD_BACKUP_RETENTION_OPTIONS: { value: string; label: string }[] = [
   { value: "1", label: "Keep 1 backup per world" },
   { value: "2", label: "Keep 2 backups per world" },
+];
+
+const SNAPSHOT_RETENTION_OPTIONS: { value: string; label: string }[] = [
+  { value: "3", label: "Keep 3 snapshots" },
+  { value: "5", label: "Keep 5 snapshots" },
+  { value: "10", label: "Keep 10 snapshots" },
+  { value: "20", label: "Keep 20 snapshots" },
+];
+
+const SNAPSHOT_MAX_AGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "7", label: "Delete after 7 days" },
+  { value: "14", label: "Delete after 14 days" },
+  { value: "30", label: "Delete after 30 days" },
+  { value: "60", label: "Delete after 60 days" },
+  { value: "90", label: "Delete after 90 days" },
 ];
 
 const PROJECT_DETAIL_TABS: { value: string; label: string }[] = [
@@ -10294,6 +10319,42 @@ export default function App() {
                           <div className="muted" style={{ marginTop: 8 }}>
                             Backups run every {instSettings.world_backup_interval_minutes} min and keep{" "}
                             {instSettings.world_backup_retention_count} per world.
+                          </div>
+                        </div>
+
+                        <div className="settingCard">
+                          <div className="settingTitle">Snapshot retention</div>
+                          <div className="settingSub">
+                            Control how many instance snapshots to keep and how long they are retained.
+                          </div>
+                          <MenuSelect
+                            value={String(instSettings.snapshot_retention_count)}
+                            labelPrefix="Count"
+                            onChange={(v) =>
+                              void persistInstanceChanges(
+                                inst,
+                                { settings: { snapshot_retention_count: Number(v) } },
+                                "Snapshot retention saved."
+                              )
+                            }
+                            options={SNAPSHOT_RETENTION_OPTIONS}
+                          />
+                          <div style={{ height: 8 }} />
+                          <MenuSelect
+                            value={String(instSettings.snapshot_max_age_days)}
+                            labelPrefix="Age"
+                            onChange={(v) =>
+                              void persistInstanceChanges(
+                                inst,
+                                { settings: { snapshot_max_age_days: Number(v) } },
+                                "Snapshot retention saved."
+                              )
+                            }
+                            options={SNAPSHOT_MAX_AGE_OPTIONS}
+                          />
+                          <div className="muted" style={{ marginTop: 8 }}>
+                            Keep up to {instSettings.snapshot_retention_count} snapshots and auto-delete after{" "}
+                            {instSettings.snapshot_max_age_days} days.
                           </div>
                         </div>
                       </div>

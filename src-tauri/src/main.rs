@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use base64::Engine as _;
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
@@ -45,6 +45,8 @@ const DEV_RUNTIME_CURSEFORGE_API_KEY_ENV: &str = "MPM_CURSEFORGE_API_KEY_DEV_RUN
 const MAX_LOCAL_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_WORLD_BACKUP_INTERVAL_MINUTES: u32 = 10;
 const DEFAULT_WORLD_BACKUP_RETENTION_COUNT: u32 = 1;
+const DEFAULT_SNAPSHOT_RETENTION_COUNT: u32 = 5;
+const DEFAULT_SNAPSHOT_MAX_AGE_DAYS: u32 = 14;
 const MENU_CHECK_FOR_UPDATES_ID: &str = "menu_check_for_updates";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT: &str = "app_menu_check_for_updates";
 
@@ -258,6 +260,10 @@ struct InstanceSettings {
     world_backup_interval_minutes: u32,
     #[serde(default = "default_world_backup_retention_count")]
     world_backup_retention_count: u32,
+    #[serde(default = "default_snapshot_retention_count")]
+    snapshot_retention_count: u32,
+    #[serde(default = "default_snapshot_max_age_days")]
+    snapshot_max_age_days: u32,
 }
 
 impl Default for InstanceSettings {
@@ -276,6 +282,8 @@ impl Default for InstanceSettings {
             force_vsync: false,
             world_backup_interval_minutes: default_world_backup_interval_minutes(),
             world_backup_retention_count: default_world_backup_retention_count(),
+            snapshot_retention_count: default_snapshot_retention_count(),
+            snapshot_max_age_days: default_snapshot_max_age_days(),
         }
     }
 }
@@ -1631,6 +1639,14 @@ fn default_world_backup_retention_count() -> u32 {
     DEFAULT_WORLD_BACKUP_RETENTION_COUNT
 }
 
+fn default_snapshot_retention_count() -> u32 {
+    DEFAULT_SNAPSHOT_RETENTION_COUNT
+}
+
+fn default_snapshot_max_age_days() -> u32 {
+    DEFAULT_SNAPSHOT_MAX_AGE_DAYS
+}
+
 fn default_update_check_cadence() -> String {
     "daily".to_string()
 }
@@ -1948,16 +1964,19 @@ fn list_snapshots(instance_dir: &Path) -> Result<Vec<SnapshotMeta>, String> {
     Ok(out)
 }
 
-fn prune_old_snapshots(instance_dir: &Path, keep: usize) -> Result<(), String> {
-    if keep == 0 {
-        return Ok(());
-    }
+fn prune_old_snapshots(instance_dir: &Path, keep: usize, max_age_days: i64) -> Result<(), String> {
     let metas = list_snapshots(instance_dir)?;
-    if metas.len() <= keep {
-        return Ok(());
-    }
     let root = snapshots_dir(instance_dir);
-    for meta in metas.iter().skip(keep) {
+    let cutoff = Utc::now()
+        .timestamp()
+        .saturating_sub(max_age_days.max(0).saturating_mul(86_400));
+    for (idx, meta) in metas.iter().enumerate() {
+        let created_at = created_at_sort_key(&meta.created_at);
+        let over_count = keep > 0 && idx >= keep;
+        let over_age = created_at > 0 && created_at < cutoff;
+        if !over_count && !over_age {
+            continue;
+        }
         let dir = root.join(&meta.id);
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(|e| format!("remove old snapshot failed: {e}"))?;
@@ -1989,7 +2008,21 @@ fn create_instance_snapshot(
         reason: reason.to_string(),
     };
     write_snapshot_meta(&snapshot_dir, &meta)?;
-    prune_old_snapshots(&instance_dir, 20)?;
+    let instance_settings = read_index(instances_dir)
+        .ok()
+        .and_then(|index| {
+            index
+                .instances
+                .into_iter()
+                .find(|inst| inst.id == instance_id)
+                .map(|inst| normalize_instance_settings(inst.settings))
+        })
+        .unwrap_or_default();
+    prune_old_snapshots(
+        &instance_dir,
+        instance_settings.snapshot_retention_count as usize,
+        instance_settings.snapshot_max_age_days as i64,
+    )?;
     Ok(meta)
 }
 
@@ -2264,6 +2297,8 @@ fn normalize_instance_settings(mut settings: InstanceSettings) -> InstanceSettin
     settings.memory_mb = settings.memory_mb.clamp(512, 65536);
     settings.world_backup_interval_minutes = settings.world_backup_interval_minutes.clamp(5, 15);
     settings.world_backup_retention_count = settings.world_backup_retention_count.clamp(1, 2);
+    settings.snapshot_retention_count = settings.snapshot_retention_count.clamp(1, 20);
+    settings.snapshot_max_age_days = settings.snapshot_max_age_days.clamp(1, 90);
     settings
 }
 

@@ -24,6 +24,8 @@ export type InstanceSettings = {
   force_vsync: boolean;
   world_backup_interval_minutes: number;
   world_backup_retention_count: number;
+  snapshot_retention_count: number;
+  snapshot_max_age_days: number;
 };
 
 export type InstalledMod = {
