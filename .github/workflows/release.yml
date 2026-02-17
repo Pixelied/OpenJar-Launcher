@@ -376,8 +376,30 @@ jobs:
 
           shopt -s nullglob
           sanitize_name() {
-            printf '%s' "$1" | tr ' ' '.'
+            printf '%s' "$1" | tr ' ' '-' | tr -cs '[:alnum:]._-' '-'
           }
+          pick_first_file() {
+            for f in "$@"; do
+              if [ -f "$f" ]; then
+                echo "$f"
+                return 0
+              fi
+            done
+            return 1
+          }
+          platform_id() {
+            case "$LABEL" in
+              macos-arm64) echo "darwin-aarch64" ;;
+              macos-intel) echo "darwin-x86_64" ;;
+              windows) echo "windows-x86_64" ;;
+              windows-arm64) echo "windows-aarch64" ;;
+              linux) echo "linux-x86_64" ;;
+              *) echo "$LABEL" ;;
+            esac
+          }
+
+          PLATFORM="$(platform_id)"
+          PREFIX="openjar-launcher_${TAG}_${PLATFORM}"
 
           if [ "${{ runner.os }}" = "macOS" ]; then
             APPS=("$BUNDLE_DIR/macos/"*.app)
@@ -387,67 +409,61 @@ jobs:
               exit 1
             fi
             APP="${APPS[0]}"
-            APP_BASENAME="$(basename "$APP" .app)"
-            OUT_NAME="$(sanitize_name "${APP_BASENAME}_${TAG}_${LABEL}.app.zip")"
+            OUT_NAME="$(sanitize_name "${PREFIX}_installer.zip")"
             OUT="dist-artifacts/${OUT_NAME}"
             ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT"
             echo "Created: $OUT"
           elif [ "${{ runner.os }}" = "Windows" ]; then
-            for f in \
-              "$BUNDLE_DIR"/msi/*.msi \
-              "$BUNDLE_DIR"/nsis/*.exe \
-              "$BUNDLE_DIR"/windows/*.msi \
-              "$BUNDLE_DIR"/windows/*.exe
-            do
-              if [ -f "$f" ]; then
-                base="$(basename "$f")"
-                ext="${base##*.}"
-                stem="${base%.*}"
-                out_name="$(sanitize_name "${stem}_${TAG}_${LABEL}.${ext}")"
-                cp -f "$f" "dist-artifacts/${out_name}"
-              fi
-            done
+            installer="$(pick_first_file "$BUNDLE_DIR"/nsis/*.exe "$BUNDLE_DIR"/windows/*.exe || true)"
+            if [ -z "${installer:-}" ]; then
+              echo "Missing Windows installer (.exe) in $BUNDLE_DIR"
+              find "$BUNDLE_DIR" -maxdepth 4 -type f -name "*.exe" -print || true
+              exit 1
+            fi
+            out_name="$(sanitize_name "${PREFIX}_installer.exe")"
+            cp -f "$installer" "dist-artifacts/${out_name}"
           else
-            for f in \
-              "$BUNDLE_DIR"/appimage/*.AppImage \
-              "$BUNDLE_DIR"/deb/*.deb \
-              "$BUNDLE_DIR"/rpm/*.rpm
-            do
-              if [ -f "$f" ]; then
-                base="$(basename "$f")"
-                ext="${base##*.}"
-                stem="${base%.*}"
-                out_name="$(sanitize_name "${stem}_${TAG}_${LABEL}.${ext}")"
-                cp -f "$f" "dist-artifacts/${out_name}"
-              fi
-            done
+            installer="$(pick_first_file "$BUNDLE_DIR"/appimage/*.AppImage || true)"
+            if [ -z "${installer:-}" ]; then
+              echo "Missing Linux installer (.AppImage) in $BUNDLE_DIR"
+              find "$BUNDLE_DIR" -maxdepth 4 -type f -name "*.AppImage" -print || true
+              exit 1
+            fi
+            out_name="$(sanitize_name "${PREFIX}_installer.AppImage")"
+            cp -f "$installer" "dist-artifacts/${out_name}"
           fi
 
-          # Keep only updater payload archives/signatures (exclude control/data and alternate bundles).
-          while IFS= read -r -d '' f; do
-            base="$(basename "$f")"
-            case "$base" in
-              *.app.tar.gz|*.app.tar.gz.sig|*.AppImage.tar.gz|*.AppImage.tar.gz.sig|*.msi.zip|*.msi.zip.sig) ;;
-              *) continue ;;
-            esac
-            if [[ "$base" == *.tar.gz.sig ]]; then
-              out="${base%.tar.gz.sig}_${TAG}_${LABEL}.tar.gz.sig"
-            elif [[ "$base" == *.tar.gz ]]; then
-              out="${base%.tar.gz}_${TAG}_${LABEL}.tar.gz"
-            elif [[ "$base" == *.zip.sig ]]; then
-              out="${base%.zip.sig}_${TAG}_${LABEL}.zip.sig"
-            elif [[ "$base" == *.zip ]]; then
-              out="${base%.zip}_${TAG}_${LABEL}.zip"
-            elif [[ "$base" == *.sig ]]; then
-              out="${base%.sig}_${TAG}_${LABEL}.sig"
-            else
-              ext="${base##*.}"
-              stem="${base%.*}"
-              out="${stem}_${TAG}_${LABEL}.${ext}"
-            fi
-            out="$(sanitize_name "$out")"
-            cp -f "$f" "dist-artifacts/$out"
-          done < <(find "$BUNDLE_DIR" -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) -print0)
+          updater=""
+          updater_sig=""
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            updater="$(pick_first_file "$BUNDLE_DIR"/macos/*.app.tar.gz || true)"
+            [ -n "${updater:-}" ] && updater_sig="${updater}.sig"
+            updater_ext="tar.gz"
+          elif [ "${{ runner.os }}" = "Windows" ]; then
+            updater="$(pick_first_file "$BUNDLE_DIR"/msi/*.msi.zip "$BUNDLE_DIR"/windows/*.msi.zip || true)"
+            [ -n "${updater:-}" ] && updater_sig="${updater}.sig"
+            updater_ext="zip"
+          else
+            updater="$(pick_first_file "$BUNDLE_DIR"/appimage/*.AppImage.tar.gz || true)"
+            [ -n "${updater:-}" ] && updater_sig="${updater}.sig"
+            updater_ext="tar.gz"
+          fi
+
+          if [ -z "${updater:-}" ] || [ ! -f "$updater" ]; then
+            echo "Missing updater archive in $BUNDLE_DIR"
+            find "$BUNDLE_DIR" -maxdepth 4 -type f \( -name "*.tar.gz" -o -name "*.zip" \) -print || true
+            exit 1
+          fi
+          if [ -z "${updater_sig:-}" ] || [ ! -f "$updater_sig" ]; then
+            echo "Missing updater signature for $updater"
+            find "$BUNDLE_DIR" -maxdepth 4 -type f -name "*.sig" -print || true
+            exit 1
+          fi
+
+          updater_out="$(sanitize_name "${PREFIX}_updater.${updater_ext}")"
+          updater_sig_out="${updater_out}.sig"
+          cp -f "$updater" "dist-artifacts/${updater_out}"
+          cp -f "$updater_sig" "dist-artifacts/${updater_sig_out}"
 
           # Sanity: only keep real distributables
           find dist-artifacts -type f \
@@ -497,7 +513,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node -e 'const fs=require("fs"); const path=require("path"); const root="release-assets"; const repo=process.env.GITHUB_REPOSITORY; const tag=process.env.GITHUB_REF_NAME; if(!repo||!tag){ throw new Error("Missing GITHUB_REPOSITORY or GITHUB_REF_NAME"); } const version=tag.startsWith("v")?tag.slice(1):tag; const walk=(dir)=>{ const out=[]; for (const item of fs.readdirSync(dir,{withFileTypes:true})) { const full=path.join(dir,item.name); if(item.isDirectory()) out.push(...walk(full)); else if(item.isFile()) out.push(full); } return out; }; const files=walk(root).map((full)=>path.relative(root,full).replace(/\\\\/g,"/")); const updaterArchives=files.filter((f)=>f.endsWith(".tar.gz")||f.endsWith(".zip")); const platforms={}; const detectPlatform=(fileName)=>{ if(fileName.includes("_macos-arm64.tar.gz")) return "darwin-aarch64"; if(fileName.includes("_macos-intel.tar.gz")) return "darwin-x86_64"; if(fileName.includes("_windows-arm64.tar.gz")||fileName.includes("_windows-arm64.zip")) return "windows-aarch64"; if(fileName.includes("_windows-x64.tar.gz")||fileName.includes("_windows.tar.gz")) return "windows-x86_64"; if(fileName.includes("_windows-x64.zip")||fileName.includes("_windows.zip")) return "windows-x86_64"; if(fileName.includes("_linux-x64.tar.gz")||fileName.includes("_linux.tar.gz")) return "linux-x86_64"; return null; }; for (const archive of updaterArchives) { const platform=detectPlatform(archive); if(!platform) continue; const sigPath=archive+".sig"; const fullSig=path.join(root,sigPath); if(!fs.existsSync(fullSig)) continue; const signature=fs.readFileSync(fullSig,"utf8").trim(); if(!signature) continue; const fileName=path.basename(archive); const encodedFileName=encodeURIComponent(fileName); platforms[platform]={ signature, url:"https://github.com/"+repo+"/releases/download/"+tag+"/"+encodedFileName }; } if (Object.keys(platforms).length===0) { throw new Error("No signed updater artifacts found for latest.json generation."); } const manifest={ version, notes:"OpenJar Launcher "+tag, pub_date:new Date().toISOString(), platforms }; const outPath=path.join(root,"latest.json"); fs.writeFileSync(outPath, JSON.stringify(manifest,null,2)+"\\n","utf8"); console.log("Wrote "+outPath); console.log(JSON.stringify(manifest,null,2));'
+          node -e 'const fs=require("fs"); const path=require("path"); const root="release-assets"; const repo=process.env.GITHUB_REPOSITORY; const tag=process.env.GITHUB_REF_NAME; if(!repo||!tag){ throw new Error("Missing GITHUB_REPOSITORY or GITHUB_REF_NAME"); } const version=tag.startsWith("v")?tag.slice(1):tag; const walk=(dir)=>{ const out=[]; for (const item of fs.readdirSync(dir,{withFileTypes:true})) { const full=path.join(dir,item.name); if(item.isDirectory()) out.push(...walk(full)); else if(item.isFile()) out.push(full); } return out; }; const files=walk(root).map((full)=>path.relative(root,full).replace(/\\\\/g,"/")); const updaterArchives=files.filter((f)=>/_updater\.(tar\.gz|zip)$/.test(path.basename(f))); const platforms={}; const pattern=/^openjar-launcher_v[^_]+_(darwin-aarch64|darwin-x86_64|windows-aarch64|windows-x86_64|linux-x86_64)_updater\.(tar\.gz|zip)$/; for (const archive of updaterArchives) { const fileName=path.basename(archive); const match=fileName.match(pattern); if(!match) continue; const platform=match[1]; const sigPath=archive+".sig"; const fullSig=path.join(root,sigPath); if(!fs.existsSync(fullSig)) continue; const signature=fs.readFileSync(fullSig,"utf8").trim(); if(!signature) continue; const encodedFileName=encodeURIComponent(fileName); platforms[platform]={ signature, url:"https://github.com/"+repo+"/releases/download/"+tag+"/"+encodedFileName }; } if (Object.keys(platforms).length===0) { throw new Error("No signed updater artifacts found for latest.json generation."); } const manifest={ version, notes:"OpenJar Launcher "+tag, pub_date:new Date().toISOString(), platforms }; const outPath=path.join(root,"latest.json"); fs.writeFileSync(outPath, JSON.stringify(manifest,null,2)+"\\n","utf8"); console.log("Wrote "+outPath); console.log(JSON.stringify(manifest,null,2));'
 
       - name: Create/Update GitHub Release and upload assets
         uses: softprops/action-gh-release@v2
@@ -506,14 +522,8 @@ jobs:
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |
-            release-assets/**/*.zip
-            release-assets/**/*.tar.gz
-            release-assets/**/*.AppImage
-            release-assets/**/*.deb
-            release-assets/**/*.rpm
-            release-assets/**/*.msi
-            release-assets/**/*.exe
-            release-assets/**/*.sig
+            release-assets/**/openjar-launcher_*_installer.*
+            release-assets/**/openjar-launcher_*_updater.*
             release-assets/latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
