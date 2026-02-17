@@ -46,6 +46,7 @@ jobs:
       TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
       TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
       TAURI_UPDATER_PUBKEY: ${{ secrets.TAURI_UPDATER_PUBKEY }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
 
     steps:
       - name: Checkout
@@ -115,8 +116,8 @@ jobs:
             echo "Missing TAURI_PRIVATE_KEY secret. Updater bundles require signing."
             exit 1
           fi
-          if [ -z "${TAURI_UPDATER_PUBKEY:-}" ]; then
-            echo "Missing TAURI_UPDATER_PUBKEY secret. Release binaries must embed updater pubkey."
+          if [ -z "${TAURI_UPDATER_PUBKEY:-}${TAURI_UPDATER_PUBLIC_KEY:-}" ]; then
+            echo "Missing TAURI_UPDATER_PUBKEY/TAURI_UPDATER_PUBLIC_KEY secret. Release binaries must embed updater pubkey."
             exit 1
           fi
 
@@ -125,7 +126,105 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .tauri-ci
-          node -e 'const fs=require("fs"); const path=require("path"); const confPath="src-tauri/tauri.conf.json"; const maybeDecodeBase64=(input)=>{ const s=String(input||"").trim(); if(!s) return ""; if(s.includes("untrusted comment:")||s.startsWith("RW")) return s; if(!/^[A-Za-z0-9+/=\\r\\n]+$/.test(s)) return s; try { const d=Buffer.from(s.replace(/\\s+/g,""),"base64").toString("utf8"); return d||s; } catch { return s; } }; const extractPubKey=(raw)=>{ let s=maybeDecodeBase64(raw); try { s=decodeURIComponent(s); } catch {} const lines=s.split(/\\r?\\n/).map((line)=>line.trim()).filter(Boolean); const rw=lines.find((line)=>/^RW[A-Za-z0-9+/=]+$/.test(line)); if(rw) return rw; const inline=s.match(/RW[A-Za-z0-9+/=]+/); return inline?inline[0]:""; }; const extractPrivateKey=(raw)=>{ const s=maybeDecodeBase64(raw); if(s.includes("untrusted comment: minisign secret key:")) return s.trim(); return String(raw||"").trim(); }; const pub=extractPubKey(process.env.TAURI_UPDATER_PUBKEY||""); if(!pub||!/^RW[A-Za-z0-9+/=]+$/.test(pub)){ throw new Error("Could not parse TAURI_UPDATER_PUBKEY into a valid RW... key."); } const priv=extractPrivateKey(process.env.TAURI_PRIVATE_KEY||""); if(!priv||!priv.includes("untrusted comment: minisign secret key:")){ throw new Error("Could not parse TAURI_PRIVATE_KEY into a minisign private key."); } const privateKeyPath=path.join(".tauri-ci","updater.private.key"); fs.writeFileSync(privateKeyPath, priv+"\\n","utf8"); fs.chmodSync(privateKeyPath,0o600); fs.appendFileSync(process.env.GITHUB_ENV, "TAURI_PRIVATE_KEY="+privateKeyPath+"\\n","utf8"); const config=JSON.parse(fs.readFileSync(confPath,"utf8")); config.tauri=config.tauri||{}; config.tauri.updater=config.tauri.updater||{}; config.tauri.updater.pubkey=pub; fs.writeFileSync(confPath, JSON.stringify(config,null,2)+"\\n","utf8"); console.log("Normalized updater key material and injected updater pubkey.");'
+          node <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const confPath = "src-tauri/tauri.conf.json";
+
+          const stripWrapping = (input) => {
+            let s = String(input || "").trim();
+            if (
+              (s.startsWith('"') && s.endsWith('"')) ||
+              (s.startsWith("'") && s.endsWith("'")) ||
+              (s.startsWith("`") && s.endsWith("`"))
+            ) {
+              s = s.slice(1, -1).trim();
+            }
+            return s;
+          };
+
+          const decodeUriSafely = (input) => {
+            const safeInput = String(input || "").replace(/%(?![0-9A-Fa-f]{2})/g, "%25");
+            try {
+              return decodeURIComponent(safeInput);
+            } catch {
+              return input;
+            }
+          };
+
+          const maybeDecodeBase64 = (input) => {
+            const compact = String(input || "").replace(/\s+/g, "");
+            if (!compact || compact.length < 24) return String(input || "");
+            if (!/^[A-Za-z0-9+/=]+$/.test(compact)) return String(input || "");
+            try {
+              const decoded = Buffer.from(compact, "base64").toString("utf8");
+              return decoded && decoded.trim() ? decoded : String(input || "");
+            } catch {
+              return String(input || "");
+            }
+          };
+
+          const normalizeText = (input) => {
+            let s = stripWrapping(input);
+            s = s.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
+            s = decodeUriSafely(s);
+            return stripWrapping(s).trim();
+          };
+
+          const extractPubKey = (raw) => {
+            const attempts = [];
+            const first = normalizeText(raw);
+            attempts.push(first);
+            attempts.push(normalizeText(maybeDecodeBase64(first)));
+
+            for (const attempt of attempts) {
+              const lines = attempt
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean);
+              const lineHit = lines.find((line) => /^RW[A-Za-z0-9+/=]+$/.test(line));
+              if (lineHit) return lineHit;
+              const inlineHit = attempt.match(/RW[A-Za-z0-9+/=]{20,}/);
+              if (inlineHit) return inlineHit[0];
+            }
+            return "";
+          };
+
+          const extractPrivateKey = (raw) => {
+            const attempts = [];
+            const first = normalizeText(raw);
+            attempts.push(first);
+            attempts.push(normalizeText(maybeDecodeBase64(first)));
+            return attempts.find((entry) => entry.includes("untrusted comment: minisign secret key:")) || "";
+          };
+
+          const rawPub = process.env.TAURI_UPDATER_PUBKEY || process.env.TAURI_UPDATER_PUBLIC_KEY || "";
+          const pub = extractPubKey(rawPub);
+          if (!pub || !/^RW[A-Za-z0-9+/=]+$/.test(pub)) {
+            const preview = normalizeText(rawPub).slice(0, 48);
+            throw new Error(
+              `Could not parse updater pubkey. Expected minisign public key line starting with RW. Got prefix: "${preview}".`
+            );
+          }
+
+          const rawPriv = process.env.TAURI_PRIVATE_KEY || "";
+          const priv = extractPrivateKey(rawPriv);
+          if (!priv) {
+            throw new Error("Could not parse TAURI_PRIVATE_KEY into minisign secret key content.");
+          }
+
+          const privateKeyPath = path.join(".tauri-ci", "updater.private.key");
+          fs.writeFileSync(privateKeyPath, `${priv}\n`, "utf8");
+          fs.chmodSync(privateKeyPath, 0o600);
+          fs.appendFileSync(process.env.GITHUB_ENV, `TAURI_PRIVATE_KEY=${privateKeyPath}\n`, "utf8");
+
+          const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
+          config.tauri = config.tauri || {};
+          config.tauri.updater = config.tauri.updater || {};
+          config.tauri.updater.pubkey = pub;
+          fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+          console.log("Normalized updater key material and injected updater pubkey.");
+          NODE
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -180,6 +279,9 @@ jobs:
           pick_bundle_dir() {
             if [ -d "$BUNDLE_DIR_1" ]; then echo "$BUNDLE_DIR_1"; return; fi
             if [ -d "$BUNDLE_DIR_2" ]; then echo "$BUNDLE_DIR_2"; return; fi
+            local found
+            found="$(find "src-tauri/target" -type d -path "*/release/bundle" | head -n 1 || true)"
+            if [ -n "$found" ]; then echo "$found"; return; fi
             echo ""
           }
 

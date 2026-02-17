@@ -75,7 +75,7 @@ jobs:
             wget \
             file
 
-      - name: Normalize CI bundle config (disable updater; app bundle only)
+      - name: Normalize CI bundle config (disable updater; platform bundle targets)
         shell: bash
         run: |
           set -euo pipefail
@@ -87,12 +87,18 @@ jobs:
             exit 0
           fi
           if [[ "$CONF" == *.json ]]; then
-            node -e 'const fs=require("fs"); const confPath="src-tauri/tauri.conf.json"; const config=JSON.parse(fs.readFileSync(confPath,"utf8")); config.tauri=config.tauri||{}; config.tauri.bundle=config.tauri.bundle||{}; config.tauri.bundle.targets=["app"]; config.tauri.updater=config.tauri.updater||{}; config.tauri.updater.active=false; fs.writeFileSync(confPath, JSON.stringify(config,null,2)+"\n","utf8"); console.log("Set CI bundle.targets=[\\\"app\\\"] and updater.active=false");'
+            node -e 'const fs=require("fs"); const confPath="src-tauri/tauri.conf.json"; const config=JSON.parse(fs.readFileSync(confPath,"utf8")); const os=(process.env.RUNNER_OS||"").toLowerCase(); let targets=["appimage","deb","rpm"]; if(os==="macos") targets=["app"]; if(os==="windows") targets=["msi","nsis"]; config.tauri=config.tauri||{}; config.tauri.bundle=config.tauri.bundle||{}; config.tauri.bundle.targets=targets; config.tauri.updater=config.tauri.updater||{}; config.tauri.updater.active=false; fs.writeFileSync(confPath, JSON.stringify(config,null,2)+"\n","utf8"); console.log("Set CI bundle.targets="+JSON.stringify(targets)+" and updater.active=false");'
           else
+            TARGETS='["appimage", "deb", "rpm"]'
+            if [ "${RUNNER_OS:-}" = "macOS" ]; then
+              TARGETS='["app"]'
+            elif [ "${RUNNER_OS:-}" = "Windows" ]; then
+              TARGETS='["msi", "nsis"]'
+            fi
             perl -0777 -i -pe '
-              s/"targets"\s*:\s*\[[^\]]*\]/"targets": ["app"]/g;
-              s/"targets"\s*:\s*"all"/"targets": ["app"]/g;
-              s/"targets"\s*:\s*"dmg"/"targets": ["app"]/g;
+              s/"targets"\s*:\s*\[[^\]]*\]/"targets": '"$TARGETS"'/g;
+              s/"targets"\s*:\s*"all"/"targets": '"$TARGETS"'/g;
+              s/"targets"\s*:\s*"dmg"/"targets": '"$TARGETS"'/g;
               s/"active"\s*:\s*true/"active": false/g if /"updater"\s*:/s;
             ' "$CONF"
           fi
@@ -148,10 +154,16 @@ jobs:
           elif [ -d "$BUNDLE_DIR_2" ]; then
             BUNDLE_DIR="$BUNDLE_DIR_2"
           else
-            echo "Could not find Tauri bundle directory."
-            exit 1
+            BUNDLE_DIR="$(find "src-tauri/target" -type d -path "*/release/bundle" | head -n 1 || true)"
+            if [ -z "${BUNDLE_DIR:-}" ]; then
+              echo "Could not find Tauri bundle directory."
+              echo "Tried: $BUNDLE_DIR_1 and $BUNDLE_DIR_2"
+              find "src-tauri/target" -maxdepth 5 -type d -print || true
+              exit 1
+            fi
           fi
 
+          echo "Using bundle dir: $BUNDLE_DIR"
           shopt -s nullglob
 
           if [ "${{ runner.os }}" = "macOS" ]; then
