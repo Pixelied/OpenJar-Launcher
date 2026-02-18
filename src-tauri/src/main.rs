@@ -3475,6 +3475,11 @@ fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
         || status.is_server_error()
 }
 
+fn error_mentions_forbidden(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("403") || lower.contains("forbidden")
+}
+
 fn download_bytes_with_retry(client: &Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
     let max_attempts = 3usize;
     let mut attempt = 0usize;
@@ -5183,10 +5188,19 @@ fn check_single_content_update_entry(
         if latest_download_url.is_none() {
             match resolve_curseforge_file_download_url(client, api_key, mod_id, &latest) {
                 Ok(url) => latest_download_url = Some(url),
-                Err(err) => warnings.push(format!(
-                    "Could not resolve download url for CurseForge update '{}' ({}): {}",
-                    entry.name, entry.project_id, err
-                )),
+                Err(err) => {
+                    if error_mentions_forbidden(&err) {
+                        warnings.push(format!(
+                            "Skipped CurseForge update '{}' ({}): provider blocked automated download URL (403).",
+                            entry.name, entry.project_id
+                        ));
+                        return Ok((None, warnings));
+                    }
+                    warnings.push(format!(
+                        "Could not resolve download url for CurseForge update '{}' ({}): {}",
+                        entry.name, entry.project_id, err
+                    ));
+                }
             }
         }
         return Ok((
@@ -10695,6 +10709,15 @@ fn update_all_instance_content_inner(
                 None,
             ),
             Err(fast_err) => {
+                if update.source.trim().eq_ignore_ascii_case("curseforge")
+                    && error_mentions_forbidden(&fast_err)
+                {
+                    warnings.push(format!(
+                        "Skipped CurseForge update '{}' ({}): provider blocked automated download (403).",
+                        update.name, update.project_id
+                    ));
+                    continue;
+                }
                 warnings.push(format!(
                     "Fast update fallback for '{}': {}",
                     update.name, fast_err
