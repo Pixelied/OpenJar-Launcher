@@ -106,6 +106,7 @@ import {
   readInstanceLogs,
   readLocalImageDataUrl,
   revealConfigEditorFile,
+  removeInstalledMod,
   listModpackSpecs,
   getModpackSpec,
   openInstancePath,
@@ -135,6 +136,7 @@ import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
 import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
 import ModpackMaker from "./pages/ModpackMaker";
 import InstanceModpackCard from "./components/InstanceModpackCard";
+import CommandPalette, { type CommandPaletteItem } from "./components/CommandPalette";
 import {
   analyzeLogLines,
   analyzeLogText,
@@ -163,6 +165,7 @@ type SchedulerCadence =
   | "weekly";
 type SchedulerAutoApplyMode = "never" | "opt_in_instances" | "all_instances";
 type SchedulerApplyScope = "scheduled_only" | "scheduled_and_manual";
+type SettingsMode = "basic" | "advanced";
 
 type VersionItem = {
   id: string;
@@ -263,6 +266,31 @@ type PerfActionEntry = {
   finished_at: number;
 };
 
+type HomeWidgetId =
+  | "action_required"
+  | "launchpad"
+  | "recent_activity"
+  | "performance_pulse"
+  | "friend_link"
+  | "maintenance"
+  | "running_sessions"
+  | "recent_instances";
+
+type HomeWidgetLayoutItem = {
+  id: HomeWidgetId;
+  visible: boolean;
+  pinned: boolean;
+  column: "main" | "side";
+  order: number;
+};
+
+type InstanceContentFilters = {
+  query: string;
+  state: "all" | "enabled" | "disabled";
+  source: "all" | "modrinth" | "curseforge" | "local" | "other";
+  missing: "all" | "missing" | "present";
+};
+
 type LaunchOutcomeEntry = {
   at: number;
   ok: boolean;
@@ -274,6 +302,10 @@ type LaunchFixActionDraft = LaunchFixAction & {
 };
 
 type LaunchOutcomesByInstance = Record<string, LaunchOutcomeEntry[]>;
+type LaunchPreflightIgnoreEntry = {
+  fingerprint: string;
+  expires_at: number;
+};
 
 const CRITICAL_UPDATE_TOKENS = [
   "fabric-api",
@@ -1119,6 +1151,44 @@ function humanizeToken(value: string | null | undefined) {
     .replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
+function formatSnapshotReason(reason?: string | null) {
+  const raw = String(reason ?? "").trim();
+  if (!raw) return "Snapshot";
+  const parsed = raw
+    .replace(/^before-install-discover:/i, "Before installing ")
+    .replace(/^before-install-modrinth:/i, "Before installing ")
+    .replace(/^before-install-curseforge:/i, "Before installing ")
+    .replace(/^before-update-all$/i, "Before update all")
+    .replace(/^before-/i, "Before ")
+    .replace(/[:_/-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return parsed ? parsed.charAt(0).toUpperCase() + parsed.slice(1) : "Snapshot";
+}
+
+function formatSnapshotOptionLabel(snapshot: SnapshotMeta) {
+  const reason = formatSnapshotReason(snapshot.reason);
+  const created = formatDateTime(snapshot.created_at, "Unknown time");
+  if (created === "Unknown time") {
+    return `${reason} • ${snapshot.id}`;
+  }
+  return `${reason} • ${created}`;
+}
+
+function launchCompatibilityFingerprint(report: LaunchCompatibilityReport) {
+  const parts = [...(report.items ?? [])]
+    .map((item) => {
+      const code = String(item.code ?? "").trim();
+      const severity = String(item.severity ?? "").trim().toLowerCase();
+      const blocking = item.blocking ? "1" : "0";
+      const message = String(item.message ?? "").trim().toLowerCase();
+      return `${code}|${severity}|${blocking}|${message}`;
+    })
+    .filter(Boolean)
+    .sort();
+  return `${report.status}|${report.blocking_count}|${report.warning_count}|${parts.join("||")}`;
+}
+
 function normalizeMinecraftUuid(uuid?: string | null) {
   if (!uuid) return null;
   return uuid.replace(/-/g, "").trim() || null;
@@ -1133,6 +1203,10 @@ const LAUNCH_OUTCOMES_KEY = "openjar.launchOutcomes.v1";
 const HEALTH_SCORE_DISMISSED_KEY = "openjar.healthScore.dismissed.v1";
 const AUTOPROFILE_APPLIED_KEY = "openjar.autoProfile.appliedHints.v1";
 const AUTOPROFILE_DISMISSED_KEY = "openjar.autoProfile.dismissed.v1";
+const PREFLIGHT_IGNORE_KEY = "openjar.preflightIgnore.v1";
+const SETTINGS_MODE_KEY = "mpm.settings.mode.v1";
+const HOME_LAYOUT_KEY = "mpm.home.layout.v1";
+const INSTANCE_CONTENT_FILTERS_KEY = "mpm.instance.content.filters.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
 const APP_UPDATE_BANNER_ANIMATION_MS = 320;
@@ -1147,6 +1221,91 @@ const skinHeadRenderCache = new Map<string, string>();
 const skinHeadRenderPending = new Map<string, Promise<string | null>>();
 const skin3dThumbCache = new Map<string, string>();
 const skin3dThumbPending = new Map<string, Promise<string | null>>();
+
+const DEFAULT_HOME_LAYOUT: HomeWidgetLayoutItem[] = [
+  { id: "action_required", visible: true, pinned: true, column: "main", order: 0 },
+  { id: "launchpad", visible: true, pinned: true, column: "main", order: 1 },
+  { id: "recent_activity", visible: true, pinned: false, column: "main", order: 2 },
+  { id: "performance_pulse", visible: true, pinned: false, column: "main", order: 3 },
+  { id: "friend_link", visible: true, pinned: false, column: "side", order: 0 },
+  { id: "maintenance", visible: true, pinned: true, column: "side", order: 1 },
+  { id: "running_sessions", visible: true, pinned: false, column: "side", order: 2 },
+  { id: "recent_instances", visible: true, pinned: false, column: "side", order: 3 },
+];
+
+function defaultInstanceContentFilters(): InstanceContentFilters {
+  return {
+    query: "",
+    state: "all",
+    source: "all",
+    missing: "all",
+  };
+}
+
+function isSourceFilterValue(value: string): value is InstanceContentFilters["source"] {
+  return value === "all" || value === "modrinth" || value === "curseforge" || value === "local" || value === "other";
+}
+
+function readSettingsMode(): SettingsMode {
+  if (typeof window === "undefined") return "basic";
+  try {
+    const raw = localStorage.getItem(SETTINGS_MODE_KEY);
+    return raw === "advanced" ? "advanced" : "basic";
+  } catch {
+    return "basic";
+  }
+}
+
+function readHomeLayout(): HomeWidgetLayoutItem[] {
+  if (typeof window === "undefined") return DEFAULT_HOME_LAYOUT;
+  try {
+    const raw = localStorage.getItem(HOME_LAYOUT_KEY);
+    if (!raw) return DEFAULT_HOME_LAYOUT;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return DEFAULT_HOME_LAYOUT;
+    const byId = new Map<HomeWidgetId, HomeWidgetLayoutItem>();
+    for (const row of parsed) {
+      if (!row || typeof row !== "object") continue;
+      const id = String((row as any).id ?? "") as HomeWidgetId;
+      const base = DEFAULT_HOME_LAYOUT.find((item) => item.id === id);
+      if (!base) continue;
+      byId.set(id, {
+        id,
+        visible: (row as any).visible !== false,
+        pinned: Boolean((row as any).pinned),
+        column: (row as any).column === "side" ? "side" : "main",
+        order: Number.isFinite(Number((row as any).order)) ? Number((row as any).order) : base.order,
+      });
+    }
+    return DEFAULT_HOME_LAYOUT.map((item) => byId.get(item.id) ?? item);
+  } catch {
+    return DEFAULT_HOME_LAYOUT;
+  }
+}
+
+function readInstanceContentFiltersState(): Record<string, InstanceContentFilters> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(INSTANCE_CONTENT_FILTERS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, InstanceContentFilters> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, any>)) {
+      if (!value || typeof value !== "object") continue;
+      const source = String(value.source ?? "all").trim().toLowerCase();
+      out[key] = {
+        query: String(value.query ?? ""),
+        state: value.state === "enabled" || value.state === "disabled" ? value.state : "all",
+        source: isSourceFilterValue(source) ? source : "all",
+        missing: value.missing === "missing" || value.missing === "present" ? value.missing : "all",
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 
 function skinThumbSourceCandidates(input?: string | null): string[] {
   const src = String(input ?? "").trim();
@@ -2070,7 +2229,7 @@ const MOD_CATEGORY_GROUPS: CatGroup[] = [
   },
 ];
 
-function Icon(props: { name: "home" | "compass" | "box" | "books" | "skin" | "bell" | "plus" | "gear" | "user" | "search" | "x" | "play" | "download" | "sliders" | "cpu" | "sparkles" | "layers" | "folder" | "upload" | "trash"; size?: number; className?: string }) {
+function Icon(props: { name: "home" | "compass" | "box" | "books" | "skin" | "bell" | "plus" | "gear" | "user" | "search" | "x" | "play" | "download" | "sliders" | "cpu" | "sparkles" | "layers" | "folder" | "upload" | "trash" | "check_circle" | "slash_circle"; size?: number; className?: string }) {
   const size = props.size ?? 22;
   const cls = props.className ?? "navIcon";
 
@@ -2178,6 +2337,20 @@ function Icon(props: { name: "home" | "compass" | "box" | "books" | "skin" | "be
       return (
         <svg {...common}>
           <path d="M8 5l12 7-12 7z" />
+        </svg>
+      );
+    case "check_circle":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8.3 12.2l2.3 2.3 5.1-5.1" />
+        </svg>
+      );
+    case "slash_circle":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M8 16L16 8" />
         </svg>
       );
     case "download":
@@ -2312,7 +2485,7 @@ function Modal({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  return (
+  const modalNode = (
     <div className="modalOverlay" onMouseDown={onClose}>
       <div className={`modal ${size === "wide" ? "wide" : ""} ${className ?? ""}`} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modalHeader">
@@ -2325,6 +2498,9 @@ function Modal({
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return modalNode;
+  return createPortal(modalNode, document.body);
 }
 
 function SegTabs({
@@ -2951,6 +3127,12 @@ export default function App() {
   }, [theme, accentPreset, accentStrength, motionPreset, densityPreset]);
 
   const [route, setRoute] = useState<Route>("home");
+  const [settingsMode, setSettingsMode] = useState<SettingsMode>(() => readSettingsMode());
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [pendingSettingAnchor, setPendingSettingAnchor] = useState<string | null>(null);
+  const [homeCustomizeOpen, setHomeCustomizeOpen] = useState(false);
+  const [homeLayout, setHomeLayout] = useState<HomeWidgetLayoutItem[]>(() => readHomeLayout());
+  const [draggedHomeWidgetId, setDraggedHomeWidgetId] = useState<HomeWidgetId | null>(null);
 
   // instances
   const [instances, setInstances] = useState<Instance[]>([]);
@@ -2973,6 +3155,33 @@ export default function App() {
   const [instanceTab, setInstanceTab] = useState<"content" | "worlds" | "logs" | "settings">("content");
   const [instanceContentType, setInstanceContentType] = useState<"mods" | "resourcepacks" | "datapacks" | "shaders">("mods");
   const [instanceQuery, setInstanceQuery] = useState("");
+  const [instanceFilterState, setInstanceFilterState] = useState<InstanceContentFilters["state"]>("all");
+  const [instanceFilterSource, setInstanceFilterSource] = useState<InstanceContentFilters["source"]>("all");
+  const [instanceFilterMissing, setInstanceFilterMissing] = useState<InstanceContentFilters["missing"]>("all");
+  const [instanceContentFiltersByScope, setInstanceContentFiltersByScope] = useState<
+    Record<string, InstanceContentFilters>
+  >(() => readInstanceContentFiltersState());
+  useEffect(() => {
+    try {
+      localStorage.setItem(SETTINGS_MODE_KEY, settingsMode);
+    } catch {
+      // ignore persistence failures
+    }
+  }, [settingsMode]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(HOME_LAYOUT_KEY, JSON.stringify(homeLayout));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [homeLayout]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(INSTANCE_CONTENT_FILTERS_KEY, JSON.stringify(instanceContentFiltersByScope));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [instanceContentFiltersByScope]);
   const [logFilterQuery, setLogFilterQuery] = useState("");
   const [logSeverityFilter, setLogSeverityFilter] = useState<"all" | InstanceLogSeverity>("all");
   const [logSourceFilter, setLogSourceFilter] = useState<InstanceLogSource>("live");
@@ -3020,6 +3229,147 @@ export default function App() {
     setSelectedId(id);
     setRoute("instance");
   }
+
+  function resetHomeLayout() {
+    setHomeLayout(DEFAULT_HOME_LAYOUT);
+  }
+
+  function patchHomeLayout(id: HomeWidgetId, patch: Partial<HomeWidgetLayoutItem>) {
+    setHomeLayout((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
+  }
+
+  function moveHomeWidgetToColumn(column: "main" | "side") {
+    if (!draggedHomeWidgetId) return;
+    setHomeLayout((prev) => {
+      const source = prev.find((item) => item.id === draggedHomeWidgetId);
+      if (!source) return prev;
+      const next = prev.map((item) =>
+        item.id === draggedHomeWidgetId ? { ...item, column } : item
+      );
+      const main = next
+        .filter((item) => item.column === "main")
+        .sort((a, b) => a.order - b.order)
+        .map((item, idx) => ({ ...item, order: idx }));
+      const side = next
+        .filter((item) => item.column === "side")
+        .sort((a, b) => a.order - b.order)
+        .map((item, idx) => ({ ...item, order: idx }));
+      return [...main, ...side];
+    });
+  }
+
+  function nudgeHomeWidget(id: HomeWidgetId, direction: -1 | 1) {
+    setHomeLayout((prev) => {
+      const target = prev.find((item) => item.id === id);
+      if (!target) return prev;
+      const siblings = prev
+        .filter((item) => item.column === target.column)
+        .sort((a, b) => a.order - b.order);
+      const index = siblings.findIndex((item) => item.id === id);
+      if (index < 0) return prev;
+      const nextIndex = Math.max(0, Math.min(siblings.length - 1, index + direction));
+      if (nextIndex === index) return prev;
+      const reordered = [...siblings];
+      const [moved] = reordered.splice(index, 1);
+      reordered.splice(nextIndex, 0, moved);
+      const orderById = new Map<HomeWidgetId, number>();
+      reordered.forEach((item, idx) => orderById.set(item.id, idx));
+      return prev.map((item) =>
+        item.column === target.column
+          ? { ...item, order: orderById.get(item.id) ?? item.order }
+          : item
+      );
+    });
+  }
+
+  function reorderHomeWidget(targetId: HomeWidgetId) {
+    if (!draggedHomeWidgetId || draggedHomeWidgetId === targetId) return;
+    setHomeLayout((prev) => {
+      const source = prev.find((item) => item.id === draggedHomeWidgetId);
+      const target = prev.find((item) => item.id === targetId);
+      if (!source || !target) return prev;
+      const moving = prev
+        .filter((item) => item.id !== draggedHomeWidgetId)
+        .map((item) =>
+          item.id === targetId
+            ? { ...item, order: item.order + 0.5 }
+            : item
+        );
+      moving.push({ ...source, column: target.column, order: target.order });
+      const main = moving
+        .filter((item) => item.column === "main")
+        .sort((a, b) => a.order - b.order)
+        .map((item, idx) => ({ ...item, order: idx }));
+      const side = moving
+        .filter((item) => item.column === "side")
+        .sort((a, b) => a.order - b.order)
+        .map((item, idx) => ({ ...item, order: idx }));
+      return [...main, ...side];
+    });
+  }
+
+  function openSettingAnchor(anchorId: string, options?: { advanced?: boolean; target?: "global" | "instance" }) {
+    if (options?.advanced && settingsMode !== "advanced") {
+      setSettingsMode("advanced");
+      setInstallNotice("Switched to Advanced mode to open this setting.");
+    }
+    if (options?.target === "instance") {
+      const targetInstanceId = selectedId ?? instances[0]?.id ?? null;
+      if (!targetInstanceId) {
+        setInstallNotice("Create an instance first to open instance settings.");
+        return;
+      }
+      setSelectedId(targetInstanceId);
+      setRoute("instance");
+      setInstanceSettingsOpen(true);
+      if (anchorId.includes("installation")) setInstanceSettingsSection("installation");
+      else if (anchorId.includes("java")) setInstanceSettingsSection("java");
+      else if (anchorId.includes("graphics")) setInstanceSettingsSection("graphics");
+      else if (anchorId.includes("hooks")) setInstanceSettingsSection("content");
+      else setInstanceSettingsSection("general");
+    } else {
+      setRoute("settings");
+    }
+    setPendingSettingAnchor(anchorId);
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key.toLowerCase() !== "k") return;
+      if (!event.metaKey && !event.ctrlKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      const isInputLike = Boolean(
+        target?.isContentEditable || tag === "input" || tag === "textarea" || tag === "select"
+      );
+      if (isInputLike) return;
+      event.preventDefault();
+      setCommandPaletteOpen(true);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!pendingSettingAnchor) return;
+    const targetId = `setting-anchor-${pendingSettingAnchor}`;
+    const focus = () => {
+      const element = document.getElementById(targetId);
+      if (!element) return false;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.classList.add("settingAnchorFlash");
+      window.setTimeout(() => element.classList.remove("settingAnchorFlash"), 1400);
+      setPendingSettingAnchor(null);
+      return true;
+    };
+    if (focus()) return;
+    const timer = window.setTimeout(() => {
+      focus();
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [pendingSettingAnchor, route, instanceSettingsOpen]);
 
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3091,6 +3441,12 @@ export default function App() {
       setInstanceLinksOpen(false);
     }
   }, [route]);
+  useEffect(() => {
+    if (settingsMode === "advanced") return;
+    if (instanceSettingsSection === "content") {
+      setInstanceSettingsSection("general");
+    }
+  }, [settingsMode, instanceSettingsSection]);
 
   useEffect(() => {
     const shouldDetect =
@@ -3847,8 +4203,9 @@ export default function App() {
   }
   const lastInstallNoticeRef = useRef<string | null>(null);
   const [importingInstanceId, setImportingInstanceId] = useState<string | null>(null);
-  const [launchBusyInstanceId, setLaunchBusyInstanceId] = useState<string | null>(null);
+  const [launchBusyInstanceIds, setLaunchBusyInstanceIds] = useState<string[]>([]);
   const [launchCancelBusyInstanceId, setLaunchCancelBusyInstanceId] = useState<string | null>(null);
+  const userRequestedStopLaunchIdsRef = useRef<Set<string>>(new Set());
   const [launchStageByInstance, setLaunchStageByInstance] = useState<
     Record<string, { status: string; label: string; message: string; updated_at: number }>
   >({});
@@ -3959,8 +4316,30 @@ export default function App() {
   const [friendConflictResolveBusy, setFriendConflictResolveBusy] = useState(false);
   const [preflightReportModal, setPreflightReportModal] = useState<{
     instanceId: string;
+    method: LaunchMethod;
     report: LaunchCompatibilityReport;
   } | null>(null);
+  const [preflightIgnoreByInstance, setPreflightIgnoreByInstance] = useState<
+    Record<string, LaunchPreflightIgnoreEntry>
+  >(() => {
+    try {
+      const raw = localStorage.getItem(PREFLIGHT_IGNORE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, any>;
+      if (!parsed || typeof parsed !== "object") return {};
+      const now = Date.now();
+      const out: Record<string, LaunchPreflightIgnoreEntry> = {};
+      for (const [instanceId, row] of Object.entries(parsed)) {
+        const fingerprint = String((row as any)?.fingerprint ?? "").trim();
+        const expiresAt = Number((row as any)?.expires_at ?? 0);
+        if (!instanceId || !fingerprint || !Number.isFinite(expiresAt) || expiresAt <= now) continue;
+        out[instanceId] = { fingerprint, expires_at: expiresAt };
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  });
   const [launchFixPlanByInstance, setLaunchFixPlanByInstance] = useState<Record<string, LaunchFixPlan>>({});
   const [launchFixPlanDraftByInstance, setLaunchFixPlanDraftByInstance] = useState<
     Record<string, LaunchFixActionDraft[]>
@@ -4017,7 +4396,6 @@ export default function App() {
   const [curseforgeApiStatus, setCurseforgeApiStatus] = useState<CurseforgeApiStatus | null>(null);
   const [curseforgeApiBusy, setCurseforgeApiBusy] = useState(false);
   const [oauthClientIdDraft, setOauthClientIdDraft] = useState("");
-  const [showAdvancedClientId, setShowAdvancedClientId] = useState(false);
   const [accountDiagnostics, setAccountDiagnostics] = useState<AccountDiagnostics | null>(() =>
     readCachedAccountDiagnostics()
   );
@@ -4183,6 +4561,30 @@ export default function App() {
   const [rollbackSnapshotId, setRollbackSnapshotId] = useState<string | null>(null);
   const [worldRollbackBusyById, setWorldRollbackBusyById] = useState<Record<string, boolean>>({});
   const [presetIoBusy, setPresetIoBusy] = useState(false);
+  const instanceFilterScopeKey = useMemo(
+    () => (selectedId ? `${selectedId}::${instanceContentType}` : ""),
+    [selectedId, instanceContentType]
+  );
+  useEffect(() => {
+    if (!instanceFilterScopeKey) return;
+    const saved = instanceContentFiltersByScope[instanceFilterScopeKey] ?? defaultInstanceContentFilters();
+    setInstanceQuery(saved.query ?? "");
+    setInstanceFilterState(saved.state ?? "all");
+    setInstanceFilterSource(saved.source ?? "all");
+    setInstanceFilterMissing(saved.missing ?? "all");
+  }, [instanceFilterScopeKey, instanceContentFiltersByScope]);
+  useEffect(() => {
+    if (!instanceFilterScopeKey) return;
+    setInstanceContentFiltersByScope((prev) => ({
+      ...prev,
+      [instanceFilterScopeKey]: {
+        query: instanceQuery,
+        state: instanceFilterState,
+        source: instanceFilterSource,
+        missing: instanceFilterMissing,
+      },
+    }));
+  }, [instanceFilterScopeKey, instanceQuery, instanceFilterState, instanceFilterSource, instanceFilterMissing]);
   const normalizedInstanceQuery = useMemo(
     () => instanceQuery.trim().toLowerCase(),
     [instanceQuery]
@@ -4265,6 +4667,18 @@ export default function App() {
       }
 
       if (normalizeInstanceContentType(entry.content_type) !== instanceContentType) continue;
+      if (instanceFilterState === "enabled" && !entry.enabled) continue;
+      if (instanceFilterState === "disabled" && entry.enabled) continue;
+      if (instanceFilterMissing === "missing" && entry.file_exists) continue;
+      if (instanceFilterMissing === "present" && !entry.file_exists) continue;
+      if (instanceFilterSource !== "all") {
+        const source = String(entry.source ?? "").trim().toLowerCase();
+        if (instanceFilterSource === "other") {
+          if (source === "modrinth" || source === "curseforge" || source === "local") continue;
+        } else if (source !== instanceFilterSource) {
+          continue;
+        }
+      }
       if (
         normalizedInstanceQuery &&
         !entry.name.toLowerCase().includes(normalizedInstanceQuery) &&
@@ -4293,7 +4707,15 @@ export default function App() {
       selectedVisibleModCount,
       selectedInstalledModCount,
     };
-  }, [installedMods, instanceContentType, normalizedInstanceQuery, selectedModVersionIdSet]);
+  }, [
+    installedMods,
+    instanceContentType,
+    normalizedInstanceQuery,
+    selectedModVersionIdSet,
+    instanceFilterState,
+    instanceFilterSource,
+    instanceFilterMissing,
+  ]);
   const instanceHealthById = useMemo<Record<string, InstanceHealthScore>>(() => {
     const out: Record<string, InstanceHealthScore> = {};
     for (const inst of instances) {
@@ -4392,6 +4814,22 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(LAUNCH_OUTCOMES_KEY, JSON.stringify(launchOutcomesByInstance));
   }, [launchOutcomesByInstance]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const normalized: Record<string, LaunchPreflightIgnoreEntry> = {};
+    for (const [instanceId, row] of Object.entries(preflightIgnoreByInstance)) {
+      if (!instanceId) continue;
+      const fingerprint = String(row?.fingerprint ?? "").trim();
+      const expiresAt = Number(row?.expires_at ?? 0);
+      if (!fingerprint || !Number.isFinite(expiresAt) || expiresAt <= now) continue;
+      normalized[instanceId] = { fingerprint, expires_at: expiresAt };
+    }
+    localStorage.setItem(PREFLIGHT_IGNORE_KEY, JSON.stringify(normalized));
+    if (Object.keys(normalized).length !== Object.keys(preflightIgnoreByInstance).length) {
+      setPreflightIgnoreByInstance(normalized);
+    }
+  }, [preflightIgnoreByInstance]);
 
   useEffect(() => {
     localStorage.setItem(HEALTH_SCORE_DISMISSED_KEY, JSON.stringify(healthScoreDismissedByInstance));
@@ -5814,7 +6252,10 @@ export default function App() {
             result.applied += 1;
             result.messages.push(`${action.title}: opened`);
           } else if (action.kind === "rerun_preflight") {
-            const report = await preflightLaunchCompatibility({ instanceId: inst.id });
+            const report = await preflightLaunchCompatibility({
+              instanceId: inst.id,
+              method: launchMethodPick,
+            });
             if (report.status === "blocked") {
               result.failed += 1;
               result.messages.push("Preflight still has blockers.");
@@ -6285,6 +6726,28 @@ export default function App() {
     }
   }
 
+  async function onDeleteInstalledMod(inst: Instance, mod: InstalledMod) {
+    if ((mod.content_type ?? "mods") !== "mods") return;
+    const confirmed = window.confirm(
+      `Delete "${mod.name}" from this instance?\n\nThis removes the file from disk for this instance.`
+    );
+    if (!confirmed) return;
+    setToggleBusyVersion(mod.version_id);
+    setModsErr(null);
+    try {
+      await removeInstalledMod({
+        instanceId: inst.id,
+        versionId: mod.version_id,
+      });
+      await refreshInstalledMods(inst.id);
+      setInstallNotice(`Deleted ${mod.name} from ${inst.name}.`);
+    } catch (e: any) {
+      setModsErr(e?.toString?.() ?? String(e));
+    } finally {
+      setToggleBusyVersion(null);
+    }
+  }
+
   function onToggleModSelection(versionId: string, checked: boolean) {
     setSelectedModVersionIds((prev) => {
       if (checked) {
@@ -6445,12 +6908,9 @@ export default function App() {
   }
 
   async function onPlayInstance(inst: Instance, method?: LaunchMethod) {
-    if (launchBusyInstanceId === inst.id) {
+    const requestedMethod = method ?? launchMethodPick;
+    if (launchBusyInstanceIds.includes(inst.id)) {
       await onCancelPendingLaunch(inst);
-      return;
-    }
-    if (launchBusyInstanceId && launchBusyInstanceId !== inst.id) {
-      setInstallNotice("Another instance is currently launching. Cancel it first or wait.");
       return;
     }
     setError(null);
@@ -6462,7 +6922,7 @@ export default function App() {
       delete next[inst.id];
       return next;
     });
-    setLaunchBusyInstanceId(inst.id);
+    setLaunchBusyInstanceIds((prev) => (prev.includes(inst.id) ? prev : [...prev, inst.id]));
     setLaunchStageByInstance((prev) => ({
       ...prev,
       [inst.id]: {
@@ -6473,12 +6933,42 @@ export default function App() {
       },
     }));
     try {
-      const preflight = await preflightLaunchCompatibility({ instanceId: inst.id });
+      const preflight = await preflightLaunchCompatibility({
+        instanceId: inst.id,
+        method: requestedMethod,
+      });
+      const preflightFingerprint = launchCompatibilityFingerprint(preflight);
+      const now = Date.now();
+      const ignoreEntry = preflightIgnoreByInstance[inst.id];
+      const canIgnoreBlockedPreflight = Boolean(
+        ignoreEntry &&
+          ignoreEntry.expires_at > now &&
+          ignoreEntry.fingerprint === preflightFingerprint
+      );
+      if (ignoreEntry && ignoreEntry.expires_at <= now) {
+        setPreflightIgnoreByInstance((prev) => {
+          if (!prev[inst.id]) return prev;
+          const next = { ...prev };
+          delete next[inst.id];
+          return next;
+        });
+      }
       if (preflight.status === "blocked") {
+        if (canIgnoreBlockedPreflight) {
+          setInstallNotice(
+            `Compatibility blockers were ignored for this instance until ${formatDateTime(
+              new Date(ignoreEntry!.expires_at).toISOString()
+            )}.`
+          );
+        } else {
         const reason =
           preflight.items.find((item) => item.blocking)?.message ??
           "Launch is blocked by compatibility checks.";
-        setPreflightReportModal({ instanceId: inst.id, report: preflight });
+        setPreflightReportModal({
+          instanceId: inst.id,
+          method: requestedMethod,
+          report: preflight,
+        });
         setError(reason);
         setLauncherErr(reason);
         setLaunchStageByInstance((prev) => ({
@@ -6491,6 +6981,7 @@ export default function App() {
           },
         }));
         return;
+        }
       }
       if (preflight.warning_count > 0 || preflight.status === "warning") {
         const warn = preflight.items.find((item) => !item.blocking)?.message;
@@ -6542,7 +7033,7 @@ export default function App() {
 
       const res: LaunchResult = await launchInstance({
         instanceId: inst.id,
-        method: method ?? launchMethodPick,
+        method: requestedMethod,
       });
       if (res.method === "prism" && res.prism_instance_id) {
         setInstallNotice(`${res.message} (Prism instance: ${res.prism_instance_id})`);
@@ -6574,7 +7065,7 @@ export default function App() {
       } else {
         setError(msg);
         setLauncherErr(msg);
-        const launchMethod = String(method ?? launchMethodPick ?? "native").toLowerCase();
+        const launchMethod = String(requestedMethod ?? "native").toLowerCase();
         setLaunchFailureByInstance((prev) => ({
           ...prev,
           [inst.id]: {
@@ -6596,12 +7087,22 @@ export default function App() {
         }));
       }
     } finally {
-      setLaunchBusyInstanceId(null);
+      setLaunchBusyInstanceIds((prev) => prev.filter((id) => id !== inst.id));
     }
   }
 
   async function onStopRunning(launchId: string) {
     setLauncherErr(null);
+    userRequestedStopLaunchIdsRef.current.add(launchId);
+    const runningTarget = runningInstances.find((item) => item.launch_id === launchId);
+    if (runningTarget?.instance_id) {
+      setLaunchFailureByInstance((prev) => {
+        if (!prev[runningTarget.instance_id]) return prev;
+        const next = { ...prev };
+        delete next[runningTarget.instance_id];
+        return next;
+      });
+    }
     try {
       await stopRunningInstance({ launchId });
       const running = await listRunningInstances();
@@ -6609,6 +7110,7 @@ export default function App() {
       setRunningInstances((prev) => (sameRunningInstances(prev, runningSafe) ? prev : runningSafe));
       setInstallNotice("Stop signal sent.");
     } catch (e: any) {
+      userRequestedStopLaunchIdsRef.current.delete(launchId);
       setLauncherErr(e?.toString?.() ?? String(e));
     }
   }
@@ -7239,7 +7741,6 @@ export default function App() {
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
       setInstalledMods([]);
-      setSelectedModVersionIds([]);
       setModsErr(null);
       setUpdateCheck(null);
       setUpdateErr(null);
@@ -7338,12 +7839,6 @@ export default function App() {
   }, [installedMods]);
 
   useEffect(() => {
-    if (instanceContentType !== "mods") {
-      setSelectedModVersionIds([]);
-    }
-  }, [instanceContentType]);
-
-  useEffect(() => {
     const off = listen<InstallProgressEvent>("mod_install_progress", (event) => {
       const payload = event.payload;
       if (!payload) return;
@@ -7419,6 +7914,18 @@ export default function App() {
       const method = String(payload.method ?? "").toLowerCase();
       const message = String(payload.message ?? "").trim();
       const instanceId = String(payload.instance_id ?? "").trim();
+      const launchId = String(payload.launch_id ?? "").trim();
+      const lowerMessage = message.toLowerCase();
+      const userStopRequested = launchId
+        ? userRequestedStopLaunchIdsRef.current.has(launchId)
+        : false;
+      const isExpectedStopEvent =
+        lowerMessage.includes("cancelled by user") ||
+        lowerMessage.includes("stop requested") ||
+        lowerMessage.includes("instance stop requested") ||
+        lowerMessage.includes("stopped by user") ||
+        userStopRequested;
+      const isCleanExitEvent = /some\(0\)|status\s+0/i.test(message);
 
       if (instanceId) {
         if (status === "starting") {
@@ -7431,7 +7938,7 @@ export default function App() {
           }));
         }
         if (status === "running" || status === "stopped" || status === "exited") {
-          setLaunchBusyInstanceId((prev) => (prev === instanceId ? null : prev));
+          setLaunchBusyInstanceIds((prev) => prev.filter((id) => id !== instanceId));
           setLaunchCancelBusyInstanceId((prev) => (prev === instanceId ? null : prev));
         }
         if (status === "starting" || status === "running") {
@@ -7491,12 +7998,7 @@ export default function App() {
             return next;
           });
 
-          const lowerMessage = message.toLowerCase();
-          const isCleanExit = /some\(0\)|status\s+0/i.test(message);
-          const isExpectedStop =
-            lowerMessage.includes("cancelled by user") ||
-            lowerMessage.includes("stop requested");
-          if (status === "exited" && !isCleanExit && message) {
+          if (status === "exited" && !isCleanExitEvent && message && !isExpectedStopEvent) {
             setLaunchFailureByInstance((prev) => ({
               ...prev,
               [instanceId]: {
@@ -7506,7 +8008,7 @@ export default function App() {
                 updated_at: Date.now(),
               },
             }));
-          } else if (status === "stopped" && message && !isExpectedStop) {
+          } else if (status === "stopped" && message && !isExpectedStopEvent) {
             setLaunchFailureByInstance((prev) => ({
               ...prev,
               [instanceId]: {
@@ -7516,7 +8018,7 @@ export default function App() {
                 updated_at: Date.now(),
               },
             }));
-          } else if (isExpectedStop) {
+          } else if (isExpectedStopEvent) {
             setLaunchFailureByInstance((prev) => {
               if (!prev[instanceId]) return prev;
               const next = { ...prev };
@@ -7530,14 +8032,22 @@ export default function App() {
       if (status === "starting" || status === "running") {
         if (message) setInstallNotice(message);
       } else if (status === "exited") {
-        const isCleanExit = /some\(0\)|status\s+0/i.test(message);
-        if (isCleanExit) {
+        if (isExpectedStopEvent) {
+          setInstallNotice("Instance stopped.");
+        } else if (isCleanExitEvent) {
           setInstallNotice(message || "Game exited normally.");
         } else if (message) {
           setLauncherErr(message);
         }
       } else if (status === "stopped") {
-        if (message) setInstallNotice(message);
+        if (isExpectedStopEvent) {
+          setInstallNotice("Instance stopped.");
+        } else if (message) {
+          setInstallNotice(message);
+        }
+      }
+      if (launchId && status === "exited") {
+        userRequestedStopLaunchIdsRef.current.delete(launchId);
       }
 
       listRunningInstances()
@@ -8604,6 +9114,163 @@ export default function App() {
     selectedAccountCape?.url,
   ]);
 
+  const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const paletteInstanceId = selectedId ?? instances[0]?.id ?? null;
+    const paletteInstance = paletteInstanceId
+      ? instances.find((inst) => inst.id === paletteInstanceId) ?? null
+      : null;
+    const items: CommandPaletteItem[] = [
+      { id: "route:home", label: "Go to Home", group: "Navigation", keywords: ["route"], run: () => setRoute("home") },
+      { id: "route:discover", label: "Go to Discover", group: "Navigation", keywords: ["mods", "search"], run: () => setRoute("discover") },
+      { id: "route:modpacks", label: "Go to Creator Studio", group: "Navigation", keywords: ["modpack", "creator"], run: () => setRoute("modpacks") },
+      { id: "route:library", label: "Go to Library", group: "Navigation", keywords: ["instances"], run: () => setRoute("library") },
+      { id: "route:updates", label: "Go to Updates", group: "Navigation", keywords: ["scheduled"], run: () => setRoute("updates") },
+      { id: "route:skins", label: "Go to Skins", group: "Navigation", run: () => setRoute("skins") },
+      { id: "route:account", label: "Go to Account", group: "Navigation", run: () => setRoute("account") },
+      { id: "route:settings", label: "Go to Settings", group: "Navigation", run: () => setRoute("settings") },
+      {
+        id: "action:create-instance",
+        label: "Create instance",
+        group: "Actions",
+        keywords: ["new", "instance"],
+        run: () => setShowCreate(true),
+      },
+      {
+        id: "action:check-content-updates",
+        label: "Run content update checks now",
+        group: "Actions",
+        keywords: ["updates", "scheduled"],
+        run: () => void runScheduledUpdateChecks("manual"),
+      },
+      {
+        id: "action:open-instance-settings",
+        label: "Open selected instance settings",
+        group: "Actions",
+        keywords: ["instance", "settings", "modal"],
+        run: () => {
+          if (!paletteInstanceId) {
+            setInstallNotice("Create an instance first.");
+            return;
+          }
+          setSelectedId(paletteInstanceId);
+          setRoute("instance");
+          setInstanceSettingsOpen(true);
+        },
+      },
+      {
+        id: "action:open-instance",
+        label: "Open selected instance page",
+        group: "Actions",
+        keywords: ["instance", "content"],
+        run: () => {
+          if (!paletteInstanceId) {
+            setInstallNotice("Create an instance first.");
+            return;
+          }
+          setSelectedId(paletteInstanceId);
+          setRoute("instance");
+          setInstanceTab("content");
+        },
+      },
+      {
+        id: "action:open-instance-folder",
+        label: "Open selected instance folder",
+        group: "Actions",
+        keywords: ["files", "folder", "path"],
+        run: () => {
+          if (!paletteInstance) {
+            setInstallNotice("Create an instance first.");
+            return;
+          }
+          void onOpenInstancePath(paletteInstance, "instance");
+        },
+      },
+      {
+        id: "action:open-mods-folder",
+        label: "Open selected mods folder",
+        group: "Actions",
+        keywords: ["mods", "folder", "jar"],
+        run: () => {
+          if (!paletteInstance) {
+            setInstallNotice("Create an instance first.");
+            return;
+          }
+          void onOpenInstancePath(paletteInstance, "mods");
+        },
+      },
+      {
+        id: "action:open-launch-logs",
+        label: "Open selected launch logs",
+        group: "Actions",
+        keywords: ["logs", "crash", "debug"],
+        run: () => {
+          if (!paletteInstanceId) {
+            setInstallNotice("Create an instance first.");
+            return;
+          }
+          setSelectedId(paletteInstanceId);
+          setRoute("instance");
+          setInstanceTab("logs");
+          setLogSourceFilter("latest_launch");
+        },
+      },
+      {
+        id: "action:customize-home",
+        label: homeCustomizeOpen ? "Finish home customization" : "Customize home widgets",
+        group: "Actions",
+        keywords: ["home", "widgets", "layout"],
+        run: () => {
+          setRoute("home");
+          setHomeCustomizeOpen((prev) => !prev);
+        },
+      },
+      {
+        id: "action:check-app-updates",
+        label: "Check app updates now",
+        group: "Actions",
+        keywords: ["launcher", "update"],
+        run: () => void onCheckAppUpdate({ silent: false }),
+      },
+    ];
+
+    const settingShortcuts: Array<{
+      id: string;
+      label: string;
+      detail?: string;
+      advanced?: boolean;
+      target: "global" | "instance";
+      keywords?: string[];
+    }> = [
+      { id: "global:appearance", label: "Settings: Appearance", target: "global", keywords: ["theme", "accent"] },
+      { id: "global:launch-method", label: "Settings: Default launch method", target: "global", keywords: ["prism", "native"] },
+      { id: "global:java-path", label: "Settings: Java executable", target: "global", advanced: true, keywords: ["java"] },
+      { id: "global:oauth-client", label: "Settings: OAuth client override", target: "global", advanced: true, keywords: ["oauth", "client id"] },
+      { id: "global:account", label: "Settings: Microsoft account", target: "global", keywords: ["login"] },
+      { id: "global:app-updates", label: "Settings: App updates", target: "global", keywords: ["update"] },
+      { id: "global:content-visuals", label: "Settings: Content and visuals", target: "global", keywords: ["visuals", "content"] },
+      { id: "instance:general", label: "Instance settings: General", target: "instance", keywords: ["name", "notes"] },
+      { id: "instance:installation", label: "Instance settings: Installation", target: "instance", keywords: ["loader", "minecraft"] },
+      { id: "instance:java-runtime", label: "Instance settings: Java runtime", target: "instance", advanced: true, keywords: ["java"] },
+      { id: "instance:java-memory", label: "Instance settings: Memory", target: "instance", keywords: ["ram"] },
+      { id: "instance:jvm-args", label: "Instance settings: JVM arguments", target: "instance", advanced: true, keywords: ["jvm"] },
+      { id: "instance:graphics", label: "Instance settings: Window and graphics", target: "instance", keywords: ["window", "graphics"] },
+      { id: "instance:hooks", label: "Instance settings: Launch hooks", target: "instance", advanced: true, keywords: ["hooks"] },
+    ];
+
+    for (const shortcut of settingShortcuts) {
+      items.push({
+        id: `setting:${shortcut.id}`,
+        label: shortcut.label,
+        group: "Settings",
+        detail: shortcut.detail,
+        keywords: shortcut.keywords,
+        run: () => openSettingAnchor(shortcut.id, { advanced: shortcut.advanced, target: shortcut.target }),
+      });
+    }
+
+    return items;
+  }, [instances, selectedId, settingsMode, homeCustomizeOpen]);
+
   function renderContent() {
     if (route === "home") {
       type HomeAttentionItem = {
@@ -8762,12 +9429,447 @@ export default function App() {
         }
         void onCheckAppUpdate({ silent: false });
       };
+      const homeWidgetLabels: Record<HomeWidgetId, string> = {
+        action_required: "Action required",
+        launchpad: "Launchpad",
+        recent_activity: "Recent activity",
+        performance_pulse: "Performance pulse",
+        friend_link: "Friend Link readiness",
+        maintenance: "Maintenance",
+        running_sessions: "Running sessions",
+        recent_instances: "Recent instances",
+      };
+      const orderedHomeLayout = [...homeLayout].sort(
+        (a, b) => Number(b.pinned) - Number(a.pinned) || a.order - b.order
+      );
+      const visibleHomeMainWidgets = orderedHomeLayout.filter(
+        (item) => item.visible && item.column === "main"
+      );
+      const visibleHomeSideWidgets = orderedHomeLayout.filter(
+        (item) => item.visible && item.column === "side"
+      );
+      const hiddenHomeWidgetCount = homeLayout.filter((item) => !item.visible).length;
+
+      const homeWidgetCards: Record<HomeWidgetId, ReactNode> = {
+        action_required: (
+          <div className="card homePanel" id="setting-anchor-global:action-required">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Action required</div>
+              <span className="chip">{topAttention.length} item{topAttention.length === 1 ? "" : "s"}</span>
+            </div>
+            {topAttention.length === 0 ? (
+              <div className="homeAttentionClear">
+                <div className="homeRowTitle">All clear</div>
+                <div className="homeRowMeta">No urgent launch, update, or account blockers right now.</div>
+              </div>
+            ) : (
+              <div className="homeAlertList">
+                {topAttention.map((item) => (
+                  <div key={item.id} className={`homeAlertRow ${item.tone}`}>
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">{item.title}</div>
+                      <div className="homeRowMeta">{item.meta}</div>
+                    </div>
+                    <div className="homeRowActions">
+                      <button
+                        className={`btn ${item.tone === "danger" ? "danger" : ""}`}
+                        onClick={item.on_action}
+                        disabled={item.action_disabled}
+                      >
+                        {item.action_label}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+        launchpad: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Launchpad</div>
+            </div>
+            <div className="homeLaunchpad">
+              <button className="homeLaunchAction" onClick={() => setShowCreate(true)}>
+                <Icon name="plus" size={18} />
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Create instance</div>
+                  <div className="homeRowMeta">Start a new profile and version.</div>
+                </div>
+              </button>
+              <button className="homeLaunchAction" onClick={() => setRoute("discover")}>
+                <Icon name="compass" size={18} />
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Discover content</div>
+                  <div className="homeRowMeta">Find mods and install fast.</div>
+                </div>
+              </button>
+              <button className="homeLaunchAction" onClick={() => setRoute("library")}>
+                <Icon name="books" size={18} />
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Open library</div>
+                  <div className="homeRowMeta">Manage all instances in detail.</div>
+                </div>
+              </button>
+              <button className="homeLaunchAction" onClick={() => setRoute("modpacks")}>
+                <Icon name="box" size={18} />
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Creator Studio</div>
+                  <div className="homeRowMeta">Build and apply layered modpacks.</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        ),
+        recent_activity: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Recent activity</div>
+              <span className="homeMeta">Latest {recentActivity.length}</span>
+            </div>
+            {recentActivity.length === 0 ? (
+              <div className="homeEmpty">
+                <div>No activity yet. Launch an instance or install content to populate this feed.</div>
+              </div>
+            ) : (
+              <div className="homeList">
+                {recentActivity.map((item) => (
+                  <div key={item.id} className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">{item.message}</div>
+                      <div className="homeRowMeta">
+                        {item.instance_name} • {new Date(item.at).toLocaleTimeString()}
+                      </div>
+                    </div>
+                    <div className="homeRowActions">
+                      <span className={`chip ${item.tone === "error" ? "danger" : "subtle"}`}>
+                        {item.tone}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+        performance_pulse: (
+          <details className="card homePanel homeFoldPanel">
+            <summary className="homeFoldSummary">
+              <div className="homePanelTitle">Performance pulse</div>
+              <span className="homeMeta">
+                Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"} · P95{" "}
+                {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}
+              </span>
+            </summary>
+            <div className="homePanelActions" style={{ marginTop: 10 }}>
+              <button className="btn" onClick={() => setRoute("updates")}>View full timings</button>
+            </div>
+            <div className="homeMeta">{perfTrendLabel}</div>
+            {topSlowPerfActions.length === 0 ? (
+              <div className="homeEmpty">
+                <div>No timing samples yet. Run installs or update checks to collect speed data.</div>
+              </div>
+            ) : (
+              <div className="homePerfList">
+                {topSlowPerfActions.map((entry) => (
+                  <div key={entry.id} className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">{formatPerfActionLabel(entry.name)}</div>
+                      <div className="homeRowMeta">
+                        {new Date(entry.finished_at).toLocaleTimeString()}
+                        {entry.detail ? ` • ${entry.detail}` : ""}
+                      </div>
+                    </div>
+                    <div className="homeRowActions">
+                      <span className="chip">{formatDurationMs(entry.duration_ms)}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </details>
+        ),
+        friend_link: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Friend Link readiness</div>
+              <span
+                className={`chip ${
+                  focusFriendStatus?.linked && (focusFriendStatus.pending_conflicts_count ?? 0) > 0
+                    ? "danger"
+                    : "subtle"
+                }`}
+              >
+                {focusFriendStatus?.linked
+                  ? (focusFriendStatus.status || "linked").replace(/_/g, " ")
+                  : "not linked"}
+              </span>
+            </div>
+            {focusInstance && focusFriendStatus?.linked ? (
+              <>
+                <div className="homeMeta">
+                  {focusFriendStatus.peers.filter((peer) => peer.online).length}/{focusFriendStatus.peers.length} peers online
+                  {(focusFriendStatus.pending_conflicts_count ?? 0) > 0
+                    ? ` • ${focusFriendStatus.pending_conflicts_count} conflict${focusFriendStatus.pending_conflicts_count === 1 ? "" : "s"} pending`
+                    : " • No pending conflicts"}
+                </div>
+                <div className="homePanelActions">
+                  <button
+                    className="btn"
+                    onClick={() => void onManualFriendLinkSync(focusInstance.id)}
+                    disabled={friendLinkSyncBusyInstanceId === focusInstance.id}
+                  >
+                    {friendLinkSyncBusyInstanceId === focusInstance.id ? "Syncing…" : "Sync now"}
+                  </button>
+                  {(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? (
+                    <button className="btn danger" onClick={() => openInstance(focusInstance.id)}>
+                      Resolve conflicts
+                    </button>
+                  ) : null}
+                  <button className="btn" onClick={() => openInstance(focusInstance.id)}>
+                    Open links
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="homeEmpty">
+                <div>Friend Link is not active for the focused instance yet.</div>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    if (focusInstance) openInstance(focusInstance.id);
+                  }}
+                  disabled={!focusInstance}
+                >
+                  {focusInstance ? "Open instance links" : "Select an instance first"}
+                </button>
+              </div>
+            )}
+          </div>
+        ),
+        maintenance: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Maintenance</div>
+            </div>
+            <div className="homeList">
+              <div className="homeListRow">
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Content update schedule</div>
+                  <div className="homeRowMeta">
+                    {updateCadenceLabel(updateCheckCadence)} • Last run{" "}
+                    {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
+                  </div>
+                </div>
+                <span className="chip subtle">{scheduledInstancesWithUpdatesCount} with updates</span>
+              </div>
+              <div className="homeListRow">
+                <div className="homeRowMain">
+                  <div className="homeRowTitle">Next scheduled check</div>
+                  <div className="homeRowMeta">
+                    {updateCheckCadence === "off"
+                      ? "Disabled"
+                      : nextScheduledUpdateRunAt
+                        ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check")
+                        : "Pending first check"}
+                  </div>
+                </div>
+                <span className={`chip ${scheduledUpdateBusy ? "" : "subtle"}`}>
+                  {scheduledUpdateBusy
+                    ? `${scheduledUpdateRunCompleted}/${scheduledUpdateRunTotal}`
+                    : "idle"}
+                </span>
+              </div>
+            </div>
+            <div className="homeMeta">
+              {scheduledUpdateBusy ? (
+                <>
+                  Progress {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} • Elapsed{" "}
+                  {formatEtaSeconds(scheduledUpdateRunElapsedSeconds)} • ETA{" "}
+                  {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
+                </>
+              ) : (
+                <>Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})</>
+              )}
+            </div>
+            {hasUpdaterAttention ? (
+              <div className="homeMeta">Launcher update actions are pinned in Action required.</div>
+            ) : null}
+            <div className="homePanelActions homeMaintenanceActions">
+              <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
+              <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
+                {scheduledUpdateBusy ? "Checking…" : "Run content check"}
+              </button>
+              {!hasUpdaterAttention ? (
+                <button
+                  className="btn subtle"
+                  onClick={onLauncherMaintenanceAction}
+                  disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                >
+                  {launcherActionLabel}
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ),
+        running_sessions: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Running sessions</div>
+              <span className="chip subtle">{runningInstances.length}</span>
+            </div>
+            {runningInstances.length === 0 ? (
+              <div className="homeEmpty">
+                <div>No active sessions right now.</div>
+              </div>
+            ) : (
+              <div className="homeList">
+                {runningInstances.slice(0, 5).map((run) => (
+                  <div key={run.launch_id} className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">{run.instance_name}</div>
+                      <div className="homeRowMeta">
+                        {humanizeToken(run.method)} • Started {formatDateTime(run.started_at, "just now")}
+                      </div>
+                    </div>
+                    <div className="homeRowActions">
+                      <button className="btn" onClick={() => openInstance(run.instance_id)}>Open</button>
+                      <button className="btn danger" onClick={() => void onStopRunning(run.launch_id)}>Stop</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+        recent_instances: (
+          <div className="card homePanel">
+            <div className="homePanelHead">
+              <div className="homePanelTitle">Recent instances</div>
+            </div>
+            {recentInstances.length === 0 ? (
+              <div className="homeEmpty">
+                <div>No instances yet.</div>
+                <button className="btn primary" onClick={() => setShowCreate(true)}>Create instance</button>
+              </div>
+            ) : (
+              <div className="homeList">
+                {recentInstances.map((inst) => (
+                  <div key={inst.id} className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">{inst.name}</div>
+                      <div className="homeRowMeta">
+                        {loaderLabelFor(inst)} • Minecraft {inst.mc_version}
+                        {instanceHealthById[inst.id]
+                          ? ` • Health ${instanceHealthById[inst.id].grade} ${instanceHealthById[inst.id].score}`
+                          : ""}
+                      </div>
+                    </div>
+                    <div className="homeRowActions homeRecentActions">
+                      {runningIds.has(inst.id) ? <span className="chip">Running</span> : null}
+                      <button className="btn" onClick={() => openInstance(inst.id)}>Open</button>
+                      <button
+                        className={`btn ${launchBusyInstanceIds.includes(inst.id) ? "danger" : "primary"}`}
+                        onClick={() => onPlayInstance(inst)}
+                        disabled={launchCancelBusyInstanceId === inst.id}
+                      >
+                        {launchBusyInstanceIds.includes(inst.id) ? "Cancel" : "Play"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ),
+      };
+
+      const renderHomeWidget = (layoutItem: HomeWidgetLayoutItem) => {
+        const content = homeWidgetCards[layoutItem.id];
+        if (!content) return null;
+        const canNudgeUp = orderedHomeLayout
+          .filter((item) => item.column === layoutItem.column)
+          .sort((a, b) => Number(b.pinned) - Number(a.pinned) || a.order - b.order)
+          .findIndex((item) => item.id === layoutItem.id) > 0;
+        return (
+          <div
+            key={layoutItem.id}
+            className={`homeWidgetShell ${homeCustomizeOpen ? "customizeOn" : ""} ${
+              draggedHomeWidgetId === layoutItem.id ? "dragging" : ""
+            }`}
+            draggable={homeCustomizeOpen}
+            onDragStart={(event) => {
+              if (!homeCustomizeOpen) return;
+              event.dataTransfer.effectAllowed = "move";
+              setDraggedHomeWidgetId(layoutItem.id);
+            }}
+            onDragEnd={() => setDraggedHomeWidgetId(null)}
+            onDragOver={(event) => {
+              if (!homeCustomizeOpen || draggedHomeWidgetId === layoutItem.id) return;
+              event.preventDefault();
+            }}
+            onDrop={(event) => {
+              if (!homeCustomizeOpen) return;
+              event.preventDefault();
+              reorderHomeWidget(layoutItem.id);
+              setDraggedHomeWidgetId(null);
+            }}
+          >
+            {homeCustomizeOpen ? (
+              <div className="homeWidgetCustomizeStrip">
+                <span className="chip subtle">{homeWidgetLabels[layoutItem.id]}</span>
+                {layoutItem.pinned ? <span className="chip">Pinned</span> : null}
+                <div className="homeWidgetCustomizeActions">
+                  <button
+                    className={`btn ${layoutItem.pinned ? "primary" : ""}`}
+                    onClick={() => patchHomeLayout(layoutItem.id, { pinned: !layoutItem.pinned })}
+                  >
+                    {layoutItem.pinned ? "Unpin" : "Pin"}
+                  </button>
+                  <button className="btn" onClick={() => patchHomeLayout(layoutItem.id, { visible: false })}>
+                    Hide
+                  </button>
+                  <button className="btn" onClick={() => nudgeHomeWidget(layoutItem.id, -1)} disabled={!canNudgeUp}>
+                    Up
+                  </button>
+                  <button className="btn" onClick={() => nudgeHomeWidget(layoutItem.id, 1)}>
+                    Down
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {content}
+          </div>
+        );
+      };
 
       return (
         <div className="homeShell page">
           <section className="card homeSpotlight">
             <div className="homeSpotlightMain">
-              <div className="homeKicker">Mission control</div>
+              <div className="homeSpotlightTopRow">
+                <div className="homeKicker">Mission control</div>
+                <div className="homeCustomizeTop">
+                  <button
+                    className={`btn ${homeCustomizeOpen ? "primary" : ""}`}
+                    onClick={() => {
+                      setHomeCustomizeOpen((prev) => !prev);
+                      setDraggedHomeWidgetId(null);
+                    }}
+                  >
+                    {homeCustomizeOpen ? "Done customizing" : "Customize home"}
+                  </button>
+                  {homeCustomizeOpen ? (
+                    <button className="btn" onClick={resetHomeLayout}>
+                      Reset defaults
+                    </button>
+                  ) : null}
+                  {hiddenHomeWidgetCount > 0 ? (
+                    <span className="chip subtle">{hiddenHomeWidgetCount} hidden</span>
+                  ) : null}
+                </div>
+              </div>
               <div className="homeSpotlightTitle">
                 {focusInstance ? `Continue ${focusInstance.name}` : "Start your first instance"}
               </div>
@@ -8792,15 +9894,12 @@ export default function App() {
                 {focusInstance ? (
                   <>
                     <button
-                      className={`btn ${launchBusyInstanceId === focusInstance.id ? "danger" : "primary"}`}
+                      className={`btn ${launchBusyInstanceIds.includes(focusInstance.id) ? "danger" : "primary"}`}
                       onClick={() => onPlayInstance(focusInstance)}
-                      disabled={
-                        (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== focusInstance.id) ||
-                        launchCancelBusyInstanceId === focusInstance.id
-                      }
+                      disabled={launchCancelBusyInstanceId === focusInstance.id}
                     >
-                      <Icon name={launchBusyInstanceId === focusInstance.id ? "x" : "play"} size={16} />
-                      {launchBusyInstanceId === focusInstance.id
+                      <Icon name={launchBusyInstanceIds.includes(focusInstance.id) ? "x" : "play"} size={16} />
+                      {launchBusyInstanceIds.includes(focusInstance.id)
                         ? (launchCancelBusyInstanceId === focusInstance.id ? "Cancelling…" : "Cancel launch")
                         : "Play now"}
                     </button>
@@ -8841,311 +9940,95 @@ export default function App() {
             </div>
           </section>
 
+          {homeCustomizeOpen ? (
+            <div className="card homeCustomizePanel">
+              <div className="homeCustomizeHint">
+                Drag cards to reorder across columns. You can also hide, pin, and move sections from this list.
+              </div>
+              <div className="homeCustomizeList">
+                {orderedHomeLayout.map((item) => (
+                  <div key={`customize:${item.id}`} className={`homeCustomizeItem ${item.visible ? "" : "hidden"}`}>
+                    <div className="homeCustomizeItemMain">
+                      <div className="homeCustomizeItemTitle">{homeWidgetLabels[item.id]}</div>
+                      <div className="homeCustomizeItemMeta">
+                        {item.column === "main" ? "Main column" : "Side column"} · {item.pinned ? "Pinned" : "Not pinned"}
+                      </div>
+                    </div>
+                    <div className="homeCustomizeItemActions">
+                      <button
+                        className={`btn ${item.visible ? "primary" : ""}`}
+                        onClick={() => patchHomeLayout(item.id, { visible: !item.visible })}
+                      >
+                        {item.visible ? "Shown" : "Hidden"}
+                      </button>
+                      <button
+                        className={`btn ${item.pinned ? "primary" : ""}`}
+                        onClick={() => patchHomeLayout(item.id, { pinned: !item.pinned })}
+                      >
+                        {item.pinned ? "Pinned" : "Pin"}
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          patchHomeLayout(item.id, {
+                            column: item.column === "main" ? "side" : "main",
+                          })
+                        }
+                      >
+                        Move to {item.column === "main" ? "side" : "main"}
+                      </button>
+                      <button className="btn" onClick={() => nudgeHomeWidget(item.id, -1)}>
+                        Up
+                      </button>
+                      <button className="btn" onClick={() => nudgeHomeWidget(item.id, 1)}>
+                        Down
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="homeMainGrid">
-            <section className="homeMainCol">
-              {topAttention.length > 0 ? (
-                <div className="card homePanel">
-                  <div className="homePanelHead">
-                    <div className="homePanelTitle">Action required</div>
-                    <span className="chip">{topAttention.length} item{topAttention.length === 1 ? "" : "s"}</span>
-                  </div>
-                  <div className="homeAlertList">
-                    {topAttention.map((item) => (
-                      <div key={item.id} className={`homeAlertRow ${item.tone}`}>
-                        <div className="homeRowMain">
-                          <div className="homeRowTitle">{item.title}</div>
-                          <div className="homeRowMeta">{item.meta}</div>
-                        </div>
-                        <div className="homeRowActions">
-                          <button
-                            className={`btn ${item.tone === "danger" ? "danger" : ""}`}
-                            onClick={item.on_action}
-                            disabled={item.action_disabled}
-                          >
-                            {item.action_label}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="card homePanel">
-                <div className="homePanelHead">
-                  <div className="homePanelTitle">Launchpad</div>
-                </div>
-                <div className="homeLaunchpad">
-                  <button className="homeLaunchAction" onClick={() => setShowCreate(true)}>
-                    <Icon name="plus" size={18} />
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Create instance</div>
-                      <div className="homeRowMeta">Start a new profile and version.</div>
-                    </div>
-                  </button>
-                  <button className="homeLaunchAction" onClick={() => setRoute("discover")}>
-                    <Icon name="compass" size={18} />
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Discover content</div>
-                      <div className="homeRowMeta">Find mods and install fast.</div>
-                    </div>
-                  </button>
-                  <button className="homeLaunchAction" onClick={() => setRoute("library")}>
-                    <Icon name="books" size={18} />
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Open library</div>
-                      <div className="homeRowMeta">Manage all instances in detail.</div>
-                    </div>
-                  </button>
-                  <button className="homeLaunchAction" onClick={() => setRoute("modpacks")}>
-                    <Icon name="box" size={18} />
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Creator Studio</div>
-                      <div className="homeRowMeta">Build and apply layered modpacks.</div>
-                    </div>
-                  </button>
-                </div>
-              </div>
-
-              <div className="card homePanel">
-                <div className="homePanelHead">
-                  <div className="homePanelTitle">Recent activity</div>
-                  <span className="homeMeta">Latest {recentActivity.length}</span>
-                </div>
-                {recentActivity.length === 0 ? (
-                  <div className="homeEmpty">
-                    <div>No activity yet. Launch an instance or install content to populate this feed.</div>
-                  </div>
-                ) : (
-                  <div className="homeList">
-                    {recentActivity.map((item) => (
-                      <div key={item.id} className="homeListRow">
-                        <div className="homeRowMain">
-                          <div className="homeRowTitle">{item.message}</div>
-                          <div className="homeRowMeta">
-                            {item.instance_name} • {new Date(item.at).toLocaleTimeString()}
-                          </div>
-                        </div>
-                        <div className="homeRowActions">
-                          <span className={`chip ${item.tone === "error" ? "danger" : "subtle"}`}>
-                            {item.tone}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <details className="card homePanel homeFoldPanel">
-                <summary className="homeFoldSummary">
-                  <div className="homePanelTitle">Performance pulse</div>
-                  <span className="homeMeta">
-                    Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"} · P95 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}
-                  </span>
-                </summary>
-                <div className="homePanelActions" style={{ marginTop: 10 }}>
-                  <button className="btn" onClick={() => setRoute("updates")}>View full timings</button>
-                </div>
-                <div className="homeMeta">{perfTrendLabel}</div>
-                {topSlowPerfActions.length === 0 ? (
-                  <div className="homeEmpty">
-                    <div>No timing samples yet. Run installs or update checks to collect speed data.</div>
-                  </div>
-                ) : (
-                  <div className="homePerfList">
-                    {topSlowPerfActions.map((entry) => (
-                      <div key={entry.id} className="homeListRow">
-                        <div className="homeRowMain">
-                          <div className="homeRowTitle">{formatPerfActionLabel(entry.name)}</div>
-                          <div className="homeRowMeta">
-                            {new Date(entry.finished_at).toLocaleTimeString()}
-                            {entry.detail ? ` • ${entry.detail}` : ""}
-                          </div>
-                        </div>
-                        <div className="homeRowActions">
-                          <span className="chip">{formatDurationMs(entry.duration_ms)}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </details>
+            <section
+              className={`homeMainCol ${homeCustomizeOpen ? "customizeDropZone" : ""}`}
+              onDragOver={(event) => {
+                if (!homeCustomizeOpen || !draggedHomeWidgetId) return;
+                event.preventDefault();
+              }}
+              onDrop={(event) => {
+                if (!homeCustomizeOpen || !draggedHomeWidgetId) return;
+                event.preventDefault();
+                moveHomeWidgetToColumn("main");
+                setDraggedHomeWidgetId(null);
+              }}
+            >
+              {visibleHomeMainWidgets.length === 0 ? (
+                <div className="homeEmpty">No widgets in the main column.</div>
+              ) : (
+                visibleHomeMainWidgets.map((item) => renderHomeWidget(item))
+              )}
             </section>
 
-            <aside className="homeSideCol">
-              {focusInstance && focusFriendStatus?.linked ? (
-                <div className="card homePanel">
-                  <div className="homePanelHead">
-                    <div className="homePanelTitle">Friend Link readiness</div>
-                    <span
-                      className={`chip ${
-                        (focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : "subtle"
-                      }`}
-                    >
-                      {(focusFriendStatus.status || "linked").replace(/_/g, " ")}
-                    </span>
-                  </div>
-                  <div className="homeMeta">
-                    {focusFriendStatus.peers.filter((peer) => peer.online).length}/{focusFriendStatus.peers.length} peers online
-                    {(focusFriendStatus.pending_conflicts_count ?? 0) > 0
-                      ? ` • ${focusFriendStatus.pending_conflicts_count} conflict${focusFriendStatus.pending_conflicts_count === 1 ? "" : "s"} pending`
-                      : " • No pending conflicts"}
-                  </div>
-                  <div className="homePanelActions">
-                    <button
-                      className="btn"
-                      onClick={() => void onManualFriendLinkSync(focusInstance.id)}
-                      disabled={friendLinkSyncBusyInstanceId === focusInstance.id}
-                    >
-                      {friendLinkSyncBusyInstanceId === focusInstance.id ? "Syncing…" : "Sync now"}
-                    </button>
-                    {(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? (
-                      <button className="btn danger" onClick={() => openInstance(focusInstance.id)}>
-                        Resolve conflicts
-                      </button>
-                    ) : null}
-                    <button className="btn" onClick={() => openInstance(focusInstance.id)}>
-                      Open links
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="card homePanel">
-                <div className="homePanelHead">
-                  <div className="homePanelTitle">Maintenance</div>
-                </div>
-                <div className="homeList">
-                  <div className="homeListRow">
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Content update schedule</div>
-                      <div className="homeRowMeta">
-                        {updateCadenceLabel(updateCheckCadence)} • Last run{" "}
-                        {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
-                      </div>
-                    </div>
-                    <span className="chip subtle">{scheduledInstancesWithUpdatesCount} with updates</span>
-                  </div>
-                  <div className="homeListRow">
-                    <div className="homeRowMain">
-                      <div className="homeRowTitle">Next scheduled check</div>
-                      <div className="homeRowMeta">
-                        {updateCheckCadence === "off"
-                          ? "Disabled"
-                          : nextScheduledUpdateRunAt
-                            ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check")
-                            : "Pending first check"}
-                      </div>
-                    </div>
-                    <span className={`chip ${scheduledUpdateBusy ? "" : "subtle"}`}>
-                      {scheduledUpdateBusy
-                        ? `${scheduledUpdateRunCompleted}/${scheduledUpdateRunTotal}`
-                        : "idle"}
-                    </span>
-                  </div>
-                </div>
-                <div className="homeMeta">
-                  {scheduledUpdateBusy ? (
-                    <>
-                      Progress {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} • Elapsed{" "}
-                      {formatEtaSeconds(scheduledUpdateRunElapsedSeconds)} • ETA{" "}
-                      {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
-                    </>
-                  ) : (
-                    <>Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})</>
-                  )}
-                </div>
-                {hasUpdaterAttention ? (
-                  <div className="homeMeta">Launcher update actions are pinned in Action required.</div>
-                ) : null}
-                <div className="homePanelActions homeMaintenanceActions">
-                  <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
-                  <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
-                    {scheduledUpdateBusy ? "Checking…" : "Run content check"}
-                  </button>
-                  {!hasUpdaterAttention ? (
-                    <button
-                      className="btn subtle"
-                      onClick={onLauncherMaintenanceAction}
-                      disabled={appUpdaterBusy || appUpdaterInstallBusy}
-                    >
-                      {launcherActionLabel}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="card homePanel">
-                <div className="homePanelHead">
-                  <div className="homePanelTitle">Running sessions</div>
-                  <span className="chip subtle">{runningInstances.length}</span>
-                </div>
-                {runningInstances.length === 0 ? (
-                  <div className="homeEmpty">
-                    <div>No active sessions right now.</div>
-                  </div>
-                ) : (
-                  <div className="homeList">
-                    {runningInstances.slice(0, 5).map((run) => (
-                      <div key={run.launch_id} className="homeListRow">
-                        <div className="homeRowMain">
-                          <div className="homeRowTitle">{run.instance_name}</div>
-                          <div className="homeRowMeta">
-                            {humanizeToken(run.method)} • Started {formatDateTime(run.started_at, "just now")}
-                          </div>
-                        </div>
-                        <div className="homeRowActions">
-                          <button className="btn" onClick={() => openInstance(run.instance_id)}>Open</button>
-                          <button className="btn danger" onClick={() => void onStopRunning(run.launch_id)}>Stop</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="card homePanel">
-                <div className="homePanelHead">
-                  <div className="homePanelTitle">Recent instances</div>
-                </div>
-                {recentInstances.length === 0 ? (
-                  <div className="homeEmpty">
-                    <div>No instances yet.</div>
-                    <button className="btn primary" onClick={() => setShowCreate(true)}>Create instance</button>
-                  </div>
-                ) : (
-                  <div className="homeList">
-                    {recentInstances.map((inst) => (
-                      <div key={inst.id} className="homeListRow">
-                        <div className="homeRowMain">
-                          <div className="homeRowTitle">{inst.name}</div>
-                          <div className="homeRowMeta">
-                            {loaderLabelFor(inst)} • Minecraft {inst.mc_version}
-                            {instanceHealthById[inst.id]
-                              ? ` • Health ${instanceHealthById[inst.id].grade} ${instanceHealthById[inst.id].score}`
-                              : ""}
-                          </div>
-                        </div>
-                        <div className="homeRowActions homeRecentActions">
-                          {runningIds.has(inst.id) ? <span className="chip">Running</span> : null}
-                          <button className="btn" onClick={() => openInstance(inst.id)}>Open</button>
-                          <button
-                            className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
-                            onClick={() => onPlayInstance(inst)}
-                            disabled={
-                              (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== inst.id) ||
-                              launchCancelBusyInstanceId === inst.id
-                            }
-                          >
-                            {launchBusyInstanceId === inst.id ? "Cancel" : "Play"}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
+            <aside
+              className={`homeSideCol ${homeCustomizeOpen ? "customizeDropZone" : ""}`}
+              onDragOver={(event) => {
+                if (!homeCustomizeOpen || !draggedHomeWidgetId) return;
+                event.preventDefault();
+              }}
+              onDrop={(event) => {
+                if (!homeCustomizeOpen || !draggedHomeWidgetId) return;
+                event.preventDefault();
+                moveHomeWidgetToColumn("side");
+                setDraggedHomeWidgetId(null);
+              }}
+            >
+              {visibleHomeSideWidgets.length === 0 ? (
+                <div className="homeEmpty">No widgets in the side column.</div>
+              ) : (
+                visibleHomeSideWidgets.map((item) => renderHomeWidget(item))
+              )}
             </aside>
           </div>
         </div>
@@ -9157,10 +10040,20 @@ export default function App() {
         <div className="settingsPage">
           <div className="h1">Settings</div>
           <div className="p">Appearance, account, and launcher behavior.</div>
+          <div className="row" style={{ marginBottom: 10 }}>
+            <SegmentedControl
+              value={settingsMode}
+              onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
+              options={[
+                { value: "basic", label: "Basic mode" },
+                { value: "advanced", label: "Advanced mode" },
+              ]}
+            />
+          </div>
 
           <div className="settingsLayout">
             <section className="settingsCol">
-              <div className="card settingsSectionCard">
+              <div className="card settingsSectionCard" id="setting-anchor-global:appearance">
                 <div className="settingsSectionTitle">Appearance</div>
                 <div className="p settingsSectionSub">Tune the app look without changing layout behavior.</div>
 
@@ -9257,7 +10150,7 @@ export default function App() {
                 <div className="p settingsSectionSub">Set default launcher behavior and Java runtime.</div>
 
                 <div className="settingStack">
-                  <div>
+                  <div id="setting-anchor-global:launch-method">
                     <div className="settingTitle">Default launch method</div>
                     <div className="settingSub">Use native launcher or Prism launcher by default.</div>
                     <div className="row">
@@ -9272,61 +10165,59 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div>
-                    <div className="settingTitle">Java executable</div>
-                    <div className="settingSub">
-                      Absolute path to Java, or leave blank to use `java` from PATH. Minecraft 1.20.5+ needs Java 21+.
-                    </div>
-                    <input
-                      className="input"
-                      value={javaPathDraft}
-                      onChange={(e) => setJavaPathDraft(e.target.value)}
-                      placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
-                    />
-                    <div className="row">
-                      <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
-                        <span className="btnIcon">
-                          <Icon name="upload" size={17} />
-                        </span>
-                        Browse…
-                      </button>
-                      <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
-                        {javaRuntimeBusy ? "Detecting…" : "Detect installed Java"}
-                      </button>
-                      <button
-                        className="btn"
-                        onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
-                      >
-                        Get Java 21
-                      </button>
-                    </div>
-                    {javaRuntimeCandidates.length > 0 ? (
-                      <div className="settingListMini">
-                        {javaRuntimeCandidates.map((runtime) => (
-                          <div key={runtime.path} className="settingListMiniRow">
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
-                              <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
-                            </div>
-                            <button
-                              className={`btn ${javaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
-                              onClick={() => setJavaPathDraft(runtime.path)}
-                              disabled={launcherBusy}
-                            >
-                              {javaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
-                            </button>
+                  {settingsMode === "advanced" ? (
+                    <>
+                      <div id="setting-anchor-global:java-path">
+                        <div className="settingTitle">Java executable</div>
+                        <div className="settingSub">
+                          Absolute path to Java, or leave blank to use `java` from PATH. Minecraft 1.20.5+ needs Java 21+.
+                        </div>
+                        <input
+                          className="input"
+                          value={javaPathDraft}
+                          onChange={(e) => setJavaPathDraft(e.target.value)}
+                          placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
+                        />
+                        <div className="row">
+                          <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
+                            <span className="btnIcon">
+                              <Icon name="upload" size={17} />
+                            </span>
+                            Browse…
+                          </button>
+                          <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
+                            {javaRuntimeBusy ? "Detecting…" : "Detect installed Java"}
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
+                          >
+                            Get Java 21
+                          </button>
+                        </div>
+                        {javaRuntimeCandidates.length > 0 ? (
+                          <div className="settingListMini">
+                            {javaRuntimeCandidates.map((runtime) => (
+                              <div key={runtime.path} className="settingListMiniRow">
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
+                                  <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
+                                </div>
+                                <button
+                                  className={`btn ${javaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
+                                  onClick={() => setJavaPathDraft(runtime.path)}
+                                  disabled={launcherBusy}
+                                >
+                                  {javaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
+                                </button>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        ) : null}
                       </div>
-                    ) : null}
-                  </div>
 
-                  <div>
-                    <button className="btn" onClick={() => setShowAdvancedClientId((v) => !v)}>
-                      {showAdvancedClientId ? "Hide advanced OAuth settings" : "Show advanced OAuth settings"}
-                    </button>
-                    {showAdvancedClientId ? (
-                      <div style={{ marginTop: 10 }}>
+                      <div id="setting-anchor-global:oauth-client">
+                        <div className="settingTitle">OAuth client ID override</div>
                         <div className="settingSub">
                           Client ID is a public identifier, not a secret API key. Leave blank to use the bundled default.
                         </div>
@@ -9338,8 +10229,15 @@ export default function App() {
                           style={{ marginTop: 8 }}
                         />
                       </div>
-                    ) : null}
-                  </div>
+                    </>
+                  ) : (
+                    <div className="muted">
+                      Advanced Java and OAuth overrides are hidden in Basic mode.
+                      <button className="btn" style={{ marginLeft: 8 }} onClick={() => setSettingsMode("advanced")}>
+                        Switch to Advanced
+                      </button>
+                    </div>
+                  )}
 
                   <div className="settingsSaveRow">
                     <button className="btn primary" onClick={onSaveLauncherPrefs} disabled={launcherBusy}>
@@ -9351,7 +10249,7 @@ export default function App() {
             </section>
 
             <section className="settingsCol">
-              <div className="card settingsSectionCard">
+              <div className="card settingsSectionCard" id="setting-anchor-global:account">
                 <div className="settingsSectionTitle">Microsoft account</div>
                 <div className="p settingsSectionSub">
                   Connect the Microsoft account that owns Minecraft. You normally do not need to configure any client ID.
@@ -9409,7 +10307,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="card settingsSectionCard">
+              <div className="card settingsSectionCard" id="setting-anchor-global:app-updates">
                 <div className="settingsSectionTitle">App updates</div>
                 <div className="p settingsSectionSub">
                   Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
@@ -9459,7 +10357,7 @@ export default function App() {
                 ) : null}
               </div>
 
-              <div className="card settingsSectionCard">
+              <div className="card settingsSectionCard" id="setting-anchor-global:content-visuals">
                 <div className="settingsSectionTitle">Content and visuals</div>
                 <div className="p settingsSectionSub">Quick toggles for launcher behavior outside game runtime.</div>
 
@@ -10499,6 +11397,7 @@ export default function App() {
       const visibleInstalledMods = installedContentSummary.visibleInstalledMods;
       const runningForInstance = runningByInstanceId.get(inst.id) ?? [];
       const hasRunningForInstance = runningForInstance.length > 0;
+      const isLaunchBusyForInstance = launchBusyInstanceIds.includes(inst.id);
       const canStartConcurrentNative = hasRunningForInstance && launchMethodPick === "native";
       const hasNativeRunningForInstance = runningForInstance.some(
         (r) => String(r.method ?? "").toLowerCase() === "native"
@@ -10514,6 +11413,12 @@ export default function App() {
         launchStage?.status,
         launchStage?.message
       );
+      const compactHeroActions =
+        hasRunningForInstance ||
+        isLaunchBusyForInstance ||
+        hasLaunchFailure ||
+        launchStage?.status === "starting" ||
+        launchStage?.status === "running";
       const selectableVisibleMods = installedContentSummary.selectableVisibleMods;
       const selectedVisibleModCount = installedContentSummary.selectedVisibleModCount;
       const allVisibleModsSelected =
@@ -10521,6 +11426,8 @@ export default function App() {
         selectedVisibleModCount === selectableVisibleMods.length;
       const selectedInstalledModCount = installedContentSummary.selectedInstalledModCount;
       const instanceActivity = instanceActivityById[inst.id] ?? [];
+      const selectedSnapshot =
+        snapshots.find((s) => s.id === (rollbackSnapshotId ?? snapshots[0]?.id)) ?? snapshots[0] ?? null;
       const friendLinkNeedsAttention =
         Boolean(instanceFriendLinkStatus?.linked) &&
         (instanceFriendLinkStatus?.pending_conflicts_count ?? 0) > 0;
@@ -10751,24 +11658,25 @@ export default function App() {
                     <div className="instTitle">{inst.name || "Untitled instance"}</div>
                     <div className="instMetaRow">
                       <span className="chip">{loaderLabel} {inst.mc_version}</span>
-                      <span className="chip subtle">{hasRunningForInstance ? "Running" : "Never played"}</span>
-                      {instanceHealth ? (
+                      {launchStageLabel ? (
+                        <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
+                      ) : (
+                        <span className="chip subtle">{hasRunningForInstance ? "Running" : "Never played"}</span>
+                      )}
+                      {instanceHealth && !compactHeroActions ? (
                         <span className={`chip ${instanceHealth.score < 60 ? "danger" : "subtle"}`}>
                           Health {instanceHealth.grade} ({instanceHealth.score})
                         </span>
                       ) : null}
                       {hasLaunchFailure ? <span className="chip">Last launch failed</span> : null}
-                      {launchStageLabel ? (
-                        <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
-                      ) : null}
                     </div>
                   </div>
                 </div>
 
-                <div className="instHeroActions">
+                <div className={`instHeroActions ${compactHeroActions ? "compact" : ""}`}>
                   <MenuSelect
                     value={launchMethodPick}
-                    labelPrefix="Launch"
+                    labelPrefix={compactHeroActions ? "Mode" : "Launch"}
                     options={[
                       { value: "native", label: "Native" },
                       { value: "prism", label: "Prism" },
@@ -10776,14 +11684,11 @@ export default function App() {
                     onChange={(v) => setLaunchMethodPick((v as LaunchMethod) ?? "native")}
                   />
                   <button
-                    className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
+                    className={`btn instanceLaunchBtn ${isLaunchBusyForInstance ? "danger" : "primary"}`}
                     onClick={() => onPlayInstance(inst, launchMethodPick)}
-                    disabled={
-                      (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== inst.id) ||
-                      launchCancelBusyInstanceId === inst.id
-                    }
+                    disabled={launchCancelBusyInstanceId === inst.id}
                     title={
-                      launchBusyInstanceId === inst.id
+                      isLaunchBusyForInstance
                         ? "Cancel current launch"
                         : canStartConcurrentNative
                           ? "Launch an isolated concurrent native session"
@@ -10791,46 +11696,11 @@ export default function App() {
                     }
                   >
                     <span className="btnIcon">
-                      <Icon name={launchBusyInstanceId === inst.id ? "x" : "play"} size={18} />
+                      <Icon name={isLaunchBusyForInstance ? "x" : "play"} size={18} />
                     </span>
-                    {launchBusyInstanceId === inst.id
-                      ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel launch")
-                      : canStartConcurrentNative
-                        ? "Play (isolated)"
-                        : "Play"}
-                  </button>
-                  {showOpenLaunchLogAction ? (
-                    <button className="btn" onClick={() => void onOpenLaunchLog(inst)}>
-                      <span className="btnIcon">
-                        <Icon name="folder" size={16} />
-                      </span>
-                      Open launch log
-                    </button>
-                  ) : null}
-                  <button
-                    className={`btn ${friendLinkNeedsAttention ? "primary" : "subtle"}`}
-                    onClick={() => setInstanceLinksOpen(true)}
-                    title="Open Modpack and Friend Link management"
-                  >
-                    <span className="btnIcon">
-                      <Icon name="layers" size={18} />
-                    </span>
-                    Links
-                    <span className={`instanceLinkStatusPill ${friendLinkNeedsAttention ? "alert" : ""}`}>
-                      {friendLinkStatusLabel}
-                    </span>
-                  </button>
-                  <button
-                    className="btn settingsSpin"
-                    onClick={() => {
-                      setInstanceLinksOpen(false);
-                      setInstanceSettingsSection("general");
-                      setInstanceSettingsOpen(true);
-                    }}
-                  >
-                    <span className="btnIcon">
-                      <Icon name="gear" size={18} className="navIcon navAnimGear" />
-                    </span>
+                    {isLaunchBusyForInstance
+                      ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel")
+                      : "Launch"}
                   </button>
                   {hasRunningForInstance ? (
                     <button
@@ -10840,6 +11710,55 @@ export default function App() {
                       Stop
                     </button>
                   ) : null}
+                  <div className="instHeroTools">
+                    {showOpenLaunchLogAction ? (
+                      <button
+                        className={`btn ${compactHeroActions ? "subtle instHeroIconBtn" : ""}`}
+                        onClick={() => void onOpenLaunchLog(inst)}
+                        title={compactHeroActions ? "Open launch log" : undefined}
+                        aria-label="Open launch log"
+                      >
+                        <span className="btnIcon">
+                          <Icon name="folder" size={16} />
+                        </span>
+                        {compactHeroActions ? null : "Open launch log"}
+                      </button>
+                    ) : null}
+                    <button
+                      className={`btn ${friendLinkNeedsAttention ? "primary" : "subtle"} ${
+                        compactHeroActions ? "instHeroIconBtn" : ""
+                      }`}
+                      onClick={() => setInstanceLinksOpen(true)}
+                      title={`Open Modpack and Friend Link management (${friendLinkStatusLabel})`}
+                      aria-label="Open links"
+                    >
+                      <span className="btnIcon">
+                        <Icon name="layers" size={18} />
+                      </span>
+                      {compactHeroActions ? null : "Links"}
+                      {compactHeroActions ? (
+                        friendLinkNeedsAttention ? <span className="instHeroToolDot" /> : null
+                      ) : (
+                        <span className={`instanceLinkStatusPill ${friendLinkNeedsAttention ? "alert" : ""}`}>
+                          {friendLinkStatusLabel}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      className={`btn settingsSpin ${compactHeroActions ? "instHeroIconBtn" : ""}`}
+                      onClick={() => {
+                        setInstanceLinksOpen(false);
+                        setInstanceSettingsSection("general");
+                        setInstanceSettingsOpen(true);
+                      }}
+                      title="Open instance settings"
+                      aria-label="Open instance settings"
+                    >
+                      <span className="btnIcon">
+                        <Icon name="gear" size={18} className="navIcon navAnimGear" />
+                      </span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -11023,6 +11942,54 @@ export default function App() {
                       </button>
                     )}
                   </div>
+                  <div className="instToolbarRight">
+                    <MenuSelect
+                      value={instanceFilterState}
+                      labelPrefix="State"
+                      onChange={(value) => setInstanceFilterState((value as any) ?? "all")}
+                      options={[
+                        { value: "all", label: "All" },
+                        { value: "enabled", label: "Enabled" },
+                        { value: "disabled", label: "Disabled" },
+                      ]}
+                      align="start"
+                    />
+                    <MenuSelect
+                      value={instanceFilterSource}
+                      labelPrefix="Source"
+                      onChange={(value) => setInstanceFilterSource((value as any) ?? "all")}
+                      options={[
+                        { value: "all", label: "All" },
+                        { value: "modrinth", label: "Modrinth" },
+                        { value: "curseforge", label: "CurseForge" },
+                        { value: "local", label: "Local" },
+                        { value: "other", label: "Other" },
+                      ]}
+                      align="start"
+                    />
+                    <MenuSelect
+                      value={instanceFilterMissing}
+                      labelPrefix="Files"
+                      onChange={(value) => setInstanceFilterMissing((value as any) ?? "all")}
+                      options={[
+                        { value: "all", label: "All" },
+                        { value: "present", label: "Present on disk" },
+                        { value: "missing", label: "Missing on disk" },
+                      ]}
+                      align="start"
+                    />
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setInstanceQuery("");
+                        setInstanceFilterState("all");
+                        setInstanceFilterSource("all");
+                        setInstanceFilterMissing("all");
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
@@ -11073,7 +12040,7 @@ export default function App() {
                             labelPrefix="Snapshot"
                             options={snapshots.slice(0, 30).map((s) => ({
                               value: s.id,
-                              label: `${s.id} • ${s.reason}`,
+                              label: formatSnapshotOptionLabel(s),
                             }))}
                             align="start"
                             onChange={(v) => setRollbackSnapshotId(v)}
@@ -11082,7 +12049,11 @@ export default function App() {
                             className="btn instanceSnapshotRollbackBtn"
                             onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
                             disabled={rollbackBusy}
-                            title={`Rollback to ${rollbackSnapshotId ?? snapshots[0]?.id ?? "latest snapshot"}`}
+                            title={
+                              selectedSnapshot
+                                ? `Rollback to ${formatSnapshotOptionLabel(selectedSnapshot)}`
+                                : "Rollback to latest snapshot"
+                            }
                           >
                             {rollbackBusy ? "Rolling back…" : "Rollback"}
                           </button>
@@ -11201,18 +12172,29 @@ export default function App() {
 
                             <div className="instanceModsActionCell">
                               {(m.content_type ?? "mods") === "mods" ? (
-                                <button
-                                  className={`btn ${m.enabled ? "danger" : "primary"} instanceEnableBtn`}
-                                  onClick={() => onToggleInstalledMod(inst, m, !m.enabled)}
-                                  disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
-                                  aria-label={m.enabled ? "Disable mod" : "Enable mod"}
-                                >
-                                  {toggleBusyVersion === m.version_id
-                                    ? "Applying…"
-                                    : m.enabled
-                                      ? "Disable"
-                                      : "Enable"}
-                                </button>
+                                <div className="instanceModsActionRow">
+                                  <button
+                                    className={`btn subtle instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
+                                    onClick={() => onToggleInstalledMod(inst, m, !m.enabled)}
+                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
+                                    aria-label={m.enabled ? "Mod enabled, click to disable" : "Mod disabled, click to enable"}
+                                    title={m.enabled ? "Enabled · click to disable" : "Disabled · click to enable"}
+                                  >
+                                    <Icon
+                                      name={toggleBusyVersion === m.version_id ? "sparkles" : m.enabled ? "check_circle" : "slash_circle"}
+                                      size={15}
+                                    />
+                                  </button>
+                                  <button
+                                    className="btn subtle instanceActionIconBtn instanceActionDeleteBtn"
+                                    onClick={() => void onDeleteInstalledMod(inst, m)}
+                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__"}
+                                    aria-label="Delete mod"
+                                    title="Delete mod"
+                                  >
+                                    <Icon name={toggleBusyVersion === m.version_id ? "sparkles" : "trash"} size={15} />
+                                  </button>
+                                </div>
                               ) : (
                                 <span className="chip subtle">Managed</span>
                               )}
@@ -11225,7 +12207,7 @@ export default function App() {
                     {instanceContentType === "mods" && selectedInstalledModCount > 0 ? (
                       <div className="instanceModsStickyBar">
                         <div className="instanceModsStickyTitle">
-                          {selectedInstalledModCount} selected
+                          Apply to selected mods · {selectedInstalledModCount} selected · {installedContentSummary.visibleInstalledMods.length} visible
                         </div>
                         <div className="instanceModsStickyActions">
                           <button
@@ -11233,21 +12215,21 @@ export default function App() {
                             onClick={() => void onBulkToggleSelectedMods(inst, true)}
                             disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
-                            {toggleBusyVersion === "__bulk__" ? "Applying…" : "Enable"}
+                            {toggleBusyVersion === "__bulk__" ? "Applying…" : "Enable selected"}
                           </button>
                           <button
                             className="btn danger"
                             onClick={() => void onBulkToggleSelectedMods(inst, false)}
                             disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
-                            {toggleBusyVersion === "__bulk__" ? "Applying…" : "Disable"}
+                            {toggleBusyVersion === "__bulk__" ? "Applying…" : "Disable selected"}
                           </button>
                           <button
                             className="btn"
                             onClick={() => setSelectedModVersionIds([])}
                             disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
-                            Clear
+                            Clear selection
                           </button>
                         </div>
                       </div>
@@ -11737,9 +12719,9 @@ export default function App() {
                           <div className="instanceAnalyzeCard">
                             <div className="instanceAnalyzeCardTitle">Likely causes</div>
                             {logAnalyzeResult && logAnalyzeResult.likelyCauses.length > 0 ? (
-                              <div style={{ display: "grid", gap: 6 }}>
+                              <div className="instanceAnalyzeCardBody instanceAnalyzeList">
                                 {logAnalyzeResult.likelyCauses.slice(0, 4).map((cause) => (
-                                  <div key={cause.id}>
+                                  <div key={cause.id} className="instanceAnalyzeItem">
                                     <div className="rowBetween">
                                       <span>{cause.title}</span>
                                       <span className="chip subtle">{Math.round(cause.confidence * 100)}%</span>
@@ -11760,9 +12742,9 @@ export default function App() {
                           <div className="instanceAnalyzeCard">
                             <div className="instanceAnalyzeCardTitle">Failed mods</div>
                             {logAnalyzeResult && logAnalyzeResult.failedMods.length > 0 ? (
-                              <div style={{ display: "grid", gap: 6 }}>
+                              <div className="instanceAnalyzeCardBody instanceAnalyzeList">
                                 {logAnalyzeResult.failedMods.slice(0, 6).map((mod) => (
-                                  <div key={mod.id}>
+                                  <div key={mod.id} className="instanceAnalyzeItem">
                                     <div className="rowBetween">
                                       <span>{mod.label}</span>
                                       <span className="chip subtle">{Math.round(mod.confidence * 100)}%</span>
@@ -11778,7 +12760,7 @@ export default function App() {
                           <div className="instanceAnalyzeCard">
                             <div className="instanceAnalyzeCardTitle">Suspects</div>
                             {logAnalyzeResult && logAnalyzeResult.suspects.length > 0 ? (
-                              <div style={{ display: "grid", gap: 6 }}>
+                              <div className="instanceAnalyzeCardBody instanceAnalyzeList">
                                 {logAnalyzeResult.suspects.slice(0, 6).map((suspect) => (
                                   <div key={suspect.id} className="rowBetween">
                                     <span>{suspect.label}</span>
@@ -11795,7 +12777,7 @@ export default function App() {
                           <div className="instanceAnalyzeCard">
                             <div className="instanceAnalyzeCardTitle">Key errors</div>
                             {logAnalyzeResult && logAnalyzeResult.keyErrors.length > 0 ? (
-                              <div style={{ display: "grid", gap: 6 }}>
+                              <div className="instanceAnalyzeCardBody instanceAnalyzeList">
                                 {logAnalyzeResult.keyErrors.map((line, idx) => (
                                   <div key={`${idx}:${line.slice(0, 24)}`} className="muted">{line}</div>
                                 ))}
@@ -11807,7 +12789,7 @@ export default function App() {
                           <div className="instanceAnalyzeCard">
                             <div className="instanceAnalyzeCardTitle">Confidence notes</div>
                             {logAnalyzeResult && (logAnalyzeResult.confidenceNotes?.length ?? 0) > 0 ? (
-                              <div style={{ display: "grid", gap: 6 }}>
+                              <div className="instanceAnalyzeCardBody instanceAnalyzeList">
                                 {(logAnalyzeResult.confidenceNotes ?? []).map((note, idx) => (
                                   <div key={`${idx}:${note.slice(0, 18)}`} className="muted">{note}</div>
                                 ))}
@@ -11959,12 +12941,14 @@ export default function App() {
                 <div className="instSettings">
                   <div className="instSettingsNav">
                     {[
-                      { id: "general", label: "General", icon: "sliders" },
-                      { id: "installation", label: "Installation", icon: "box" },
-                      { id: "graphics", label: "Window", icon: "sparkles" },
-                      { id: "java", label: "Java and memory", icon: "cpu" },
-                      { id: "content", label: "Launch hooks", icon: "layers" },
-                    ].map((s) => (
+                      { id: "general", label: "General", icon: "sliders", advanced: false },
+                      { id: "installation", label: "Installation", icon: "box", advanced: false },
+                      { id: "graphics", label: "Window", icon: "sparkles", advanced: false },
+                      { id: "java", label: "Java and memory", icon: "cpu", advanced: false },
+                      { id: "content", label: "Launch hooks", icon: "layers", advanced: true },
+                    ]
+                      .filter((item) => settingsMode === "advanced" || !item.advanced)
+                      .map((s) => (
                     <button
                       key={s.id}
                       className={"instSettingsNavItem" + (instanceSettingsSection === s.id ? " active" : "")}
@@ -11975,7 +12959,7 @@ export default function App() {
                       </span>
                       {s.label}
                     </button>
-                  ))}
+                    ))}
 
                   <div className="instSettingsNavFooter">
                     <button
@@ -11995,11 +12979,19 @@ export default function App() {
                   <div className="instSettingsBody">
                   <div className="instSettingsStatusRow">
                     <span className="chip subtle">Auto-save on toggle/change</span>
+                    <SegmentedControl
+                      value={settingsMode}
+                      onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
+                      options={[
+                        { value: "basic", label: "Basic" },
+                        { value: "advanced", label: "Advanced" },
+                      ]}
+                    />
                     {instanceSettingsBusy ? <span className="chip">Saving…</span> : <span className="chip">Saved</span>}
                   </div>
                   {instanceSettingsSection === "general" && (
                     <>
-                      <div className="h2 sectionHead">
+                      <div className="h2 sectionHead" id="setting-anchor-instance:general">
                         General
                       </div>
 
@@ -12066,7 +13058,7 @@ export default function App() {
 
                   {instanceSettingsSection === "installation" && (
                     <>
-                      <div className="h2 sectionHead">
+                      <div className="h2 sectionHead" id="setting-anchor-instance:installation">
                         Installation
                       </div>
 
@@ -12167,73 +13159,82 @@ export default function App() {
 
                   {instanceSettingsSection === "java" && (
                     <>
-                      <div className="h2 sectionHead">
+                      <div className="h2 sectionHead" id="setting-anchor-instance:java">
                         Java and memory
                       </div>
 
                       <div className="settingGrid">
-                        <div className="settingCard">
-                          <div className="settingTitle">Java runtime</div>
-                          <div className="settingSub">
-                            Use a per-instance override, or leave blank to use launcher default.
-                          </div>
-                          <input
-                            className="input"
-                            value={instanceJavaPathDraft}
-                            onChange={(e) => setInstanceJavaPathDraft(e.target.value)}
-                            onBlur={() => void onCommitInstanceJavaPath(inst)}
-                            placeholder="Blank = use launcher Java path"
-                            disabled={instanceSettingsBusy}
-                          />
-                          <div className="row">
-                            <button className="btn" onClick={() => void onPickInstanceJavaPath(inst)} disabled={instanceSettingsBusy}>
-                              <span className="btnIcon">
-                                <Icon name="upload" size={17} />
-                              </span>
-                              Browse…
-                            </button>
-                            <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
-                              {javaRuntimeBusy ? "Detecting…" : "Detect runtimes"}
-                            </button>
-                            <button
-                              className="btn"
-                              onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
-                            >
-                              Get Java 21
-                            </button>
-                          </div>
-                          <div className="muted" style={{ marginTop: 8 }}>
-                            Minecraft {inst.mc_version} requires Java {requiredJavaMajor}+.
-                          </div>
-                          {javaRuntimeCandidates.length > 0 ? (
-                            <div className="settingListMini">
-                              {javaRuntimeCandidates.slice(0, 5).map((runtime) => (
-                                <div key={runtime.path} className="settingListMiniRow">
-                                  <div style={{ minWidth: 0 }}>
-                                    <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
-                                    <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
-                                  </div>
-                                  <button
-                                    className={`btn ${instanceJavaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
-                                    onClick={() => {
-                                      setInstanceJavaPathDraft(runtime.path);
-                                      void persistInstanceChanges(
-                                        inst,
-                                        { settings: { java_path: runtime.path } },
-                                        "Instance Java path updated."
-                                      );
-                                    }}
-                                    disabled={instanceSettingsBusy}
-                                  >
-                                    {instanceJavaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
-                                  </button>
-                                </div>
-                              ))}
+                        {settingsMode === "advanced" ? (
+                          <div className="settingCard" id="setting-anchor-instance:java-runtime">
+                            <div className="settingTitle">Java runtime</div>
+                            <div className="settingSub">
+                              Use a per-instance override, or leave blank to use launcher default.
                             </div>
-                          ) : null}
-                        </div>
+                            <input
+                              className="input"
+                              value={instanceJavaPathDraft}
+                              onChange={(e) => setInstanceJavaPathDraft(e.target.value)}
+                              onBlur={() => void onCommitInstanceJavaPath(inst)}
+                              placeholder="Blank = use launcher Java path"
+                              disabled={instanceSettingsBusy}
+                            />
+                            <div className="row">
+                              <button className="btn" onClick={() => void onPickInstanceJavaPath(inst)} disabled={instanceSettingsBusy}>
+                                <span className="btnIcon">
+                                  <Icon name="upload" size={17} />
+                                </span>
+                                Browse…
+                              </button>
+                              <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
+                                {javaRuntimeBusy ? "Detecting…" : "Detect runtimes"}
+                              </button>
+                              <button
+                                className="btn"
+                                onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
+                              >
+                                Get Java 21
+                              </button>
+                            </div>
+                            <div className="muted" style={{ marginTop: 8 }}>
+                              Minecraft {inst.mc_version} requires Java {requiredJavaMajor}+.
+                            </div>
+                            {javaRuntimeCandidates.length > 0 ? (
+                              <div className="settingListMini">
+                                {javaRuntimeCandidates.slice(0, 5).map((runtime) => (
+                                  <div key={runtime.path} className="settingListMiniRow">
+                                    <div style={{ minWidth: 0 }}>
+                                      <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
+                                      <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
+                                    </div>
+                                    <button
+                                      className={`btn ${instanceJavaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
+                                      onClick={() => {
+                                        setInstanceJavaPathDraft(runtime.path);
+                                        void persistInstanceChanges(
+                                          inst,
+                                          { settings: { java_path: runtime.path } },
+                                          "Instance Java path updated."
+                                        );
+                                      }}
+                                      disabled={instanceSettingsBusy}
+                                    >
+                                      {instanceJavaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : (
+                          <div className="settingCard">
+                            <div className="settingTitle">Java runtime override</div>
+                            <div className="settingSub">
+                              Hidden in Basic mode. Switch to Advanced to set per-instance Java executable.
+                            </div>
+                          </div>
+                        )}
 
-                        <div className="settingCard">
+                        <div className="settingCard" id="setting-anchor-instance:java-memory">
                           <div className="settingTitle">Memory</div>
                           <div className="settingSub">Set Java heap size in MB for this instance.</div>
                           <div className="row">
@@ -12283,18 +13284,20 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="settingCard">
-                          <div className="settingTitle">JVM arguments</div>
-                          <div className="settingSub">Advanced users only. Saved per instance.</div>
-                          <textarea
-                            className="textarea"
-                            placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=80"
-                            value={instanceJvmArgsDraft}
-                            onChange={(e) => setInstanceJvmArgsDraft(e.target.value)}
-                            onBlur={() => void onCommitInstanceJvmArgs(inst)}
-                            disabled={instanceSettingsBusy}
-                          />
-                        </div>
+                        {settingsMode === "advanced" ? (
+                          <div className="settingCard" id="setting-anchor-instance:jvm-args">
+                            <div className="settingTitle">JVM arguments</div>
+                            <div className="settingSub">Advanced users only. Saved per instance.</div>
+                            <textarea
+                              className="textarea"
+                              placeholder="-XX:+UseG1GC -XX:MaxGCPauseMillis=80"
+                              value={instanceJvmArgsDraft}
+                              onChange={(e) => setInstanceJvmArgsDraft(e.target.value)}
+                              onBlur={() => void onCommitInstanceJvmArgs(inst)}
+                              disabled={instanceSettingsBusy}
+                            />
+                          </div>
+                        ) : null}
 
                         {autoProfileRecommendation ? (
                           <div className="settingCard">
@@ -12335,7 +13338,7 @@ export default function App() {
 
                   {instanceSettingsSection === "graphics" && (
                     <>
-                      <div className="h2 sectionHead">
+                      <div className="h2 sectionHead" id="setting-anchor-instance:graphics">
                         Window
                       </div>
 
@@ -12514,9 +13517,9 @@ export default function App() {
                     </>
                   )}
 
-                  {instanceSettingsSection === "content" && (
+                  {settingsMode === "advanced" && instanceSettingsSection === "content" && (
                     <>
-                      <div className="h2 sectionHead">
+                      <div className="h2 sectionHead" id="setting-anchor-instance:hooks">
                         Launch hooks
                       </div>
 
@@ -13000,15 +14003,12 @@ export default function App() {
                                 </button>
                               ) : (
                                 <button
-                                  className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
+                                  className={`btn ${launchBusyInstanceIds.includes(inst.id) ? "danger" : "primary"}`}
                                   onClick={() => onPlayInstance(inst)}
-                                  disabled={
-                                    (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== inst.id) ||
-                                    launchCancelBusyInstanceId === inst.id
-                                  }
+                                  disabled={launchCancelBusyInstanceId === inst.id}
                                 >
-                                  <Icon name={launchBusyInstanceId === inst.id ? "x" : "play"} size={16} />
-                                  {launchBusyInstanceId === inst.id
+                                  <Icon name={launchBusyInstanceIds.includes(inst.id) ? "x" : "play"} size={16} />
+                                  {launchBusyInstanceIds.includes(inst.id)
                                     ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel launch")
                                     : "Play"}
                                 </button>
@@ -13284,6 +14284,12 @@ export default function App() {
         {renderContent()}
       </main>
 
+      <CommandPalette
+        open={commandPaletteOpen}
+        items={commandPaletteItems}
+        onClose={() => setCommandPaletteOpen(false)}
+      />
+
       {libraryContextMenu && libraryContextMenuStyle && libraryContextTarget
         ? createPortal(
             <div
@@ -13293,17 +14299,14 @@ export default function App() {
             >
               <button
                 className="libraryContextItem"
-                disabled={
-                  (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== libraryContextTarget.id) ||
-                  launchCancelBusyInstanceId === libraryContextTarget.id
-                }
+                disabled={launchCancelBusyInstanceId === libraryContextTarget.id}
                 onClick={() => {
                   setLibraryContextMenu(null);
                   void onPlayInstance(libraryContextTarget);
                 }}
               >
-                <Icon name={launchBusyInstanceId === libraryContextTarget.id ? "x" : "play"} size={16} />
-                {launchBusyInstanceId === libraryContextTarget.id ? "Cancel launch" : "Play"}
+                <Icon name={launchBusyInstanceIds.includes(libraryContextTarget.id) ? "x" : "play"} size={16} />
+                {launchBusyInstanceIds.includes(libraryContextTarget.id) ? "Cancel launch" : "Play"}
               </button>
               <button
                 className="libraryContextItem"
@@ -13481,31 +14484,41 @@ export default function App() {
           title="Launch compatibility checks"
           onClose={() => setPreflightReportModal(null)}
         >
-          <div className="modalBody">
-            <div className="p" style={{ marginTop: 0 }}>
-              {preflightReportModal.report.status === "blocked"
-                ? "Launch is blocked until required fixes are handled."
-                : "Compatibility checks returned warnings."}
-            </div>
-            <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 12 }}>
-              <div className="rowBetween">
-                <div style={{ fontWeight: 900 }}>Checks</div>
-                <span className="chip subtle">
-                  {preflightReportModal.report.blocking_count} blocker{preflightReportModal.report.blocking_count === 1 ? "" : "s"} ·{" "}
-                  {preflightReportModal.report.warning_count} warning{preflightReportModal.report.warning_count === 1 ? "" : "s"}
-                </span>
+          <div className="modalBody preflightModalBody">
+            <div className={`preflightSummaryCard ${preflightReportModal.report.status === "blocked" ? "blocked" : "warning"}`}>
+              <div className="preflightSummaryTitle">
+                {preflightReportModal.report.status === "blocked"
+                  ? "Launch is currently blocked"
+                  : "Launch can continue with warnings"}
               </div>
-              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
-                {preflightReportModal.report.items.map((item) => (
-                  <div key={`${item.code}:${item.title}`} className="rowBetween">
-                    <div>
-                      <div style={{ fontWeight: 800 }}>{item.title}</div>
-                      <div className="muted">{item.message}</div>
+              <div className="preflightSummaryMeta">
+                {preflightReportModal.report.blocking_count} blocker{preflightReportModal.report.blocking_count === 1 ? "" : "s"} ·{" "}
+                {preflightReportModal.report.warning_count} warning{preflightReportModal.report.warning_count === 1 ? "" : "s"}
+              </div>
+            </div>
+            <div className="preflightChecksList">
+              {preflightReportModal.report.items.length === 0 ? (
+                <div className="preflightCheckItem">
+                  <div className="preflightCheckMain">
+                    <div className="preflightCheckTitle">No issues detected</div>
+                    <div className="preflightCheckMsg">Compatibility checks passed for this launch mode.</div>
+                  </div>
+                  <span className="chip subtle">ok</span>
+                </div>
+              ) : (
+                preflightReportModal.report.items.map((item) => (
+                  <div
+                    key={`${item.code}:${item.title}`}
+                    className={`preflightCheckItem ${item.blocking ? "blocker" : "warning"}`}
+                  >
+                    <div className="preflightCheckMain">
+                      <div className="preflightCheckTitle">{item.title}</div>
+                      <div className="preflightCheckMsg">{item.message}</div>
                     </div>
                     <span className={`chip ${item.blocking ? "danger" : "subtle"}`}>{item.severity}</span>
                   </div>
-                ))}
-              </div>
+                ))
+              )}
             </div>
           </div>
           <div className="footerBar">
@@ -13542,11 +14555,42 @@ export default function App() {
             >
               Identify local JARs
             </button>
+            {preflightReportModal.report.status === "blocked" ? (
+              <button
+                className="btn danger"
+                onClick={() => {
+                  const modal = preflightReportModal;
+                  if (!modal) return;
+                  const fingerprint = launchCompatibilityFingerprint(modal.report);
+                  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+                  setPreflightIgnoreByInstance((prev) => ({
+                    ...prev,
+                    [modal.instanceId]: {
+                      fingerprint,
+                      expires_at: expiresAt,
+                    },
+                  }));
+                  setPreflightReportModal(null);
+                  setInstallNotice(
+                    `Ignoring identical compatibility blockers for this instance until ${formatDateTime(
+                      new Date(expiresAt).toISOString()
+                    )}.`
+                  );
+                  const inst = instances.find((item) => item.id === modal.instanceId);
+                  if (inst) {
+                    void onPlayInstance(inst, modal.method);
+                  }
+                }}
+              >
+                Launch anyway (ignore 24h)
+              </button>
+            ) : null}
             <button
               className="btn primary"
               onClick={async () => {
                 const report = await preflightLaunchCompatibility({
                   instanceId: preflightReportModal.instanceId,
+                  method: preflightReportModal.method,
                 }).catch(() => null);
                 if (!report) return;
                 setPreflightReportModal((prev) => (prev ? { ...prev, report } : null));

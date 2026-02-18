@@ -1,8 +1,19 @@
-use crate::utils::{try_download_file, LauncherError};
+use crate::utils::{shared_http_client, try_download_file, LauncherError};
 use crate::Launcher;
 use sha1::Digest;
 use std::error::Error;
+use std::path::PathBuf;
 use tokio::fs;
+use tokio::task::JoinSet;
+
+#[derive(Clone)]
+struct AssetDownloadTask {
+    name: String,
+    hash: String,
+    size: u64,
+    object_path: PathBuf,
+    object_url: String,
+}
 
 impl Launcher {
     /// Install assets for the current version
@@ -31,7 +42,13 @@ impl Launcher {
 
         if !index_path.exists() {
             let index_url = self.version.profile["assetIndex"]["url"].as_str().unwrap();
-            let index_data = reqwest::get(index_url).await?.text().await?;
+            let index_data = shared_http_client()
+                .get(index_url)
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
             fs::write(&index_path, index_data).await?;
         }
 
@@ -58,7 +75,7 @@ impl Launcher {
 
         let mut total: u64 = 0;
         let mut current: u64 = 0;
-        let mut objects_to_download = vec![];
+        let mut objects_to_download: Vec<AssetDownloadTask> = vec![];
 
         for (name, object) in index["objects"].as_object().unwrap() {
             let object = object.as_object().unwrap();
@@ -67,14 +84,17 @@ impl Launcher {
             let object_path = objects_dir.join(&hash[..2]).join(&hash);
 
             if !object_path.exists() {
-                total += object["size"].as_u64().unwrap();
-                objects_to_download.push({
-                    let mut object = object.clone();
-                    object.insert(
-                        "name".to_string(),
-                        serde_json::Value::String(name.to_string()),
-                    );
-                    object
+                let size = object["size"].as_u64().unwrap_or(0);
+                total += size;
+                objects_to_download.push(AssetDownloadTask {
+                    name: name.to_string(),
+                    hash: hash.clone(),
+                    size,
+                    object_path: object_path.clone(),
+                    object_url: format!(
+                        "https://resources.download.minecraft.net/{}",
+                        hash[..2].to_string() + "/" + &hash
+                    ),
                 });
             }
         }
@@ -83,34 +103,39 @@ impl Launcher {
             self.emit_progress("downloading_assets", "", total, 0);
         }
 
-        for object in objects_to_download {
-            let name = object["name"].as_str().unwrap();
-            let hash = object["hash"].as_str().unwrap().to_string();
-            let object_path = objects_dir.join(&hash[..2]).join(&hash);
-
-            fs::create_dir_all(object_path.parent().unwrap()).await?;
-
-            let object_url = format!(
-                "https://resources.download.minecraft.net/{}",
-                hash[..2].to_string() + "/" + &hash
-            );
-
-            try_download_file(&object_url, &object_path, &hash, 3).await?;
-
-            current += object["size"].as_u64().unwrap();
-            self.emit_progress("downloading_assets", name, total, current);
-
-            // Legacy assets
-            if self.version.profile["assets"].as_str().unwrap() == "legacy"
-                || self.version.profile["assets"].as_str().unwrap() == "pre-1.6"
-            {
-                let resources_path = self
-                    .game_dir
-                    .join("resources")
-                    .join(object["name"].as_str().unwrap());
-                fs::create_dir_all(resources_path.parent().unwrap()).await?;
-                fs::copy(&object_path, &resources_path).await?;
+        let legacy_assets = self.version.profile["assets"].as_str().unwrap() == "legacy"
+            || self.version.profile["assets"].as_str().unwrap() == "pre-1.6";
+        let resources_root = self.game_dir.join("resources");
+        let mut cursor = 0usize;
+        let concurrency = 16usize;
+        while cursor < objects_to_download.len() {
+            let end = (cursor + concurrency).min(objects_to_download.len());
+            let mut set = JoinSet::new();
+            for task in objects_to_download[cursor..end].iter().cloned() {
+                set.spawn(async move {
+                    if let Some(parent) = task.object_path.parent() {
+                        fs::create_dir_all(parent).await?;
+                    }
+                    try_download_file(&task.object_url, &task.object_path, &task.hash, 3).await?;
+                    Ok::<AssetDownloadTask, Box<dyn Error + Send + Sync>>(task)
+                });
             }
+            while let Some(joined) = set.join_next().await {
+                let task = joined.map_err(|e| {
+                    Box::new(LauncherError(format!("Asset download worker failed: {e}")))
+                        as Box<dyn Error + Send + Sync>
+                })??;
+                current += task.size;
+                self.emit_progress("downloading_assets", &task.name, total, current);
+                if legacy_assets {
+                    let resources_path = resources_root.join(&task.name);
+                    if let Some(parent) = resources_path.parent() {
+                        fs::create_dir_all(parent).await?;
+                    }
+                    fs::copy(&task.object_path, &resources_path).await?;
+                }
+            }
+            cursor = end;
         }
 
         Ok(())
@@ -142,7 +167,13 @@ impl Launcher {
                     .as_str()
                     .unwrap()
                     .to_string();
-                let log4j = reqwest::get(&log4j_url).await?.bytes().await?;
+                let log4j = shared_http_client()
+                    .get(&log4j_url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .bytes()
+                    .await?;
                 fs::create_dir_all(log4j_path.parent().unwrap()).await?;
                 fs::write(&log4j_path, log4j).await?;
             }

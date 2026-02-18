@@ -18,8 +18,13 @@ use crate::modpack::store::{
     set_instance_link, upsert_spec, write_store,
 };
 use crate::modpack::types::*;
+use reqwest::blocking::Client;
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use tauri::Manager;
 
 #[tauri::command]
 pub fn list_modpack_specs(app: tauri::AppHandle) -> Result<Vec<ModpackSpec>, String> {
@@ -540,6 +545,257 @@ fn count_remaining_local_entries(spec: &ModpackSpec) -> usize {
         .count()
 }
 
+const LOCAL_JAR_IMPORT_PROGRESS_EVENT: &str = "modpack_local_jar_import_progress";
+
+#[derive(Debug, Clone)]
+struct PreparedLocalImport {
+    index: usize,
+    path: String,
+    safe_file_name: String,
+    entry: ModEntry,
+    resolved: bool,
+    source_hint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedLocalImportOutcome {
+    Ready(PreparedLocalImport),
+    Skipped {
+        index: usize,
+        path: String,
+        file_name: String,
+        status: String,
+        message: String,
+    },
+}
+
+fn emit_local_jar_import_progress(
+    app: &tauri::AppHandle,
+    args: &ImportLocalJarsToLayerArgs,
+    index: usize,
+    total: usize,
+    path: String,
+    status: &str,
+    message: Option<String>,
+) {
+    let _ = app.emit_all(
+        LOCAL_JAR_IMPORT_PROGRESS_EVENT,
+        ModpackImportLocalJarProgressEvent {
+            modpack_id: args.modpack_id.clone(),
+            layer_id: args.layer_id.clone(),
+            index,
+            total,
+            path,
+            status: status.to_string(),
+            message,
+        },
+    );
+}
+
+fn dedupe_basis_for_entry(entry: &ModEntry) -> String {
+    if !entry.provider.trim().eq_ignore_ascii_case("local") {
+        return "provider".to_string();
+    }
+    if entry
+        .local_sha512
+        .as_ref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return "local_sha512".to_string();
+    }
+    if entry
+        .local_file_name
+        .as_ref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        return "filename".to_string();
+    }
+    "provider".to_string()
+}
+
+fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(usize, String)> {
+    let key = entry_key_for(entry);
+    if let Some(idx) = entries
+        .iter()
+        .position(|current| entry_key_for(current) == key)
+    {
+        return Some((idx, "provider".to_string()));
+    }
+
+    if let Some(sha512) = entry.local_sha512.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        if let Some(idx) = entries.iter().position(|current| {
+            current
+                .local_sha512
+                .as_ref()
+                .map(|value| value.trim().eq_ignore_ascii_case(sha512))
+                .unwrap_or(false)
+        }) {
+            return Some((idx, "local_sha512".to_string()));
+        }
+    }
+
+    if let Some(file_name) = entry
+        .local_file_name
+        .as_ref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(idx) = entries.iter().position(|current| {
+            current
+                .local_file_name
+                .as_ref()
+                .map(|value| value.trim().to_ascii_lowercase() == file_name)
+                .unwrap_or(false)
+        }) {
+            return Some((idx, "filename".to_string()));
+        }
+    }
+
+    None
+}
+
+fn preprocess_local_jar_task(
+    index: usize,
+    path_text: String,
+    auto_identify: bool,
+    client: Option<&Client>,
+) -> PreparedLocalImportOutcome {
+    let trimmed = path_text.trim().to_string();
+    if trimmed.is_empty() {
+        return PreparedLocalImportOutcome::Skipped {
+            index,
+            path: path_text,
+            file_name: "unknown".to_string(),
+            status: "skipped".to_string(),
+            message: "Path is empty.".to_string(),
+        };
+    }
+
+    let path = PathBuf::from(&trimmed);
+    if !path.exists() {
+        return PreparedLocalImportOutcome::Skipped {
+            index,
+            path: trimmed.clone(),
+            file_name: path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            status: "skipped".to_string(),
+            message: "File not found.".to_string(),
+        };
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    if ext != "jar" {
+        return PreparedLocalImportOutcome::Skipped {
+            index,
+            path: trimmed.clone(),
+            file_name: path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            status: "skipped".to_string(),
+            message: "Only .jar files are supported.".to_string(),
+        };
+    }
+
+    let file_name_raw = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("local-mod.jar");
+    let safe_file_name = crate::sanitize_filename(file_name_raw);
+    if safe_file_name.trim().is_empty() {
+        return PreparedLocalImportOutcome::Skipped {
+            index,
+            path: trimmed,
+            file_name: file_name_raw.to_string(),
+            status: "failed".to_string(),
+            message: "Filename could not be sanitized.".to_string(),
+        };
+    }
+
+    let bytes = match fs::read(&path) {
+        Ok(value) => value,
+        Err(err) => {
+            return PreparedLocalImportOutcome::Skipped {
+                index,
+                path: path.display().to_string(),
+                file_name: safe_file_name,
+                status: "failed".to_string(),
+                message: format!("Read failed: {err}"),
+            };
+        }
+    };
+
+    let sha512 = crate::sha512_hex(&bytes);
+    let fingerprints = crate::curseforge_fingerprint_candidates(&bytes);
+    let display_name = crate::infer_local_name(&safe_file_name);
+    let detected = if auto_identify {
+        client
+            .and_then(|http| crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true))
+            .map(provider_resolution_from_import)
+    } else {
+        None
+    };
+    let source_hint = detected.as_ref().map(|value| value.source.clone());
+
+    let mut entry = normalize_entry_for_add(ModEntry {
+        provider: detected
+            .as_ref()
+            .map(|value| value.source.clone())
+            .unwrap_or_else(|| "local".to_string()),
+        project_id: detected
+            .as_ref()
+            .map(|value| value.project_id.clone())
+            .unwrap_or_else(|| format!("local:{}", safe_file_name.to_ascii_lowercase())),
+        slug: Some(display_name.clone()),
+        content_type: "mods".to_string(),
+        required: true,
+        pin: detected.as_ref().map(|value| value.version_id.clone()),
+        channel_policy: "stable".to_string(),
+        fallback_policy: "inherit".to_string(),
+        replacement_group: None,
+        notes: Some(
+            detected
+                .as_ref()
+                .map(|value| value.name.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(display_name),
+        ),
+        disabled_by_default: false,
+        optional: false,
+        target_scope: "instance".to_string(),
+        target_worlds: vec![],
+        local_file_name: Some(safe_file_name.clone()),
+        local_file_path: Some(path.display().to_string()),
+        local_sha512: Some(sha512),
+        local_fingerprints: fingerprints,
+    });
+
+    if let Some(found) = detected.as_ref() {
+        if entry.notes.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+            entry.notes = Some(found.name.clone());
+        }
+    }
+
+    PreparedLocalImportOutcome::Ready(PreparedLocalImport {
+        index,
+        path: path.display().to_string(),
+        safe_file_name,
+        entry,
+        resolved: detected.is_some(),
+        source_hint,
+    })
+}
+
 #[tauri::command]
 pub fn import_local_jars_to_modpack_layer(
     app: tauri::AppHandle,
@@ -562,122 +818,187 @@ pub fn import_local_jars_to_modpack_layer(
     }
 
     let auto_identify = args.auto_identify.unwrap_or(false);
-    let client = if auto_identify {
-        Some(crate::build_http_client()?)
-    } else {
-        None
-    };
+    let total = args.file_paths.len();
+
+    for (idx, path_text) in args.file_paths.iter().enumerate() {
+        emit_local_jar_import_progress(
+            &app,
+            &args,
+            idx,
+            total,
+            path_text.clone(),
+            "queued",
+            Some("Queued".to_string()),
+        );
+    }
+
+    let queue = Arc::new(Mutex::new(
+        args.file_paths
+            .iter()
+            .cloned()
+            .enumerate()
+            .collect::<VecDeque<(usize, String)>>(),
+    ));
+    let worker_count = std::cmp::min(5, total.max(1));
+    let (tx, rx) = mpsc::channel::<PreparedLocalImportOutcome>();
+
+    for _ in 0..worker_count {
+        let queue_ref = Arc::clone(&queue);
+        let tx_ref = tx.clone();
+        thread::spawn(move || {
+            let client = if auto_identify {
+                crate::build_http_client().ok()
+            } else {
+                None
+            };
+            loop {
+                let next = {
+                    let Ok(mut guard) = queue_ref.lock() else {
+                        break;
+                    };
+                    guard.pop_front()
+                };
+                let Some((index, path_text)) = next else {
+                    break;
+                };
+                let outcome = preprocess_local_jar_task(index, path_text, auto_identify, client.as_ref());
+                let _ = tx_ref.send(outcome);
+            }
+        });
+    }
+    drop(tx);
+
+    let mut outcomes_by_index: Vec<Option<PreparedLocalImportOutcome>> = vec![None; total];
+    let mut received = 0usize;
+    while let Ok(outcome) = rx.recv() {
+        let index = match &outcome {
+            PreparedLocalImportOutcome::Ready(item) => item.index,
+            PreparedLocalImportOutcome::Skipped { index, .. } => *index,
+        };
+        if index < outcomes_by_index.len() {
+            outcomes_by_index[index] = Some(outcome);
+        }
+        received += 1;
+        if received >= total {
+            break;
+        }
+    }
 
     let mut added_entries = 0usize;
     let mut updated_entries = 0usize;
     let mut resolved_entries = 0usize;
+    let mut items: Vec<ModpackImportLocalJarItemResult> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    for path_text in args.file_paths {
-        let trimmed = path_text.trim();
-        if trimmed.is_empty() {
+    for (idx, outcome_opt) in outcomes_by_index.into_iter().enumerate() {
+        let Some(outcome) = outcome_opt else {
+            let raw_path = args.file_paths.get(idx).cloned().unwrap_or_default();
+            warnings.push(format!("Skipped '{}': import worker did not return a result.", raw_path));
+            items.push(ModpackImportLocalJarItemResult {
+                index: idx,
+                path: raw_path.clone(),
+                file_name: "unknown".to_string(),
+                status: "failed".to_string(),
+                message: "Worker result missing.".to_string(),
+                dedupe_basis: None,
+                duplicate_of: None,
+                source_hint: None,
+                resolved: false,
+            });
+            emit_local_jar_import_progress(
+                &app,
+                &args,
+                idx,
+                total,
+                raw_path,
+                "failed",
+                Some("Worker result missing.".to_string()),
+            );
             continue;
-        }
-        let path = PathBuf::from(trimmed);
-        if !path.exists() {
-            warnings.push(format!("Skipped '{}': file was not found.", trimmed));
-            continue;
-        }
-
-        let ext = path
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        if ext != "jar" {
-            warnings.push(format!("Skipped '{}': only .jar files are supported.", path.display()));
-            continue;
-        }
-
-        let file_name_raw = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("local-mod.jar");
-        let safe_file_name = crate::sanitize_filename(file_name_raw);
-        if safe_file_name.trim().is_empty() {
-            warnings.push(format!("Skipped '{}': filename could not be sanitized.", path.display()));
-            continue;
-        }
-
-        let bytes = match fs::read(&path) {
-            Ok(value) => value,
-            Err(err) => {
-                warnings.push(format!("Skipped '{}': read failed ({err}).", path.display()));
-                continue;
-            }
         };
 
-        let sha512 = crate::sha512_hex(&bytes);
-        let fingerprints = crate::curseforge_fingerprint_candidates(&bytes);
-        let display_name = crate::infer_local_name(&safe_file_name);
-        let detected = client
-            .as_ref()
-            .and_then(|http| crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true))
-            .map(provider_resolution_from_import);
-
-        let mut entry = normalize_entry_for_add(ModEntry {
-            provider: detected
-                .as_ref()
-                .map(|value| value.source.clone())
-                .unwrap_or_else(|| "local".to_string()),
-            project_id: detected
-                .as_ref()
-                .map(|value| value.project_id.clone())
-                .unwrap_or_else(|| format!("local:{}", safe_file_name.to_ascii_lowercase())),
-            slug: Some(display_name.clone()),
-            content_type: "mods".to_string(),
-            required: true,
-            pin: detected.as_ref().map(|value| value.version_id.clone()),
-            channel_policy: "stable".to_string(),
-            fallback_policy: "inherit".to_string(),
-            replacement_group: None,
-            notes: Some(
-                detected
-                    .as_ref()
-                    .map(|value| value.name.clone())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(display_name),
-            ),
-            disabled_by_default: false,
-            optional: false,
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
-            local_file_name: Some(safe_file_name.clone()),
-            local_file_path: Some(path.display().to_string()),
-            local_sha512: Some(sha512.clone()),
-            local_fingerprints: fingerprints,
-        });
-
-        if let Some(found) = detected {
-            resolved_entries += 1;
-            if entry.notes.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
-                entry.notes = Some(found.name);
+        match outcome {
+            PreparedLocalImportOutcome::Skipped {
+                index,
+                path,
+                file_name,
+                status,
+                message,
+            } => {
+                warnings.push(format!("Skipped '{}': {}", path, message));
+                items.push(ModpackImportLocalJarItemResult {
+                    index,
+                    path: path.clone(),
+                    file_name,
+                    status: status.clone(),
+                    message: message.clone(),
+                    dedupe_basis: None,
+                    duplicate_of: None,
+                    source_hint: None,
+                    resolved: false,
+                });
+                emit_local_jar_import_progress(&app, &args, index, total, path, &status, Some(message));
             }
-        } else if auto_identify {
-            warnings.push(format!(
-                "Added '{}' as local entry (provider match not found yet).",
-                safe_file_name
-            ));
-        }
+            PreparedLocalImportOutcome::Ready(item) => {
+                let index = item.index;
+                let entry = item.entry;
+                let dedupe_basis_default = dedupe_basis_for_entry(&entry);
+                emit_local_jar_import_progress(
+                    &app,
+                    &args,
+                    index,
+                    total,
+                    item.path.clone(),
+                    "running",
+                    Some("Importing…".to_string()),
+                );
 
-        let key = entry_key_for(&entry);
-        let layer = &mut spec.layers[layer_idx];
-        if let Some(existing_idx) = layer
-            .entries_delta
-            .add
-            .iter()
-            .position(|current| entry_key_for(current) == key)
-        {
-            layer.entries_delta.add[existing_idx] = entry;
-            updated_entries += 1;
-        } else {
-            layer.entries_delta.add.push(entry);
-            added_entries += 1;
+                if item.resolved {
+                    resolved_entries += 1;
+                } else if auto_identify {
+                    warnings.push(format!(
+                        "Added '{}' as local entry (provider match not found yet).",
+                        item.safe_file_name
+                    ));
+                }
+
+                let layer = &mut spec.layers[layer_idx];
+                let (status, message, duplicate_of, dedupe_basis) =
+                    if let Some((existing_idx, matched_basis)) = find_dedupe_entry_index(&layer.entries_delta.add, &entry)
+                {
+                    let existing_project_id = layer.entries_delta.add[existing_idx].project_id.clone();
+                    layer.entries_delta.add[existing_idx] = entry.clone();
+                    updated_entries += 1;
+                    (
+                        "updated_deduped".to_string(),
+                        format!("Updated existing entry via {matched_basis} dedupe."),
+                        Some(existing_project_id),
+                        Some(matched_basis),
+                    )
+                } else {
+                    layer.entries_delta.add.push(entry.clone());
+                    added_entries += 1;
+                    (
+                        "added".to_string(),
+                        "Added local entry.".to_string(),
+                        None,
+                        Some(dedupe_basis_default),
+                    )
+                };
+
+                items.push(ModpackImportLocalJarItemResult {
+                    index,
+                    path: item.path.clone(),
+                    file_name: item.safe_file_name,
+                    status: status.clone(),
+                    message: message.clone(),
+                    dedupe_basis,
+                    duplicate_of,
+                    source_hint: item.source_hint,
+                    resolved: item.resolved,
+                });
+                emit_local_jar_import_progress(&app, &args, index, total, item.path, &status, Some(message));
+            }
         }
     }
 
@@ -696,6 +1017,7 @@ pub fn import_local_jars_to_modpack_layer(
         added_entries,
         updated_entries,
         resolved_entries,
+        items,
         warnings,
     })
 }

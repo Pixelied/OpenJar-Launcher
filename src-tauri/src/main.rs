@@ -446,6 +446,14 @@ struct SetInstalledModEnabledArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct RemoveInstalledModArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(alias = "versionId")]
+    version_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ImportLocalModFileArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
@@ -479,6 +487,8 @@ struct ExportInstanceModsZipArgs {
 struct PreflightLaunchCompatibilityArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
+    #[serde(alias = "launchMethod", default)]
+    method: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1564,6 +1574,7 @@ struct AppState {
     login_sessions: Arc<Mutex<HashMap<String, MicrosoftLoginState>>>,
     running: Arc<Mutex<HashMap<String, RunningProcess>>>,
     launch_cancelled: Arc<Mutex<HashSet<String>>>,
+    stop_requested_launches: Arc<Mutex<HashSet<String>>>,
 }
 
 fn app_instances_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -2118,6 +2129,26 @@ fn prune_old_snapshots(instance_dir: &Path, keep: usize, max_age_days: i64) -> R
     Ok(())
 }
 
+fn snapshot_reason_slug(reason: &str) -> String {
+    let mut out = String::with_capacity(reason.len());
+    let mut last_dash = false;
+    for ch in reason.chars() {
+        let lower = ch.to_ascii_lowercase();
+        if lower.is_ascii_alphanumeric() {
+            out.push(lower);
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let cleaned = out.trim_matches('-');
+    if cleaned.is_empty() {
+        return String::new();
+    }
+    cleaned.chars().take(32).collect()
+}
+
 fn create_instance_snapshot(
     instances_dir: &Path,
     instance_id: &str,
@@ -2125,7 +2156,14 @@ fn create_instance_snapshot(
 ) -> Result<SnapshotMeta, String> {
     let instance_dir = instances_dir.join(instance_id);
     let lock = read_lockfile(instances_dir, instance_id)?;
-    let snapshot_id = format!("snap_{}", now_millis());
+    let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let reason_slug = snapshot_reason_slug(reason);
+    let entropy = now_millis() % 1000;
+    let snapshot_id = if reason_slug.is_empty() {
+        format!("snapshot-{stamp}-{entropy:03}")
+    } else {
+        format!("snapshot-{stamp}-{reason_slug}-{entropy:03}")
+    };
     let snapshot_dir = snapshots_dir(&instance_dir).join(&snapshot_id);
     fs::create_dir_all(&snapshot_dir).map_err(|e| format!("mkdir snapshot failed: {e}"))?;
 
@@ -5459,6 +5497,99 @@ fn disable_mod_file(instance_dir: &Path, filename: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+enum PrefetchedDownload {
+    Ready(Vec<u8>),
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+struct PrefetchJob {
+    index: usize,
+    update: ContentUpdateInfo,
+}
+
+fn prefetch_update_downloads(
+    client: &Client,
+    updates: &[ContentUpdateInfo],
+    worker_cap: usize,
+) -> HashMap<usize, PrefetchedDownload> {
+    let mut queue: VecDeque<PrefetchJob> = VecDeque::new();
+    for (index, update) in updates.iter().enumerate() {
+        let normalized = normalize_lock_content_type(&update.content_type);
+        if !is_updatable_content_type(&normalized) {
+            continue;
+        }
+        let source = update.source.trim().to_lowercase();
+        if source != "modrinth" && source != "curseforge" {
+            continue;
+        }
+        let Some(download_url) = update.latest_download_url.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let mut prepared = update.clone();
+        prepared.latest_download_url = Some(download_url.to_string());
+        queue.push_back(PrefetchJob {
+            index,
+            update: prepared,
+        });
+    }
+    if queue.is_empty() {
+        return HashMap::new();
+    }
+
+    let jobs = Arc::new(Mutex::new(queue));
+    let out: Arc<Mutex<HashMap<usize, PrefetchedDownload>>> = Arc::new(Mutex::new(HashMap::new()));
+    let worker_count = worker_cap.max(1).min(8).min({
+        let guard = jobs.lock();
+        match guard {
+            Ok(items) => items.len(),
+            Err(_) => 1,
+        }
+    });
+
+    let mut handles = Vec::new();
+    for _ in 0..worker_count {
+        let jobs_ref = jobs.clone();
+        let out_ref = out.clone();
+        let client_ref = client.clone();
+        handles.push(thread::spawn(move || loop {
+            let next = {
+                let mut guard = match jobs_ref.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                guard.pop_front()
+            };
+            let Some(job) = next else {
+                return;
+            };
+            let download_url = job
+                .update
+                .latest_download_url
+                .as_ref()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty());
+            let Some(download_url) = download_url else {
+                continue;
+            };
+            let result = download_bytes_with_retry(&client_ref, &download_url, &job.update.project_id)
+                .map(PrefetchedDownload::Ready)
+                .unwrap_or_else(PrefetchedDownload::Failed);
+            if let Ok(mut guard) = out_ref.lock() {
+                guard.insert(job.index, result);
+            }
+        }));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
+    match Arc::try_unwrap(out) {
+        Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+        Err(shared) => shared.lock().map(|v| v.clone()).unwrap_or_default(),
+    }
+}
+
 fn try_fast_install_content_update(
     instances_dir: &Path,
     instance: &Instance,
@@ -5466,6 +5597,7 @@ fn try_fast_install_content_update(
     client: &Client,
     cf_key: Option<&str>,
     update: &ContentUpdateInfo,
+    prefetched_download: Option<&PrefetchedDownload>,
 ) -> Result<Option<InstalledMod>, String> {
     let source = update.source.trim().to_lowercase();
     let normalized = normalize_lock_content_type(&update.content_type);
@@ -5529,7 +5661,16 @@ fn try_fast_install_content_update(
             return Err("Resolved filename is invalid".to_string());
         }
 
-        let bytes = download_bytes_with_retry(client, &download_url, &update.project_id)?;
+        let bytes = if let Some(prefetched) = prefetched_download {
+            match prefetched {
+                PrefetchedDownload::Ready(bytes) => bytes.clone(),
+                PrefetchedDownload::Failed(err) => {
+                    return Err(format!("prefetch download failed: {err}"));
+                }
+            }
+        } else {
+            download_bytes_with_retry(client, &download_url, &update.project_id)?
+        };
 
         let worlds = if normalized == "datapacks" {
             normalize_target_worlds_for_datapack(&instance_dir, &update.target_worlds)?
@@ -5625,7 +5766,16 @@ fn try_fast_install_content_update(
         if safe_filename.is_empty() {
             return Err("Resolved CurseForge filename is invalid".to_string());
         }
-        let bytes = download_bytes_with_retry(client, &download_url, &format!("cf:{mod_id}:{latest_file_id}"))?;
+        let bytes = if let Some(prefetched) = prefetched_download {
+            match prefetched {
+                PrefetchedDownload::Ready(bytes) => bytes.clone(),
+                PrefetchedDownload::Failed(err) => {
+                    return Err(format!("prefetch download failed: {err}"));
+                }
+            }
+        } else {
+            download_bytes_with_retry(client, &download_url, &format!("cf:{mod_id}:{latest_file_id}"))?
+        };
 
         let worlds = if normalized == "datapacks" {
             normalize_target_worlds_for_datapack(&instance_dir, &update.target_worlds)?
@@ -8498,6 +8648,13 @@ fn stop_running_instance(
     let Some(proc_entry) = removed else {
         return Err("Running instance not found".to_string());
     };
+    {
+        let mut stop_guard = state
+            .stop_requested_launches
+            .lock()
+            .map_err(|_| "lock stop requested launches failed".to_string())?;
+        stop_guard.insert(args.launch_id.clone());
+    }
     if let Ok(mut child) = proc_entry.child.lock() {
         let _ = child.kill();
     }
@@ -8552,6 +8709,9 @@ fn cancel_instance_launch(
 
     for proc_entry in removed {
         stopped_any = true;
+        if let Ok(mut stop_guard) = state.stop_requested_launches.lock() {
+            stop_guard.insert(proc_entry.meta.launch_id.clone());
+        }
         if let Ok(mut child) = proc_entry.child.lock() {
             let _ = child.kill();
         }
@@ -10688,8 +10848,9 @@ fn update_all_instance_content_inner(
     let mut by_source: HashMap<String, usize> = HashMap::new();
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
     let cf_key = curseforge_api_key();
+    let prefetched_downloads = prefetch_update_downloads(&client, &check.updates, 5);
 
-    for update in &check.updates {
+    for (idx, update) in check.updates.iter().enumerate() {
         let mut used_fast_path = false;
         let install_result = match try_fast_install_content_update(
             &instances_dir,
@@ -10698,6 +10859,7 @@ fn update_all_instance_content_inner(
             &client,
             cf_key.as_deref(),
             update,
+            prefetched_downloads.get(&idx),
         ) {
             Ok(Some(installed)) => {
                 used_fast_path = true;
@@ -11317,6 +11479,7 @@ async fn launch_instance(
             );
 
             let running_state = state.running.clone();
+            let stop_requested_state = state.stop_requested_launches.clone();
             let app_for_thread = app.clone();
             let launch_id_for_thread = launch_id.clone();
             let instance_id_for_thread = instance.id.clone();
@@ -11358,6 +11521,16 @@ async fn launch_instance(
                 if let Ok(mut guard) = running_state.lock() {
                     guard.remove(&launch_id_for_thread);
                 }
+                let user_requested_stop = stop_requested_state
+                    .lock()
+                    .ok()
+                    .map(|mut guard| guard.remove(&launch_id_for_thread))
+                    .unwrap_or(false);
+                let exit_message = if user_requested_stop {
+                    "Instance stopped by user.".to_string()
+                } else {
+                    exit_message
+                };
                 if let Some(path) = runtime_session_cleanup_for_thread {
                     let _ = remove_path_if_exists(&path);
                 }
@@ -11522,10 +11695,14 @@ fn write_zip_text(
     Ok(())
 }
 
-fn detect_duplicate_enabled_mod_filenames(lock: &Lockfile) -> Vec<(String, usize)> {
+fn detect_duplicate_enabled_mod_filenames(lock: &Lockfile, instance_dir: &Path) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for entry in &lock.entries {
         if !entry.enabled || normalize_lock_content_type(&entry.content_type) != "mods" {
+            continue;
+        }
+        let (enabled_path, _) = mod_paths(instance_dir, &entry.filename);
+        if !enabled_path.exists() {
             continue;
         }
         let key = entry.filename.trim().to_ascii_lowercase();
@@ -11555,63 +11732,86 @@ fn preflight_launch_compatibility(
     let settings = read_launcher_settings(&app)?;
 
     let mut items: Vec<LaunchCompatibilityItem> = Vec::new();
-    let required_java = required_java_major_for_mc(&instance.mc_version);
-    let java_executable = if !instance_settings.java_path.trim().is_empty() {
-        instance_settings.java_path.trim().to_string()
-    } else {
-        resolve_java_executable(&settings).unwrap_or_default()
-    };
-    if java_executable.trim().is_empty() {
-        items.push(LaunchCompatibilityItem {
-            code: "JAVA_PATH_UNRESOLVED".to_string(),
-            title: "Java runtime path missing".to_string(),
-            message: "Could not resolve a Java executable for this instance.".to_string(),
-            severity: "blocker".to_string(),
-            blocking: true,
-        });
-    } else if let Ok((java_major, version_line)) = detect_java_major(&java_executable) {
-        if java_major < required_java {
+    let launch_method = args
+        .method
+        .as_deref()
+        .and_then(LaunchMethod::parse)
+        .unwrap_or(LaunchMethod::Native);
+    if launch_method == LaunchMethod::Native {
+        let required_java = required_java_major_for_mc(&instance.mc_version);
+        let java_executable = if !instance_settings.java_path.trim().is_empty() {
+            instance_settings.java_path.trim().to_string()
+        } else {
+            resolve_java_executable(&settings).unwrap_or_default()
+        };
+        if java_executable.trim().is_empty() {
             items.push(LaunchCompatibilityItem {
-                code: "JAVA_VERSION_INCOMPATIBLE".to_string(),
-                title: "Java version is too old".to_string(),
-                message: format!(
-                    "Java {java_major} detected ({version_line}), but Minecraft {} needs Java {}+.",
-                    instance.mc_version, required_java
-                ),
+                code: "JAVA_PATH_UNRESOLVED".to_string(),
+                title: "Java runtime path missing".to_string(),
+                message: "Could not resolve a Java executable for this instance.".to_string(),
                 severity: "blocker".to_string(),
                 blocking: true,
             });
+        } else if let Ok((java_major, version_line)) = detect_java_major(&java_executable) {
+            if java_major < required_java {
+                items.push(LaunchCompatibilityItem {
+                    code: "JAVA_VERSION_INCOMPATIBLE".to_string(),
+                    title: "Java version is too old".to_string(),
+                    message: format!(
+                        "Java {java_major} detected ({version_line}), but Minecraft {} needs Java {}+.",
+                        instance.mc_version, required_java
+                    ),
+                    severity: "blocker".to_string(),
+                    blocking: true,
+                });
+            }
+        } else {
+            items.push(LaunchCompatibilityItem {
+                code: "JAVA_VERSION_CHECK_FAILED".to_string(),
+                title: "Could not verify Java version".to_string(),
+                message: "Launch may fail until Java runtime is verified.".to_string(),
+                severity: "warning".to_string(),
+                blocking: false,
+            });
         }
-    } else {
-        items.push(LaunchCompatibilityItem {
-            code: "JAVA_VERSION_CHECK_FAILED".to_string(),
-            title: "Could not verify Java version".to_string(),
-            message: "Launch may fail until Java runtime is verified.".to_string(),
-            severity: "warning".to_string(),
-            blocking: false,
-        });
     }
 
-    let mut missing_enabled = 0usize;
+    let mut missing_enabled_mods = 0usize;
+    let mut missing_enabled_non_mods = 0usize;
     for entry in &lock.entries {
         if !entry.enabled {
             continue;
         }
         if !entry_file_exists(&instance_dir, entry) {
-            missing_enabled += 1;
+            if normalize_lock_content_type(&entry.content_type) == "mods" {
+                missing_enabled_mods += 1;
+            } else {
+                missing_enabled_non_mods += 1;
+            }
         }
     }
-    if missing_enabled > 0 {
+    if missing_enabled_mods > 0 {
         items.push(LaunchCompatibilityItem {
-            code: "MISSING_ENABLED_FILES".to_string(),
-            title: "Enabled content file missing".to_string(),
-            message: format!("{missing_enabled} enabled lock entries are missing on disk."),
+            code: "MISSING_ENABLED_MOD_FILES".to_string(),
+            title: "Enabled mod file missing".to_string(),
+            message: format!("{missing_enabled_mods} enabled mod entries are missing on disk."),
             severity: "blocker".to_string(),
             blocking: true,
         });
     }
+    if missing_enabled_non_mods > 0 {
+        items.push(LaunchCompatibilityItem {
+            code: "MISSING_ENABLED_NONMOD_FILES".to_string(),
+            title: "Some enabled non-mod content is missing".to_string(),
+            message: format!(
+                "{missing_enabled_non_mods} enabled non-mod entries are missing on disk. This usually does not block launch."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
 
-    let duplicates = detect_duplicate_enabled_mod_filenames(&lock);
+    let duplicates = detect_duplicate_enabled_mod_filenames(&lock, &instance_dir);
     if !duplicates.is_empty() {
         let preview = duplicates
             .iter()
@@ -11621,10 +11821,12 @@ fn preflight_launch_compatibility(
             .join(", ");
         items.push(LaunchCompatibilityItem {
             code: "DUPLICATE_MOD_FILENAMES".to_string(),
-            title: "Duplicate enabled mod entries".to_string(),
-            message: format!("Conflicting filenames detected: {preview}"),
-            severity: "blocker".to_string(),
-            blocking: true,
+            title: "Possible duplicate enabled mods".to_string(),
+            message: format!(
+                "Detected duplicate enabled mod filenames: {preview}. This can cause odd behavior, but may still launch."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
         });
     }
 
@@ -11912,6 +12114,40 @@ fn set_installed_mod_enabled(
     Ok(lock_entry_to_installed(&instance_dir, &entry))
 }
 
+#[tauri::command]
+fn remove_installed_mod(
+    app: tauri::AppHandle,
+    args: RemoveInstalledModArgs,
+) -> Result<InstalledMod, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let _ = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instances_dir.join(&args.instance_id);
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+
+    let idx = lock
+        .entries
+        .iter()
+        .position(|e| e.version_id == args.version_id)
+        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let entry = lock.entries.remove(idx);
+    if normalize_lock_content_type(&entry.content_type) != "mods" {
+        return Err("Delete is currently supported for mods only".to_string());
+    }
+
+    let (enabled_path, disabled_path) = mod_paths(&instance_dir, &entry.filename);
+    if enabled_path.exists() {
+        fs::remove_file(&enabled_path)
+            .map_err(|e| format!("remove mod file '{}' failed: {e}", enabled_path.display()))?;
+    }
+    if disabled_path.exists() {
+        fs::remove_file(&disabled_path)
+            .map_err(|e| format!("remove disabled mod file '{}' failed: {e}", disabled_path.display()))?;
+    }
+
+    write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    Ok(lock_entry_to_installed(&instance_dir, &entry))
+}
+
 fn main() {
     tauri::Builder::default()
         .menu(build_main_menu("OpenJar Launcher"))
@@ -11954,6 +12190,7 @@ fn main() {
             resolve_local_mod_sources,
             list_installed_mods,
             set_installed_mod_enabled,
+            remove_installed_mod,
             preflight_launch_compatibility,
             launch_instance,
             get_launcher_settings,

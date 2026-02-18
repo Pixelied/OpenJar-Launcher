@@ -2,6 +2,7 @@ use async_recursion::async_recursion;
 use serde_json::Value;
 use sha1::Digest;
 use std::error::Error;
+use std::sync::OnceLock;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
@@ -23,6 +24,17 @@ impl From<LauncherError> for Box<dyn Error + Send> {
     }
 }
 
+pub(crate) fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .tcp_nodelay(true)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
 #[async_recursion]
 pub(crate) async fn try_download_file(
     url: &str,
@@ -33,19 +45,17 @@ pub(crate) async fn try_download_file(
     let url = url.replace(std::path::MAIN_SEPARATOR_STR, "/");
     let url = url.as_str();
 
-    let response = reqwest::get(url).await?;
+    let response = shared_http_client().get(url).send().await?.error_for_status()?;
     let data = response.bytes().await?;
 
     let mut file = fs::File::create(path).await?;
     file.write_all(&data).await?;
-    file.sync_all().await?;
-    file.flush().await?;
 
     if hash.len() != 40 {
         return Ok(());
     }
 
-    let downloaded_hash = format!("{:x}", sha1::Sha1::digest(&fs::read(path).await?));
+    let downloaded_hash = format!("{:x}", sha1::Sha1::digest(data.as_ref()));
 
     if downloaded_hash != hash {
         if retries > 0 {

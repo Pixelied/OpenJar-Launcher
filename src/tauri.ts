@@ -158,6 +158,13 @@ export function setInstalledModEnabled(input: {
   return invoke("set_installed_mod_enabled", { args: input });
 }
 
+export function removeInstalledMod(input: {
+  instanceId: string;
+  versionId: string;
+}): Promise<InstalledMod> {
+  return invoke("remove_installed_mod", { args: input });
+}
+
 export function importLocalModFile(input: {
   instanceId: string;
   filePath: string;
@@ -233,6 +240,7 @@ export function launchInstance(input: {
 
 export function preflightLaunchCompatibility(input: {
   instanceId: string;
+  method?: LaunchMethod;
 }): Promise<LaunchCompatibilityReport> {
   return invoke("preflight_launch_compatibility", { args: input });
 }

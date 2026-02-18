@@ -931,5 +931,28 @@ export type ModpackImportLocalJarsResult = {
   updated_entries: number;
   resolved_entries: number;
   remaining_local_entries: number;
+  items: ModpackImportLocalJarItemResult[];
   warnings: string[];
+};
+
+export type ModpackImportLocalJarItemResult = {
+  index: number;
+  path: string;
+  file_name: string;
+  status: "queued" | "running" | "added" | "updated_deduped" | "skipped" | "failed" | string;
+  message: string;
+  dedupe_basis?: "provider" | "local_sha512" | "filename" | string | null;
+  duplicate_of?: string | null;
+  source_hint?: string | null;
+  resolved: boolean;
+};
+
+export type ModpackImportLocalJarProgressEvent = {
+  modpack_id: string;
+  layer_id: string;
+  index: number;
+  total: number;
+  path: string;
+  status: "queued" | "running" | "added" | "updated_deduped" | "skipped" | "failed" | string;
+  message?: string | null;
 };

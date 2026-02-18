@@ -709,6 +709,92 @@ button, input, select { font-family: inherit; }
     radial-gradient(1200px 700px at 50% 46%, color-mix(in srgb, var(--accent) 18%, transparent), transparent 68%),
     rgba(8, 14, 24, 0.36);
 }
+.commandPaletteOverlay{
+  position: fixed;
+  inset: 0;
+  z-index: calc(var(--z-modal) + 8);
+  background: rgba(3, 6, 12, 0.56);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: max(72px, calc(env(safe-area-inset-top) + 56px)) 18px 24px;
+}
+.commandPalettePanel{
+  width: min(760px, 100%);
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 86%, transparent);
+  background: color-mix(in srgb, var(--panel2) 95%, #000 5%);
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+.commandPaletteHeader{
+  font-size: 13px;
+  font-weight: 920;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.commandPaletteInput{
+  width: 100%;
+}
+.commandPaletteList{
+  max-height: min(62vh, 520px);
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+  padding-right: 2px;
+}
+.commandPaletteGroup{
+  display: grid;
+  gap: 6px;
+}
+.commandPaletteGroupTitle{
+  font-size: 11px;
+  font-weight: 900;
+  color: var(--muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.commandPaletteGroupItems{
+  display: grid;
+  gap: 6px;
+}
+.commandPaletteItem{
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--stroke) 66%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+  color: var(--text);
+  border-radius: 12px;
+  padding: 9px 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms var(--ease), background 140ms var(--ease), transform 140ms var(--ease);
+}
+.commandPaletteItem:hover,
+.commandPaletteItem.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 72%, var(--stroke2));
+  background: color-mix(in srgb, var(--accent-soft) 46%, var(--surface) 54%);
+  transform: translateY(-1px);
+}
+.commandPaletteItemLabel{
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.commandPaletteItemDetail{
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 760;
+}
+.commandPaletteEmpty{
+  border: 1px dashed var(--stroke2);
+  border-radius: 12px;
+  padding: 12px;
+  color: var(--muted);
+}
 .msCodeDialog{
   width: min(720px, calc(100vw - 36px));
   border-radius: 28px;
@@ -2548,6 +2634,13 @@ button, input, select { font-family: inherit; }
   flex-direction: column;
   gap: 8px;
 }
+.homeSpotlightTopRow{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .homeKicker{
   font-size: 11px;
   font-weight: 950;
@@ -2799,6 +2892,93 @@ button, input, select { font-family: inherit; }
 }
 .homeRecentActions .btn{
   min-width: 70px;
+}
+.homeCustomizeTop{
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.homeCustomizePanel{
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 18px;
+}
+.homeCustomizeHint{
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+.homeCustomizeList{
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+.homeCustomizeItem{
+  border: 1px solid color-mix(in srgb, var(--stroke) 70%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
+  padding: 9px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.homeCustomizeItem.hidden{
+  opacity: 0.7;
+}
+.homeCustomizeItemMain{
+  min-width: 0;
+}
+.homeCustomizeItemTitle{
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.homeCustomizeItemMeta{
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 760;
+}
+.homeCustomizeItemActions{
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.homeWidgetShell{
+  min-width: 0;
+}
+.homeWidgetShell.customizeOn{
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent-ring) 70%, var(--stroke2));
+  padding: 8px;
+  background: color-mix(in srgb, var(--accent-soft) 24%, transparent);
+}
+.homeWidgetShell.dragging{
+  opacity: 0.55;
+}
+.homeWidgetCustomizeStrip{
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.homeWidgetCustomizeActions{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.customizeDropZone{
+  min-height: 80px;
 }
 
 .libraryLayout{
@@ -3334,11 +3514,57 @@ button, input, select { font-family: inherit; }
 .instHeroText{ min-width: 0; }
 .instTitle{ font-size: 18px; font-weight: 900; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
 .instMetaRow{ display:flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
-.instHeroActions{ display:flex; gap: 8px; align-items:center; flex-wrap: wrap; }
+.instHeroActions{ display:flex; gap: 8px; align-items:center; flex-wrap: nowrap; }
 .instHeroActions .btn{
   min-height: var(--density-control-h);
   display: inline-flex;
   align-items: center;
+}
+.instHeroActions.compact{
+  gap: 6px;
+}
+.instHeroTools{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.instHeroIconBtn{
+  min-width: 38px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  justify-content: center;
+  position: relative;
+}
+.instHeroIconBtn .btnIcon{
+  margin-right: 0;
+}
+.instHeroToolDot{
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(239,68,68,0.95);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--surface) 90%, transparent);
+}
+.instanceLaunchBtn{
+  min-width: 132px;
+  justify-content: center;
+}
+@media (max-width: 1260px){
+  .instPageTop{
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .instHeroActions{
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .instHeroTools{
+    width: 100%;
+  }
 }
 
 .btnIcon{
@@ -3692,7 +3918,7 @@ button, input, select { font-family: inherit; }
 }
 .instanceModsHeaderRow{
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) minmax(220px, 0.55fr) 120px;
+  grid-template-columns: 36px minmax(0, 1fr) minmax(180px, 0.52fr) 136px;
   gap: 12px;
   align-items: center;
   padding: 6px 10px;
@@ -3718,7 +3944,7 @@ button, input, select { font-family: inherit; }
   background: rgba(127,127,127,0.08);
   padding: 8px 10px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) minmax(220px, 0.55fr) 120px;
+  grid-template-columns: 36px minmax(0, 1fr) minmax(180px, 0.52fr) 136px;
   gap: 10px;
   align-items: center;
 }
@@ -3790,13 +4016,102 @@ button, input, select { font-family: inherit; }
 }
 .instanceModsActionCell{
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: flex-end;
+  padding-left: 8px;
+}
+.instanceModsActionRow{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.instanceActionIconBtn{
+  min-width: 40px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  justify-content: center;
+}
+.instanceActionIconBtn .navIcon{
+  width: 17px;
+  height: 17px;
+}
+.instanceActionToggleBtn.enabled{
+  border-color: rgba(34,197,94,0.45);
+  background: color-mix(in srgb, rgba(34,197,94,0.2) 82%, var(--surface) 18%);
+  color: rgba(22,163,74,0.98);
+}
+.instanceActionToggleBtn.enabled:hover{
+  border-color: rgba(34,197,94,0.62);
+}
+.instanceActionToggleBtn.disabled{
+  border-color: rgba(245,158,11,0.42);
+  background: color-mix(in srgb, rgba(245,158,11,0.16) 82%, var(--surface) 18%);
+  color: rgba(180,83,9,0.98);
+}
+.instanceActionDeleteBtn{
+  border-color: color-mix(in srgb, rgba(239,68,68,0.42) 58%, var(--stroke));
+  color: color-mix(in srgb, rgba(239,68,68,0.9) 68%, var(--text));
+}
+.preflightModalBody{
+  display: grid;
+  gap: 10px;
+}
+.preflightSummaryCard{
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  border-radius: 12px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
+}
+.preflightSummaryCard.blocked{
+  border-color: rgba(239,68,68,0.35);
+  background: color-mix(in srgb, rgba(239,68,68,0.14) 82%, var(--surface) 18%);
+}
+.preflightSummaryCard.warning{
+  border-color: rgba(217,119,6,0.30);
+  background: color-mix(in srgb, rgba(217,119,6,0.12) 84%, var(--surface) 16%);
+}
+.preflightSummaryTitle{
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.preflightSummaryMeta{
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 760;
+}
+.preflightChecksList{
+  display: grid;
   gap: 8px;
 }
-.instanceEnableBtn{
-  min-width: 108px;
-  justify-content: center;
+.preflightCheckItem{
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  border-radius: 11px;
+  padding: 10px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+}
+.preflightCheckItem.blocker{
+  border-color: rgba(239,68,68,0.32);
+}
+.preflightCheckItem.warning{
+  border-color: rgba(217,119,6,0.28);
+}
+.preflightCheckMain{
+  min-width: 0;
+}
+.preflightCheckTitle{
+  font-weight: 850;
+}
+.preflightCheckMsg{
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12.5px;
 }
 .instanceSectionShell{
   width: 100%;
@@ -4158,7 +4473,7 @@ button, input, select { font-family: inherit; }
 }
 .instanceAnalyzeResults{
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 10px;
 }
 .instanceAnalyzeCard{
@@ -4167,11 +4482,44 @@ button, input, select { font-family: inherit; }
   padding: 10px;
   background: transparent;
   min-height: 78px;
+  min-width: 0;
+  overflow: hidden;
 }
 .instanceAnalyzeCardTitle{
   font-size: 13px;
   font-weight: 920;
   margin-bottom: 6px;
+}
+.instanceAnalyzeCardBody{
+  min-width: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.instanceAnalyzeCard .rowBetween{
+  align-items: flex-start;
+  min-width: 0;
+}
+.instanceAnalyzeCard .rowBetween > :first-child{
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.instanceAnalyzeCard .chip{
+  flex: 0 0 auto;
+}
+.instanceAnalyzeCard .muted{
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.32;
+}
+.instanceAnalyzeList{
+  display: grid;
+  gap: 6px;
+}
+.instanceAnalyzeItem{
+  min-width: 0;
 }
 .installedModRow{
   border: 1px solid var(--stroke);
@@ -4446,6 +4794,12 @@ button, input, select { font-family: inherit; }
   .homeMainGrid{
     grid-template-columns: 1fr;
   }
+  .homeSpotlightTopRow{
+    align-items: flex-start;
+  }
+  .homeCustomizeTop{
+    justify-content: flex-start;
+  }
   .homeLaunchpad{
     grid-template-columns: 1fr;
   }
@@ -4528,7 +4882,7 @@ button, input, select { font-family: inherit; }
   .instanceModsActionCell{
     align-items: flex-start;
   }
-  .instanceEnableBtn{
+  .instanceModsActionRow{
     width: 100%;
   }
   .instanceContentHeaderMeta{
@@ -4705,6 +5059,20 @@ button, input, select { font-family: inherit; }
 .settingsSectionCard{
   padding: 14px;
   border-radius: 20px;
+}
+.settingAnchorFlash{
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 12px;
+  animation: settingAnchorPulse 0.9s ease;
+}
+@keyframes settingAnchorPulse{
+  0%{
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 48%, transparent);
+  }
+  100%{
+    box-shadow: 0 0 0 14px transparent;
+  }
 }
 .settingsSectionTitle{
   font-weight: 980;

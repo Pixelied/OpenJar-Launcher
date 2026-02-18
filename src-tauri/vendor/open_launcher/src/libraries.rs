@@ -1,13 +1,22 @@
 use crate::utils::get_os;
-use crate::utils::{extract_all, try_download_file};
+use crate::utils::{extract_all, try_download_file, LauncherError};
 use crate::Launcher;
 use crate::{events, forge};
 use serde_json::Value;
 use sha1::Digest;
 use std::error::Error;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::sync::broadcast;
+use tokio::task::JoinSet;
+
+#[derive(Clone)]
+struct LibraryDownloadTask {
+    name: String,
+    url: String,
+    hash: String,
+    path: PathBuf,
+}
 
 pub(crate) fn get_lib_path(name: &str) -> String {
     let parts: Vec<&str> = name.split(':').collect();
@@ -142,22 +151,48 @@ pub(crate) async fn download_libs(
     progress: &mut events::Progress,
     progress_sender: broadcast::Sender<events::Progress>,
 ) -> Result<events::Progress, Box<dyn Error + Send + Sync>> {
-    for library in libs {
-        let name = library["name"].as_str().unwrap();
-        let url = library["url"].as_str().unwrap();
-        let hash = library["hash"].as_str().unwrap();
-        let path = Path::new(library["path"].as_str().unwrap());
-
-        fs::create_dir_all(path.parent().unwrap()).await?;
-        try_download_file(url, path, hash, 3).await?;
-
-        *progress = events::Progress {
-            task: "downloading_libraries".to_string(),
-            file: name.to_string(),
-            total: progress.total,
-            current: progress.current + 1,
-        };
-        let _ = progress_sender.send(progress.clone());
+    let tasks: Vec<LibraryDownloadTask> = libs
+        .iter()
+        .map(|library| LibraryDownloadTask {
+            name: library["name"].as_str().unwrap_or("").to_string(),
+            url: library["url"].as_str().unwrap_or("").to_string(),
+            hash: library["hash"].as_str().unwrap_or("").to_string(),
+            path: PathBuf::from(library["path"].as_str().unwrap_or("")),
+        })
+        .filter(|task| {
+            !task.name.trim().is_empty()
+                && !task.url.trim().is_empty()
+                && !task.path.as_os_str().is_empty()
+        })
+        .collect();
+    let mut cursor = 0usize;
+    let concurrency = 12usize;
+    while cursor < tasks.len() {
+        let end = (cursor + concurrency).min(tasks.len());
+        let mut set = JoinSet::new();
+        for task in tasks[cursor..end].iter().cloned() {
+            set.spawn(async move {
+                if let Some(parent) = task.path.parent() {
+                    fs::create_dir_all(parent).await?;
+                }
+                try_download_file(&task.url, &task.path, &task.hash, 3).await?;
+                Ok::<LibraryDownloadTask, Box<dyn Error + Send + Sync>>(task)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            let task = joined.map_err(|e| {
+                Box::new(LauncherError(format!("Library download worker failed: {e}")))
+                    as Box<dyn Error + Send + Sync>
+            })??;
+            *progress = events::Progress {
+                task: "downloading_libraries".to_string(),
+                file: task.name,
+                total: progress.total,
+                current: progress.current + 1,
+            };
+            let _ = progress_sender.send(progress.clone());
+        }
+        cursor = end;
     }
 
     Ok(progress.clone())

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
 import type {
   CreatorConflictSuggestion,
@@ -6,11 +7,14 @@ import type {
   Layer,
   LayerDiffResult,
   ModEntry,
+  ModpackImportLocalJarItemResult,
+  ModpackImportLocalJarProgressEvent,
   ModpackSpec,
   ResolutionPlan,
   ResolutionSettings,
 } from "../types";
 import {
+  applyUpdateModpackFromInstance,
   applyModpackPlan,
   applyTemplateLayerUpdate,
   deleteModpackSpec,
@@ -23,10 +27,12 @@ import {
   importModpackSpecJson,
   listModpackSpecs,
   migrateLegacyCreatorPresets,
+  previewUpdateModpackFromInstance,
   previewTemplateLayerUpdate,
   resolveLocalModpackEntries,
   resolveModpackForInstance,
   seedDevModpackData,
+  updateAllInstanceContent,
   upsertModpackSpec,
 } from "../tauri";
 
@@ -182,6 +188,19 @@ function fmtDate(value?: string | null): string {
   return d.toLocaleString();
 }
 
+function fileLabelFromPath(path: string): string {
+  const clean = String(path ?? "").trim();
+  if (!clean) return "unknown.jar";
+  const parts = clean.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? clean;
+}
+
+function localJarStatusLabel(status: string): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (normalized === "updated_deduped") return "updated/deduped";
+  return normalized || "queued";
+}
+
 export default function ModpackMaker({
   instances,
   selectedInstanceId,
@@ -214,6 +233,8 @@ export default function ModpackMaker({
   const [entryDraft, setEntryDraft] = useState<ModEntry>(emptyEntry());
   const [importLocalJarsBusy, setImportLocalJarsBusy] = useState(false);
   const [identifyLocalJarsBusy, setIdentifyLocalJarsBusy] = useState(false);
+  const [localJarQueueItems, setLocalJarQueueItems] = useState<ModpackImportLocalJarItemResult[]>([]);
+  const [localJarQueueTotal, setLocalJarQueueTotal] = useState(0);
 
   const [providerImport, setProviderImport] = useState({
     source: "modrinth",
@@ -225,6 +246,7 @@ export default function ModpackMaker({
     layerName: "Imported Modpack Layer",
   });
   const [templateDiff, setTemplateDiff] = useState<LayerDiffResult | null>(null);
+  const [instanceSyncDiff, setInstanceSyncDiff] = useState<LayerDiffResult | null>(null);
 
   const [plan, setPlan] = useState<ResolutionPlan | null>(null);
   const [applyWizardOpen, setApplyWizardOpen] = useState(false);
@@ -401,6 +423,79 @@ export default function ModpackMaker({
     [allEntries, selectedEntryKey]
   );
 
+  const localJarQueueStats = useMemo(() => {
+    const stats = {
+      queued: 0,
+      running: 0,
+      added: 0,
+      updated_deduped: 0,
+      skipped: 0,
+      failed: 0,
+    };
+    for (const item of localJarQueueItems) {
+      const key = String(item.status ?? "").trim().toLowerCase();
+      if (key in stats) {
+        (stats as Record<string, number>)[key] += 1;
+      }
+    }
+    return stats;
+  }, [localJarQueueItems]);
+
+  const failedLocalJarPaths = useMemo(
+    () =>
+      localJarQueueItems
+        .filter((item) => String(item.status).trim().toLowerCase() === "failed")
+        .map((item) => item.path),
+    [localJarQueueItems]
+  );
+
+  useEffect(() => {
+    const off = listen<ModpackImportLocalJarProgressEvent>("modpack_local_jar_import_progress", (event) => {
+      const payload = event.payload;
+      if (!payload) return;
+      if (!editorSpec || payload.modpack_id !== editorSpec.id) return;
+      if (selectedLayerId && payload.layer_id !== selectedLayerId) return;
+      setLocalJarQueueTotal(payload.total || 0);
+      setLocalJarQueueItems((prev) => {
+        const next = [...prev];
+        const idx = next.findIndex(
+          (item) => item.index === payload.index || item.path === payload.path
+        );
+        const base: ModpackImportLocalJarItemResult = idx >= 0
+          ? next[idx]
+          : {
+              index: payload.index,
+              path: payload.path,
+              file_name: fileLabelFromPath(payload.path),
+              status: "queued",
+              message: "",
+              dedupe_basis: null,
+              duplicate_of: null,
+              source_hint: null,
+              resolved: false,
+            };
+        const updated: ModpackImportLocalJarItemResult = {
+          ...base,
+          index: payload.index,
+          path: payload.path,
+          file_name: base.file_name || fileLabelFromPath(payload.path),
+          status: payload.status || base.status,
+          message: String(payload.message ?? base.message ?? ""),
+        };
+        if (idx >= 0) {
+          next[idx] = updated;
+        } else {
+          next.push(updated);
+        }
+        next.sort((a, b) => a.index - b.index);
+        return next;
+      });
+    });
+    return () => {
+      off.then((unlisten) => unlisten()).catch(() => null);
+    };
+  }, [editorSpec, selectedLayerId]);
+
   const selectedApplySpec = useMemo(
     () => specs.find((spec) => spec.id === applySpecId) ?? null,
     [specs, applySpecId]
@@ -493,6 +588,7 @@ export default function ModpackMaker({
       setEntrySearch("");
       setEntryFilter("all");
       setTemplateDiff(null);
+      setInstanceSyncDiff(null);
       setView("editor");
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
@@ -523,6 +619,107 @@ export default function ModpackMaker({
       setEditorSpec(cloneSpec(saved));
       await refreshSpecs();
       onNotice("Modpack spec saved.");
+    } catch (err: any) {
+      onError(err?.toString?.() ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function syncFromInstanceToModpack() {
+    if (!editorSpec) {
+      onError("Open a modpack first.");
+      return;
+    }
+    const instanceId = selectedInstanceId ?? instances[0]?.id ?? "";
+    if (!instanceId) {
+      onError("Select an instance first.");
+      return;
+    }
+    const instanceName = instances.find((item) => item.id === instanceId)?.name ?? "selected instance";
+    setBusy(true);
+    try {
+      const diff = await previewUpdateModpackFromInstance({
+        instanceId,
+        modpackId: editorSpec.id,
+      });
+      setInstanceSyncDiff(diff);
+      const totalChanges = diff.added.length + diff.overridden.length + diff.removed.length;
+      if (totalChanges === 0) {
+        onNotice(`No mod changes found between ${editorSpec.name} and ${instanceName}.`);
+        return;
+      }
+      const confirmed = window.confirm(
+        `Update "${editorSpec.name}" from "${instanceName}"?\n\n` +
+          `Adds: ${diff.added.length}\nOverrides: ${diff.overridden.length}\nRemoves: ${diff.removed.length}`
+      );
+      if (!confirmed) return;
+      const nextSpec = await applyUpdateModpackFromInstance({
+        instanceId,
+        modpackId: editorSpec.id,
+        layerName: "Instance Overrides",
+      });
+      setEditorSpec(cloneSpec(nextSpec));
+      await refreshSpecs();
+      onNotice(
+        `Updated from ${instanceName}: +${diff.added.length} add, ${diff.overridden.length} override, ${diff.removed.length} remove.`
+      );
+    } catch (err: any) {
+      onError(err?.toString?.() ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateModsInCreatorFromInstance() {
+    if (!editorSpec) {
+      onError("Open a modpack first.");
+      return;
+    }
+    const instanceId = selectedInstanceId ?? instances[0]?.id ?? "";
+    if (!instanceId) {
+      onError("Select an instance first.");
+      return;
+    }
+    const instanceName = instances.find((item) => item.id === instanceId)?.name ?? "selected instance";
+    setBusy(true);
+    try {
+      const updated = await updateAllInstanceContent({ instanceId });
+      if (updated.updated_entries === 0) {
+        onNotice(`No updates were found for ${instanceName}.`);
+        return;
+      }
+      const warningSummary =
+        updated.warnings.length > 0 ? ` Warnings: ${updated.warnings.slice(0, 2).join(" | ")}` : "";
+      onNotice(
+        `Updated ${updated.updated_entries} entr${updated.updated_entries === 1 ? "y" : "ies"} in ${instanceName}.${warningSummary}`
+      );
+
+      const syncNow = window.confirm(
+        `Updated ${updated.updated_entries} entr${updated.updated_entries === 1 ? "y" : "ies"} in "${instanceName}".\n\nSync those changes into "${editorSpec.name}" now?`
+      );
+      if (!syncNow) return;
+
+      const diff = await previewUpdateModpackFromInstance({
+        instanceId,
+        modpackId: editorSpec.id,
+      });
+      setInstanceSyncDiff(diff);
+      const totalChanges = diff.added.length + diff.overridden.length + diff.removed.length;
+      if (totalChanges === 0) {
+        onNotice(`No modpack changes were needed after updating ${instanceName}.`);
+        return;
+      }
+      const nextSpec = await applyUpdateModpackFromInstance({
+        instanceId,
+        modpackId: editorSpec.id,
+        layerName: "Instance Overrides",
+      });
+      setEditorSpec(cloneSpec(nextSpec));
+      await refreshSpecs();
+      onNotice(
+        `Synced updates from ${instanceName}: +${diff.added.length} add, ${diff.overridden.length} override, ${diff.removed.length} remove.`
+      );
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
     } finally {
@@ -568,7 +765,7 @@ export default function ModpackMaker({
     });
   }
 
-  async function addLocalJarsFromComputer() {
+  async function runLocalJarImport(filePaths: string[], modeLabel = "import") {
     if (!editorSpec || !selectedLayer) {
       onError("Select a layer first.");
       return;
@@ -577,14 +774,22 @@ export default function ModpackMaker({
       onError(`Layer "${selectedLayer.name}" is frozen. Unfreeze before adding content.`);
       return;
     }
-    const picked = await openDialog({
-      multiple: true,
-      filters: [{ name: "Java archives", extensions: ["jar"] }],
-    });
-    if (!picked) return;
-    const filePaths = Array.isArray(picked) ? picked : [picked];
     if (filePaths.length === 0) return;
 
+    setLocalJarQueueItems(
+      filePaths.map((path, index) => ({
+        index,
+        path,
+        file_name: fileLabelFromPath(path),
+        status: "queued",
+        message: "Queued",
+        dedupe_basis: null,
+        duplicate_of: null,
+        source_hint: null,
+        resolved: false,
+      }))
+    );
+    setLocalJarQueueTotal(filePaths.length);
     setImportLocalJarsBusy(true);
     try {
       const out = await importLocalJarsToModpackLayer({
@@ -594,6 +799,8 @@ export default function ModpackMaker({
         autoIdentify: autoIdentifyLocalJarsEnabled,
       });
       setEditorSpec(cloneSpec(out.spec));
+      setLocalJarQueueItems(out.items ?? []);
+      setLocalJarQueueTotal((out.items ?? []).length);
       const warningText =
         out.warnings.length > 0 ? ` ${out.warnings.slice(0, 2).join(" | ")}` : "";
       const resolvedText =
@@ -601,13 +808,32 @@ export default function ModpackMaker({
           ? ` Identified ${out.resolved_entries} entr${out.resolved_entries === 1 ? "y" : "ies"}.`
           : "";
       onNotice(
-        `Added ${out.added_entries} entr${out.added_entries === 1 ? "y" : "ies"} and updated ${out.updated_entries}.${resolvedText}${warningText}`
+        `${modeLabel === "retry" ? "Retried" : "Processed"} ${out.items.length} file${out.items.length === 1 ? "" : "s"}: added ${out.added_entries}, updated ${out.updated_entries}.${resolvedText}${warningText}`
       );
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
     } finally {
       setImportLocalJarsBusy(false);
     }
+  }
+
+  async function addLocalJarsFromComputer() {
+    const picked = await openDialog({
+      multiple: true,
+      filters: [{ name: "Java archives", extensions: ["jar"] }],
+    });
+    if (!picked) return;
+    const filePaths = Array.isArray(picked) ? picked : [picked];
+    await runLocalJarImport(filePaths, "import");
+  }
+
+  async function retryFailedLocalJars() {
+    const retryPaths = Array.from(new Set(failedLocalJarPaths));
+    if (retryPaths.length === 0) {
+      onNotice("No failed local JAR imports to retry.");
+      return;
+    }
+    await runLocalJarImport(retryPaths, "retry");
   }
 
   async function identifyLocalJarsInCreator(mode: "missing_only" | "all" = "all") {
@@ -1089,6 +1315,22 @@ export default function ModpackMaker({
                 Home
               </button>
               <div className="mpmEditorHeaderActions">
+                <button
+                  className="btn"
+                  disabled={busy || instances.length === 0}
+                  onClick={() => void updateModsInCreatorFromInstance()}
+                  title="Update content in the selected instance, then optionally sync those changes into this modpack."
+                >
+                  Update mods
+                </button>
+                <button
+                  className="btn"
+                  disabled={busy || instances.length === 0}
+                  onClick={() => void syncFromInstanceToModpack()}
+                  title="Sync provider-managed mod changes from an instance into an overrides layer."
+                >
+                  Sync from instance
+                </button>
                 <button className="btn primary" onClick={() => openApplyWizard(editorSpec.id)} title="Preview/resolve/apply in wizard modal.">
                   Preview + apply
                 </button>
@@ -1148,6 +1390,11 @@ export default function ModpackMaker({
                 <button className="btn" onClick={() => setConflictWizardOpen(true)}>
                   Conflict wizard
                 </button>
+              ) : null}
+              {instanceSyncDiff ? (
+                <span className="chip subtle" title="From latest update-from-instance preview.">
+                  Last instance sync: +{instanceSyncDiff.added.length} / ~{instanceSyncDiff.overridden.length} / -{instanceSyncDiff.removed.length}
+                </span>
               ) : null}
               {plan && plan.modpack_id === editorSpec.id ? (
                 <span className={`chip ${plan.failed_mods.length > 0 ? "danger" : "subtle"}`} title="From latest preview resolve.">
@@ -1460,7 +1707,61 @@ export default function ModpackMaker({
                     >
                       {identifyLocalJarsBusy ? "Identifying..." : "Identify local JARs"}
                     </button>
+                    <button
+                      className="btn"
+                      onClick={() => void retryFailedLocalJars()}
+                      disabled={importLocalJarsBusy || failedLocalJarPaths.length === 0}
+                      title="Retry only files that failed in the latest import queue."
+                    >
+                      Retry failed only
+                    </button>
                   </div>
+                  {localJarQueueItems.length > 0 ? (
+                    <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
+                      <div className="rowBetween">
+                        <div style={{ fontWeight: 900 }}>
+                          Import queue
+                          {localJarQueueTotal > 0 ? ` (${localJarQueueItems.length}/${localJarQueueTotal})` : ""}
+                        </div>
+                        <span className="chip subtle">
+                          Added {localJarQueueStats.added} · Updated {localJarQueueStats.updated_deduped} · Failed {localJarQueueStats.failed}
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gap: 6, marginTop: 8, maxHeight: 210, overflow: "auto" }}>
+                        {localJarQueueItems
+                          .slice()
+                          .sort((a, b) => a.index - b.index)
+                          .map((item) => (
+                            <div key={`${item.index}:${item.path}`} className="rowBetween" style={{ gap: 10 }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 700, wordBreak: "break-all" }}>{item.file_name}</div>
+                                <div className="muted" style={{ fontSize: 12 }}>
+                                  {item.message || "No message"}
+                                  {item.dedupe_basis ? ` · dedupe: ${item.dedupe_basis}` : ""}
+                                  {item.source_hint ? ` · source: ${item.source_hint}` : ""}
+                                </div>
+                              </div>
+                              <span className="chip subtle">{localJarStatusLabel(item.status)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {importLocalJarsBusy ? (
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Processing queue with up to 5 workers...
+                    </div>
+                  ) : null}
+                  {localJarQueueStats.skipped > 0 ? (
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      {localJarQueueStats.skipped} file{localJarQueueStats.skipped === 1 ? "" : "s"} were skipped (non-jar/missing/invalid).
+                    </div>
+                  ) : null}
+                  {localJarQueueStats.updated_deduped > 0 ? (
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      Dedupe priority: provider ID, then local SHA-512, then filename.
+                    </div>
+                  ) : null}
                 </details>
               </div>
               <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>

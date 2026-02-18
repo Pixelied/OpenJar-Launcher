@@ -110,6 +110,7 @@ version = "1.0.1"
 features = [
     "io-util",
     "fs",
+    "rt",
 ]
 
 [dependencies.tokio-util]

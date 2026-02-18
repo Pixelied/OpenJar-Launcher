@@ -561,12 +561,43 @@ pub struct ModpackLocalResolverResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ModpackImportLocalJarItemResult {
+    pub index: usize,
+    pub path: String,
+    pub file_name: String,
+    pub status: String,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub dedupe_basis: Option<String>,
+    #[serde(default)]
+    pub duplicate_of: Option<String>,
+    #[serde(default)]
+    pub source_hint: Option<String>,
+    pub resolved: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModpackImportLocalJarProgressEvent {
+    pub modpack_id: String,
+    pub layer_id: String,
+    pub index: usize,
+    pub total: usize,
+    pub path: String,
+    pub status: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ModpackImportLocalJarsResult {
     pub spec: ModpackSpec,
     pub added_entries: usize,
     pub updated_entries: usize,
     pub resolved_entries: usize,
     pub remaining_local_entries: usize,
+    #[serde(default)]
+    pub items: Vec<ModpackImportLocalJarItemResult>,
     #[serde(default)]
     pub warnings: Vec<String>,
 }
