@@ -11,20 +11,20 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 - [Screenshots](#screenshots)
 - [Highlights](#highlights)
 - [Features](#features)
-  - [Instance Management](#instance-management)
-  - [Import / Export](#import--export)
   - [Discover + Install (Multi-provider)](#discover--install-multi-provider)
   - [Updates + Update Availability (Multi-provider)](#updates--update-availability-multi-provider)
   - [Installed Mods (Per instance)](#installed-mods-per-instance)
-  - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
-  - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
-  - [Launching](#launching)
-  - [Multi-Launch Explained (Isolated Runtime Sessions)](#multi-launch-explained-isolated-runtime-sessions)
-  - [Microsoft Account / Auth (Native Launch)](#microsoft-account--auth-native-launch)
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
   - [Friend Link (LAN Sync for Shared Packs)](#friend-link-lan-sync-for-shared-packs)
+  - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
+  - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
+  - [Multi-Launch Explained (Isolated Runtime Sessions)](#multi-launch-explained-isolated-runtime-sessions)
+  - [Microsoft Account / Auth (Native Launch)](#microsoft-account--auth-native-launch)
+  - [Instance Management](#instance-management)
+  - [Import / Export](#import--export)
+  - [Launching](#launching)
 - [Where your data lives](#where-your-data-lives)
 - [Tech Stack](#tech-stack)
 - [Platform support & testing](#platform-support--testing)
@@ -81,58 +81,6 @@ Screenshots live in `docs/screenshots/` — click any image to view full size.
 ---
 
 ## Features
-
-### Instance Management
-
-Create and manage self-contained “instances” (your own Minecraft folders with their own mods, packs, saves, and settings).
-
-What you can do:
-- Create, list, rename, edit, delete instances
-- Open/reveal instance folders and common paths
-- Instance icons (store an icon path + load local images for display)
-
-Per-instance launch settings (these affect the actual launch):
-- Java executable path (or auto-detect a runtime)
-- Memory limit (adds `-Xmx####M`)
-- Extra JVM args
-- “Keep launcher open” / “Close on game exit”
-
-Note on settings:
-- Some extra toggles exist in the UI/settings model (graphics preset, shader toggle, vsync, prefer releases, etc.)
-- If something doesn’t change the game yet, it means it isn’t fully hooked up in the current build.
-
----
-
-### Import / Export
-
-Move your existing setup into OpenJar and back out again.
-
-Create instance from a modpack archive (“From File” flow):
-- Supports **Modrinth `.mrpack`** and **CurseForge** modpack zips
-- Reads pack name / Minecraft version / loader from pack metadata
-- Imports **override files** (configs/resources/scripts/etc.) into the instance
-
-Important:
-- It does **not** automatically download the modpack’s mods yet — it currently extracts overrides only.
-
-Import instances from other launchers:
-- **Vanilla Minecraft** (`.minecraft`)
-- **Prism Launcher** instances (auto-detected)
-- Copies common folders like:
-  - `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `saves/`
-  - plus `options.txt` and `servers.dat`
-
-Other import/export tools:
-- Import a local mod **`.jar`** into an instance (“Add from file”)
-  - OpenJar attempts provider detection for local `.jar` imports:
-    - **Modrinth** by file `sha512`
-    - **CurseForge** by file fingerprint
-  - When matched, the lock entry is saved with provider/source IDs so update checks and update-all work normally.
-  - If no provider match is found, it falls back to a local-only lock entry.
-- Export installed mods as a **ZIP**
-  - Includes enabled `.jar` files and disabled `.disabled` files
-
----
 
 ### Discover + Install (Multi-provider)
 
@@ -232,118 +180,6 @@ Keep track of what’s installed, and quickly disable something that’s causing
 
 ---
 
-### Snapshots + Rollback (installed content)
-
-Snapshots are your “undo” button for **installed content** — not your entire world.
-
-What a snapshot is:
-- A stored copy of specific *content folders* + the lockfile at that moment,
-  so you can revert after a bad install/update.
-
-What gets snapshotted:
-- `mods/`
-- `resourcepacks/`
-- `shaderpacks/`
-- each world’s `saves/<world>/datapacks/`
-- the instance `lock.json`
-
-What does *not* get snapshotted:
-- Your world data (region/playerdata/etc.) — that’s handled by **World Backups**
-- Other world files outside `datapacks/`
-- General config folders (for now)
-
-When snapshots are created:
-- Before installing content (when there are real actions to apply)
-- Before applying presets (if enabled)
-- Before “Update all” (when updates exist)
-
-How rollback works:
-- Snapshots are kept (up to 20) and listed in the UI
-- Rolling back restores the snapshot’s content folders + the saved `lock.json`
-- You must stop Minecraft before rolling back
-
----
-
-### World Backups + World Rollback (your saves)
-
-This is the “I don’t want to lose my world” safety net.
-
-What it does:
-- OpenJar can periodically back up each world in `saves/`
-- Each backup is a **zip of the entire world folder**
-  (region, playerdata, data, advancements, etc.)
-- Backups are stored under `world_backups/` inside the instance folder
-
-How you control it (per instance):
-- Backup interval (minutes)
-  - Example: every 10 minutes OpenJar zips your world and stores a backup
-- Retention count (per world)
-  - Example: keep the last 3 backups of each world, delete older ones automatically
-
-World rollback (restore a backup):
-- Choose a backup (most recent or a specific one)
-- Restoring **replaces** `saves/<world>` with the backed-up copy
-- You must stop Minecraft before restoring a world
-
-Important nuance (multi-launch):
-- When OpenJar launches additional copies using an **isolated runtime session**,
-  it copies worlds/configs into a temporary folder so those extra sessions can’t corrupt
-  your main world.
-- In isolated mode, auto world backups are not run for that session.
-
----
-
-### Launching
-
-Two launch modes depending on how you prefer to run Minecraft.
-
-Native launch mode (no Prism required):
-- Loader support includes Vanilla / Fabric / Forge (auto resolution logic)
-- Uses shared caches under app data (assets/libraries/versions caching)
-
-Prism launch mode:
-- Syncs instance content into a Prism instance folder
-- Uses symlinks when possible, with copy fallback
-- Launches through Prism’s workflow
-
-Basic safety controls:
-- Tracks running launches (per-launch IDs)
-- Stop a running instance
-- Cancel an in-progress launch
-- Prevents unsafe duplicate native launch of the *same* instance folder
-
----
-
-### Multi-Launch Explained (Isolated Runtime Sessions)
-
-When you launch a second (or third…) copy of the same instance, OpenJar creates a **runtime session** folder.
-
-How it behaves:
-- First launch: the game uses the normal instance runtime folder
-- Additional launches: OpenJar makes `runtime_sessions/<launch_id>/` and:
-  - links mods/resourcepacks/shaderpacks (fast, shared)
-  - copies config + saves into the session (so changes don’t touch your main instance)
-  - copies `options.txt` + `servers.dat`
-- When the game closes, that runtime session folder is deleted automatically
-
-Why it exists:
-- It avoids two Minecraft clients writing to the same world/config and corrupting things.
-
----
-
-### Microsoft Account / Auth (Native Launch)
-
-Sign in and stay signed in.
-
-- Microsoft device-code login flow (begin + poll)
-- List saved accounts
-- Select active account
-- Logout/disconnect
-- Account diagnostics (helps when auth gets weird)
-- Tokens are stored in the system keychain (with a safe fallback file inside app data)
-
----
-
 ### Logs + Crash Hints
 
 OpenJar can read the latest instance logs and give you faster signals.
@@ -433,6 +269,170 @@ Current scope:
 - Designed for small groups (max 4 peers)
 - No cloud relay/WAN server in v1
 - No world save replication in v1 (content/config parity only)
+
+---
+
+### World Backups + World Rollback (your saves)
+
+This is the “I don’t want to lose my world” safety net.
+
+What it does:
+- OpenJar can periodically back up each world in `saves/`
+- Each backup is a **zip of the entire world folder**
+  (region, playerdata, data, advancements, etc.)
+- Backups are stored under `world_backups/` inside the instance folder
+
+How you control it (per instance):
+- Backup interval (minutes)
+  - Example: every 10 minutes OpenJar zips your world and stores a backup
+- Retention count (per world)
+  - Example: keep the last 3 backups of each world, delete older ones automatically
+
+World rollback (restore a backup):
+- Choose a backup (most recent or a specific one)
+- Restoring **replaces** `saves/<world>` with the backed-up copy
+- You must stop Minecraft before restoring a world
+
+Important nuance (multi-launch):
+- When OpenJar launches additional copies using an **isolated runtime session**,
+  it copies worlds/configs into a temporary folder so those extra sessions can’t corrupt
+  your main world.
+- In isolated mode, auto world backups are not run for that session.
+
+---
+
+### Snapshots + Rollback (installed content)
+
+Snapshots are your “undo” button for **installed content** — not your entire world.
+
+What a snapshot is:
+- A stored copy of specific *content folders* + the lockfile at that moment,
+  so you can revert after a bad install/update.
+
+What gets snapshotted:
+- `mods/`
+- `resourcepacks/`
+- `shaderpacks/`
+- each world’s `saves/<world>/datapacks/`
+- the instance `lock.json`
+
+What does *not* get snapshotted:
+- Your world data (region/playerdata/etc.) — that’s handled by **World Backups**
+- Other world files outside `datapacks/`
+- General config folders (for now)
+
+When snapshots are created:
+- Before installing content (when there are real actions to apply)
+- Before applying presets (if enabled)
+- Before “Update all” (when updates exist)
+
+How rollback works:
+- Snapshots are kept (up to 20) and listed in the UI
+- Rolling back restores the snapshot’s content folders + the saved `lock.json`
+- You must stop Minecraft before rolling back
+
+---
+
+### Multi-Launch Explained (Isolated Runtime Sessions)
+
+When you launch a second (or third…) copy of the same instance, OpenJar creates a **runtime session** folder.
+
+How it behaves:
+- First launch: the game uses the normal instance runtime folder
+- Additional launches: OpenJar makes `runtime_sessions/<launch_id>/` and:
+  - links mods/resourcepacks/shaderpacks (fast, shared)
+  - copies config + saves into the session (so changes don’t touch your main instance)
+  - copies `options.txt` + `servers.dat`
+- When the game closes, that runtime session folder is deleted automatically
+
+Why it exists:
+- It avoids two Minecraft clients writing to the same world/config and corrupting things.
+
+---
+
+### Microsoft Account / Auth (Native Launch)
+
+Sign in and stay signed in.
+
+- Microsoft device-code login flow (begin + poll)
+- List saved accounts
+- Select active account
+- Logout/disconnect
+- Account diagnostics (helps when auth gets weird)
+- Tokens are stored in the system keychain (with a safe fallback file inside app data)
+
+---
+
+### Instance Management
+
+Create and manage self-contained “instances” (your own Minecraft folders with their own mods, packs, saves, and settings).
+
+What you can do:
+- Create, list, rename, edit, delete instances
+- Open/reveal instance folders and common paths
+- Instance icons (store an icon path + load local images for display)
+
+Per-instance launch settings (these affect the actual launch):
+- Java executable path (or auto-detect a runtime)
+- Memory limit (adds `-Xmx####M`)
+- Extra JVM args
+- “Keep launcher open” / “Close on game exit”
+
+Note on settings:
+- Some extra toggles exist in the UI/settings model (graphics preset, shader toggle, vsync, prefer releases, etc.)
+- If something doesn’t change the game yet, it means it isn’t fully hooked up in the current build.
+
+---
+
+### Import / Export
+
+Move your existing setup into OpenJar and back out again.
+
+Create instance from a modpack archive (“From File” flow):
+- Supports **Modrinth `.mrpack`** and **CurseForge** modpack zips
+- Reads pack name / Minecraft version / loader from pack metadata
+- Imports **override files** (configs/resources/scripts/etc.) into the instance
+
+Important:
+- It does **not** automatically download the modpack’s mods yet — it currently extracts overrides only.
+
+Import instances from other launchers:
+- **Vanilla Minecraft** (`.minecraft`)
+- **Prism Launcher** instances (auto-detected)
+- Copies common folders like:
+  - `mods/`, `config/`, `resourcepacks/`, `shaderpacks/`, `saves/`
+  - plus `options.txt` and `servers.dat`
+
+Other import/export tools:
+- Import a local mod **`.jar`** into an instance (“Add from file”)
+  - OpenJar attempts provider detection for local `.jar` imports:
+    - **Modrinth** by file `sha512`
+    - **CurseForge** by file fingerprint
+  - When matched, the lock entry is saved with provider/source IDs so update checks and update-all work normally.
+  - If no provider match is found, it falls back to a local-only lock entry.
+- Export installed mods as a **ZIP**
+  - Includes enabled `.jar` files and disabled `.disabled` files
+
+---
+
+### Launching
+
+Two launch modes depending on how you prefer to run Minecraft.
+
+Native launch mode (no Prism required):
+- Loader support includes Vanilla / Fabric / Forge (auto resolution logic)
+- Uses shared caches under app data (assets/libraries/versions caching)
+
+Prism launch mode:
+- Syncs instance content into a Prism instance folder
+- Uses symlinks when possible, with copy fallback
+- Launches through Prism’s workflow
+
+Basic safety controls:
+- Tracks running launches (per-launch IDs)
+- Stop a running instance
+- Cancel an in-progress launch
+- Prevents unsafe duplicate native launch of the *same* instance folder
 
 ---
 
