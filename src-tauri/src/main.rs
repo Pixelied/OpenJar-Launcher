@@ -6,6 +6,7 @@ use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
 use reqwest::blocking::{multipart, Client, Response};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha512};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -22,6 +23,7 @@ use zip::write::FileOptions;
 use zip::ZipArchive;
 
 mod modpack;
+mod friend_link;
 
 const USER_AGENT: &str = "ModpackManager/0.1.1 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
@@ -878,6 +880,29 @@ struct CurseforgeFilesResponse {
     data: Vec<CurseforgeFile>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct CurseforgeFingerprintData {
+    #[serde(default)]
+    #[serde(rename = "exactMatches")]
+    exact_matches: Vec<CurseforgeFingerprintMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CurseforgeFingerprintResponse {
+    data: CurseforgeFingerprintData,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct CurseforgeFingerprintMatch {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    #[serde(rename = "modId")]
+    mod_id: i64,
+    #[serde(default)]
+    file: Option<CurseforgeFile>,
+}
+
 #[derive(Debug, Deserialize)]
 struct CurseforgeDownloadUrlResponse {
     data: String,
@@ -935,6 +960,9 @@ struct CurseforgeMod {
 #[derive(Debug, Clone, Deserialize)]
 struct CurseforgeFile {
     id: i64,
+    #[serde(default)]
+    #[serde(rename = "modId")]
+    mod_id: i64,
     #[serde(default)]
     #[serde(rename = "displayName")]
     display_name: String,
@@ -2610,6 +2638,244 @@ fn infer_local_name(filename: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+#[derive(Debug, Clone)]
+struct LocalImportedProviderMatch {
+    source: String,
+    project_id: String,
+    version_id: String,
+    name: String,
+    version_number: String,
+    hashes: HashMap<String, String>,
+}
+
+fn sha512_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha512::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn curseforge_murmur2_fingerprint(bytes: &[u8]) -> u32 {
+    // CurseForge expects the Java-style MurmurHash2 fingerprint for file matching.
+    let m: u32 = 0x5bd1e995;
+    let r: u32 = 24;
+    let len = bytes.len() as u32;
+    let mut h: u32 = 1 ^ len;
+    let mut index = 0usize;
+
+    while index + 4 <= bytes.len() {
+        let mut k = (bytes[index] as u32)
+            | ((bytes[index + 1] as u32) << 8)
+            | ((bytes[index + 2] as u32) << 16)
+            | ((bytes[index + 3] as u32) << 24);
+        k = k.wrapping_mul(m);
+        k ^= k >> r;
+        k = k.wrapping_mul(m);
+        h = h.wrapping_mul(m);
+        h ^= k;
+        index += 4;
+    }
+
+    match bytes.len().saturating_sub(index) {
+        3 => {
+            h ^= (bytes[index + 2] as u32) << 16;
+            h ^= (bytes[index + 1] as u32) << 8;
+            h ^= bytes[index] as u32;
+            h = h.wrapping_mul(m);
+        }
+        2 => {
+            h ^= (bytes[index + 1] as u32) << 8;
+            h ^= bytes[index] as u32;
+            h = h.wrapping_mul(m);
+        }
+        1 => {
+            h ^= bytes[index] as u32;
+            h = h.wrapping_mul(m);
+        }
+        _ => {}
+    }
+
+    h ^= h >> 13;
+    h = h.wrapping_mul(m);
+    h ^= h >> 15;
+    h
+}
+
+fn fetch_modrinth_version_by_sha512(
+    client: &Client,
+    sha512: &str,
+) -> Result<Option<ModrinthVersion>, String> {
+    let url = format!(
+        "{}/version_file/{}?algorithm=sha512",
+        modrinth_api_base(),
+        sha512.trim()
+    );
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("modrinth hash lookup failed: {e}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(format!(
+            "modrinth hash lookup failed with status {}",
+            resp.status()
+        ));
+    }
+    let version = resp
+        .json::<ModrinthVersion>()
+        .map_err(|e| format!("parse modrinth hash lookup failed: {e}"))?;
+    Ok(Some(version))
+}
+
+fn fetch_curseforge_match_by_fingerprint(
+    client: &Client,
+    api_key: &str,
+    fingerprint: u32,
+) -> Result<Option<(CurseforgeMod, CurseforgeFile)>, String> {
+    let url = format!(
+        "{}/fingerprints/{}",
+        CURSEFORGE_API_BASE, CURSEFORGE_GAME_ID_MINECRAFT
+    );
+    let body = serde_json::json!({ "fingerprints": [fingerprint] });
+    let resp = client
+        .post(&url)
+        .header("Accept", "application/json")
+        .header("x-api-key", api_key)
+        .json(&body)
+        .send()
+        .map_err(|e| format!("curseforge fingerprint lookup failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "curseforge fingerprint lookup failed with status {}",
+            resp.status()
+        ));
+    }
+    let payload = resp
+        .json::<CurseforgeFingerprintResponse>()
+        .map_err(|e| format!("parse curseforge fingerprint response failed: {e}"))?;
+    let Some(matched) = payload.data.exact_matches.into_iter().next() else {
+        return Ok(None);
+    };
+    let mut file = match matched.file {
+        Some(file) => file,
+        None => return Ok(None),
+    };
+    let mod_id = if matched.mod_id > 0 {
+        matched.mod_id
+    } else if matched.id > 0 {
+        matched.id
+    } else if file.mod_id > 0 {
+        file.mod_id
+    } else {
+        0
+    };
+    if mod_id <= 0 {
+        return Ok(None);
+    }
+    if file.mod_id <= 0 {
+        file.mod_id = mod_id;
+    }
+    let project = fetch_curseforge_project(client, api_key, mod_id)?;
+    Ok(Some((project, file)))
+}
+
+fn detect_provider_for_local_mod(
+    client: &Client,
+    file_bytes: &[u8],
+    safe_filename: &str,
+) -> Option<LocalImportedProviderMatch> {
+    let sha512 = sha512_hex(file_bytes);
+    if let Ok(Some(version)) = fetch_modrinth_version_by_sha512(client, &sha512) {
+        let project_id = version.project_id.trim().to_string();
+        if !project_id.is_empty() {
+            let matched_file = version
+                .files
+                .iter()
+                .find(|f| {
+                    f.hashes
+                        .get("sha512")
+                        .map(|h| h.eq_ignore_ascii_case(&sha512))
+                        .unwrap_or(false)
+                })
+                .or_else(|| {
+                    version
+                        .files
+                        .iter()
+                        .find(|f| sanitize_filename(&f.filename).eq_ignore_ascii_case(safe_filename))
+                })
+                .or_else(|| version.files.first());
+            let mut hashes = matched_file.map(|f| f.hashes.clone()).unwrap_or_default();
+            hashes
+                .entry("sha512".to_string())
+                .or_insert_with(|| sha512.clone());
+            let version_number = if version.version_number.trim().is_empty() {
+                matched_file
+                    .map(|f| f.filename.clone())
+                    .filter(|v| !v.trim().is_empty())
+                    .unwrap_or_else(|| "unknown".to_string())
+            } else {
+                version.version_number.clone()
+            };
+            let name = version
+                .name
+                .clone()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(|| fetch_project_title(client, &project_id))
+                .unwrap_or_else(|| infer_local_name(safe_filename));
+            return Some(LocalImportedProviderMatch {
+                source: "modrinth".to_string(),
+                project_id,
+                version_id: version.id,
+                name,
+                version_number,
+                hashes,
+            });
+        }
+    }
+
+    if let Some(api_key) = curseforge_api_key() {
+        let fingerprint = curseforge_murmur2_fingerprint(file_bytes);
+        if let Ok(Some((project, file))) =
+            fetch_curseforge_match_by_fingerprint(client, &api_key, fingerprint)
+        {
+            let mut hashes = parse_cf_hashes(&file);
+            hashes
+                .entry("sha512".to_string())
+                .or_insert_with(|| sha512.clone());
+            let version_number = if file.display_name.trim().is_empty() {
+                if file.file_name.trim().is_empty() {
+                    "unknown".to_string()
+                } else {
+                    file.file_name.clone()
+                }
+            } else {
+                file.display_name.clone()
+            };
+            let name = if project.name.trim().is_empty() {
+                infer_local_name(safe_filename)
+            } else {
+                project.name.clone()
+            };
+            return Some(LocalImportedProviderMatch {
+                source: "curseforge".to_string(),
+                project_id: format!("cf:{}", project.id),
+                version_id: format!("cf_file:{}", file.id),
+                name,
+                version_number,
+                hashes,
+            });
+        }
+    }
+
+    None
 }
 
 fn mod_paths(instance_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
@@ -4428,58 +4694,44 @@ fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool 
     }
 }
 
-fn check_instance_content_updates_inner(
+fn check_single_content_update_entry(
     client: &Client,
     instance: &Instance,
-    lock: &Lockfile,
-    scope: UpdateScope,
-) -> Result<ContentUpdateCheckResult, String> {
-    let mut updates: Vec<ContentUpdateInfo> = Vec::new();
+    entry: &LockEntry,
+    cf_key: Option<&str>,
+) -> Result<(Option<ContentUpdateInfo>, Vec<String>), String> {
     let mut warnings: Vec<String> = Vec::new();
-    let mut checked_entries = 0usize;
 
-    let has_cf_entries = lock
-        .entries
-        .iter()
-        .any(|e| entry_allowed_in_update_scope(e, scope) && e.source.eq_ignore_ascii_case("curseforge"));
-    let cf_key = curseforge_api_key();
-    if has_cf_entries && cf_key.is_none() {
-        warnings.push(
-            "CurseForge key unavailable, skipped CurseForge update checks for this instance."
-                .to_string(),
-        );
+    if entry
+        .pinned_version
+        .as_ref()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+    {
+        warnings.push(format!(
+            "Skipped pinned entry '{}' ({})",
+            entry.name, entry.project_id
+        ));
+        return Ok((None, warnings));
     }
 
-    for entry in &lock.entries {
-        if !entry_allowed_in_update_scope(entry, scope) {
-            continue;
-        }
-        checked_entries += 1;
+    let source = entry.source.trim().to_lowercase();
+    let content_type = normalize_lock_content_type(&entry.content_type);
 
-        if entry.pinned_version.as_ref().map(|v| !v.trim().is_empty()).unwrap_or(false) {
+    if source == "modrinth" {
+        let versions = fetch_project_versions(client, &entry.project_id)?;
+        let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type) else {
             warnings.push(format!(
-                "Skipped pinned entry '{}' ({})",
+                "No compatible Modrinth update found for '{}' ({})",
                 entry.name, entry.project_id
             ));
-            continue;
+            return Ok((None, warnings));
+        };
+        if latest.id == entry.version_id {
+            return Ok((None, warnings));
         }
-
-        let source = entry.source.trim().to_lowercase();
-        let content_type = normalize_lock_content_type(&entry.content_type);
-
-        if source == "modrinth" {
-            let versions = fetch_project_versions(client, &entry.project_id)?;
-            let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type) else {
-                warnings.push(format!(
-                    "No compatible Modrinth update found for '{}' ({})",
-                    entry.name, entry.project_id
-                ));
-                continue;
-            };
-            if latest.id == entry.version_id {
-                continue;
-            }
-            updates.push(ContentUpdateInfo {
+        return Ok((
+            Some(ContentUpdateInfo {
                 source: "modrinth".to_string(),
                 content_type,
                 project_id: entry.project_id.clone(),
@@ -4490,30 +4742,32 @@ fn check_instance_content_updates_inner(
                 latest_version_number: latest.version_number,
                 enabled: entry.enabled,
                 target_worlds: entry.target_worlds.clone(),
-            });
-            continue;
-        }
+            }),
+            warnings,
+        ));
+    }
 
-        if source == "curseforge" {
-            let Some(api_key) = cf_key.as_deref() else {
-                continue;
-            };
-            let mod_id = parse_curseforge_project_id(&entry.project_id)?;
-            let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-            files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
-            files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
-            let Some(latest) = files.into_iter().next() else {
-                warnings.push(format!(
-                    "No compatible CurseForge update found for '{}' ({})",
-                    entry.name, entry.project_id
-                ));
-                continue;
-            };
-            let latest_version_id = format!("cf_file:{}", latest.id);
-            if latest_version_id == entry.version_id {
-                continue;
-            }
-            updates.push(ContentUpdateInfo {
+    if source == "curseforge" {
+        let Some(api_key) = cf_key else {
+            return Ok((None, warnings));
+        };
+        let mod_id = parse_curseforge_project_id(&entry.project_id)?;
+        let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
+        files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+        files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+        let Some(latest) = files.into_iter().next() else {
+            warnings.push(format!(
+                "No compatible CurseForge update found for '{}' ({})",
+                entry.name, entry.project_id
+            ));
+            return Ok((None, warnings));
+        };
+        let latest_version_id = format!("cf_file:{}", latest.id);
+        if latest_version_id == entry.version_id {
+            return Ok((None, warnings));
+        }
+        return Ok((
+            Some(ContentUpdateInfo {
                 source: "curseforge".to_string(),
                 content_type,
                 project_id: entry.project_id.clone(),
@@ -4528,8 +4782,109 @@ fn check_instance_content_updates_inner(
                 },
                 enabled: entry.enabled,
                 target_worlds: entry.target_worlds.clone(),
-            });
+            }),
+            warnings,
+        ));
+    }
+
+    Ok((None, warnings))
+}
+
+fn check_instance_content_updates_inner(
+    client: &Client,
+    instance: &Instance,
+    lock: &Lockfile,
+    scope: UpdateScope,
+) -> Result<ContentUpdateCheckResult, String> {
+    let mut updates: Vec<ContentUpdateInfo> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let candidate_entries: Vec<LockEntry> = lock
+        .entries
+        .iter()
+        .filter(|e| entry_allowed_in_update_scope(e, scope))
+        .cloned()
+        .collect();
+    let checked_entries = candidate_entries.len();
+
+    let has_cf_entries = candidate_entries
+        .iter()
+        .any(|e| e.source.eq_ignore_ascii_case("curseforge"));
+    let cf_key = curseforge_api_key();
+    if has_cf_entries && cf_key.is_none() {
+        warnings.push(
+            "CurseForge key unavailable, skipped CurseForge update checks for this instance."
+                .to_string(),
+        );
+    }
+
+    if candidate_entries.is_empty() {
+        return Ok(ContentUpdateCheckResult {
+            checked_entries,
+            update_count: 0,
+            updates,
+            warnings,
+        });
+    }
+
+    let parallelism = std::thread::available_parallelism()
+        .map(|v| v.get())
+        .unwrap_or(4)
+        .clamp(1, 6)
+        .min(candidate_entries.len());
+
+    if parallelism <= 1 {
+        for entry in &candidate_entries {
+            let (maybe_update, mut local_warnings) =
+                check_single_content_update_entry(client, instance, entry, cf_key.as_deref())?;
+            if let Some(update) = maybe_update {
+                updates.push(update);
+            }
+            warnings.append(&mut local_warnings);
         }
+    } else {
+        let mut partitions: Vec<Vec<LockEntry>> = vec![Vec::new(); parallelism];
+        for (idx, entry) in candidate_entries.into_iter().enumerate() {
+            partitions[idx % parallelism].push(entry);
+        }
+
+        let instance_snapshot = instance.clone();
+        let cf_key_snapshot = cf_key.clone();
+        std::thread::scope(|scope_ctx| -> Result<(), String> {
+            let mut handles = Vec::new();
+            for chunk in partitions {
+                let client_local = client.clone();
+                let instance_local = instance_snapshot.clone();
+                let cf_key_local = cf_key_snapshot.clone();
+                handles.push(scope_ctx.spawn(move || -> Result<(Vec<ContentUpdateInfo>, Vec<String>), String> {
+                    let mut local_updates = Vec::new();
+                    let mut local_warnings = Vec::new();
+                    for entry in &chunk {
+                        let (maybe_update, mut warnings_for_entry) =
+                            check_single_content_update_entry(
+                                &client_local,
+                                &instance_local,
+                                entry,
+                                cf_key_local.as_deref(),
+                            )?;
+                        if let Some(update) = maybe_update {
+                            local_updates.push(update);
+                        }
+                        local_warnings.append(&mut warnings_for_entry);
+                    }
+                    Ok((local_updates, local_warnings))
+                }));
+            }
+
+            for handle in handles {
+                let joined = handle
+                    .join()
+                    .map_err(|_| "update-check worker thread panicked".to_string())?;
+                let (mut local_updates, mut local_warnings) = joined?;
+                updates.append(&mut local_updates);
+                warnings.append(&mut local_warnings);
+            }
+            Ok(())
+        })?;
     }
 
     updates.sort_by(|a, b| {
@@ -9336,25 +9691,60 @@ fn import_local_mod_file(
     if disabled_path.exists() {
         fs::remove_file(&disabled_path).map_err(|e| format!("cleanup disabled mod failed: {e}"))?;
     }
-    fs::copy(&source_path, &dest_path).map_err(|e| format!("copy mod file failed: {e}"))?;
+    let file_bytes = fs::read(&source_path).map_err(|e| format!("read mod file failed: {e}"))?;
+    fs::write(&dest_path, &file_bytes).map_err(|e| format!("copy mod file failed: {e}"))?;
+
+    let detected_provider = Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .ok()
+        .and_then(|client| detect_provider_for_local_mod(&client, &file_bytes, &safe_filename));
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| e.filename != safe_filename);
 
-    let project_id = format!("local:{}", safe_filename.to_lowercase());
-    let new_entry = LockEntry {
-        source: "local".into(),
-        project_id,
-        version_id: format!("local_{}", now_millis()),
-        name: infer_local_name(&safe_filename),
-        version_number: "local-file".into(),
-        filename: safe_filename.clone(),
-        content_type: "mods".to_string(),
-        target_scope: "instance".to_string(),
-        target_worlds: vec![],
-        pinned_version: None,
-        enabled: true,
-        hashes: HashMap::new(),
+    if let Some(found) = detected_provider.as_ref() {
+        remove_replaced_entries_for_content(
+            &mut lock,
+            &instance_dir,
+            &found.project_id,
+            "mods",
+        )?;
+    }
+
+    let new_entry = if let Some(found) = detected_provider {
+        LockEntry {
+            source: found.source,
+            project_id: found.project_id,
+            version_id: found.version_id,
+            name: found.name,
+            version_number: found.version_number,
+            filename: safe_filename.clone(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: found.hashes,
+        }
+    } else {
+        let project_id = format!("local:{}", safe_filename.to_lowercase());
+        LockEntry {
+            source: "local".into(),
+            project_id,
+            version_id: format!("local_{}", now_millis()),
+            name: infer_local_name(&safe_filename),
+            version_number: "local-file".into(),
+            filename: safe_filename.clone(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: HashMap::new(),
+        }
     };
 
     lock.entries.push(new_entry.clone());
@@ -10221,6 +10611,17 @@ fn main() {
             modpack::rollback_instance_to_last_modpack_snapshot,
             modpack::migrate_legacy_creator_presets,
             modpack::seed_dev_modpack_data,
+            friend_link::create_friend_link_session,
+            friend_link::join_friend_link_session,
+            friend_link::leave_friend_link_session,
+            friend_link::get_friend_link_status,
+            friend_link::set_friend_link_allowlist,
+            friend_link::reconcile_friend_link,
+            friend_link::resolve_friend_link_conflicts,
+            friend_link::export_friend_link_debug_bundle,
+            friend_link::list_instance_config_files,
+            friend_link::read_instance_config_file,
+            friend_link::write_instance_config_file,
             get_curseforge_project_detail,
             import_provider_modpack_template,
             export_presets_json,

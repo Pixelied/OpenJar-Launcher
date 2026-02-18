@@ -43,11 +43,19 @@ import type {
   ModpackApplyResult,
   InstanceModpackStatus,
   DriftReport,
+  FriendLinkDebugBundleResult,
+  FriendLinkInvite,
+  FriendLinkReconcileResult,
+  FriendLinkStatus,
+  ConflictResolutionPayload,
   MigrationReport,
+  InstanceConfigFileEntry,
+  ReadInstanceConfigFileResult,
   UpdateAllContentResult,
   UpdateAllResult,
   WorldConfigFileEntry,
   ReadWorldConfigFileResult,
+  WriteInstanceConfigFileResult,
   WriteWorldConfigFileResult,
   WorldRollbackResult,
 } from "./types";
@@ -390,6 +398,28 @@ export function writeWorldConfigFile(input: {
   return invoke("write_world_config_file", { args: input });
 }
 
+export function listInstanceConfigFiles(input: {
+  instanceId: string;
+}): Promise<InstanceConfigFileEntry[]> {
+  return invoke("list_instance_config_files", { args: input });
+}
+
+export function readInstanceConfigFile(input: {
+  instanceId: string;
+  path: string;
+}): Promise<ReadInstanceConfigFileResult> {
+  return invoke("read_instance_config_file", { args: input });
+}
+
+export function writeInstanceConfigFile(input: {
+  instanceId: string;
+  path: string;
+  content: string;
+  expectedModifiedAt?: number;
+}): Promise<WriteInstanceConfigFileResult> {
+  return invoke("write_instance_config_file", { args: input });
+}
+
 export function installDiscoverContent(input: {
   instanceId: string;
   source: DiscoverSource | "modrinth" | "curseforge";
@@ -576,4 +606,58 @@ export function seedDevModpackData(input?: {
   instanceName?: string;
 }): Promise<SeedDevResult> {
   return invoke("seed_dev_modpack_data", { args: input ?? {} });
+}
+
+export function createFriendLinkSession(input: {
+  instanceId: string;
+  displayName?: string;
+}): Promise<FriendLinkInvite> {
+  return invoke("create_friend_link_session", { args: input });
+}
+
+export function joinFriendLinkSession(input: {
+  instanceId: string;
+  inviteCode: string;
+  displayName?: string;
+}): Promise<FriendLinkStatus> {
+  return invoke("join_friend_link_session", { args: input });
+}
+
+export function leaveFriendLinkSession(input: {
+  instanceId: string;
+}): Promise<FriendLinkStatus> {
+  return invoke("leave_friend_link_session", { args: input });
+}
+
+export function getFriendLinkStatus(input: {
+  instanceId: string;
+}): Promise<FriendLinkStatus> {
+  return invoke("get_friend_link_status", { args: input });
+}
+
+export function setFriendLinkAllowlist(input: {
+  instanceId: string;
+  allowlist: string[];
+}): Promise<FriendLinkStatus> {
+  return invoke("set_friend_link_allowlist", { args: input });
+}
+
+export function reconcileFriendLink(input: {
+  instanceId: string;
+  mode?: "manual" | "prelaunch" | string;
+}): Promise<FriendLinkReconcileResult> {
+  return invoke("reconcile_friend_link", { args: input });
+}
+
+export function resolveFriendLinkConflicts(input: {
+  instanceId: string;
+  resolution: ConflictResolutionPayload;
+}): Promise<FriendLinkReconcileResult> {
+  return invoke("resolve_friend_link_conflicts", { args: input });
+}
+
+export function exportFriendLinkDebugBundle(input: {
+  instanceId: string;
+}): Promise<FriendLinkDebugBundleResult> {
+  return invoke("export_friend_link_debug_bundle", { args: input });
 }

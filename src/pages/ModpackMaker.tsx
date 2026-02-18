@@ -546,7 +546,7 @@ export default function ModpackMaker({
   );
 
   return (
-    <div style={{ maxWidth: 1440 }}>
+    <div className="mpmPage" style={{ maxWidth: 1440, margin: "0 auto" }}>
       {migrationPending ? (
         <div className="card" style={{ marginTop: 12, padding: 14, borderRadius: 16 }}>
           <div style={{ fontWeight: 900 }}>Legacy Creator migration available</div>
@@ -582,15 +582,15 @@ export default function ModpackMaker({
 
       {view === "home" ? (
         <>
-          <div className="card" style={{ marginTop: 12, padding: 14, borderRadius: 16, position: "relative", zIndex: 4 }}>
-            <div className="rowBetween" style={{ alignItems: "flex-start" }}>
-              <div>
+          <div className="card mpmShellCard mpmHomeCard" style={{ position: "relative", zIndex: 4 }}>
+            <div className="mpmHomeHeader">
+              <div className="mpmHeaderBlock">
                 <div className="h2">Modpacks</div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Build modpack specs, then preview and apply with clear results.
                 </div>
               </div>
-              <div className="row" style={{ gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <div className="mpmHomeActions">
                 <button className="btn primary" disabled={busy} onClick={createSpec} title="Create a new modpack spec.">
                   Create modpack
                 </button>
@@ -610,10 +610,155 @@ export default function ModpackMaker({
                 >
                   Preview + apply
                 </button>
+                <div ref={homeActionsRef} className="mpmHomeMoreActions" style={{ position: "relative" }}>
+                  <button className="btn" onClick={() => setHomeActionsOpen((prev) => !prev)}>
+                    More actions
+                  </button>
+                  {homeActionsOpen ? (
+                  <div
+                    className="card"
+                    style={{
+                      position: "absolute",
+                      right: 0,
+                      top: "calc(100% + 8px)",
+                      zIndex: 40,
+                      padding: 10,
+                      borderRadius: 12,
+                      minWidth: 240,
+                      boxShadow: "var(--shadowSoft)",
+                    }}
+                  >
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <button
+                        className="btn"
+                        disabled={busy || !selectedSpec}
+                        onClick={async () => {
+                          setHomeActionsOpen(false);
+                          if (!selectedSpec) return;
+                          setBusy(true);
+                          try {
+                            const copy = await duplicateModpackSpec({
+                              modpackId: selectedSpec.id,
+                              newName: `${selectedSpec.name} copy`,
+                            });
+                            await refreshSpecs();
+                            setSelectedSpecId(copy.id);
+                            onNotice("Duplicated modpack spec.");
+                          } catch (err: any) {
+                            onError(err?.toString?.() ?? String(err));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                        title="Duplicate selected modpack."
+                      >
+                        Duplicate selected
+                      </button>
+                      <button
+                        className="btn"
+                        disabled={busy}
+                        onClick={async () => {
+                          setHomeActionsOpen(false);
+                          const picked = await openDialog({
+                            multiple: false,
+                            filters: [{ name: "JSON", extensions: ["json"] }],
+                          });
+                          if (!picked || Array.isArray(picked)) return;
+                          setBusy(true);
+                          try {
+                            const out = await importModpackSpecJson({ inputPath: picked });
+                            await refreshSpecs();
+                            onNotice(`Imported modpack spec data from ${out.path}.`);
+                          } catch (err: any) {
+                            onError(err?.toString?.() ?? String(err));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                        title="Import modpack spec JSON."
+                      >
+                        Import JSON
+                      </button>
+                      <button
+                        className="btn"
+                        disabled={busy || !selectedSpec}
+                        onClick={async () => {
+                          setHomeActionsOpen(false);
+                          if (!selectedSpec) return;
+                          const target = await saveDialog({
+                            defaultPath: `${selectedSpec.name.replace(/\s+/g, "-").toLowerCase()}.modpack-spec.json`,
+                            filters: [{ name: "JSON", extensions: ["json"] }],
+                          });
+                          if (!target || Array.isArray(target)) return;
+                          setBusy(true);
+                          try {
+                            const out = await exportModpackSpecJson({
+                              modpackId: selectedSpec.id,
+                              outputPath: target,
+                            });
+                            onNotice(`Exported spec to ${out.path}.`);
+                          } catch (err: any) {
+                            onError(err?.toString?.() ?? String(err));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                        title="Export selected modpack spec JSON."
+                      >
+                        Export selected JSON
+                      </button>
+                      <button
+                        className="btn danger"
+                        disabled={busy || !selectedSpec}
+                        onClick={async () => {
+                          setHomeActionsOpen(false);
+                          if (!selectedSpec) return;
+                          setBusy(true);
+                          try {
+                            await deleteModpackSpec({ modpackId: selectedSpec.id });
+                            setSelectedSpecId(null);
+                            await refreshSpecs();
+                            onNotice("Deleted modpack spec.");
+                          } catch (err: any) {
+                            onError(err?.toString?.() ?? String(err));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                        title="Delete selected modpack."
+                      >
+                        Delete selected
+                      </button>
+                      {isDevMode ? (
+                        <button
+                          className="btn"
+                          disabled={busy}
+                          onClick={async () => {
+                            setHomeActionsOpen(false);
+                            setBusy(true);
+                            try {
+                              const out = await seedDevModpackData();
+                              await refreshSpecs();
+                              onNotice(`${out.message} Spec ${out.created_spec_id}, instance ${out.created_instance_id}.`);
+                            } catch (err: any) {
+                              onError(err?.toString?.() ?? String(err));
+                            } finally {
+                              setBusy(false);
+                            }
+                          }}
+                          title="Developer only: seed local sample data."
+                        >
+                          Load dev seed data
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  ) : null}
+                </div>
               </div>
             </div>
 
-            <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr auto", gap: 8, alignItems: "center" }}>
+            <div style={{ marginTop: 10 }}>
               <input
                 className="input"
                 value={homeSearch}
@@ -621,155 +766,10 @@ export default function ModpackMaker({
                 placeholder="Search modpacks..."
                 title="Search by name, description, or tags."
               />
-              <div ref={homeActionsRef} style={{ position: "relative" }}>
-                <button className="btn" onClick={() => setHomeActionsOpen((prev) => !prev)}>
-                  More actions
-                </button>
-                {homeActionsOpen ? (
-                <div
-                  className="card"
-                  style={{
-                    position: "absolute",
-                    right: 0,
-                    top: "calc(100% + 8px)",
-                    zIndex: 40,
-                    padding: 10,
-                    borderRadius: 12,
-                    minWidth: 240,
-                    boxShadow: "var(--shadowSoft)",
-                  }}
-                >
-                  <div style={{ display: "grid", gap: 8 }}>
-                    <button
-                      className="btn"
-                      disabled={busy || !selectedSpec}
-                      onClick={async () => {
-                        setHomeActionsOpen(false);
-                        if (!selectedSpec) return;
-                        setBusy(true);
-                        try {
-                          const copy = await duplicateModpackSpec({
-                            modpackId: selectedSpec.id,
-                            newName: `${selectedSpec.name} copy`,
-                          });
-                          await refreshSpecs();
-                          setSelectedSpecId(copy.id);
-                          onNotice("Duplicated modpack spec.");
-                        } catch (err: any) {
-                          onError(err?.toString?.() ?? String(err));
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                      title="Duplicate selected modpack."
-                    >
-                      Duplicate selected
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={busy}
-                      onClick={async () => {
-                        setHomeActionsOpen(false);
-                        const picked = await openDialog({
-                          multiple: false,
-                          filters: [{ name: "JSON", extensions: ["json"] }],
-                        });
-                        if (!picked || Array.isArray(picked)) return;
-                        setBusy(true);
-                        try {
-                          const out = await importModpackSpecJson({ inputPath: picked });
-                          await refreshSpecs();
-                          onNotice(`Imported modpack spec data from ${out.path}.`);
-                        } catch (err: any) {
-                          onError(err?.toString?.() ?? String(err));
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                      title="Import modpack spec JSON."
-                    >
-                      Import JSON
-                    </button>
-                    <button
-                      className="btn"
-                      disabled={busy || !selectedSpec}
-                      onClick={async () => {
-                        setHomeActionsOpen(false);
-                        if (!selectedSpec) return;
-                        const target = await saveDialog({
-                          defaultPath: `${selectedSpec.name.replace(/\s+/g, "-").toLowerCase()}.modpack-spec.json`,
-                          filters: [{ name: "JSON", extensions: ["json"] }],
-                        });
-                        if (!target || Array.isArray(target)) return;
-                        setBusy(true);
-                        try {
-                          const out = await exportModpackSpecJson({
-                            modpackId: selectedSpec.id,
-                            outputPath: target,
-                          });
-                          onNotice(`Exported spec to ${out.path}.`);
-                        } catch (err: any) {
-                          onError(err?.toString?.() ?? String(err));
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                      title="Export selected modpack spec JSON."
-                    >
-                      Export selected JSON
-                    </button>
-                    <button
-                      className="btn danger"
-                      disabled={busy || !selectedSpec}
-                      onClick={async () => {
-                        setHomeActionsOpen(false);
-                        if (!selectedSpec) return;
-                        setBusy(true);
-                        try {
-                          await deleteModpackSpec({ modpackId: selectedSpec.id });
-                          setSelectedSpecId(null);
-                          await refreshSpecs();
-                          onNotice("Deleted modpack spec.");
-                        } catch (err: any) {
-                          onError(err?.toString?.() ?? String(err));
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                      title="Delete selected modpack."
-                    >
-                      Delete selected
-                    </button>
-                    {isDevMode ? (
-                      <button
-                        className="btn"
-                        disabled={busy}
-                        onClick={async () => {
-                          setHomeActionsOpen(false);
-                          setBusy(true);
-                          try {
-                            const out = await seedDevModpackData();
-                            await refreshSpecs();
-                            onNotice(`${out.message} Spec ${out.created_spec_id}, instance ${out.created_instance_id}.`);
-                          } catch (err: any) {
-                            onError(err?.toString?.() ?? String(err));
-                          } finally {
-                            setBusy(false);
-                          }
-                        }}
-                        title="Developer only: seed local sample data."
-                      >
-                        Load dev seed data
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                ) : null}
-              </div>
             </div>
           </div>
 
-          <div className="card" style={{ marginTop: 12, padding: 14, borderRadius: 16 }}>
+          <div className="card mpmShellCard">
             {filteredHomeSpecs.length === 0 ? (
               <div className="muted">
                 {specs.length === 0 ? "No modpacks yet. Create one to get started." : "No modpacks match your search."}
@@ -814,7 +814,7 @@ export default function ModpackMaker({
                             </div>
                           ) : null}
                         </div>
-                        <div className="row" style={{ gap: 8 }}>
+                        <div className="mpmInlineActions">
                           <button
                             className="btn"
                             onClick={(e) => {
@@ -846,33 +846,29 @@ export default function ModpackMaker({
 
       {view === "editor" && editorSpec ? (
         <>
-          <div className="card" style={{ marginTop: 12, padding: 14, borderRadius: 16 }}>
-            <div className="rowBetween">
+          <div className="card mpmShellCard">
+            <div className="mpmEditorTopBar">
+              <button className="btn subtle" onClick={() => setView("home")} title="Back to modpack home.">
+                Home
+              </button>
+              <div className="mpmEditorHeaderActions">
+                <button className="btn primary" onClick={() => openApplyWizard(editorSpec.id)} title="Preview/resolve/apply in wizard modal.">
+                  Preview + apply
+                </button>
+                <button className="btn subtle" disabled={busy} onClick={saveEditorSpec} title="Save this modpack spec.">
+                  Save
+                </button>
+              </div>
+            </div>
+            <div className="mpmEditorHeader">
               <div style={{ minWidth: 0 }}>
                 <div className="h2">{editorSpec.name || "Untitled modpack"}</div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   3-panel editor: layers, unified entries list, and entry inspector.
                 </div>
               </div>
-              <div className="row mpmEditorHeaderActions" style={{ gap: 8, flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => setView("home")} title="Back to modpack home.">
-                  Home
-                </button>
-                <button className="btn" onClick={openAddModal} title="Add entry directly from project id/slug.">
-                  Add in-place
-                </button>
-                <button className="btn" onClick={openDiscoverForSelectedLayer} title="Open Discover and add directly into this modpack/layer.">
-                  Open in Discover
-                </button>
-                <button className="btn" onClick={() => openApplyWizard(editorSpec.id)} title="Preview/resolve/apply in wizard modal.">
-                  Preview + apply
-                </button>
-                <button className="btn primary" disabled={busy} onClick={saveEditorSpec} title="Save this modpack spec.">
-                  Save
-                </button>
-              </div>
             </div>
-            <div style={{ marginTop: 10, display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
+            <div className="mpmEditorMetaGrid">
               <input
                 className="input"
                 value={editorSpec.name}
@@ -904,12 +900,10 @@ export default function ModpackMaker({
                 title="Short summary of this modpack."
               />
             </div>
-            <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-              <span className="chip subtle">Entries: {allEntries.length}</span>
-              <span className="chip subtle">Mods: {entryCountsByType.mods}</span>
-              <span className="chip subtle">Resourcepacks: {entryCountsByType.resourcepacks}</span>
-              <span className="chip subtle">Shaderpacks: {entryCountsByType.shaderpacks}</span>
-              <span className="chip subtle">Datapacks: {entryCountsByType.datapacks}</span>
+            <div className="mpmPackSummaryRow">
+              <span className="muted">
+                {allEntries.length} entries · {entryCountsByType.mods} mods · {entryCountsByType.resourcepacks} resourcepacks · {entryCountsByType.shaderpacks} shaderpacks · {entryCountsByType.datapacks} datapacks
+              </span>
               <span className={`chip ${packConflictCount > 0 ? "danger" : "subtle"}`} title="Duplicate entries across layers.">
                 Potential conflicts: {packConflictCount}
               </span>
@@ -931,10 +925,10 @@ export default function ModpackMaker({
             }}
           >
             <div className="card mpmLayersPanel" style={{ padding: 12, borderRadius: 16 }}>
-              <div className="rowBetween">
-                <div style={{ fontWeight: 900 }}>Layers</div>
+              <div className="rowBetween mpmLayersHeader">
+                <div className="mpmPanelTitle">Layers</div>
                 <button
-                  className="btn"
+                  className="btn mpmLayersAddBtn"
                   title="Add another layer. Later layers can override earlier ones."
                   onClick={() => {
                     const nextLayer: Layer = {
@@ -958,6 +952,7 @@ export default function ModpackMaker({
                 {editorSpec.layers.map((layer) => {
                   const active = selectedLayerId === layer.id;
                   const layerMenuOpen = openLayerMenuId === layer.id;
+                  const showLayerMeta = Boolean(layer.is_frozen || layer.source);
                   return (
                     <div
                       key={layer.id}
@@ -968,9 +963,9 @@ export default function ModpackMaker({
                         borderColor: active ? "var(--accent-ring)" : undefined,
                       }}
                     >
-                      <div className="rowBetween">
+                      <div className="rowBetween mpmLayerRow">
                         <button
-                          className="btn"
+                          className="btn mpmLayerSelectBtn"
                           style={{ flex: 1, justifyContent: "space-between" }}
                           onClick={() => {
                             setSelectedLayerId(layer.id);
@@ -985,8 +980,7 @@ export default function ModpackMaker({
                           <span className="chip subtle">{layer.entries_delta.add.length}</span>
                         </button>
                         <button
-                          className="btn"
-                          style={{ width: 34, padding: 0, marginLeft: 6 }}
+                          className="btn mpmLayerMoreBtn"
                           onClick={() => setOpenLayerMenuId((prev) => (prev === layer.id ? null : layer.id))}
                           title="Layer actions"
                         >
@@ -1022,17 +1016,19 @@ export default function ModpackMaker({
                           </div>
                         </div>
                       ) : null}
-                      <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
-                        {layer.is_frozen ? <span className="chip subtle">Frozen</span> : null}
-                        {layer.source ? <span className="chip subtle">Source: {layer.source.kind}</span> : null}
-                      </div>
+                      {showLayerMeta ? (
+                        <div className="row mpmLayerMetaRow" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
+                          {layer.is_frozen ? <span className="chip subtle">Frozen</span> : null}
+                          {layer.source ? <span className="chip subtle">Source: {layer.source.kind}</span> : null}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}
               </div>
 
               <details className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
-                <summary style={{ cursor: "pointer", fontWeight: 800 }}>Layer tools, templates, and diffs</summary>
+                <summary className="mpmLayerToolsSummary" style={{ cursor: "pointer", fontWeight: 800 }}>Layer tools, templates, and diffs</summary>
                 <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
                   <div className="muted" title="Import a provider modpack as a new stable layer snapshot.">
                     Import provider template
@@ -1193,7 +1189,7 @@ export default function ModpackMaker({
             <div className="card mpmEntriesPanel" style={{ padding: 12, borderRadius: 16 }}>
               <div className="rowBetween">
                 <div className="h3">Entries</div>
-                <div className="row" style={{ gap: 8 }}>
+                <div className="mpmInlineActions">
                   <button className="btn" onClick={openAddModal} title="Add content directly by id/slug.">
                     Add in-place
                   </button>
@@ -1294,7 +1290,7 @@ export default function ModpackMaker({
                         role="button"
                         title="Select entry to edit in inspector."
                       >
-                        <div className="rowBetween">
+                        <div className="rowBetween mpmEntryRow">
                           <div style={{ minWidth: 0 }}>
                             <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               {entryDisplayName(row.entry)}
@@ -1303,7 +1299,7 @@ export default function ModpackMaker({
                               {row.entry.project_id}
                             </div>
                           </div>
-                          <div className="row" style={{ gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                          <div className="mpmEntryBadges">
                             <span className="chip subtle">{row.entry.provider}</span>
                             <span className="chip subtle">{row.entry.content_type}</span>
                             <span className="chip subtle">{row.layerName}</span>
@@ -1312,7 +1308,7 @@ export default function ModpackMaker({
                             {row.duplicateCount > 1 ? <span className="chip danger">Conflict</span> : null}
                             {isFailing ? <span className="chip danger">Failing</span> : null}
                             <button
-                              className="btn danger"
+                              className="btn subtle"
                               disabled={Boolean(layerFrozen)}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1337,7 +1333,7 @@ export default function ModpackMaker({
                 <div style={{ fontWeight: 900 }}>Inspector</div>
                 {selectedEntryRow ? (
                   <button
-                    className="btn danger"
+                    className="btn subtle"
                     disabled={editorSpec.layers.find((layer) => layer.id === selectedEntryRow.layerId)?.is_frozen}
                     onClick={() => removeEntry(selectedEntryRow.layerId, selectedEntryRow.entryIndex)}
                     title="Remove this entry from its layer."

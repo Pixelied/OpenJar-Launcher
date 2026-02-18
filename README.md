@@ -24,6 +24,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
+  - [Friend Link (LAN Sync for Shared Packs)](#friend-link-lan-sync-for-shared-packs)
 - [Where your data lives](#where-your-data-lives)
 - [Tech Stack](#tech-stack)
 - [Platform support & testing](#platform-support--testing)
@@ -123,6 +124,11 @@ Import instances from other launchers:
 
 Other import/export tools:
 - Import a local mod **`.jar`** into an instance (“Add from file”)
+  - OpenJar attempts provider detection for local `.jar` imports:
+    - **Modrinth** by file `sha512`
+    - **CurseForge** by file fingerprint
+  - When matched, the lock entry is saved with provider/source IDs so update checks and update-all work normally.
+  - If no provider match is found, it falls back to a local-only lock entry.
 - Export installed mods as a **ZIP**
   - Includes enabled `.jar` files and disabled `.disabled` files
 
@@ -396,6 +402,34 @@ What makes it unique:
 - **Profiles** (like Lite / Recommended / Full) to toggle optional content cleanly
 - **Linked mode + drift detection** to keep instances aligned over time
 - **Reversible applies** with lock snapshots and one-click rollback
+
+---
+
+### Friend Link (LAN Sync for Shared Packs)
+
+Friend Link lets two to four peers keep linked instances in sync over LAN/VPN with pre-launch safety checks.
+
+What v1 syncs:
+- Lockfile-backed content state (mods/resourcepacks/shaderpacks/datapacks)
+- Allowlisted config files (`options.txt`, `config/**/*.json`, `config/**/*.toml`, `config/**/*.properties`)
+
+Safety behavior:
+- Two-way reconcile with conflict detection
+- Explicit conflict resolution (`keep mine` / `take theirs`)
+- Pre-launch sync gate for linked instances
+- Offline fallback:
+  - launch allowed only when local state matches last-good group snapshot
+  - stale offline state is blocked with a clear reason
+
+How pairing works:
+- Create host link -> share invite code
+- Join link with invite code
+- LAN transport with signed messages (shared secret + HMAC)
+
+Current scope:
+- Designed for small groups (max 4 peers)
+- No cloud relay/WAN server in v1
+- No world save replication (content/config parity only)
 
 ---
 

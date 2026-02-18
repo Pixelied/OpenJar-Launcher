@@ -1,10 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import type { DriftReport, Instance, InstanceModpackStatus, LayerDiffResult } from "../types";
+import type {
+  DriftReport,
+  FriendLinkReconcileResult,
+  FriendLinkStatus,
+  Instance,
+  InstanceModpackStatus,
+  LayerDiffResult,
+} from "../types";
 import {
   applyUpdateModpackFromInstance,
+  createFriendLinkSession,
   detectInstanceModpackDrift,
+  exportFriendLinkDebugBundle,
+  getFriendLinkStatus,
   getInstanceModpackStatus,
+  joinFriendLinkSession,
+  leaveFriendLinkSession,
   previewUpdateModpackFromInstance,
+  reconcileFriendLink,
+  resolveFriendLinkConflicts,
   realignInstanceToModpack,
   rollbackInstanceToLastModpackSnapshot,
 } from "../tauri";
@@ -13,22 +27,30 @@ type Props = {
   instance: Instance;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
+  onFriendConflict?: (instanceId: string, result: FriendLinkReconcileResult) => void;
 };
 
-export default function InstanceModpackCard({ instance, onNotice, onError }: Props) {
+export default function InstanceModpackCard({ instance, onNotice, onError, onFriendConflict }: Props) {
   const [status, setStatus] = useState<InstanceModpackStatus | null>(null);
   const [drift, setDrift] = useState<DriftReport | null>(null);
   const [diff, setDiff] = useState<LayerDiffResult | null>(null);
+  const [friendStatus, setFriendStatus] = useState<FriendLinkStatus | null>(null);
+  const [inviteCode, setInviteCode] = useState("");
+  const [invitePreview, setInvitePreview] = useState<string | null>(null);
+  const [friendConflicts, setFriendConflicts] = useState<FriendLinkReconcileResult | null>(null);
+  const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
     try {
-      const [statusInfo, driftInfo] = await Promise.all([
+      const [statusInfo, driftInfo, linked] = await Promise.all([
         getInstanceModpackStatus({ instanceId: instance.id }),
         detectInstanceModpackDrift({ instanceId: instance.id }).catch(() => null),
+        getFriendLinkStatus({ instanceId: instance.id }).catch(() => null),
       ]);
       setStatus(statusInfo);
       setDrift(driftInfo);
+      setFriendStatus(linked);
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
     }
@@ -191,6 +213,246 @@ export default function InstanceModpackCard({ instance, onNotice, onError }: Pro
           ) : null}
         </>
       )}
+
+      <div style={{ marginTop: 16, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 12 }}>
+        <div className="rowBetween">
+          <div style={{ fontWeight: 900 }}>Friend Link</div>
+          <span className="chip subtle">{friendStatus?.linked ? (friendStatus.status || "linked") : "unlinked"}</span>
+        </div>
+        {friendStatus?.linked ? (
+          <>
+            <div style={{ marginTop: 8 }} className="muted">
+              Group: {friendStatus.group_id} · Peers: {(friendStatus.peers?.length ?? 0) + 1}
+            </div>
+            {friendStatus.peers?.length ? (
+              <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
+                {friendStatus.peers.map((peer) => (
+                  <div key={peer.peer_id} className="rowBetween">
+                    <span>{peer.display_name}</span>
+                    <span className="chip subtle">{peer.online ? "online" : "offline"}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="muted" style={{ marginTop: 6 }}>
+                No followers joined yet.
+              </div>
+            )}
+            <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const invite = await createFriendLinkSession({ instanceId: instance.id });
+                    setInvitePreview(invite.invite_code);
+                    onNotice("Generated fresh invite code.");
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Refresh invite
+              </button>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const out = await reconcileFriendLink({ instanceId: instance.id, mode: "manual" });
+                    if (out.status === "conflicted") {
+                      setFriendConflicts(out);
+                      onFriendConflict?.(instance.id, out);
+                    }
+                    onNotice(`Friend sync: ${out.status}. Applied ${out.actions_applied} changes.`);
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Sync now
+              </button>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const out = await exportFriendLinkDebugBundle({ instanceId: instance.id });
+                    onNotice(`Exported debug bundle to ${out.path}`);
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Export debug
+              </button>
+              <button
+                className="btn danger"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await leaveFriendLinkSession({ instanceId: instance.id });
+                    setInvitePreview(null);
+                    setFriendConflicts(null);
+                    onNotice("Left friend link session.");
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Leave link
+              </button>
+            </div>
+            {friendStatus.pending_conflicts_count > 0 ? (
+              <div className="muted" style={{ marginTop: 6 }}>
+                {friendStatus.pending_conflicts_count} pending conflict{friendStatus.pending_conflicts_count === 1 ? "" : "s"}.
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <div className="muted" style={{ marginTop: 8 }}>
+              Create a link as host or join a friend with an invite code.
+            </div>
+            <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const invite = await createFriendLinkSession({ instanceId: instance.id });
+                    setInvitePreview(invite.invite_code);
+                    onNotice("Friend link created. Share the invite code.");
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Create host link
+              </button>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <input
+                className="input"
+                placeholder="Paste invite code"
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+              />
+            </div>
+            <div className="row" style={{ marginTop: 8, gap: 8 }}>
+              <button
+                className="btn primary"
+                disabled={busy || !inviteCode.trim()}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await joinFriendLinkSession({
+                      instanceId: instance.id,
+                      inviteCode: inviteCode.trim(),
+                    });
+                    setInviteCode("");
+                    onNotice("Joined friend link.");
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Join link
+              </button>
+            </div>
+          </>
+        )}
+        {invitePreview ? (
+          <div style={{ marginTop: 8 }}>
+            <div className="muted">Invite code</div>
+            <textarea className="textarea" value={invitePreview} readOnly style={{ minHeight: 74 }} />
+          </div>
+        ) : null}
+        {friendConflicts?.conflicts?.length ? (
+          <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
+            <div style={{ fontWeight: 800 }}>Conflicts ({friendConflicts.conflicts.length})</div>
+            <div className="muted" style={{ marginTop: 4 }}>
+              Resolve by keeping your local state or taking peer state.
+            </div>
+            <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+              {friendConflicts.conflicts.slice(0, 12).map((conflict) => (
+                <div key={conflict.id} className="rowBetween">
+                  <span>{conflict.key}</span>
+                  <span className="chip subtle">{conflict.kind}</span>
+                </div>
+              ))}
+            </div>
+            <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+              <button
+                className="btn"
+                disabled={resolvingConflicts}
+                onClick={async () => {
+                  setResolvingConflicts(true);
+                  try {
+                    const out = await resolveFriendLinkConflicts({
+                      instanceId: instance.id,
+                      resolution: { keep_all_mine: true },
+                    });
+                    setFriendConflicts(out.status === "conflicted" ? out : null);
+                    onNotice(`Resolved conflicts with local preference. Status: ${out.status}.`);
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setResolvingConflicts(false);
+                  }
+                }}
+              >
+                Keep all mine
+              </button>
+              <button
+                className="btn primary"
+                disabled={resolvingConflicts}
+                onClick={async () => {
+                  setResolvingConflicts(true);
+                  try {
+                    const out = await resolveFriendLinkConflicts({
+                      instanceId: instance.id,
+                      resolution: { take_all_theirs: true },
+                    });
+                    setFriendConflicts(out.status === "conflicted" ? out : null);
+                    onNotice(`Resolved conflicts with peer preference. Status: ${out.status}.`);
+                    await refresh();
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setResolvingConflicts(false);
+                  }
+                }}
+              >
+                Take all theirs
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

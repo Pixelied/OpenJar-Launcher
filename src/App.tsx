@@ -39,6 +39,8 @@ import type {
   BeginMicrosoftLoginResult,
   ContentUpdateCheckResult,
   ContentUpdateInfo,
+  FriendLinkReconcileResult,
+  FriendLinkStatus,
   MicrosoftLoginState,
   InstallPlanPreview,
   Instance,
@@ -87,6 +89,9 @@ import {
   logoutMicrosoftAccount,
   rollbackInstance,
   rollbackInstanceWorldBackup,
+  reconcileFriendLink,
+  resolveFriendLinkConflicts,
+  getFriendLinkStatus,
   pollMicrosoftLogin,
   previewModrinthInstall,
   readInstanceLogs,
@@ -130,7 +135,7 @@ import {
   type LogSeverity,
 } from "./lib/logAnalysis";
 
-type Route = "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
+type Route = "home" | "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
 type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
 type MotionPreset = "calm" | "standard" | "expressive";
@@ -234,6 +239,17 @@ type AppUpdaterState = {
   latest_version?: string | null;
   release_notes?: string | null;
   pub_date?: string | null;
+};
+
+type PerfActionStatus = "ok" | "error";
+
+type PerfActionEntry = {
+  id: string;
+  name: string;
+  detail?: string | null;
+  status: PerfActionStatus;
+  duration_ms: number;
+  finished_at: number;
 };
 
 function normalizeVersionLabel(value: string | null | undefined) {
@@ -855,6 +871,35 @@ function formatPercent(n: number | null | undefined) {
   return `${Math.max(0, Math.min(100, n)).toFixed(0)}%`;
 }
 
+function formatDurationMs(ms: number | null | undefined) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remain = Math.round(seconds % 60);
+  return `${minutes}m ${remain}s`;
+}
+
+function formatEtaSeconds(seconds: number | null | undefined) {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return "Estimating…";
+  if (seconds < 1) return "<1s";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const mins = Math.floor(seconds / 60);
+  const sec = Math.round(seconds % 60);
+  return `${mins}m ${sec}s`;
+}
+
+function formatPerfActionLabel(name: string) {
+  const parts = String(name)
+    .split("_")
+    .filter((part) => part.trim().length > 0);
+  if (parts.length === 0) return "Action";
+  return parts
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
 function formatDate(input: string | null | undefined) {
   const d = parseDateLike(input);
   if (!d) return input ?? "";
@@ -916,6 +961,7 @@ const SKIN_HEAD_CACHE_MAX = 120;
 const ACCOUNT_DIAGNOSTICS_CACHE_KEY = "mpm.account.diagnostics_cache.v1";
 const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
 const APP_UPDATER_AUTOCHECK_KEY = "mpm.appUpdater.autoCheck.v1";
+const PERF_ACTION_LOG_KEY = "mpm.perf.actions.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
 const APP_UPDATE_BANNER_ANIMATION_MS = 320;
@@ -1851,7 +1897,7 @@ const MOD_CATEGORY_GROUPS: CatGroup[] = [
   },
 ];
 
-function Icon(props: { name: "compass" | "box" | "books" | "skin" | "bell" | "plus" | "gear" | "user" | "search" | "x" | "play" | "download" | "sliders" | "cpu" | "sparkles" | "layers" | "folder" | "upload" | "trash"; size?: number; className?: string }) {
+function Icon(props: { name: "home" | "compass" | "box" | "books" | "skin" | "bell" | "plus" | "gear" | "user" | "search" | "x" | "play" | "download" | "sliders" | "cpu" | "sparkles" | "layers" | "folder" | "upload" | "trash"; size?: number; className?: string }) {
   const size = props.size ?? 22;
   const cls = props.className ?? "navIcon";
 
@@ -1869,6 +1915,14 @@ function Icon(props: { name: "compass" | "box" | "books" | "skin" | "bell" | "pl
   };
 
   switch (props.name) {
+    case "home":
+      return (
+        <svg {...common}>
+          <path d="M4.2 10.4L12 4l7.8 6.4" />
+          <path d="M6.4 9.2V19a1 1 0 0 0 1 1h9.2a1 1 0 0 0 1-1V9.2" />
+          <path d="M10.3 20v-4.9a.9.9 0 0 1 .9-.9h1.6a.9.9 0 0 1 .9.9V20" />
+        </svg>
+      );
     case "compass":
       return (
         <svg {...common}>
@@ -2723,7 +2777,7 @@ export default function App() {
     });
   }, [theme, accentPreset, accentStrength, motionPreset, densityPreset]);
 
-  const [route, setRoute] = useState<Route>("library");
+  const [route, setRoute] = useState<Route>("home");
 
   // instances
   const [instances, setInstances] = useState<Instance[]>([]);
@@ -2774,6 +2828,7 @@ export default function App() {
   const [logWindowBySource, setLogWindowBySource] = useState<Record<string, LogWindowState>>({});
   const logLoadRequestSeqRef = useRef(0);
   const [instanceSettingsOpen, setInstanceSettingsOpen] = useState(false);
+  const [instanceLinksOpen, setInstanceLinksOpen] = useState(false);
   const [instanceSettingsSection, setInstanceSettingsSection] = useState<
     "general" | "installation" | "java" | "graphics" | "content"
   >("general");
@@ -2788,6 +2843,7 @@ export default function App() {
 
   function openInstance(id: string) {
     setLibraryContextMenu(null);
+    setInstanceLinksOpen(false);
     setSelectedId(id);
     setRoute("instance");
   }
@@ -2856,6 +2912,12 @@ export default function App() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (route !== "instance") {
+      setInstanceLinksOpen(false);
+    }
+  }, [route]);
 
   useEffect(() => {
     const shouldDetect =
@@ -3529,6 +3591,61 @@ export default function App() {
   const [installProgress, setInstallProgress] = useState<InstallProgressEvent | null>(null);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
   const [installNotice, setInstallNotice] = useState<string | null>(null);
+  const [installProgressEtaSeconds, setInstallProgressEtaSeconds] = useState<number | null>(null);
+  const [installProgressElapsedSeconds, setInstallProgressElapsedSeconds] = useState<number | null>(null);
+  const installProgressTimingRef = useRef<Record<string, {
+    started_at: number;
+    last_at: number;
+    last_percent: number;
+    rate_percent_per_sec: number;
+  }>>({});
+  const [scheduledUpdateRunStartedAt, setScheduledUpdateRunStartedAt] = useState<number | null>(null);
+  const [scheduledUpdateRunCompleted, setScheduledUpdateRunCompleted] = useState(0);
+  const [scheduledUpdateRunTotal, setScheduledUpdateRunTotal] = useState(0);
+  const [scheduledUpdateRunEtaSeconds, setScheduledUpdateRunEtaSeconds] = useState<number | null>(null);
+  const [scheduledUpdateRunElapsedSeconds, setScheduledUpdateRunElapsedSeconds] = useState<number | null>(null);
+  const [perfActions, setPerfActions] = useState<PerfActionEntry[]>(() => {
+    try {
+      const raw = localStorage.getItem(PERF_ACTION_LOG_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((entry) => entry && typeof entry === "object")
+        .slice(0, 120) as PerfActionEntry[];
+    } catch {
+      return [];
+    }
+  });
+  function recordPerfAction(
+    name: string,
+    status: PerfActionStatus,
+    startedAtMs: number,
+    detail?: string | null
+  ) {
+    const duration = Math.max(0, performance.now() - startedAtMs);
+    const entry: PerfActionEntry = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      name,
+      detail: detail ?? null,
+      status,
+      duration_ms: duration,
+      finished_at: Date.now(),
+    };
+    setPerfActions((prev) => [entry, ...prev].slice(0, 120));
+    if (duration >= 1500) {
+      console.info(`[perf] ${name} took ${Math.round(duration)}ms${detail ? ` (${detail})` : ""}`);
+    }
+  }
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PERF_ACTION_LOG_KEY, JSON.stringify(perfActions.slice(0, 120)));
+    } catch {
+      // ignore telemetry persistence failures
+    }
+  }, [perfActions]);
+
   const [instanceActivityById, setInstanceActivityById] = useState<
     Record<string, InstanceActivityEntry[]>
   >({});
@@ -3569,6 +3686,10 @@ export default function App() {
   const [launchFailureByInstance, setLaunchFailureByInstance] = useState<
     Record<string, LaunchFailureRecord>
   >({});
+  const [instanceFriendLinkStatus, setInstanceFriendLinkStatus] = useState<FriendLinkStatus | null>(null);
+  const [friendConflictInstanceId, setFriendConflictInstanceId] = useState<string | null>(null);
+  const [friendConflictResult, setFriendConflictResult] = useState<FriendLinkReconcileResult | null>(null);
+  const [friendConflictResolveBusy, setFriendConflictResolveBusy] = useState(false);
   const [launchMethodPick, setLaunchMethodPick] = useState<LaunchMethod>("native");
   const [updateCheckCadence, setUpdateCheckCadence] = useState<SchedulerCadence>("daily");
   const [updateAutoApplyMode, setUpdateAutoApplyMode] = useState<SchedulerAutoApplyMode>("never");
@@ -3813,6 +3934,24 @@ export default function App() {
     () => scheduledUpdateEntries.filter((row) => (row.update_count ?? 0) > 0).length,
     [scheduledUpdateEntries]
   );
+  const perfActionMetrics = useMemo(() => {
+    if (perfActions.length === 0) return null;
+    const durations = perfActions
+      .map((entry) => Math.max(0, Number(entry.duration_ms) || 0))
+      .sort((a, b) => a - b);
+    const count = durations.length;
+    const total = durations.reduce((sum, value) => sum + value, 0);
+    const avgMs = total / Math.max(1, count);
+    const p95Index = Math.min(count - 1, Math.floor(count * 0.95));
+    const p95Ms = durations[p95Index] ?? durations[count - 1] ?? 0;
+    const slowestMs = durations[count - 1] ?? 0;
+    return {
+      count,
+      avg_ms: avgMs,
+      p95_ms: p95Ms,
+      slowest_ms: slowestMs,
+    };
+  }, [perfActions]);
   const nextScheduledUpdateRunAt = useMemo(
     () => computeNextUpdateRunAt(scheduledUpdateLastRunAt, updateCheckCadence),
     [scheduledUpdateLastRunAt, updateCheckCadence]
@@ -4054,6 +4193,32 @@ export default function App() {
     scheduledUpdateLastRunAt,
     updateAutoApplyMode,
     updateApplyScope,
+  ]);
+
+  useEffect(() => {
+    if (!scheduledUpdateBusy || !scheduledUpdateRunStartedAt) return;
+    const tick = () => {
+      const elapsedSeconds = Math.max(0, (Date.now() - scheduledUpdateRunStartedAt) / 1000);
+      setScheduledUpdateRunElapsedSeconds(elapsedSeconds);
+      if (
+        scheduledUpdateRunCompleted > 0 &&
+        scheduledUpdateRunCompleted < scheduledUpdateRunTotal
+      ) {
+        const remaining = scheduledUpdateRunTotal - scheduledUpdateRunCompleted;
+        const avgSecondsPerInstance = elapsedSeconds / scheduledUpdateRunCompleted;
+        setScheduledUpdateRunEtaSeconds(Math.max(0, avgSecondsPerInstance * remaining));
+      }
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [
+    scheduledUpdateBusy,
+    scheduledUpdateRunStartedAt,
+    scheduledUpdateRunCompleted,
+    scheduledUpdateRunTotal,
   ]);
 
   async function refreshCurseforgeApiStatus() {
@@ -5037,6 +5202,16 @@ export default function App() {
     const target = installTarget;
     if (!target) return;
     const key = `${inst.id}:${target.source}:${target.contentType}:${target.projectId}`;
+    const timingKey = `${inst.id}:${target.projectId}`;
+    const nowPerf = performance.now();
+    installProgressTimingRef.current[timingKey] = {
+      started_at: nowPerf,
+      last_at: nowPerf,
+      last_percent: 0,
+      rate_percent_per_sec: 0,
+    };
+    setInstallProgressEtaSeconds(null);
+    setInstallProgressElapsedSeconds(0);
     setInstallingKey(key);
     setInstallNotice(null);
     setError(null);
@@ -5049,6 +5224,7 @@ export default function App() {
       percent: 0,
       message: "Resolving compatible version…",
     });
+    let installSucceeded = false;
 
     try {
       const directDatapackWorlds =
@@ -5096,6 +5272,8 @@ export default function App() {
         percent: 100,
         message: "Install complete",
       });
+      setInstallProgressEtaSeconds(0);
+      installSucceeded = true;
     } catch (e: any) {
       setError(e?.toString?.() ?? String(e));
       setInstallProgress((prev) => ({
@@ -5107,7 +5285,18 @@ export default function App() {
         percent: prev?.percent ?? null,
         message: e?.toString?.() ?? String(e),
       }));
+      setInstallProgressEtaSeconds(null);
     } finally {
+      const startedAt = installProgressTimingRef.current[timingKey]?.started_at ?? nowPerf;
+      const elapsedSeconds = Math.max(0, (performance.now() - startedAt) / 1000);
+      setInstallProgressElapsedSeconds(elapsedSeconds);
+      recordPerfAction(
+        "install_content",
+        installSucceeded ? "ok" : "error",
+        startedAt,
+        `${target.source}:${target.contentType}:${target.projectId}`
+      );
+      delete installProgressTimingRef.current[timingKey];
       setInstallingKey(null);
       window.setTimeout(() => {
         setInstallProgress((prev) => (prev?.stage === "completed" ? null : prev));
@@ -5539,6 +5728,40 @@ export default function App() {
       },
     }));
     try {
+      const friendLinkStatus = await getFriendLinkStatus({ instanceId: inst.id }).catch(() => null);
+      if (friendLinkStatus?.linked) {
+        const friendReconcile = await reconcileFriendLink({ instanceId: inst.id, mode: "prelaunch" });
+        if (friendReconcile.status === "conflicted") {
+          setFriendConflictInstanceId(inst.id);
+          setFriendConflictResult(friendReconcile);
+          setInstallNotice("Friend Link has unresolved conflicts. Resolve them before launching.");
+          setLaunchStageByInstance((prev) => {
+            const next = { ...prev };
+            delete next[inst.id];
+            return next;
+          });
+          return;
+        }
+        if (friendReconcile.status === "blocked_offline_stale" || friendReconcile.status === "error") {
+          const reason = friendReconcile.blocked_reason ?? "Friend Link state is not safe to launch.";
+          setError(reason);
+          setLauncherErr(reason);
+          setLaunchStageByInstance((prev) => ({
+            ...prev,
+            [inst.id]: {
+              status: "error",
+              label: "Blocked",
+              message: reason,
+              updated_at: Date.now(),
+            },
+          }));
+          return;
+        }
+        if (friendReconcile.status === "degraded_offline_last_good") {
+          setInstallNotice("Friend Link: peers offline, launching with last-good synced snapshot.");
+        }
+      }
+
       const res: LaunchResult = await launchInstance({
         instanceId: inst.id,
         method: method ?? launchMethodPick,
@@ -5927,64 +6150,107 @@ export default function App() {
   async function runScheduledUpdateChecks(reason: "manual" | "scheduled" = "manual") {
     if (scheduledUpdateRunningRef.current) return;
     if (instances.length === 0) return;
+    const runStartedPerf = performance.now();
+    const runStartedAt = Date.now();
+    let runSucceeded = false;
     scheduledUpdateRunningRef.current = true;
     setScheduledUpdateBusy(true);
+    setScheduledUpdateRunStartedAt(runStartedAt);
+    setScheduledUpdateRunCompleted(0);
+    setScheduledUpdateRunTotal(instances.length);
+    setScheduledUpdateRunElapsedSeconds(0);
+    setScheduledUpdateRunEtaSeconds(null);
     if (reason === "manual") setScheduledUpdateErr(null);
     const checkedAt = new Date().toISOString();
     let completed = 0;
     let autoAppliedInstances = 0;
     let autoAppliedEntries = 0;
+    const workerLimit = Math.min(4, Math.max(1, instances.length));
     const canAutoApplyInRun = updateAutoApplyMode !== "never" && (
       reason === "scheduled" || updateApplyScope === "scheduled_and_manual"
     );
-    try {
-      for (const inst of instances) {
-        try {
-          const result = await checkInstanceContentUpdates({ instanceId: inst.id });
-          const shouldAutoApplyForInstance =
-            canAutoApplyInRun &&
-            result.update_count > 0 &&
-            (updateAutoApplyMode === "all_instances" ||
-              (updateAutoApplyMode === "opt_in_instances" &&
-                Boolean(inst.settings?.auto_update_installed_content)));
-          if (shouldAutoApplyForInstance) {
-            try {
-              const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
-              autoAppliedInstances += 1;
-              autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
-              const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
-              storeScheduledUpdateResult(inst, refreshed, checkedAt, null);
-              if (route === "instance" && selectedId === inst.id) {
-                setUpdateCheck(refreshed);
-              }
-            } catch (applyErr: any) {
-              const applyMsg = applyErr?.toString?.() ?? String(applyErr);
-              storeScheduledUpdateResult(
-                inst,
-                result,
-                checkedAt,
-                `Auto-apply failed: ${applyMsg}`
-              );
-              if (route === "instance" && selectedId === inst.id) {
-                setUpdateCheck(result);
-              }
+
+    const processInstance = async (inst: Instance) => {
+      const instanceStartedAt = performance.now();
+      let instanceSuccess = false;
+      try {
+        const result = await checkInstanceContentUpdates({ instanceId: inst.id });
+        const shouldAutoApplyForInstance =
+          canAutoApplyInRun &&
+          result.update_count > 0 &&
+          (updateAutoApplyMode === "all_instances" ||
+            (updateAutoApplyMode === "opt_in_instances" &&
+              Boolean(inst.settings?.auto_update_installed_content)));
+        if (shouldAutoApplyForInstance) {
+          try {
+            const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
+            autoAppliedInstances += 1;
+            autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
+            const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
+            storeScheduledUpdateResult(inst, refreshed, checkedAt, null);
+            if (route === "instance" && selectedId === inst.id) {
+              setUpdateCheck(refreshed);
             }
-          } else {
-            storeScheduledUpdateResult(inst, result, checkedAt, null);
+          } catch (applyErr: any) {
+            const applyMsg = applyErr?.toString?.() ?? String(applyErr);
+            storeScheduledUpdateResult(
+              inst,
+              result,
+              checkedAt,
+              `Auto-apply failed: ${applyMsg}`
+            );
             if (route === "instance" && selectedId === inst.id) {
               setUpdateCheck(result);
             }
           }
-        } catch (err: any) {
-          storeScheduledUpdateResult(
-            inst,
-            null,
-            checkedAt,
-            err?.toString?.() ?? String(err)
-          );
+        } else {
+          storeScheduledUpdateResult(inst, result, checkedAt, null);
+          if (route === "instance" && selectedId === inst.id) {
+            setUpdateCheck(result);
+          }
         }
+        instanceSuccess = true;
+      } catch (err: any) {
+        storeScheduledUpdateResult(
+          inst,
+          null,
+          checkedAt,
+          err?.toString?.() ?? String(err)
+        );
+      } finally {
         completed += 1;
+        const elapsedSeconds = Math.max(0, (performance.now() - runStartedPerf) / 1000);
+        setScheduledUpdateRunCompleted(completed);
+        setScheduledUpdateRunElapsedSeconds(elapsedSeconds);
+        if (completed >= instances.length) {
+          setScheduledUpdateRunEtaSeconds(0);
+        } else if (completed > 0) {
+          const remaining = instances.length - completed;
+          const avgSecondsPerInstance = elapsedSeconds / completed;
+          setScheduledUpdateRunEtaSeconds(Math.max(0, avgSecondsPerInstance * remaining));
+        } else {
+          setScheduledUpdateRunEtaSeconds(null);
+        }
+        recordPerfAction(
+          "check_instance_updates",
+          instanceSuccess ? "ok" : "error",
+          instanceStartedAt,
+          inst.id
+        );
       }
+    };
+
+    try {
+      let cursor = 0;
+      const workers = Array.from({ length: workerLimit }, async () => {
+        while (true) {
+          const idx = cursor++;
+          if (idx >= instances.length) break;
+          await processInstance(instances[idx]);
+        }
+      });
+      await Promise.all(workers);
+      runSucceeded = true;
       setScheduledUpdateLastRunAt(checkedAt);
       if (reason === "manual") {
         const autoAppliedMsg =
@@ -6002,12 +6268,23 @@ export default function App() {
         setScheduledUpdateErr(err?.toString?.() ?? String(err));
       }
     } finally {
+      const elapsedSeconds = Math.max(0, (performance.now() - runStartedPerf) / 1000);
+      setScheduledUpdateRunElapsedSeconds(elapsedSeconds);
+      setScheduledUpdateRunEtaSeconds(0);
+      recordPerfAction(
+        "run_scheduled_update_checks",
+        runSucceeded ? "ok" : "error",
+        runStartedPerf,
+        `${reason}:${instances.length}`
+      );
       scheduledUpdateRunningRef.current = false;
       setScheduledUpdateBusy(false);
     }
   }
 
   async function onCheckUpdates(inst: Instance) {
+    const startedAt = performance.now();
+    let succeeded = false;
     setUpdateBusy(true);
     setUpdateErr(null);
     try {
@@ -6021,16 +6298,25 @@ export default function App() {
           `${res.update_count} update${res.update_count === 1 ? "" : "s"} available.`
         );
       }
+      succeeded = true;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setUpdateErr(msg);
       storeScheduledUpdateResult(inst, null, new Date().toISOString(), msg);
     } finally {
+      recordPerfAction(
+        "check_instance_updates_manual",
+        succeeded ? "ok" : "error",
+        startedAt,
+        inst.id
+      );
       setUpdateBusy(false);
     }
   }
 
   async function onUpdateAll(inst: Instance) {
+    const startedAt = performance.now();
+    let succeeded = false;
     setUpdateAllBusy(true);
     setUpdateErr(null);
     setError(null);
@@ -6043,12 +6329,19 @@ export default function App() {
       setInstallNotice(
         `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} (${refreshed.update_count} remaining).`
       );
+      succeeded = true;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setUpdateErr(msg);
       setError(msg);
       storeScheduledUpdateResult(inst, null, new Date().toISOString(), msg);
     } finally {
+      recordPerfAction(
+        "update_all_instance_content",
+        succeeded ? "ok" : "error",
+        startedAt,
+        inst.id
+      );
       setUpdateAllBusy(false);
     }
   }
@@ -6074,6 +6367,24 @@ export default function App() {
     setUpdateErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, selectedId]);
+
+  useEffect(() => {
+    if (route !== "instance" || !selectedId) {
+      setInstanceFriendLinkStatus(null);
+      return;
+    }
+    let cancelled = false;
+    getFriendLinkStatus({ instanceId: selectedId })
+      .then((status) => {
+        if (!cancelled) setInstanceFriendLinkStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setInstanceFriendLinkStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [route, selectedId, instanceLinksOpen, friendConflictResult]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -6111,6 +6422,53 @@ export default function App() {
       const payload = event.payload;
       if (!payload) return;
       setInstallProgress(payload);
+
+      const timingKey = `${payload.instance_id}:${payload.project_id}`;
+      const nowPerf = performance.now();
+      const rawPercent =
+        Number.isFinite(payload.percent as number)
+          ? Number(payload.percent)
+          : Number(payload.total ?? 0) > 0
+            ? (Number(payload.downloaded ?? 0) / Number(payload.total)) * 100
+            : null;
+      const percent = rawPercent == null ? null : Math.max(0, Math.min(100, rawPercent));
+
+      const existing = installProgressTimingRef.current[timingKey];
+      const tracker = existing ?? {
+        started_at: nowPerf,
+        last_at: nowPerf,
+        last_percent: Math.max(0, percent ?? 0),
+        rate_percent_per_sec: 0,
+      };
+      const elapsedSeconds = Math.max(0, (nowPerf - tracker.started_at) / 1000);
+      let etaSeconds: number | null = null;
+      if (percent != null) {
+        const deltaPercent = percent - tracker.last_percent;
+        const deltaSeconds = Math.max(0.001, (nowPerf - tracker.last_at) / 1000);
+        if (deltaPercent > 0.01) {
+          const instantRate = deltaPercent / deltaSeconds;
+          tracker.rate_percent_per_sec =
+            tracker.rate_percent_per_sec > 0
+              ? tracker.rate_percent_per_sec * 0.68 + instantRate * 0.32
+              : instantRate;
+        }
+        if (tracker.rate_percent_per_sec > 0.01 && percent < 100) {
+          etaSeconds = Math.max(0, (100 - percent) / tracker.rate_percent_per_sec);
+        } else if (percent >= 100) {
+          etaSeconds = 0;
+        }
+        tracker.last_percent = Math.max(tracker.last_percent, percent);
+      }
+      tracker.last_at = nowPerf;
+      installProgressTimingRef.current[timingKey] = tracker;
+
+      setInstallProgressElapsedSeconds(elapsedSeconds);
+      setInstallProgressEtaSeconds(etaSeconds);
+
+      const stage = String(payload.stage ?? "").toLowerCase();
+      if (stage === "completed" || stage === "error") {
+        delete installProgressTimingRef.current[timingKey];
+      }
     });
     return () => {
       off.then((unlisten) => unlisten()).catch(() => null);
@@ -7321,6 +7679,478 @@ export default function App() {
   ]);
 
   function renderContent() {
+    if (route === "home") {
+      type HomeAttentionItem = {
+        id: string;
+        tone: "danger" | "warn";
+        title: string;
+        meta: string;
+        action_label: string;
+        on_action: () => void;
+        action_disabled?: boolean;
+      };
+      const loaderLabelFor = (inst: Instance) =>
+        inst.loader === "neoforge"
+          ? "NeoForge"
+          : inst.loader === "fabric"
+            ? "Fabric"
+            : inst.loader === "forge"
+              ? "Forge"
+              : inst.loader === "quilt"
+                ? "Quilt"
+                : "Vanilla";
+      const recentInstances = [...instances]
+        .sort((a, b) => {
+          const bTs = parseDateLike(b.created_at)?.getTime() ?? 0;
+          const aTs = parseDateLike(a.created_at)?.getTime() ?? 0;
+          return bTs - aTs;
+        })
+        .slice(0, 5);
+      const focusInstance = selected ?? recentInstances[0] ?? null;
+      const runningIds = new Set(runningInstances.map((run) => run.instance_id));
+      const instanceNameById = new Map(instances.map((inst) => [inst.id, inst.name]));
+      const instancesById = new Map(instances.map((inst) => [inst.id, inst]));
+      const recentActivity = Object.entries(instanceActivityById)
+        .flatMap(([instanceId, entries]) =>
+          entries.map((entry) => ({
+            ...entry,
+            instance_id: instanceId,
+            instance_name: instanceNameById.get(instanceId) ?? "Unknown instance",
+          }))
+        )
+        .sort((a, b) => b.at - a.at)
+        .slice(0, 8);
+      const focusLaunchStage = focusInstance ? launchStageByInstance[focusInstance.id] ?? null : null;
+      const focusLaunchStageLabel = focusLaunchStage?.label?.trim() || launchStageBadgeLabel(
+        focusLaunchStage?.status,
+        focusLaunchStage?.message
+      );
+      const slowPerfActions = [...perfActions]
+        .slice(0, 48)
+        .sort((a, b) => b.duration_ms - a.duration_ms)
+        .slice(0, 5);
+      const topSlowPerfActions = slowPerfActions.slice(0, 3);
+      const recentPerfWindow = perfActions.slice(0, 10);
+      const recentPerfA = recentPerfWindow.slice(0, 5).map((entry) => Math.max(0, Number(entry.duration_ms) || 0));
+      const recentPerfB = recentPerfWindow.slice(5, 10).map((entry) => Math.max(0, Number(entry.duration_ms) || 0));
+      const avgPerfA = recentPerfA.length
+        ? recentPerfA.reduce((sum, value) => sum + value, 0) / recentPerfA.length
+        : null;
+      const avgPerfB = recentPerfB.length
+        ? recentPerfB.reduce((sum, value) => sum + value, 0) / recentPerfB.length
+        : null;
+      const perfTrendLabel =
+        avgPerfA == null || avgPerfB == null
+          ? "Trend: collect more samples"
+          : avgPerfA <= avgPerfB * 0.9
+            ? "Trend: getting faster"
+            : avgPerfA >= avgPerfB * 1.1
+              ? "Trend: getting slower"
+              : "Trend: stable";
+      const homeAttentionItems: HomeAttentionItem[] = [];
+      const launchFailures = Object.entries(launchFailureByInstance)
+        .sort((a, b) => (b[1]?.updated_at ?? 0) - (a[1]?.updated_at ?? 0))
+        .slice(0, 3);
+      for (const [instanceId, failure] of launchFailures) {
+        const inst = instancesById.get(instanceId);
+        if (!inst) continue;
+        homeAttentionItems.push({
+          id: `launch:${instanceId}`,
+          tone: "danger",
+          title: `${inst.name}: launch failed`,
+          meta: failure?.message || "Open instance logs for details.",
+          action_label: "Open instance",
+          on_action: () => openInstance(instanceId),
+        });
+      }
+      if (!selectedLauncherAccount) {
+        homeAttentionItems.push({
+          id: "account:missing",
+          tone: "warn",
+          title: "Microsoft account not connected",
+          meta: "Connect an account to launch with native runtime.",
+          action_label: msLoginSessionId ? "Waiting for login…" : "Connect account",
+          on_action: onBeginMicrosoftLogin,
+          action_disabled: launcherBusy || Boolean(msLoginSessionId),
+        });
+      }
+      if (appUpdaterLastError) {
+        homeAttentionItems.push({
+          id: "updater:error",
+          tone: "danger",
+          title: "Launcher update check failed",
+          meta: appUpdaterLastError,
+          action_label: "Check again",
+          on_action: () => {
+            void onCheckAppUpdate({ silent: false });
+          },
+        });
+      }
+      const topAttention = homeAttentionItems.slice(0, 6);
+      const launcherActionIsInstall = Boolean(appUpdaterState?.available);
+      const launcherActionLabel = launcherActionIsInstall
+        ? (appUpdaterInstallBusy ? "Installing…" : "Install launcher update")
+        : (appUpdaterBusy ? "Checking…" : "Check launcher update");
+      const onLauncherMaintenanceAction = () => {
+        if (launcherActionIsInstall) {
+          void onInstallAppUpdate();
+          return;
+        }
+        void onCheckAppUpdate({ silent: false });
+      };
+
+      return (
+        <div className="homeShell page">
+          <section className="card homeSpotlight">
+            <div className="homeSpotlightMain">
+              <div className="homeKicker">Mission control</div>
+              <div className="homeSpotlightTitle">
+                {focusInstance ? `Continue ${focusInstance.name}` : "Start your first instance"}
+              </div>
+              <div className="homeSpotlightSub">
+                {focusInstance
+                  ? `${loaderLabelFor(focusInstance)} • Minecraft ${focusInstance.mc_version}`
+                  : "Create an instance, install content, and launch in one flow."}
+              </div>
+              {focusInstance ? (
+                <div className="homeChipRow">
+                  <span className="chip subtle">{loaderLabelFor(focusInstance)}</span>
+                  <span className="chip subtle">Minecraft {focusInstance.mc_version}</span>
+                  {runningIds.has(focusInstance.id) ? <span className="chip">Running</span> : null}
+                  {focusLaunchStageLabel ? (
+                    <span className="chip">
+                      {focusLaunchStage?.status === "starting" ? `Launching: ${focusLaunchStageLabel}` : focusLaunchStageLabel}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="homePanelActions">
+                {focusInstance ? (
+                  <>
+                    <button
+                      className={`btn ${launchBusyInstanceId === focusInstance.id ? "danger" : "primary"}`}
+                      onClick={() => onPlayInstance(focusInstance)}
+                      disabled={
+                        (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== focusInstance.id) ||
+                        launchCancelBusyInstanceId === focusInstance.id
+                      }
+                    >
+                      <Icon name={launchBusyInstanceId === focusInstance.id ? "x" : "play"} size={16} />
+                      {launchBusyInstanceId === focusInstance.id
+                        ? (launchCancelBusyInstanceId === focusInstance.id ? "Cancelling…" : "Cancel launch")
+                        : "Play now"}
+                    </button>
+                    <button className="btn" onClick={() => openInstance(focusInstance.id)}>
+                      Open instance
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn primary" onClick={() => setShowCreate(true)}>
+                      <Icon name="plus" size={16} />
+                      Create instance
+                    </button>
+                    <button className="btn" onClick={() => setRoute("discover")}>
+                      Discover content
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="homeKpis">
+              <div className="homeKpi">
+                <div className="homeKpiLabel">Instances</div>
+                <div className="homeKpiValue">{instances.length}</div>
+              </div>
+              <div className="homeKpi">
+                <div className="homeKpiLabel">Running</div>
+                <div className="homeKpiValue">{runningInstances.length}</div>
+              </div>
+              <div className="homeKpi">
+                <div className="homeKpiLabel">Scheduled updates</div>
+                <div className="homeKpiValue">{scheduledUpdatesAvailableTotal}</div>
+              </div>
+              <div className="homeKpi">
+                <div className="homeKpiLabel">Account</div>
+                <div className="homeKpiValue">{selectedLauncherAccount ? "Connected" : "Offline"}</div>
+              </div>
+            </div>
+          </section>
+
+          <div className="homeMainGrid">
+            <section className="homeMainCol">
+              {topAttention.length === 0 ? (
+                <div className="card homeAttentionClear">
+                  <div className="homePanelHead">
+                    <div className="homePanelTitle">Action required</div>
+                    <span className="chip subtle">All clear</span>
+                  </div>
+                  <div className="homeRowMeta">No blockers detected.</div>
+                </div>
+              ) : (
+                <div className="card homePanel">
+                  <div className="homePanelHead">
+                    <div className="homePanelTitle">Action required</div>
+                    <span className="chip">{topAttention.length} item{topAttention.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="homeAlertList">
+                    {topAttention.map((item) => (
+                      <div key={item.id} className={`homeAlertRow ${item.tone}`}>
+                        <div className="homeRowMain">
+                          <div className="homeRowTitle">{item.title}</div>
+                          <div className="homeRowMeta">{item.meta}</div>
+                        </div>
+                        <div className="homeRowActions">
+                          <button
+                            className={`btn ${item.tone === "danger" ? "danger" : ""}`}
+                            onClick={item.on_action}
+                            disabled={item.action_disabled}
+                          >
+                            {item.action_label}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Launchpad</div>
+                </div>
+                <div className="homeLaunchpad">
+                  <button className="homeLaunchAction" onClick={() => setShowCreate(true)}>
+                    <Icon name="plus" size={18} />
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Create instance</div>
+                      <div className="homeRowMeta">Start a new profile and version.</div>
+                    </div>
+                  </button>
+                  <button className="homeLaunchAction" onClick={() => setRoute("discover")}>
+                    <Icon name="compass" size={18} />
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Discover content</div>
+                      <div className="homeRowMeta">Find mods and install fast.</div>
+                    </div>
+                  </button>
+                  <button className="homeLaunchAction" onClick={() => setRoute("library")}>
+                    <Icon name="books" size={18} />
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Open library</div>
+                      <div className="homeRowMeta">Manage all instances in detail.</div>
+                    </div>
+                  </button>
+                  <button className="homeLaunchAction" onClick={() => setRoute("modpacks")}>
+                    <Icon name="box" size={18} />
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Creator Studio</div>
+                      <div className="homeRowMeta">Build and apply layered modpacks.</div>
+                    </div>
+                  </button>
+                </div>
+              </div>
+
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Recent activity</div>
+                  <span className="chip subtle">{recentActivity.length}</span>
+                </div>
+                {recentActivity.length === 0 ? (
+                  <div className="homeEmpty">
+                    <div>No activity yet. Launch an instance or install content to populate this feed.</div>
+                  </div>
+                ) : (
+                  <div className="homeList">
+                    {recentActivity.map((item) => (
+                      <div key={item.id} className="homeListRow">
+                        <div className="homeRowMain">
+                          <div className="homeRowTitle">{item.message}</div>
+                          <div className="homeRowMeta">
+                            {item.instance_name} • {new Date(item.at).toLocaleTimeString()}
+                          </div>
+                        </div>
+                        <div className="homeRowActions">
+                          <span className={`chip ${item.tone === "error" ? "danger" : "subtle"}`}>
+                            {item.tone}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Performance pulse</div>
+                  <button className="btn" onClick={() => setRoute("updates")}>View full timings</button>
+                </div>
+                <div className="homeChipRow">
+                  <span className="chip subtle">Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"}</span>
+                  <span className="chip subtle">P95 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}</span>
+                  <span className="chip">Slowest {perfActionMetrics ? formatDurationMs(perfActionMetrics.slowest_ms) : "n/a"}</span>
+                </div>
+                <div className="homeMeta">{perfTrendLabel}</div>
+                {topSlowPerfActions.length === 0 ? (
+                  <div className="homeEmpty">
+                    <div>No timing samples yet. Run installs or update checks to collect speed data.</div>
+                  </div>
+                ) : (
+                  <div className="homePerfList">
+                    {topSlowPerfActions.map((entry) => (
+                      <div key={entry.id} className="homeListRow">
+                        <div className="homeRowMain">
+                          <div className="homeRowTitle">{formatPerfActionLabel(entry.name)}</div>
+                          <div className="homeRowMeta">
+                            {new Date(entry.finished_at).toLocaleTimeString()}
+                            {entry.detail ? ` • ${entry.detail}` : ""}
+                          </div>
+                        </div>
+                        <div className="homeRowActions">
+                          <span className={`chip ${entry.status === "error" ? "danger" : "subtle"}`}>{entry.status}</span>
+                          <span className="chip">{formatDurationMs(entry.duration_ms)}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <aside className="homeSideCol">
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Maintenance</div>
+                </div>
+                <div className="homeList">
+                  <div className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Content update schedule</div>
+                      <div className="homeRowMeta">
+                        {updateCadenceLabel(updateCheckCadence)} • Last run{" "}
+                        {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
+                      </div>
+                    </div>
+                    <span className="chip subtle">{scheduledInstancesWithUpdatesCount} with updates</span>
+                  </div>
+                  <div className="homeListRow">
+                    <div className="homeRowMain">
+                      <div className="homeRowTitle">Next scheduled check</div>
+                      <div className="homeRowMeta">
+                        {updateCheckCadence === "off"
+                          ? "Disabled"
+                          : nextScheduledUpdateRunAt
+                            ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check")
+                            : "Pending first check"}
+                      </div>
+                    </div>
+                    <span className={`chip ${scheduledUpdateBusy ? "" : "subtle"}`}>
+                      {scheduledUpdateBusy
+                        ? `${scheduledUpdateRunCompleted}/${scheduledUpdateRunTotal}`
+                        : "idle"}
+                    </span>
+                  </div>
+                </div>
+                <div className="homeMeta">
+                  {scheduledUpdateBusy ? (
+                    <>
+                      Progress {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} • Elapsed{" "}
+                      {formatEtaSeconds(scheduledUpdateRunElapsedSeconds)} • ETA{" "}
+                      {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
+                    </>
+                  ) : (
+                    <>Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})</>
+                  )}
+                </div>
+                <div className="homePanelActions">
+                  <button
+                    className="btn"
+                    onClick={onLauncherMaintenanceAction}
+                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                  >
+                    {launcherActionLabel}
+                  </button>
+                  <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
+                  <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
+                    {scheduledUpdateBusy ? "Checking…" : "Run content check"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Running sessions</div>
+                  <span className="chip subtle">{runningInstances.length}</span>
+                </div>
+                {runningInstances.length === 0 ? (
+                  <div className="homeEmpty">
+                    <div>No active sessions right now.</div>
+                  </div>
+                ) : (
+                  <div className="homeList">
+                    {runningInstances.slice(0, 5).map((run) => (
+                      <div key={run.launch_id} className="homeListRow">
+                        <div className="homeRowMain">
+                          <div className="homeRowTitle">{run.instance_name}</div>
+                          <div className="homeRowMeta">
+                            {humanizeToken(run.method)} • Started {formatDateTime(run.started_at, "just now")}
+                          </div>
+                        </div>
+                        <div className="homeRowActions">
+                          <button className="btn" onClick={() => openInstance(run.instance_id)}>Open</button>
+                          <button className="btn danger" onClick={() => void onStopRunning(run.launch_id)}>Stop</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="card homePanel">
+                <div className="homePanelHead">
+                  <div className="homePanelTitle">Recent instances</div>
+                </div>
+                {recentInstances.length === 0 ? (
+                  <div className="homeEmpty">
+                    <div>No instances yet.</div>
+                    <button className="btn primary" onClick={() => setShowCreate(true)}>Create instance</button>
+                  </div>
+                ) : (
+                  <div className="homeList">
+                    {recentInstances.map((inst) => (
+                      <div key={inst.id} className="homeListRow">
+                        <div className="homeRowMain">
+                          <div className="homeRowTitle">{inst.name}</div>
+                          <div className="homeRowMeta">
+                            {loaderLabelFor(inst)} • Minecraft {inst.mc_version}
+                          </div>
+                        </div>
+                        <div className="homeRowActions">
+                          {runningIds.has(inst.id) ? <span className="chip">Running</span> : null}
+                          <button
+                            className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
+                            onClick={() => onPlayInstance(inst)}
+                            disabled={
+                              (Boolean(launchBusyInstanceId) && launchBusyInstanceId !== inst.id) ||
+                              launchCancelBusyInstanceId === inst.id
+                            }
+                          >
+                            {launchBusyInstanceId === inst.id ? "Cancel" : "Play"}
+                          </button>
+                          <button className="btn" onClick={() => openInstance(inst.id)}>Open</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </aside>
+          </div>
+        </div>
+      );
+    }
+
     if (route === "settings") {
       return (
         <div style={{ maxWidth: 980 }}>
@@ -7717,6 +8547,52 @@ export default function App() {
               ) : null}
               {launcherErr ? <div className="errorBox" style={{ marginTop: 10 }}>{launcherErr}</div> : null}
             </div>
+
+            <div className="card" style={{ padding: 16, marginTop: 12, borderRadius: 22 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                <div style={{ fontWeight: 980, fontSize: 14 }}>Performance telemetry (local)</div>
+                <button className="btn subtle" onClick={() => setPerfActions([])} disabled={perfActions.length === 0}>
+                  Clear samples
+                </button>
+              </div>
+              <div className="settingSub" style={{ marginTop: 8 }}>
+                Lightweight UI timings for the latest actions, stored only on this device.
+              </div>
+              <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+                <span className="chip subtle">{perfActions.length} samples</span>
+                <span className="chip subtle">
+                  Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"}
+                </span>
+                <span className="chip subtle">
+                  P95 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}
+                </span>
+                <span className="chip">
+                  Slowest {perfActionMetrics ? formatDurationMs(perfActionMetrics.slowest_ms) : "n/a"}
+                </span>
+              </div>
+              {perfActions.length === 0 ? (
+                <div className="muted" style={{ marginTop: 10 }}>
+                  No samples yet. Run installs, update checks, or update-all actions to collect timings.
+                </div>
+              ) : (
+                <div className="updatesList" style={{ marginTop: 10, maxHeight: 300, overflow: "auto" }}>
+                  {perfActions.slice(0, 24).map((entry) => (
+                    <div key={entry.id} className="updatesListRow">
+                      <div className="updatesListName">
+                        {formatPerfActionLabel(entry.name)}
+                        <span className={`chip ${entry.status === "ok" ? "subtle" : ""}`} style={{ marginLeft: 8 }}>
+                          {entry.status}
+                        </span>
+                      </div>
+                      <div className="updatesListMeta">
+                        {formatDurationMs(entry.duration_ms)} · {new Date(entry.finished_at).toLocaleTimeString()}
+                        {entry.detail ? ` · ${entry.detail}` : ""}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       );
@@ -7741,6 +8617,17 @@ export default function App() {
                   <div className="settingSub" style={{ marginTop: 6 }}>
                     Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})
                   </div>
+                  {scheduledUpdateBusy ? (
+                    <div className="settingSub" style={{ marginTop: 6 }}>
+                      Progress: {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} · Elapsed{" "}
+                      {formatEtaSeconds(scheduledUpdateRunElapsedSeconds)} · ETA{" "}
+                      {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
+                    </div>
+                  ) : scheduledUpdateRunTotal > 0 && scheduledUpdateRunElapsedSeconds != null ? (
+                    <div className="settingSub" style={{ marginTop: 6 }}>
+                      Last run duration: {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="updatesScreenSummaryActions">
                   <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
@@ -8593,6 +9480,16 @@ export default function App() {
         selectedVisibleModCount === selectableVisibleMods.length;
       const selectedInstalledModCount = installedContentSummary.selectedInstalledModCount;
       const instanceActivity = instanceActivityById[inst.id] ?? [];
+      const friendLinkNeedsAttention =
+        Boolean(instanceFriendLinkStatus?.linked) &&
+        (instanceFriendLinkStatus?.pending_conflicts_count ?? 0) > 0;
+      const friendLinkStatusLabel = !instanceFriendLinkStatus?.linked
+        ? "Unlinked"
+        : (instanceFriendLinkStatus.pending_conflicts_count ?? 0) > 0
+          ? `${instanceFriendLinkStatus.pending_conflicts_count} conflict${instanceFriendLinkStatus.pending_conflicts_count === 1 ? "" : "s"}`
+          : instanceFriendLinkStatus.status
+            ? instanceFriendLinkStatus.status.replace(/_/g, " ")
+            : "Linked";
 
       const activeLogCacheKey = `${inst.id}:${logSourceFilter}`;
       const activeLogPayload = rawLogLinesBySource[activeLogCacheKey] ?? null;
@@ -8803,8 +9700,22 @@ export default function App() {
                     </button>
                   ) : null}
                   <button
+                    className={`btn ${friendLinkNeedsAttention ? "primary" : "subtle"}`}
+                    onClick={() => setInstanceLinksOpen(true)}
+                    title="Open Modpack and Friend Link management"
+                  >
+                    <span className="btnIcon">
+                      <Icon name="layers" size={18} />
+                    </span>
+                    Links
+                    <span className={`instanceLinkStatusPill ${friendLinkNeedsAttention ? "alert" : ""}`}>
+                      {friendLinkStatusLabel}
+                    </span>
+                  </button>
+                  <button
                     className="btn settingsSpin"
                     onClick={() => {
+                      setInstanceLinksOpen(false);
                       setInstanceSettingsSection("general");
                       setInstanceSettingsOpen(true);
                     }}
@@ -8845,7 +9756,7 @@ export default function App() {
                         Install content
                       </button>
                       <button
-                        className="btn"
+                        className="btn subtle"
                         onClick={() => onAddModFromFile(inst)}
                         disabled={importingInstanceId === inst.id}
                       >
@@ -8878,14 +9789,6 @@ export default function App() {
                     <></>
                   )}
                 </div>
-              </div>
-
-              <div style={{ marginTop: 12 }}>
-                <InstanceModpackCard
-                  instance={inst}
-                  onNotice={(message) => setInstallNotice(message)}
-                  onError={(message) => setError(message)}
-                />
               </div>
 
               {instanceTab === "content" ? (
@@ -8925,104 +9828,99 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="instanceContentControlGrid">
-                      <div className="instanceContentControlCard">
-                        <div className="instanceContentControlHead">
-                          <div className="instanceContentControlTitle">Selection</div>
-                          <div className="muted instanceContentControlMeta">
-                            {installedMods.length} item{installedMods.length === 1 ? "" : "s"} in lockfile
-                          </div>
+                    <div className="instanceContentControlCard instanceContentToolsCard">
+                      <div className="instanceContentControlHead">
+                        <div className="instanceContentControlTitle">Content tools</div>
+                        <div className="muted instanceContentControlMeta">
+                          {installedMods.length} item{installedMods.length === 1 ? "" : "s"} in lockfile
                         </div>
-                        <div className="instanceContentStatRow">
-                          <span className="chip subtle">Visible: {visibleInstalledMods.length}</span>
-                          <span className="chip subtle">Selected: {selectedInstalledModCount}</span>
-                        </div>
-                        {instanceContentType === "mods" ? (
-                          <div className="instanceModsBulkRow">
-                            <button
-                              className="btn"
-                              onClick={() => onToggleAllVisibleModSelection(visibleInstalledMods, !allVisibleModsSelected)}
-                              disabled={selectableVisibleMods.length === 0 || toggleBusyVersion === "__bulk__"}
-                            >
-                              {allVisibleModsSelected ? "Unselect visible" : "Select visible"}
-                            </button>
-                            <button
-                              className="btn"
-                              onClick={() => setSelectedModVersionIds([])}
-                              disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
-                            >
-                              Clear selection
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="muted instanceContentControlHint">
-                            Switch to Installed mods to use bulk selection.
-                          </div>
-                        )}
                       </div>
-
-                      <div className="instanceContentControlCard">
-                        <div className="instanceContentControlHead">
-                          <div className="instanceContentControlTitle">Maintenance</div>
-                          <div className="muted instanceContentControlMeta">
-                            {snapshotsBusy
-                              ? "Loading snapshots…"
-                              : snapshots.length > 0
-                                ? `${snapshots.length} snapshot${snapshots.length === 1 ? "" : "s"}`
-                                : "No snapshots yet"}
+                      <div className="instanceContentToolsGrid">
+                        <div className="instanceContentToolsPane">
+                          <div className="instanceContentToolsPaneHead">Selection</div>
+                          <div className="muted instanceContentStatText">
+                            Visible {visibleInstalledMods.length} · Selected {selectedInstalledModCount}
                           </div>
+                          {instanceContentType === "mods" ? (
+                            <div className="instanceModsBulkRow">
+                              <button
+                                className="btn"
+                                onClick={() => onToggleAllVisibleModSelection(visibleInstalledMods, !allVisibleModsSelected)}
+                                disabled={selectableVisibleMods.length === 0 || toggleBusyVersion === "__bulk__"}
+                              >
+                                {allVisibleModsSelected ? "Unselect visible" : "Select visible"}
+                              </button>
+                              <button
+                                className="btn"
+                                onClick={() => setSelectedModVersionIds([])}
+                                disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
+                              >
+                                Clear selection
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="muted instanceContentControlHint">
+                              Switch to Installed mods to use bulk selection.
+                            </div>
+                          )}
                         </div>
-                        <div className="instanceContentUpdateRow">
-                          <button
-                            className="btn"
-                            onClick={() => onCheckUpdates(inst)}
-                            disabled={updateBusy || updateAllBusy}
-                          >
-                            {updateBusy ? "Checking…" : "Refresh"}
-                          </button>
-                          <button
-                            className="btn primary"
-                            onClick={() => onUpdateAll(inst)}
-                            disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
-                          >
-                            {updateAllBusy ? "Updating…" : `Update all${updateCheck?.update_count ? ` (${updateCheck.update_count})` : ""}`}
-                          </button>
-                        </div>
-                        <div className="instanceSnapshotRow">
-                          {snapshots.length > 0 ? (
-                            <MenuSelect
-                              value={rollbackSnapshotId ?? snapshots[0].id}
-                              labelPrefix="Snapshot"
-                              options={snapshots.slice(0, 30).map((s) => ({
-                                value: s.id,
-                                label: `${s.id} • ${s.reason}`,
-                              }))}
-                              align="start"
-                              onChange={(v) => setRollbackSnapshotId(v)}
-                            />
+                        <div className="instanceContentToolsPane">
+                          <div className="instanceContentToolsPaneHeader">
+                            <div className="instanceContentToolsPaneHead">Maintenance</div>
+                            <div className="muted instanceContentControlHint">
+                              {updateCheck?.update_count
+                                ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending`
+                                : "Run refresh to check updates"}
+                            </div>
+                          </div>
+                          <div className="instanceContentUpdateRow">
+                            <button
+                              className="btn"
+                              onClick={() => onCheckUpdates(inst)}
+                              disabled={updateBusy || updateAllBusy}
+                            >
+                              {updateBusy ? "Checking…" : "Refresh"}
+                            </button>
+                            <button
+                              className="btn primary"
+                              onClick={() => onUpdateAll(inst)}
+                              disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
+                            >
+                              {updateAllBusy ? "Updating…" : "Update all"}
+                            </button>
+                          </div>
+                          <div className="instanceSnapshotRow">
+                            {snapshots.length > 0 ? (
+                              <MenuSelect
+                                value={rollbackSnapshotId ?? snapshots[0].id}
+                                labelPrefix="Snapshot"
+                                options={snapshots.slice(0, 30).map((s) => ({
+                                  value: s.id,
+                                  label: `${s.id} • ${s.reason}`,
+                                }))}
+                                align="start"
+                                onChange={(v) => setRollbackSnapshotId(v)}
+                              />
+                            ) : null}
+                            <button
+                              className="btn instanceSnapshotRollbackBtn"
+                              onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
+                              disabled={rollbackBusy || snapshots.length === 0}
+                              title={
+                                snapshots.length === 0
+                                  ? "No snapshot available yet"
+                                  : `Rollback to ${rollbackSnapshotId ?? snapshots[0]?.id ?? "latest snapshot"}`
+                              }
+                            >
+                              {rollbackBusy ? "Rolling back…" : "Rollback"}
+                            </button>
+                          </div>
+                          {snapshots.length === 0 ? (
+                            <div className="muted instanceContentControlHint">
+                              Installing or updating content creates a snapshot automatically.
+                            </div>
                           ) : null}
-                          <button
-                            className="btn instanceSnapshotRollbackBtn"
-                            onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
-                            disabled={rollbackBusy || snapshots.length === 0}
-                            title={
-                              snapshots.length === 0
-                                ? "No snapshot available yet"
-                                : `Rollback to ${rollbackSnapshotId ?? snapshots[0]?.id ?? "latest snapshot"}`
-                            }
-                          >
-                            {rollbackBusy ? "Rolling back…" : `Rollback${snapshots.length ? ` (${snapshots.length})` : ""}`}
-                          </button>
                         </div>
-                        {snapshots.length > 0 ? (
-                          <div className="muted instanceContentControlHint">
-                            Selected snapshot: {rollbackSnapshotId ?? snapshots[0].id}
-                          </div>
-                        ) : (
-                          <div className="muted instanceContentControlHint">
-                            Installing or updating content creates a snapshot automatically.
-                          </div>
-                        )}
                       </div>
                     </div>
 
@@ -9828,6 +10726,36 @@ export default function App() {
               </div>
             </aside>
           </div>
+
+          {instanceLinksOpen && (
+            <Modal
+              title={`${inst.name || "Instance"} links`}
+              titleNode={
+                <div className="instSettingsCrumb">
+                  <span className="instSettingsCrumbIcon" aria-hidden="true">
+                    <Icon name="layers" size={15} />
+                  </span>
+                  <span className="instSettingsCrumbName">{inst.name || "Instance"}</span>
+                  <span className="instSettingsCrumbSep">›</span>
+                  <span className="instSettingsCrumbLabel">Links</span>
+                </div>
+              }
+              onClose={() => setInstanceLinksOpen(false)}
+              size="wide"
+            >
+              <div className="modalBody">
+                <InstanceModpackCard
+                  instance={inst}
+                  onNotice={(message) => setInstallNotice(message)}
+                  onError={(message) => setError(message)}
+                  onFriendConflict={(instanceId, result) => {
+                    setFriendConflictInstanceId(instanceId);
+                    setFriendConflictResult(result);
+                  }}
+                />
+              </div>
+            </Modal>
+          )}
 
           {instanceSettingsOpen && (
             <Modal
@@ -10942,7 +11870,10 @@ export default function App() {
 
   const appUpdateAvailable = Boolean(appUpdaterState?.available);
   const appUpdateBannerVisibleRaw =
-    appUpdaterBusy || appUpdaterInstallBusy || Boolean(appUpdaterState) || Boolean(appUpdaterLastError);
+    appUpdaterBusy ||
+    appUpdaterInstallBusy ||
+    Boolean(appUpdaterLastError) ||
+    Boolean(appUpdaterState?.available);
   const appUpdateBannerVisible =
     appUpdateBannerVisibleRaw && appUpdateBannerDismissedKey !== appUpdateBannerStateKey;
   const appUpdateBannerTitle = appUpdaterInstallBusy
@@ -10980,6 +11911,10 @@ export default function App() {
   return (
     <div className="appWrap">
       <aside className="navRail">
+        <NavButton active={route === "home"} label="Home" onClick={() => setRoute("home")}>
+          <Icon name="home" className="navIcon navHomeIcon" />
+        </NavButton>
+
         <NavButton active={route === "discover"} label="Discover content" onClick={() => setRoute("discover")}>
           <Icon name="compass" className="navIcon compassIcon navAnimCompass" />
         </NavButton>
@@ -11205,6 +12140,97 @@ export default function App() {
             document.body
           )
         : null}
+
+      {friendConflictResult && friendConflictInstanceId ? (
+        <Modal
+          title="Resolve Friend Link Conflicts"
+          size="wide"
+          onClose={() => {
+            if (friendConflictResolveBusy) return;
+            setFriendConflictResult(null);
+            setFriendConflictInstanceId(null);
+          }}
+        >
+          <div className="modalBody">
+            <div className="p" style={{ marginTop: 0 }}>
+              Launch is blocked until Friend Link conflicts are resolved for this instance.
+            </div>
+            <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 12 }}>
+              <div className="rowBetween">
+                <div style={{ fontWeight: 900 }}>Conflicts</div>
+                <span className="chip subtle">{friendConflictResult.conflicts.length}</span>
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {friendConflictResult.conflicts.slice(0, 24).map((conflict) => (
+                  <div key={conflict.id} className="rowBetween">
+                    <div>
+                      <div style={{ fontWeight: 700 }}>{conflict.key}</div>
+                      <div className="muted">{conflict.kind}</div>
+                    </div>
+                    <span className="chip subtle">{conflict.peer_id}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="footerBar">
+            <button
+              className="btn"
+              disabled={friendConflictResolveBusy}
+              onClick={async () => {
+                setFriendConflictResolveBusy(true);
+                try {
+                  const out = await resolveFriendLinkConflicts({
+                    instanceId: friendConflictInstanceId,
+                    resolution: { keep_all_mine: true },
+                  });
+                  if (out.status === "conflicted") {
+                    setFriendConflictResult(out);
+                    setInstallNotice(`Still ${out.conflicts.length} unresolved conflict(s).`);
+                  } else {
+                    setFriendConflictResult(null);
+                    setFriendConflictInstanceId(null);
+                    setInstallNotice(`Friend Link resolved: ${out.status}.`);
+                  }
+                } catch (e: any) {
+                  setError(e?.toString?.() ?? String(e));
+                } finally {
+                  setFriendConflictResolveBusy(false);
+                }
+              }}
+            >
+              {friendConflictResolveBusy ? "Resolving…" : "Keep all mine"}
+            </button>
+            <button
+              className="btn primary"
+              disabled={friendConflictResolveBusy}
+              onClick={async () => {
+                setFriendConflictResolveBusy(true);
+                try {
+                  const out = await resolveFriendLinkConflicts({
+                    instanceId: friendConflictInstanceId,
+                    resolution: { take_all_theirs: true },
+                  });
+                  if (out.status === "conflicted") {
+                    setFriendConflictResult(out);
+                    setInstallNotice(`Still ${out.conflicts.length} unresolved conflict(s).`);
+                  } else {
+                    setFriendConflictResult(null);
+                    setFriendConflictInstanceId(null);
+                    setInstallNotice(`Friend Link resolved: ${out.status}.`);
+                  }
+                } catch (e: any) {
+                  setError(e?.toString?.() ?? String(e));
+                } finally {
+                  setFriendConflictResolveBusy(false);
+                }
+              }}
+            >
+              {friendConflictResolveBusy ? "Resolving…" : "Take all theirs"}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
 
       {showCreate ? (
         <Modal
@@ -11433,6 +12459,16 @@ export default function App() {
                 <div className="installProgressMeta">
                   <span>{formatPercent(installProgress.percent)}</span>
                   <span>{installProgress.stage}</span>
+                  {installProgressElapsedSeconds != null ? (
+                    <span>Elapsed {formatEtaSeconds(installProgressElapsedSeconds)}</span>
+                  ) : null}
+                  {installProgress.stage === "completed" ? (
+                    <span>ETA done</span>
+                  ) : installProgress.stage === "error" ? (
+                    <span>ETA unavailable</span>
+                  ) : (
+                    <span>ETA {formatEtaSeconds(installProgressEtaSeconds)}</span>
+                  )}
                 </div>
               </div>
             ) : null}

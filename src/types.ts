@@ -317,6 +317,111 @@ export type WriteWorldConfigFileResult = {
   message: string;
 };
 
+export type InstanceConfigFileEntry = {
+  path: string;
+  size_bytes: number;
+  modified_at: number;
+  editable: boolean;
+  kind: string;
+  readonly_reason?: string | null;
+};
+
+export type ReadInstanceConfigFileResult = {
+  path: string;
+  editable: boolean;
+  kind: string;
+  size_bytes: number;
+  modified_at: number;
+  readonly_reason?: string | null;
+  content?: string | null;
+  preview?: string | null;
+};
+
+export type WriteInstanceConfigFileResult = {
+  path: string;
+  size_bytes: number;
+  modified_at: number;
+  message: string;
+};
+
+export type FriendLinkInvite = {
+  invite_code: string;
+  group_id: string;
+  expires_at: string;
+  bootstrap_peer_endpoint: string;
+  protocol_version: number;
+};
+
+export type FriendLinkPeer = {
+  peer_id: string;
+  display_name: string;
+  endpoint: string;
+  online: boolean;
+  last_seen_at?: string | null;
+};
+
+export type FriendLinkStatus = {
+  instance_id: string;
+  linked: boolean;
+  group_id?: string | null;
+  local_peer_id?: string | null;
+  display_name?: string | null;
+  listener_endpoint?: string | null;
+  allowlist: string[];
+  peers: FriendLinkPeer[];
+  pending_conflicts_count: number;
+  status: string;
+  last_good_hash?: string | null;
+};
+
+export type FriendSyncItemKind = "lock_entry" | "config_file" | string;
+
+export type FriendSyncConflict = {
+  id: string;
+  kind: FriendSyncItemKind;
+  key: string;
+  peer_id: string;
+  mine_hash: string;
+  theirs_hash: string;
+  mine_preview?: string | null;
+  theirs_preview?: string | null;
+};
+
+export type FriendLinkReconcileAction = {
+  kind: FriendSyncItemKind;
+  key: string;
+  peer_id: string;
+  applied: boolean;
+  message: string;
+};
+
+export type FriendLinkReconcileResult = {
+  status: string;
+  mode: "manual" | "prelaunch" | string;
+  actions_applied: number;
+  actions_pending: number;
+  actions: FriendLinkReconcileAction[];
+  conflicts: FriendSyncConflict[];
+  warnings: string[];
+  blocked_reason?: string | null;
+  local_state_hash: string;
+  last_good_hash?: string | null;
+  offline_peers: number;
+};
+
+export type ConflictResolutionPayload = {
+  keep_all_mine?: boolean;
+  take_all_theirs?: boolean;
+  items?: Array<{
+    conflict_id: string;
+    resolution: "keep_mine" | "take_theirs" | "skip_for_now" | string;
+  }>;
+};
+
+export type FriendLinkDebugBundleResult = {
+  path: string;
+};
+
 export type SnapshotMeta = {
   id: string;
   created_at: string;
