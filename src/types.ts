@@ -91,6 +91,10 @@ export type ContentUpdateInfo = {
   latest_version_number: string;
   enabled: boolean;
   target_worlds: string[];
+  latest_file_name?: string;
+  latest_download_url?: string;
+  latest_hashes?: Record<string, string>;
+  required_dependencies?: string[];
 };
 
 export type ContentUpdateCheckResult = {
@@ -118,6 +122,108 @@ export type LaunchResult = {
 };
 
 export type LaunchMethod = "prism" | "native";
+
+export type LaunchCompatibilityItem = {
+  code: string;
+  title: string;
+  message: string;
+  severity: "blocker" | "warning" | "info" | string;
+  blocking: boolean;
+};
+
+export type LaunchCompatibilityReport = {
+  instance_id: string;
+  status: "ok" | "warning" | "blocked" | string;
+  checked_at: string;
+  blocking_count: number;
+  warning_count: number;
+  unresolved_local_entries: number;
+  items: LaunchCompatibilityItem[];
+};
+
+export type LocalResolverMatch = {
+  key: string;
+  from_source: string;
+  to_source: string;
+  project_id: string;
+  version_id: string;
+  name: string;
+  version_number: string;
+  confidence: "deterministic" | "high" | string;
+  reason: string;
+};
+
+export type LocalResolverResult = {
+  instance_id: string;
+  scanned_entries: number;
+  resolved_entries: number;
+  remaining_local_entries: number;
+  matches: LocalResolverMatch[];
+  warnings: string[];
+};
+
+export type LaunchFixAction = {
+  id: string;
+  kind: "toggle_mod" | "install_dependency" | "open_config" | "rerun_preflight" | string;
+  title: string;
+  detail: string;
+  selected: boolean;
+  payload?: Record<string, unknown>;
+};
+
+export type LaunchFixPlan = {
+  instance_id: string;
+  generated_at: string;
+  source: "log_analysis" | string;
+  causes: string[];
+  actions: LaunchFixAction[];
+};
+
+export type LaunchFixApplyResult = {
+  applied: number;
+  failed: number;
+  skipped: number;
+  messages: string[];
+};
+
+export type InstanceHealthScore = {
+  score: number;
+  grade: "A" | "B" | "C" | "D" | "F";
+  reasons: string[];
+};
+
+export type AutoProfileRecommendation = {
+  memory_mb: number;
+  jvm_args: string;
+  graphics_preset: "Performance" | "Balanced" | "Quality" | string;
+  confidence: "high" | "medium" | "low" | string;
+  reasons: string[];
+};
+
+export type SupportPerfAction = {
+  id: string;
+  name: string;
+  detail?: string | null;
+  status: "ok" | "error" | string;
+  duration_ms: number;
+  finished_at: number;
+};
+
+export type SupportBundleResult = {
+  output_path: string;
+  files_count: number;
+  redactions_applied: number;
+  message: string;
+};
+
+export type CreatorConflictSuggestion = {
+  id: string;
+  conflict_code: string;
+  title: string;
+  detail: string;
+  patch_preview: string;
+  risk: "low" | "medium" | "high" | string;
+};
 
 export type UpdateCheckCadence =
   | "off"

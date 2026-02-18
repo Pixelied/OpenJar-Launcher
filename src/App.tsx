@@ -39,8 +39,14 @@ import type {
   BeginMicrosoftLoginResult,
   ContentUpdateCheckResult,
   ContentUpdateInfo,
+  AutoProfileRecommendation,
   FriendLinkReconcileResult,
   FriendLinkStatus,
+  InstanceHealthScore,
+  LaunchCompatibilityReport,
+  LaunchFixAction,
+  LaunchFixApplyResult,
+  LaunchFixPlan,
   MicrosoftLoginState,
   InstallPlanPreview,
   Instance,
@@ -52,6 +58,7 @@ import type {
   Loader,
   ModpackSpec,
   SnapshotMeta,
+  SupportPerfAction,
 } from "./types";
 import {
   applySelectedAccountAppearance,
@@ -64,6 +71,7 @@ import {
   deleteInstance,
   exportPresetsJson,
   exportInstanceModsZip,
+  exportInstanceSupportBundle,
   getDevModeState,
   getCurseforgeApiStatus,
   getCurseforgeProjectDetail,
@@ -94,8 +102,10 @@ import {
   getFriendLinkStatus,
   pollMicrosoftLogin,
   previewModrinthInstall,
+  preflightLaunchCompatibility,
   readInstanceLogs,
   readLocalImageDataUrl,
+  revealConfigEditorFile,
   listModpackSpecs,
   getModpackSpec,
   openInstancePath,
@@ -106,6 +116,7 @@ import {
   setInstanceIcon,
   setInstalledModEnabled,
   stopRunningInstance,
+  resolveLocalModSources,
   upsertModpackSpec,
   detectJavaRuntimes,
   updateAllInstanceContent,
@@ -136,7 +147,7 @@ import {
 } from "./lib/logAnalysis";
 
 type Route = "home" | "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
-type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
+type AccentPreset = "neutral" | "gray" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
 type MotionPreset = "calm" | "standard" | "expressive";
 type DensityPreset = "comfortable" | "compact";
@@ -252,6 +263,152 @@ type PerfActionEntry = {
   finished_at: number;
 };
 
+type LaunchOutcomeEntry = {
+  at: number;
+  ok: boolean;
+  message?: string | null;
+};
+
+type LaunchFixActionDraft = LaunchFixAction & {
+  selected: boolean;
+};
+
+type LaunchOutcomesByInstance = Record<string, LaunchOutcomeEntry[]>;
+
+const CRITICAL_UPDATE_TOKENS = [
+  "fabric-api",
+  "fabric_api",
+  "architectury",
+  "architectury-api",
+  "cloth-config",
+  "forge-config-api-port",
+  "forge_config_api_port",
+  "neoforge",
+  "forge",
+];
+
+const CRASH_OUTCOME_RE = /\b(crash|exception|fatal|sigsegv|exit code -1)\b/i;
+
+function isLikelyCriticalUpdate(update: ContentUpdateInfo) {
+  const haystack = `${update.project_id} ${update.name}`.toLowerCase();
+  return CRITICAL_UPDATE_TOKENS.some((token) => haystack.includes(token));
+}
+
+function healthScoreGrade(score: number): InstanceHealthScore["grade"] {
+  if (score >= 90) return "A";
+  if (score >= 75) return "B";
+  if (score >= 60) return "C";
+  if (score >= 45) return "D";
+  return "F";
+}
+
+function computeInstanceHealthScore(args: {
+  instanceId: string;
+  launchOutcomesByInstance: LaunchOutcomesByInstance;
+  friendStatus?: FriendLinkStatus | null;
+  scheduledUpdatesByInstance: Record<string, ScheduledUpdateCheckEntry>;
+}): InstanceHealthScore {
+  const now = Date.now();
+  let score = 100;
+  const reasons: string[] = [];
+  const outcomes = (args.launchOutcomesByInstance[args.instanceId] ?? []).slice(0, 24);
+  const recent72h = outcomes.filter((item) => now - Number(item.at || 0) <= 72 * 60 * 60 * 1000);
+  const hasRecentFailedLaunch = recent72h.some((item) => !item.ok);
+  if (hasRecentFailedLaunch) {
+    score -= 40;
+    reasons.push("Recent launch failure");
+  }
+  if ((args.friendStatus?.pending_conflicts_count ?? 0) > 0) {
+    score -= 25;
+    reasons.push("Friend Link conflicts pending");
+  }
+  const crashLikeCount = outcomes.filter((item) => !item.ok && CRASH_OUTCOME_RE.test(String(item.message ?? ""))).length;
+  if (crashLikeCount > 0) {
+    const penalty = Math.min(20, crashLikeCount * 5);
+    score -= penalty;
+    reasons.push(`${crashLikeCount} crash-like outcome${crashLikeCount === 1 ? "" : "s"}`);
+  }
+  const scheduled = args.scheduledUpdatesByInstance[args.instanceId];
+  const criticalUpdates = (scheduled?.updates ?? []).filter(isLikelyCriticalUpdate).length;
+  if (criticalUpdates > 0) {
+    const penalty = Math.min(15, criticalUpdates * 5);
+    score -= penalty;
+    reasons.push(`${criticalUpdates} critical update${criticalUpdates === 1 ? "" : "s"} pending`);
+  }
+  const recentStreak = outcomes.slice(0, 3);
+  if (recentStreak.length >= 2 && recentStreak.every((item) => item.ok)) {
+    score += 5;
+    reasons.push("Recent launch streak");
+  }
+  score = Math.max(0, Math.min(100, score));
+  return {
+    score,
+    grade: healthScoreGrade(score),
+    reasons,
+  };
+}
+
+function computeAutoProfileRecommendation(args: {
+  instance: Instance;
+  enabledModCount: number;
+  launchOutcomesByInstance: LaunchOutcomesByInstance;
+}): AutoProfileRecommendation {
+  const outcomes = (args.launchOutcomesByInstance[args.instance.id] ?? []).slice(0, 16);
+  const outcomeText = outcomes.map((item) => String(item.message ?? "").toLowerCase()).join("\n");
+  const oomLike = /\boutofmemoryerror|java heap space|gc overhead\b/i.test(outcomeText);
+  const recentFailureRate = outcomes.length
+    ? outcomes.filter((item) => !item.ok).length / outcomes.length
+    : 0;
+  let memoryMb = 4096;
+  const reasons: string[] = [];
+  if (args.enabledModCount >= 220) {
+    memoryMb = 8192;
+    reasons.push("Very high enabled mod count");
+  } else if (args.enabledModCount >= 140) {
+    memoryMb = 6144;
+    reasons.push("High enabled mod count");
+  } else if (args.enabledModCount <= 45) {
+    memoryMb = 3072;
+    reasons.push("Light mod footprint");
+  } else {
+    reasons.push("Balanced mod footprint");
+  }
+  if (oomLike) {
+    memoryMb = Math.max(memoryMb, 8192);
+    reasons.push("OOM signature detected in launch history");
+  }
+  const loader = String(args.instance.loader ?? "").toLowerCase();
+  const jvmArgs = loader === "vanilla"
+    ? "-XX:+UseG1GC -XX:MaxGCPauseMillis=75"
+    : "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=60 -XX:+UnlockExperimentalVMOptions";
+  let graphicsPreset: AutoProfileRecommendation["graphics_preset"] = "Balanced";
+  if (args.enabledModCount >= 180 || recentFailureRate >= 0.35) {
+    graphicsPreset = "Performance";
+  } else if (args.enabledModCount <= 60 && recentFailureRate < 0.15) {
+    graphicsPreset = "Quality";
+  }
+  const confidence: AutoProfileRecommendation["confidence"] =
+    outcomes.length >= 4 ? (recentFailureRate < 0.2 ? "high" : "medium") : "low";
+  return {
+    memory_mb: memoryMb,
+    jvm_args: jvmArgs,
+    graphics_preset: graphicsPreset,
+    confidence,
+    reasons,
+  };
+}
+
+function autoProfileSignature(recommendation: AutoProfileRecommendation): string {
+  const reasons = [...(recommendation.reasons ?? [])].map((item) => String(item).trim()).filter(Boolean);
+  return [
+    recommendation.memory_mb,
+    recommendation.jvm_args.trim(),
+    recommendation.graphics_preset,
+    recommendation.confidence,
+    reasons.join("|"),
+  ].join("::");
+}
+
 function normalizeVersionLabel(value: string | null | undefined) {
   return String(value ?? "").trim().replace(/^v/i, "");
 }
@@ -304,6 +461,16 @@ function inferActivityTone(message: string): InstanceActivityEntry["tone"] {
     return "success";
   }
   return "info";
+}
+
+function summarizeWarnings(warnings: string[], maxItems = 3): string {
+  const cleaned = warnings
+    .map((item) => String(item ?? "").trim())
+    .filter((item) => item.length > 0);
+  if (cleaned.length === 0) return "";
+  const preview = cleaned.slice(0, Math.max(1, maxItems));
+  const extra = cleaned.length - preview.length;
+  return extra > 0 ? `${preview.join(" | ")} | +${extra} more` : preview.join(" | ");
 }
 
 type MicrosoftCodePrompt = {
@@ -962,9 +1129,15 @@ const ACCOUNT_DIAGNOSTICS_CACHE_KEY = "mpm.account.diagnostics_cache.v1";
 const DISCOVER_ADD_TRAY_STICKY_KEY = "mpm.discover.add_tray_sticky.v1";
 const APP_UPDATER_AUTOCHECK_KEY = "mpm.appUpdater.autoCheck.v1";
 const PERF_ACTION_LOG_KEY = "mpm.perf.actions.v1";
+const LAUNCH_OUTCOMES_KEY = "openjar.launchOutcomes.v1";
+const HEALTH_SCORE_DISMISSED_KEY = "openjar.healthScore.dismissed.v1";
+const AUTOPROFILE_APPLIED_KEY = "openjar.autoProfile.appliedHints.v1";
+const AUTOPROFILE_DISMISSED_KEY = "openjar.autoProfile.dismissed.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
 const APP_UPDATE_BANNER_ANIMATION_MS = 320;
+const INSTALL_NOTICE_AUTO_HIDE_MS = 9000;
+const TOP_ERROR_AUTO_HIDE_MS = 12000;
 const SKIN_IMAGE_FETCH_TIMEOUT_MS = 4500;
 const SKIN_VIEWER_LOAD_TIMEOUT_MS = 7000;
 const ACCOUNT_DIAGNOSTICS_TIMEOUT_MS = 20000;
@@ -1394,6 +1567,7 @@ const DISCOVER_LOADER_GROUPS: CatGroup[] = [
 
 const ACCENT_OPTIONS: { value: AccentPreset; label: string }[] = [
   { value: "neutral", label: "Neutral" },
+  { value: "gray", label: "Neutral Gray" },
   { value: "blue", label: "Blue" },
   { value: "emerald", label: "Emerald" },
   { value: "amber", label: "Amber" },
@@ -1482,6 +1656,7 @@ const CURSEFORGE_DETAIL_TABS: { value: string; label: string }[] = [
 function isAccentPreset(value: string | null): value is AccentPreset {
   return (
     value === "neutral" ||
+    value === "gray" ||
     value === "blue" ||
     value === "emerald" ||
     value === "amber" ||
@@ -3649,6 +3824,29 @@ export default function App() {
   const [instanceActivityById, setInstanceActivityById] = useState<
     Record<string, InstanceActivityEntry[]>
   >({});
+  function appendInstanceActivity(
+    instanceId: string,
+    messages: string[],
+    tone?: InstanceActivityEntry["tone"]
+  ) {
+    const cleaned = messages
+      .map((msg) => String(msg ?? "").trim())
+      .filter((msg) => msg.length > 0);
+    if (!instanceId || cleaned.length === 0) return;
+    setInstanceActivityById((prev) => {
+      const newEntries = cleaned.map((message) => ({
+        id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        message,
+        at: Date.now(),
+        tone: tone ?? inferActivityTone(message),
+      }));
+      const nextItems = [...newEntries, ...(prev[instanceId] ?? [])].slice(0, 20);
+      return {
+        ...prev,
+        [instanceId]: nextItems,
+      };
+    });
+  }
   const lastInstallNoticeRef = useRef<string | null>(null);
   const [importingInstanceId, setImportingInstanceId] = useState<string | null>(null);
   const [launchBusyInstanceId, setLaunchBusyInstanceId] = useState<string | null>(null);
@@ -3686,10 +3884,100 @@ export default function App() {
   const [launchFailureByInstance, setLaunchFailureByInstance] = useState<
     Record<string, LaunchFailureRecord>
   >({});
+  const [launchOutcomesByInstance, setLaunchOutcomesByInstance] = useState<LaunchOutcomesByInstance>(() => {
+    try {
+      const raw = localStorage.getItem(LAUNCH_OUTCOMES_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return {};
+      const next: LaunchOutcomesByInstance = {};
+      for (const [instanceId, rows] of Object.entries(parsed as Record<string, any>)) {
+        if (!Array.isArray(rows)) continue;
+        next[instanceId] = rows
+          .map((item) => ({
+            at: Number(item?.at ?? Date.now()),
+            ok: Boolean(item?.ok),
+            message: item?.message ? String(item.message) : null,
+          }))
+          .filter((item) => Number.isFinite(item.at))
+          .slice(0, 30);
+      }
+      return next;
+    } catch {
+      return {};
+    }
+  });
+  const [healthScoreDismissedByInstance, setHealthScoreDismissedByInstance] = useState<Record<string, boolean>>(
+    () => {
+      try {
+        const raw = localStorage.getItem(HEALTH_SCORE_DISMISSED_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        return parsed as Record<string, boolean>;
+      } catch {
+        return {};
+      }
+    }
+  );
+  const [autoProfileAppliedHintsByInstance, setAutoProfileAppliedHintsByInstance] = useState<Record<string, string>>(
+    () => {
+      try {
+        const raw = localStorage.getItem(AUTOPROFILE_APPLIED_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        return parsed as Record<string, string>;
+      } catch {
+        return {};
+      }
+    }
+  );
+  const [autoProfileDismissedByInstance, setAutoProfileDismissedByInstance] = useState<Record<string, string>>(
+    () => {
+      try {
+        const raw = localStorage.getItem(AUTOPROFILE_DISMISSED_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object") return {};
+        const out: Record<string, string> = {};
+        for (const [instanceId, signature] of Object.entries(parsed as Record<string, unknown>)) {
+          if (!instanceId) continue;
+          const normalized = String(signature ?? "").trim();
+          if (!normalized) continue;
+          out[instanceId] = normalized;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    }
+  );
   const [instanceFriendLinkStatus, setInstanceFriendLinkStatus] = useState<FriendLinkStatus | null>(null);
+  const [friendLinkStatusByInstance, setFriendLinkStatusByInstance] = useState<Record<string, FriendLinkStatus>>({});
+  const [friendLinkSyncBusyInstanceId, setFriendLinkSyncBusyInstanceId] = useState<string | null>(null);
   const [friendConflictInstanceId, setFriendConflictInstanceId] = useState<string | null>(null);
   const [friendConflictResult, setFriendConflictResult] = useState<FriendLinkReconcileResult | null>(null);
   const [friendConflictResolveBusy, setFriendConflictResolveBusy] = useState(false);
+  const [preflightReportModal, setPreflightReportModal] = useState<{
+    instanceId: string;
+    report: LaunchCompatibilityReport;
+  } | null>(null);
+  const [launchFixPlanByInstance, setLaunchFixPlanByInstance] = useState<Record<string, LaunchFixPlan>>({});
+  const [launchFixPlanDraftByInstance, setLaunchFixPlanDraftByInstance] = useState<
+    Record<string, LaunchFixActionDraft[]>
+  >({});
+  const [launchFixApplyResultByInstance, setLaunchFixApplyResultByInstance] = useState<
+    Record<string, LaunchFixApplyResult>
+  >({});
+  const [launchFixBusyInstanceId, setLaunchFixBusyInstanceId] = useState<string | null>(null);
+  const [launchFixApplyBusyInstanceId, setLaunchFixApplyBusyInstanceId] = useState<string | null>(null);
+  const [launchFixModalInstanceId, setLaunchFixModalInstanceId] = useState<string | null>(null);
+  const localResolverBackfillAtRef = useRef<Record<string, number>>({});
+  const localResolverBusyRef = useRef<Record<string, boolean>>({});
+  const [supportBundleModalInstanceId, setSupportBundleModalInstanceId] = useState<string | null>(null);
+  const [supportBundleIncludeRawLogs, setSupportBundleIncludeRawLogs] = useState(false);
+  const [supportBundleBusy, setSupportBundleBusy] = useState(false);
   const [launchMethodPick, setLaunchMethodPick] = useState<LaunchMethod>("native");
   const [updateCheckCadence, setUpdateCheckCadence] = useState<SchedulerCadence>("daily");
   const [updateAutoApplyMode, setUpdateAutoApplyMode] = useState<SchedulerAutoApplyMode>("never");
@@ -4007,6 +4295,27 @@ export default function App() {
       selectedInstalledModCount,
     };
   }, [installedMods, instanceContentType, normalizedInstanceQuery, selectedModVersionIdSet]);
+  const instanceHealthById = useMemo<Record<string, InstanceHealthScore>>(() => {
+    const out: Record<string, InstanceHealthScore> = {};
+    for (const inst of instances) {
+      out[inst.id] = computeInstanceHealthScore({
+        instanceId: inst.id,
+        launchOutcomesByInstance,
+        friendStatus: friendLinkStatusByInstance[inst.id] ?? null,
+        scheduledUpdatesByInstance: scheduledUpdateEntriesByInstance,
+      });
+    }
+    return out;
+  }, [instances, launchOutcomesByInstance, friendLinkStatusByInstance, scheduledUpdateEntriesByInstance]);
+  const selectedInstanceAutoProfileRecommendation = useMemo<AutoProfileRecommendation | null>(() => {
+    if (!selected) return null;
+    const enabledModCount = installedContentSummary.modEntries.filter((mod) => mod.enabled).length;
+    return computeAutoProfileRecommendation({
+      instance: selected,
+      enabledModCount,
+      launchOutcomesByInstance,
+    });
+  }, [selected, installedContentSummary.modEntries, launchOutcomesByInstance]);
 
   useEffect(() => {
     localStorage.setItem("mpm.launchHealth.v1", JSON.stringify(launchHealthByInstance));
@@ -4082,6 +4391,22 @@ export default function App() {
   }, [scheduledUpdateEntriesByInstance]);
 
   useEffect(() => {
+    localStorage.setItem(LAUNCH_OUTCOMES_KEY, JSON.stringify(launchOutcomesByInstance));
+  }, [launchOutcomesByInstance]);
+
+  useEffect(() => {
+    localStorage.setItem(HEALTH_SCORE_DISMISSED_KEY, JSON.stringify(healthScoreDismissedByInstance));
+  }, [healthScoreDismissedByInstance]);
+
+  useEffect(() => {
+    localStorage.setItem(AUTOPROFILE_APPLIED_KEY, JSON.stringify(autoProfileAppliedHintsByInstance));
+  }, [autoProfileAppliedHintsByInstance]);
+
+  useEffect(() => {
+    localStorage.setItem(AUTOPROFILE_DISMISSED_KEY, JSON.stringify(autoProfileDismissedByInstance));
+  }, [autoProfileDismissedByInstance]);
+
+  useEffect(() => {
     localStorage.setItem(DISCOVER_ADD_TRAY_STICKY_KEY, discoverAddTraySticky ? "1" : "0");
   }, [discoverAddTraySticky]);
 
@@ -4116,20 +4441,26 @@ export default function App() {
     if (!message) return;
     if (lastInstallNoticeRef.current === message) return;
     lastInstallNoticeRef.current = message;
-    const entry: InstanceActivityEntry = {
-      id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      message,
-      at: Date.now(),
-      tone: inferActivityTone(message),
-    };
-    setInstanceActivityById((prev) => {
-      const nextItems = [entry, ...(prev[selectedId] ?? [])].slice(0, 20);
-      return {
-        ...prev,
-        [selectedId]: nextItems,
-      };
-    });
+    appendInstanceActivity(selectedId, [message]);
   }, [installNotice, route, selectedId]);
+
+  useEffect(() => {
+    if (!installNotice) return;
+    const notice = installNotice;
+    const timer = window.setTimeout(() => {
+      setInstallNotice((current) => (current === notice ? null : current));
+    }, INSTALL_NOTICE_AUTO_HIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [installNotice]);
+
+  useEffect(() => {
+    if (!error) return;
+    const currentError = error;
+    const timer = window.setTimeout(() => {
+      setError((current) => (current === currentError ? null : current));
+    }, TOP_ERROR_AUTO_HIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [error]);
 
   useEffect(() => {
     if (instances.length === 0) return;
@@ -5168,12 +5499,419 @@ export default function App() {
     }, 1200);
   }
 
+  function recordLaunchOutcome(instanceId: string, ok: boolean, message?: string | null) {
+    const entry: LaunchOutcomeEntry = {
+      at: Date.now(),
+      ok,
+      message: message ?? null,
+    };
+    setLaunchOutcomesByInstance((prev) => ({
+      ...prev,
+      [instanceId]: [entry, ...(prev[instanceId] ?? [])].slice(0, 30),
+    }));
+  }
+
+  async function runLocalResolverBackfill(
+    instanceId: string,
+    mode: "missing_only" | "all" = "missing_only",
+    options?: { silent?: boolean; refreshListAfterResolve?: boolean }
+  ) {
+    const now = Date.now();
+    const cooldownMs = mode === "all" ? 1000 : 5 * 60_000;
+    if ((localResolverBusyRef.current[instanceId] ?? false) && mode !== "all") {
+      return;
+    }
+    if (
+      mode !== "all" &&
+      now - Number(localResolverBackfillAtRef.current[instanceId] ?? 0) < cooldownMs
+    ) {
+      return;
+    }
+    localResolverBusyRef.current[instanceId] = true;
+    localResolverBackfillAtRef.current[instanceId] = now;
+    try {
+      const result = await resolveLocalModSources({ instanceId, mode });
+      if (result.resolved_entries > 0) {
+        if (!options?.silent) {
+          setInstallNotice(
+            `Identified ${result.resolved_entries} local mod${result.resolved_entries === 1 ? "" : "s"} with provider metadata.`
+          );
+        }
+        if (options?.refreshListAfterResolve !== false) {
+          const refreshed = await listInstalledMods(instanceId).catch(() => null);
+          if (refreshed && route === "instance" && selectedId === instanceId) {
+            setInstalledMods(refreshed);
+          }
+        }
+      }
+      if (!options?.silent && result.warnings.length > 0 && result.resolved_entries === 0) {
+        setModsErr(result.warnings[0] ?? "Some local files could not be identified.");
+      }
+    } catch (e: any) {
+      if (!options?.silent) {
+        setModsErr(e?.toString?.() ?? String(e));
+      }
+    } finally {
+      localResolverBusyRef.current[instanceId] = false;
+    }
+  }
+
+  function estimatePostApplyUpdateCheck(
+    check: ContentUpdateCheckResult,
+    updatedEntries: number
+  ): ContentUpdateCheckResult {
+    const applied = Math.max(0, Number(updatedEntries) || 0);
+    const remaining = Math.max(0, (check.update_count ?? 0) - applied);
+    const nextUpdates = remaining === 0
+      ? []
+      : check.updates.slice(Math.min(check.updates.length, applied));
+    return {
+      ...check,
+      update_count: remaining,
+      updates: nextUpdates,
+      warnings: check.warnings ?? [],
+    };
+  }
+
+  function shouldAutoApplyManualChecksForInstance(inst: Instance) {
+    if (updateAutoApplyMode === "never") return false;
+    if (updateApplyScope !== "scheduled_and_manual") return false;
+    return (
+      updateAutoApplyMode === "all_instances" ||
+      (updateAutoApplyMode === "opt_in_instances" &&
+        Boolean(inst.settings?.auto_update_installed_content))
+    );
+  }
+
+  function applyAutoProfileRecommendation(inst: Instance, recommendation: AutoProfileRecommendation) {
+    const memory = recommendation.memory_mb;
+    const jvmArgs = recommendation.jvm_args;
+    const graphics = recommendation.graphics_preset;
+    const signature = autoProfileSignature(recommendation);
+    setInstanceMemoryDraft(String(memory));
+    setInstanceJvmArgsDraft(jvmArgs);
+    void persistInstanceChanges(
+      inst,
+      {
+        settings: {
+          memory_mb: memory,
+          jvm_args: jvmArgs,
+          graphics_preset: graphics,
+        },
+      },
+      "Applied smart auto-profile recommendation."
+    );
+    setAutoProfileAppliedHintsByInstance((prev) => ({
+      ...prev,
+      [inst.id]: new Date().toISOString(),
+    }));
+    setAutoProfileDismissedByInstance((prev) => ({
+      ...prev,
+      [inst.id]: signature,
+    }));
+  }
+
+  function buildLaunchFixPlanFromAnalysis(
+    inst: Instance,
+    analysis: LogAnalyzeResult,
+    mods: InstalledMod[]
+  ): LaunchFixPlan {
+    const actions: LaunchFixAction[] = [];
+    const seen = new Set<string>();
+    const addAction = (action: LaunchFixAction) => {
+      if (seen.has(action.id)) return;
+      seen.add(action.id);
+      actions.push(action);
+    };
+    const lowerErrors = (analysis.keyErrors ?? []).map((line) => line.toLowerCase());
+    const enabledMods = mods.filter((mod) => mod.enabled && mod.file_exists);
+    const suspectIds = new Set((analysis.suspects ?? []).map((item) => item.id.toLowerCase()));
+    const suspectedMods = enabledMods.filter((mod) => {
+      const key = `${mod.project_id} ${mod.name} ${mod.filename}`.toLowerCase();
+      return Array.from(suspectIds).some((token) => token && key.includes(token));
+    });
+    for (const mod of suspectedMods.slice(0, 3)) {
+      addAction({
+        id: `toggle:${mod.version_id}`,
+        kind: "toggle_mod",
+        title: `Disable ${mod.name}`,
+        detail: "Likely crash suspect from log analysis.",
+        selected: true,
+        payload: { version_id: mod.version_id, target_enabled: false },
+      });
+    }
+    const depPattern = /\b(?:requires|missing mandatory dependency)\s+([a-z0-9._-]{3,})/i;
+    for (const line of lowerErrors.slice(0, 16)) {
+      const match = line.match(depPattern);
+      if (!match?.[1]) continue;
+      const projectId = match[1].trim();
+      addAction({
+        id: `dep:${projectId}`,
+        kind: "install_dependency",
+        title: `Install dependency: ${projectId}`,
+        detail: "Detected from launch errors.",
+        selected: true,
+        payload: { project_id: projectId, source: "modrinth" },
+      });
+      if (actions.length >= 5) break;
+    }
+    const configLine = lowerErrors.find((line) => line.includes("config/") || line.includes("options.txt"));
+    if (configLine || analysis.likelyCauses.some((cause) => cause.id === "config_parse_error")) {
+      const configMatch = configLine?.match(/(config\/[a-z0-9_./-]+\.(?:json|toml|properties)|options\.txt)/i);
+      addAction({
+        id: `cfg:${configMatch?.[1] ?? "config"}`,
+        kind: "open_config",
+        title: "Open config editor",
+        detail: configMatch?.[1]
+          ? `Inspect and fix ${configMatch[1]}.`
+          : "Inspect config files referenced in the crash logs.",
+        selected: true,
+        payload: { path: configMatch?.[1] ?? null },
+      });
+    }
+    if (analysis.likelyCauses.some((cause) => cause.id === "java_mismatch")) {
+      addAction({
+        id: "cfg:java-runtime",
+        kind: "open_config",
+        title: "Review Java runtime settings",
+        detail: "Logs suggest Java version/runtime mismatch.",
+        selected: true,
+        payload: { open_java_settings: true },
+      });
+    }
+    addAction({
+      id: "rerun:preflight",
+      kind: "rerun_preflight",
+      title: "Re-run compatibility checks",
+      detail: "Validate blockers after applying fixes.",
+      selected: true,
+    });
+    const causes = analysis.likelyCauses.slice(0, 6).map((cause) => cause.title);
+    return {
+      instance_id: inst.id,
+      generated_at: new Date().toISOString(),
+      source: "log_analysis",
+      causes,
+      actions,
+    };
+  }
+
+  async function prepareLaunchFixPlan(inst: Instance) {
+    setLaunchFixBusyInstanceId(inst.id);
+    setError(null);
+    try {
+      const [launchLog, crashLog, mods] = await Promise.all([
+        readInstanceLogs({ instanceId: inst.id, source: "latest_launch", maxLines: 4000 }).catch(() => null),
+        readInstanceLogs({ instanceId: inst.id, source: "latest_crash", maxLines: 4000 }).catch(() => null),
+        listInstalledMods(inst.id).catch(() => [] as InstalledMod[]),
+      ]);
+      const lines: Array<{
+        message: string;
+        severity: LogSeverity;
+        source: string;
+        lineNo?: number | null;
+        timestamp?: string | null;
+      }> = [];
+      const append = (payload: ReadInstanceLogsResult | null, source: InstanceLogSourceApi) => {
+        if (!payload?.available || !Array.isArray(payload.lines)) return;
+        for (const line of payload.lines) {
+          lines.push({
+            message: String(line.raw ?? ""),
+            severity: inferLogSeverity(String(line.raw ?? "")),
+            source,
+            lineNo: line.line_no ?? null,
+            timestamp: line.timestamp ?? null,
+          });
+        }
+      };
+      append(launchLog, "latest_launch");
+      append(crashLog, "latest_crash");
+      if (lines.length === 0) {
+        throw new Error("No launch logs found yet. Launch once, then retry Fix My Launch.");
+      }
+      const analysis = analyzeLogLines(lines);
+      const plan = buildLaunchFixPlanFromAnalysis(inst, analysis, mods);
+      if (plan.actions.length === 0) {
+        throw new Error("No actionable fixes were detected from current logs.");
+      }
+      setLaunchFixPlanByInstance((prev) => ({ ...prev, [inst.id]: plan }));
+      setLaunchFixPlanDraftByInstance((prev) => ({
+        ...prev,
+        [inst.id]: plan.actions.map((action) => ({ ...action, selected: action.selected !== false })),
+      }));
+      setLaunchFixApplyResultByInstance((prev) => {
+        const next = { ...prev };
+        delete next[inst.id];
+        return next;
+      });
+      setLaunchFixModalInstanceId(inst.id);
+      setInstallNotice(`Built launch fix plan with ${plan.actions.length} action${plan.actions.length === 1 ? "" : "s"}.`);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setError(msg);
+    } finally {
+      setLaunchFixBusyInstanceId(null);
+    }
+  }
+
+  async function applyLaunchFixPlan(inst: Instance) {
+    const draft = launchFixPlanDraftByInstance[inst.id] ?? [];
+    const selectedActions = draft.filter((action) => action.selected);
+    if (selectedActions.length === 0) {
+      setInstallNotice("Select at least one fix action to apply.");
+      return;
+    }
+    setLaunchFixApplyBusyInstanceId(inst.id);
+    const result: LaunchFixApplyResult = {
+      applied: 0,
+      failed: 0,
+      skipped: 0,
+      messages: [],
+    };
+    try {
+      for (const action of selectedActions) {
+        try {
+          if (action.kind === "toggle_mod") {
+            const versionId = String(action.payload?.version_id ?? "");
+            const targetEnabled = Boolean(action.payload?.target_enabled);
+            if (!versionId) {
+              result.skipped += 1;
+              result.messages.push(`${action.title}: missing version id`);
+              continue;
+            }
+            await setInstalledModEnabled({ instanceId: inst.id, versionId, enabled: targetEnabled });
+            result.applied += 1;
+            result.messages.push(`${action.title}: applied`);
+          } else if (action.kind === "install_dependency") {
+            const projectId = String(action.payload?.project_id ?? "").trim();
+            const source = String(action.payload?.source ?? "modrinth");
+            if (!projectId) {
+              result.skipped += 1;
+              result.messages.push(`${action.title}: missing project id`);
+              continue;
+            }
+            if (source === "curseforge") {
+              await installCurseforgeMod({ instanceId: inst.id, projectId, projectTitle: projectId });
+            } else {
+              await installModrinthMod({ instanceId: inst.id, projectId, projectTitle: projectId });
+            }
+            result.applied += 1;
+            result.messages.push(`${action.title}: installed`);
+          } else if (action.kind === "open_config") {
+            const path = String(action.payload?.path ?? "").trim();
+            if (Boolean(action.payload?.open_java_settings)) {
+              setInstanceSettingsSection("java");
+              setInstanceSettingsOpen(true);
+              setRoute("instance");
+            } else if (path) {
+              await revealConfigEditorFile({
+                instanceId: inst.id,
+                scope: "instance",
+                path,
+              }).catch(() => null);
+              setRoute("modpacks");
+              setModpacksStudioTab("config");
+            }
+            result.applied += 1;
+            result.messages.push(`${action.title}: opened`);
+          } else if (action.kind === "rerun_preflight") {
+            const report = await preflightLaunchCompatibility({ instanceId: inst.id });
+            if (report.status === "blocked") {
+              result.failed += 1;
+              result.messages.push("Preflight still has blockers.");
+            } else {
+              result.applied += 1;
+              result.messages.push("Preflight passed.");
+            }
+          } else {
+            result.skipped += 1;
+            result.messages.push(`${action.title}: unsupported action kind`);
+          }
+        } catch (e: any) {
+          result.failed += 1;
+          result.messages.push(`${action.title}: ${e?.toString?.() ?? String(e)}`);
+        }
+      }
+      await refreshInstalledMods(inst.id);
+      setLaunchFixApplyResultByInstance((prev) => ({ ...prev, [inst.id]: result }));
+      setInstallNotice(
+        `Fix plan complete: ${result.applied} applied, ${result.failed} failed, ${result.skipped} skipped.`
+      );
+    } finally {
+      setLaunchFixApplyBusyInstanceId(null);
+    }
+  }
+
+  async function onExportSupportBundle(inst: Instance, includeRawLogs = supportBundleIncludeRawLogs) {
+    setSupportBundleBusy(true);
+    setError(null);
+    setLauncherErr(null);
+    try {
+      const suggested = `${inst.name.replace(/\s+/g, "-") || "instance"}-support-bundle.zip`;
+      const savePath = await saveDialog({
+        defaultPath: suggested,
+        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      });
+      if (!savePath || Array.isArray(savePath)) return;
+      const perfPayload: SupportPerfAction[] = perfActions.slice(0, 150).map((entry) => ({
+        id: entry.id,
+        name: entry.name,
+        detail: entry.detail ?? null,
+        status: entry.status,
+        duration_ms: entry.duration_ms,
+        finished_at: entry.finished_at,
+      }));
+      const out = await exportInstanceSupportBundle({
+        instanceId: inst.id,
+        outputPath: savePath,
+        includeRawLogs,
+        perfActions: perfPayload,
+      });
+      setInstallNotice(`${out.message} ${out.files_count} files exported (${out.redactions_applied} redactions).`);
+      await shellOpen(savePath);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setSupportBundleBusy(false);
+      setSupportBundleModalInstanceId(null);
+    }
+  }
+
+  async function onManualFriendLinkSync(instanceId: string) {
+    setFriendLinkSyncBusyInstanceId(instanceId);
+    try {
+      const out = await reconcileFriendLink({ instanceId, mode: "manual" });
+      if (out.status === "conflicted") {
+        setFriendConflictInstanceId(instanceId);
+        setFriendConflictResult(out);
+        setInstallNotice("Friend Link found conflicts. Resolve before launching.");
+      } else {
+        setInstallNotice(`Friend Link sync: ${out.status}.`);
+      }
+      const status = await getFriendLinkStatus({ instanceId }).catch(() => null);
+      if (status) {
+        setFriendLinkStatusByInstance((prev) => ({ ...prev, [instanceId]: status }));
+        if (selectedId === instanceId) setInstanceFriendLinkStatus(status);
+      }
+    } catch (e: any) {
+      setError(e?.toString?.() ?? String(e));
+    } finally {
+      setFriendLinkSyncBusyInstanceId(null);
+    }
+  }
+
   async function refreshInstalledMods(instanceId: string) {
     setModsBusy(true);
     setModsErr(null);
     try {
       const mods = await listInstalledMods(instanceId);
       setInstalledMods(mods);
+      void runLocalResolverBackfill(instanceId, "missing_only", {
+        silent: true,
+        refreshListAfterResolve: true,
+      });
     } catch (e: any) {
       setModsErr(e?.toString?.() ?? String(e));
       setInstalledMods([]);
@@ -5728,7 +6466,38 @@ export default function App() {
       },
     }));
     try {
+      const preflight = await preflightLaunchCompatibility({ instanceId: inst.id });
+      if (preflight.status === "blocked") {
+        const reason =
+          preflight.items.find((item) => item.blocking)?.message ??
+          "Launch is blocked by compatibility checks.";
+        setPreflightReportModal({ instanceId: inst.id, report: preflight });
+        setError(reason);
+        setLauncherErr(reason);
+        setLaunchStageByInstance((prev) => ({
+          ...prev,
+          [inst.id]: {
+            status: "error",
+            label: "Blocked",
+            message: reason,
+            updated_at: Date.now(),
+          },
+        }));
+        return;
+      }
+      if (preflight.warning_count > 0 || preflight.status === "warning") {
+        const warn = preflight.items.find((item) => !item.blocking)?.message;
+        setInstallNotice(
+          warn
+            ? `Preflight warning: ${warn}`
+            : "Preflight found non-blocking warnings. Launching anyway."
+        );
+      }
+
       const friendLinkStatus = await getFriendLinkStatus({ instanceId: inst.id }).catch(() => null);
+      if (friendLinkStatus) {
+        setFriendLinkStatusByInstance((prev) => ({ ...prev, [inst.id]: friendLinkStatus }));
+      }
       if (friendLinkStatus?.linked) {
         const friendReconcile = await reconcileFriendLink({ instanceId: inst.id, mode: "prelaunch" });
         if (friendReconcile.status === "conflicted") {
@@ -5740,6 +6509,7 @@ export default function App() {
             delete next[inst.id];
             return next;
           });
+          recordLaunchOutcome(inst.id, false, "Friend Link conflicts blocked launch.");
           return;
         }
         if (friendReconcile.status === "blocked_offline_stale" || friendReconcile.status === "error") {
@@ -5755,6 +6525,7 @@ export default function App() {
               updated_at: Date.now(),
             },
           }));
+          recordLaunchOutcome(inst.id, false, reason);
           return;
         }
         if (friendReconcile.status === "degraded_offline_last_good") {
@@ -5771,6 +6542,7 @@ export default function App() {
       } else {
         setInstallNotice(res.message);
       }
+      recordLaunchOutcome(inst.id, true, res.message);
       setLaunchStageByInstance((prev) => ({
         ...prev,
         [inst.id]: {
@@ -5805,6 +6577,7 @@ export default function App() {
             updated_at: Date.now(),
           },
         }));
+        recordLaunchOutcome(inst.id, false, msg);
         setLaunchStageByInstance((prev) => ({
           ...prev,
           [inst.id]: {
@@ -5958,13 +6731,18 @@ export default function App() {
       setAppUpdaterLastError(null);
 
       if (!silent) {
-        if (nextState.available) {
-          setInstallNotice(
-            `App update available${nextState.latest_version ? `: v${nextState.latest_version}` : ""}.`
-          );
-        } else {
-          setInstallNotice(`OpenJar Launcher is up to date (v${nextState.current_version}).`);
-        }
+        // Updater status is surfaced in the dedicated app update banner.
+        // Clear legacy updater notices so we don't render duplicate banners.
+        setInstallNotice((current) => {
+          const text = String(current ?? "").toLowerCase();
+          if (
+            text.startsWith("app update available") ||
+            text.startsWith("openjar launcher is up to date")
+          ) {
+            return null;
+          }
+          return current;
+        });
       }
     } catch (e: any) {
       const raw = e?.toString?.() ?? String(e);
@@ -6165,7 +6943,7 @@ export default function App() {
     let completed = 0;
     let autoAppliedInstances = 0;
     let autoAppliedEntries = 0;
-    const workerLimit = Math.min(4, Math.max(1, instances.length));
+    const workerLimit = Math.min(6, Math.max(1, instances.length));
     const canAutoApplyInRun = updateAutoApplyMode !== "never" && (
       reason === "scheduled" || updateApplyScope === "scheduled_and_manual"
     );
@@ -6186,10 +6964,21 @@ export default function App() {
             const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
             autoAppliedInstances += 1;
             autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
-            const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
-            storeScheduledUpdateResult(inst, refreshed, checkedAt, null);
+            const estimatedAfterApply = estimatePostApplyUpdateCheck(
+              result,
+              applyResult.updated_entries ?? 0
+            );
+            storeScheduledUpdateResult(inst, estimatedAfterApply, checkedAt, null);
             if (route === "instance" && selectedId === inst.id) {
-              setUpdateCheck(refreshed);
+              setUpdateCheck(estimatedAfterApply);
+              await refreshInstalledMods(inst.id);
+            }
+            if ((applyResult.warnings?.length ?? 0) > 0) {
+              appendInstanceActivity(
+                inst.id,
+                applyResult.warnings.slice(0, 4).map((warning) => `Update warning: ${warning}`),
+                "warn"
+              );
             }
           } catch (applyErr: any) {
             const applyMsg = applyErr?.toString?.() ?? String(applyErr);
@@ -6282,22 +7071,69 @@ export default function App() {
     }
   }
 
-  async function onCheckUpdates(inst: Instance) {
+  async function onCheckUpdates(
+    inst: Instance,
+    options?: {
+      autoApplyIfConfigured?: boolean;
+      syncSelectedInstanceMods?: boolean;
+      quietSuccessNotice?: boolean;
+    }
+  ) {
     const startedAt = performance.now();
     let succeeded = false;
     setUpdateBusy(true);
     setUpdateErr(null);
     try {
       const res = await checkInstanceContentUpdates({ instanceId: inst.id });
-      setUpdateCheck(res);
-      storeScheduledUpdateResult(inst, res, new Date().toISOString(), null);
-      if (res.update_count === 0) {
-        setInstallNotice("All tracked content is up to date.");
-      } else {
-        setInstallNotice(
-          `${res.update_count} update${res.update_count === 1 ? "" : "s"} available.`
-        );
+      let nextCheck = res;
+      const shouldAutoApply =
+        Boolean(options?.autoApplyIfConfigured) &&
+        res.update_count > 0 &&
+        shouldAutoApplyManualChecksForInstance(inst);
+
+      if (shouldAutoApply) {
+        const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
+        nextCheck = estimatePostApplyUpdateCheck(res, applyResult.updated_entries ?? 0);
+        if (!options?.quietSuccessNotice) {
+          if ((applyResult.warnings?.length ?? 0) > 0) {
+            const warningSummary = summarizeWarnings(applyResult.warnings ?? [], 2);
+            setInstallNotice(
+              `Recheck complete. Updated ${applyResult.updated_entries} entr${applyResult.updated_entries === 1 ? "y" : "ies"} (${nextCheck.update_count} remaining) with ${applyResult.warnings.length} warning${applyResult.warnings.length === 1 ? "" : "s"}: ${warningSummary}`
+            );
+          } else {
+            setInstallNotice(
+              `Recheck complete. Updated ${applyResult.updated_entries} entr${applyResult.updated_entries === 1 ? "y" : "ies"} (${nextCheck.update_count} remaining).`
+            );
+          }
+        }
+        if ((applyResult.warnings?.length ?? 0) > 0) {
+          appendInstanceActivity(
+            inst.id,
+            applyResult.warnings.slice(0, 6).map((warning) => `Update warning: ${warning}`),
+            "warn"
+          );
+        }
+      } else if (!options?.quietSuccessNotice) {
+        if (res.update_count === 0) {
+          setInstallNotice("All tracked content is up to date.");
+        } else if (options?.autoApplyIfConfigured && !shouldAutoApplyManualChecksForInstance(inst)) {
+          setInstallNotice(
+            `${res.update_count} update${res.update_count === 1 ? "" : "s"} found. Auto-apply for manual checks is disabled for this instance.`
+          );
+        } else {
+          setInstallNotice(
+            `${res.update_count} update${res.update_count === 1 ? "" : "s"} available.`
+          );
+        }
       }
+
+      if (selectedId === inst.id) {
+        setUpdateCheck(nextCheck);
+        if (options?.syncSelectedInstanceMods) {
+          await refreshInstalledMods(inst.id);
+        }
+      }
+      storeScheduledUpdateResult(inst, nextCheck, new Date().toISOString(), null);
       succeeded = true;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
@@ -6321,14 +7157,42 @@ export default function App() {
     setUpdateErr(null);
     setError(null);
     try {
+      setInstallNotice("Updating all content… this can take a bit on larger packs.");
       const res = await updateAllInstanceContent({ instanceId: inst.id });
-      await refreshInstalledMods(inst.id);
-      const refreshed = await checkInstanceContentUpdates({ instanceId: inst.id });
-      setUpdateCheck(refreshed);
-      storeScheduledUpdateResult(inst, refreshed, new Date().toISOString(), null);
-      setInstallNotice(
-        `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} (${refreshed.update_count} remaining).`
-      );
+      if (selectedId === inst.id) {
+        void refreshInstalledMods(inst.id);
+      }
+      const cached = scheduledUpdateEntriesByInstance[inst.id];
+      if (cached) {
+        const baseline: ContentUpdateCheckResult = {
+          checked_entries: cached.checked_entries,
+          update_count: cached.update_count,
+          updates: cached.updates ?? [],
+          warnings: [],
+        };
+        const estimated = estimatePostApplyUpdateCheck(baseline, res.updated_entries ?? 0);
+        storeScheduledUpdateResult(inst, estimated, new Date().toISOString(), null);
+        if (selectedId === inst.id) {
+          setUpdateCheck(estimated);
+        }
+      } else {
+        void onCheckUpdates(inst, { quietSuccessNotice: true });
+      }
+      if (res.warnings.length > 0) {
+        const warningSummary = summarizeWarnings(res.warnings, 3);
+        setInstallNotice(
+          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} with ${res.warnings.length} warning${res.warnings.length === 1 ? "" : "s"}: ${warningSummary}`
+        );
+        appendInstanceActivity(
+          inst.id,
+          res.warnings.slice(0, 6).map((warning) => `Update warning: ${warning}`),
+          "warn"
+        );
+      } else {
+        setInstallNotice(
+          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"}.`
+        );
+      }
       succeeded = true;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
@@ -6369,6 +7233,17 @@ export default function App() {
   }, [route, selectedId]);
 
   useEffect(() => {
+    if (!selectedId || route !== "instance" || instanceTab !== "content") return;
+    const timer = window.setTimeout(() => {
+      void runLocalResolverBackfill(selectedId, "missing_only", {
+        silent: true,
+        refreshListAfterResolve: true,
+      });
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [selectedId, route, instanceTab]);
+
+  useEffect(() => {
     if (route !== "instance" || !selectedId) {
       setInstanceFriendLinkStatus(null);
       return;
@@ -6385,6 +7260,42 @@ export default function App() {
       cancelled = true;
     };
   }, [route, selectedId, instanceLinksOpen, friendConflictResult]);
+
+  useEffect(() => {
+    const targetIds = new Set<string>();
+    if (selectedId) targetIds.add(selectedId);
+    if (route === "home") {
+      const homeIds = [...instances]
+        .sort((a, b) => (parseDateLike(b.created_at)?.getTime() ?? 0) - (parseDateLike(a.created_at)?.getTime() ?? 0))
+        .slice(0, 6)
+        .map((inst) => inst.id);
+      for (const id of homeIds) targetIds.add(id);
+    }
+    if (targetIds.size === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      Array.from(targetIds).map(async (instanceId) => {
+        const status = await getFriendLinkStatus({ instanceId }).catch(() => null);
+        return { instanceId, status };
+      })
+    ).then((items) => {
+      if (cancelled) return;
+      setFriendLinkStatusByInstance((prev) => {
+        const next = { ...prev };
+        for (const item of items) {
+          if (item.status) {
+            next[item.instanceId] = item.status;
+          } else {
+            delete next[item.instanceId];
+          }
+        }
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [route, instances, selectedId, instanceLinksOpen, friendConflictResult]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -7725,6 +8636,8 @@ export default function App() {
         focusLaunchStage?.status,
         focusLaunchStage?.message
       );
+      const focusHealthScore = focusInstance ? instanceHealthById[focusInstance.id] ?? null : null;
+      const focusFriendStatus = focusInstance ? friendLinkStatusByInstance[focusInstance.id] ?? null : null;
       const slowPerfActions = [...perfActions]
         .slice(0, 48)
         .sort((a, b) => b.duration_ms - a.duration_ms)
@@ -7785,8 +8698,44 @@ export default function App() {
             void onCheckAppUpdate({ silent: false });
           },
         });
+      } else if (appUpdaterState?.available) {
+        homeAttentionItems.push({
+          id: "updater:available",
+          tone: "warn",
+          title: `Launcher update available${appUpdaterState.latest_version ? `: v${appUpdaterState.latest_version}` : ""}`,
+          meta: "Install now and restart the launcher.",
+          action_label: appUpdaterInstallBusy ? "Installing…" : "Install update",
+          on_action: () => {
+            void onInstallAppUpdate();
+          },
+          action_disabled: appUpdaterInstallBusy || appUpdaterBusy,
+        });
+      }
+      const updateDebt = scheduledUpdateEntries
+        .filter((row) => (row.update_count ?? 0) > 0)
+        .slice(0, 3);
+      for (const row of updateDebt) {
+        homeAttentionItems.push({
+          id: `updates:${row.instance_id}`,
+          tone: "warn",
+          title: `${row.instance_name}: ${row.update_count} update${row.update_count === 1 ? "" : "s"} pending`,
+          meta: "Review content updates before your next launch.",
+          action_label: "Open updates",
+          on_action: () => setRoute("updates"),
+        });
+      }
+      if (focusInstance && focusFriendStatus?.linked && (focusFriendStatus.pending_conflicts_count ?? 0) > 0) {
+        homeAttentionItems.push({
+          id: `friend:${focusInstance.id}`,
+          tone: "danger",
+          title: `${focusInstance.name}: Friend Link conflicts`,
+          meta: `${focusFriendStatus.pending_conflicts_count} conflict${focusFriendStatus.pending_conflicts_count === 1 ? "" : "s"} require resolution before launch.`,
+          action_label: "Resolve now",
+          on_action: () => openInstance(focusInstance.id),
+        });
       }
       const topAttention = homeAttentionItems.slice(0, 6);
+      const hasUpdaterAttention = topAttention.some((item) => item.id.startsWith("updater:"));
       const launcherActionIsInstall = Boolean(appUpdaterState?.available);
       const launcherActionLabel = launcherActionIsInstall
         ? (appUpdaterInstallBusy ? "Installing…" : "Install launcher update")
@@ -7816,7 +8765,21 @@ export default function App() {
                 <div className="homeChipRow">
                   <span className="chip subtle">{loaderLabelFor(focusInstance)}</span>
                   <span className="chip subtle">Minecraft {focusInstance.mc_version}</span>
+                  {focusHealthScore ? (
+                    <span className={`chip ${focusHealthScore.score < 60 ? "danger" : "subtle"}`}>
+                      Health {focusHealthScore.grade} ({focusHealthScore.score})
+                    </span>
+                  ) : null}
                   {runningIds.has(focusInstance.id) ? <span className="chip">Running</span> : null}
+                  {focusFriendStatus?.linked ? (
+                    <span
+                      className={`chip ${
+                        (focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : "subtle"
+                      }`}
+                    >
+                      Friend Link: {(focusFriendStatus.status || "linked").replace(/_/g, " ")}
+                    </span>
+                  ) : null}
                   {focusLaunchStageLabel ? (
                     <span className="chip">
                       {focusLaunchStage?.status === "starting" ? `Launching: ${focusLaunchStageLabel}` : focusLaunchStageLabel}
@@ -7843,6 +8806,14 @@ export default function App() {
                     <button className="btn" onClick={() => openInstance(focusInstance.id)}>
                       Open instance
                     </button>
+                    {focusFriendStatus?.linked ? (
+                      <button
+                        className={`btn ${(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : ""}`}
+                        onClick={() => openInstance(focusInstance.id)}
+                      >
+                        {(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "Resolve Friend Link" : "Friend Link"}
+                      </button>
+                    ) : null}
                   </>
                 ) : (
                   <>
@@ -8019,6 +8990,44 @@ export default function App() {
             </section>
 
             <aside className="homeSideCol">
+              {focusInstance && focusFriendStatus?.linked ? (
+                <div className="card homePanel">
+                  <div className="homePanelHead">
+                    <div className="homePanelTitle">Friend Link readiness</div>
+                    <span
+                      className={`chip ${
+                        (focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : "subtle"
+                      }`}
+                    >
+                      {(focusFriendStatus.status || "linked").replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <div className="homeMeta">
+                    {focusFriendStatus.peers.filter((peer) => peer.online).length}/{focusFriendStatus.peers.length} peers online
+                    {(focusFriendStatus.pending_conflicts_count ?? 0) > 0
+                      ? ` • ${focusFriendStatus.pending_conflicts_count} conflict${focusFriendStatus.pending_conflicts_count === 1 ? "" : "s"} pending`
+                      : " • No pending conflicts"}
+                  </div>
+                  <div className="homePanelActions">
+                    <button
+                      className="btn"
+                      onClick={() => void onManualFriendLinkSync(focusInstance.id)}
+                      disabled={friendLinkSyncBusyInstanceId === focusInstance.id}
+                    >
+                      {friendLinkSyncBusyInstanceId === focusInstance.id ? "Syncing…" : "Sync now"}
+                    </button>
+                    {(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? (
+                      <button className="btn danger" onClick={() => openInstance(focusInstance.id)}>
+                        Resolve conflicts
+                      </button>
+                    ) : null}
+                    <button className="btn" onClick={() => openInstance(focusInstance.id)}>
+                      Open links
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="card homePanel">
                 <div className="homePanelHead">
                   <div className="homePanelTitle">Maintenance</div>
@@ -8063,14 +9072,19 @@ export default function App() {
                     <>Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})</>
                   )}
                 </div>
+                {hasUpdaterAttention ? (
+                  <div className="homeMeta">Launcher update actions are pinned in Action required.</div>
+                ) : null}
                 <div className="homePanelActions">
-                  <button
-                    className="btn"
-                    onClick={onLauncherMaintenanceAction}
-                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
-                  >
-                    {launcherActionLabel}
-                  </button>
+                  {!hasUpdaterAttention ? (
+                    <button
+                      className="btn"
+                      onClick={onLauncherMaintenanceAction}
+                      disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                    >
+                      {launcherActionLabel}
+                    </button>
+                  ) : null}
                   <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
                   <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
                     {scheduledUpdateBusy ? "Checking…" : "Run content check"}
@@ -8127,6 +9141,16 @@ export default function App() {
                           </div>
                         </div>
                         <div className="homeRowActions">
+                          {instanceHealthById[inst.id] ? (
+                            <span
+                              className={`chip ${
+                                (instanceHealthById[inst.id].score ?? 100) < 60 ? "danger" : "subtle"
+                              }`}
+                              title={(instanceHealthById[inst.id].reasons ?? []).join(" • ")}
+                            >
+                              {instanceHealthById[inst.id].grade} {instanceHealthById[inst.id].score}
+                            </span>
+                          ) : null}
                           {runningIds.has(inst.id) ? <span className="chip">Running</span> : null}
                           <button
                             className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
@@ -8704,7 +9728,12 @@ export default function App() {
                           className="btn"
                           onClick={() => {
                             const inst = instances.find((item) => item.id === row.instance_id);
-                            if (inst) void onCheckUpdates(inst);
+                            if (inst) {
+                              void onCheckUpdates(inst, {
+                                autoApplyIfConfigured: true,
+                                syncSelectedInstanceMods: true,
+                              });
+                            }
                           }}
                           disabled={updateBusy || scheduledUpdateBusy}
                         >
@@ -9490,6 +10519,30 @@ export default function App() {
           : instanceFriendLinkStatus.status
             ? instanceFriendLinkStatus.status.replace(/_/g, " ")
             : "Linked";
+      const instanceHealth = instanceHealthById[inst.id] ?? null;
+      const hideHealthCard = Boolean(healthScoreDismissedByInstance[inst.id]);
+      const friendOnlinePeers = (instanceFriendLinkStatus?.peers ?? []).filter((peer) => peer.online).length;
+      const friendPeerTotal = instanceFriendLinkStatus?.peers?.length ?? 0;
+      const autoProfileRecommendation = selectedInstanceAutoProfileRecommendation;
+      const autoProfileAppliedAt = autoProfileAppliedHintsByInstance[inst.id] ?? null;
+      const autoProfileRecSignature = autoProfileRecommendation
+        ? autoProfileSignature(autoProfileRecommendation)
+        : null;
+      const autoProfileMatchesCurrentSettings =
+        Boolean(autoProfileRecommendation) &&
+        Number(inst.settings?.memory_mb ?? 0) === Number(autoProfileRecommendation?.memory_mb ?? 0) &&
+        String(inst.settings?.jvm_args ?? "").trim() ===
+          String(autoProfileRecommendation?.jvm_args ?? "").trim() &&
+        String(inst.settings?.graphics_preset ?? "").trim().toLowerCase() ===
+          String(autoProfileRecommendation?.graphics_preset ?? "").trim().toLowerCase();
+      const showAutoProfileBanner =
+        Boolean(autoProfileRecommendation) &&
+        instanceTab === "content" &&
+        !autoProfileMatchesCurrentSettings &&
+        !autoProfileAppliedAt &&
+        !friendLinkNeedsAttention &&
+        (!hasLaunchFailure || autoProfileRecommendation?.confidence !== "low") &&
+        autoProfileDismissedByInstance[inst.id] !== autoProfileRecSignature;
 
       const activeLogCacheKey = `${inst.id}:${logSourceFilter}`;
       const activeLogPayload = rawLogLinesBySource[activeLogCacheKey] ?? null;
@@ -9593,8 +10646,8 @@ export default function App() {
               ) : null}
 
               {showLaunchHealthBanner ? (
-                <div className="card instanceNoticeCard" style={{ borderColor: "rgba(52, 211, 153, 0.3)" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div className="card instanceNoticeCard noticeSuccess">
+                  <div className="instanceNoticeHead">
                     <div>
                       <div style={{ fontWeight: 950 }}>Launch health check passed</div>
                       <div className="muted">
@@ -9613,7 +10666,7 @@ export default function App() {
                       Dismiss
                     </button>
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                  <div className="instanceNoticeChips">
                     <span className="chip">Auth ✓</span>
                     <span className="chip">Assets ✓</span>
                     <span className="chip">Libraries ✓</span>
@@ -9623,17 +10676,55 @@ export default function App() {
               ) : null}
 
               {hasLaunchFailure ? (
-                <div className="card instanceNoticeCard" style={{ borderColor: "rgba(248, 113, 113, 0.32)" }}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <div className="card instanceNoticeCard noticeDanger">
+                  <div className="instanceNoticeHead">
                     <div>
                       <div style={{ fontWeight: 950 }}>Last launch did not complete</div>
                       <div className="muted">{launchFailure?.message || "Check native launch log for details."}</div>
                     </div>
-                    <button className="btn" onClick={() => void onOpenLaunchLog(inst)}>
-                      <span className="btnIcon">
-                        <Icon name="folder" size={16} />
-                      </span>
-                      Open launch log
+                    <div className="instanceNoticeActions">
+                      <button
+                        className="btn"
+                        onClick={() => void prepareLaunchFixPlan(inst)}
+                        disabled={launchFixBusyInstanceId === inst.id}
+                      >
+                        {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my launch"}
+                      </button>
+                      <button className="btn" onClick={() => setSupportBundleModalInstanceId(inst.id)}>
+                        Export support bundle
+                      </button>
+                      <button className="btn" onClick={() => void onOpenLaunchLog(inst)}>
+                        <span className="btnIcon">
+                          <Icon name="folder" size={16} />
+                        </span>
+                        Open launch log
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {instanceHealth && !hideHealthCard ? (
+                <div className="card instanceNoticeCard">
+                  <div className="instanceNoticeHead">
+                    <div>
+                      <div style={{ fontWeight: 950 }}>Instance health: {instanceHealth.grade} ({instanceHealth.score})</div>
+                      <div className="muted">
+                        {instanceHealth.reasons.length > 0
+                          ? instanceHealth.reasons.join(" • ")
+                          : "No immediate blockers detected."}
+                      </div>
+                    </div>
+                    <button
+                      className="btn"
+                      onClick={() =>
+                        setHealthScoreDismissedByInstance((prev) => ({
+                          ...prev,
+                          [inst.id]: true,
+                        }))
+                      }
+                    >
+                      Dismiss
                     </button>
                   </div>
                 </div>
@@ -9649,6 +10740,11 @@ export default function App() {
                     <div className="instMetaRow">
                       <span className="chip">{loaderLabel} {inst.mc_version}</span>
                       <span className="chip subtle">{hasRunningForInstance ? "Running" : "Never played"}</span>
+                      {instanceHealth ? (
+                        <span className={`chip ${instanceHealth.score < 60 ? "danger" : "subtle"}`}>
+                          Health {instanceHealth.grade} ({instanceHealth.score})
+                        </span>
+                      ) : null}
                       {hasLaunchFailure ? <span className="chip">Last launch failed</span> : null}
                       {launchStageLabel ? (
                         <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
@@ -9735,6 +10831,101 @@ export default function App() {
                 </div>
               </div>
 
+              {instanceFriendLinkStatus?.linked ? (
+                <div className="card instanceNoticeCard">
+                  <div className="instanceNoticeHead instanceNoticeHeadWrap">
+                    <div>
+                      <div style={{ fontWeight: 950 }}>
+                        Friend Link readiness: {(instanceFriendLinkStatus.status || "linked").replace(/_/g, " ")}
+                      </div>
+                      <div className="muted">
+                        {friendOnlinePeers}/{friendPeerTotal} peer{friendPeerTotal === 1 ? "" : "s"} online
+                        {instanceFriendLinkStatus.pending_conflicts_count > 0
+                          ? ` • ${instanceFriendLinkStatus.pending_conflicts_count} conflict${instanceFriendLinkStatus.pending_conflicts_count === 1 ? "" : "s"} pending`
+                          : " • No pending conflicts"}
+                      </div>
+                    </div>
+                    <div className="instanceNoticeActions">
+                      <button
+                        className="btn"
+                        onClick={() => void onManualFriendLinkSync(inst.id)}
+                        disabled={friendLinkSyncBusyInstanceId === inst.id}
+                      >
+                        {friendLinkSyncBusyInstanceId === inst.id ? "Syncing…" : "Sync now"}
+                      </button>
+                      {instanceFriendLinkStatus.pending_conflicts_count > 0 ? (
+                        <button
+                          className="btn danger"
+                          onClick={async () => {
+                            const out = await reconcileFriendLink({ instanceId: inst.id, mode: "manual" }).catch(
+                              () => null
+                            );
+                            if (out?.status === "conflicted") {
+                              setFriendConflictInstanceId(inst.id);
+                              setFriendConflictResult(out);
+                            }
+                          }}
+                        >
+                          Resolve conflicts
+                        </button>
+                      ) : null}
+                      <button className="btn" onClick={() => setInstanceLinksOpen(true)}>
+                        Open links
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {showAutoProfileBanner && autoProfileRecommendation ? (
+                <div className="card instanceNoticeCard">
+                  <div className="instanceNoticeHead instanceNoticeHeadWrap">
+                    <div>
+                      <div style={{ fontWeight: 950 }}>
+                        Smart profile: {Math.round(autoProfileRecommendation.memory_mb / 1024)} GB · {autoProfileRecommendation.graphics_preset}
+                      </div>
+                      <div className="muted">
+                        {autoProfileRecommendation.confidence} confidence
+                        {autoProfileRecommendation.reasons.length > 0
+                          ? ` • ${autoProfileRecommendation.reasons.join(" • ")}`
+                          : ""}
+                      </div>
+                    </div>
+                    <div className="instanceNoticeActions">
+                      <button
+                        className="btn"
+                        onClick={() => {
+                          setInstanceSettingsSection("java");
+                          setInstanceSettingsOpen(true);
+                        }}
+                      >
+                        Review
+                      </button>
+                      <button
+                        className="btn primary"
+                        onClick={() => applyAutoProfileRecommendation(inst, autoProfileRecommendation)}
+                        disabled={instanceSettingsBusy}
+                      >
+                        Apply recommendation
+                      </button>
+                      <button
+                        className="btn subtle"
+                        onClick={() => {
+                          if (!autoProfileRecSignature) return;
+                          setAutoProfileDismissedByInstance((prev) => ({
+                            ...prev,
+                            [inst.id]: autoProfileRecSignature,
+                          }));
+                          setInstallNotice("Smart profile card dismissed for this recommendation.");
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="instTabsRow">
                 <SegmentedControl
                   className="instPrimaryTabs"
@@ -9764,6 +10955,19 @@ export default function App() {
                           <Icon name="upload" size={18} />
                         </span>
                         {importingInstanceId === inst.id ? "Adding…" : "Add from file"}
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          void runLocalResolverBackfill(inst.id, "all", {
+                            silent: false,
+                            refreshListAfterResolve: true,
+                          })
+                        }
+                        disabled={Boolean(localResolverBusyRef.current[inst.id])}
+                        title="Try to match local jar files to Modrinth/CurseForge metadata."
+                      >
+                        Identify local JARs
                       </button>
                     </>
                   ) : instanceTab === "worlds" ? (
@@ -10531,6 +11735,13 @@ export default function App() {
                             >
                               {logAnalyzeBusy ? "Analyzing…" : "Analyze current source"}
                             </button>
+                            <button
+                              className="btn"
+                              onClick={() => void prepareLaunchFixPlan(inst)}
+                              disabled={launchFixBusyInstanceId === inst.id}
+                            >
+                              {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my launch"}
+                            </button>
                           </div>
                           {logAnalyzeSourcesUsed.length > 0 ? (
                             <div className="instanceAnalyzeSourceRow">
@@ -10721,6 +11932,10 @@ export default function App() {
                   <button className="btn" onClick={() => onExportModsZip(inst)}>
                     <Icon name="download" size={16} />
                     Export mods zip
+                  </button>
+                  <button className="btn" onClick={() => setSupportBundleModalInstanceId(inst.id)}>
+                    <Icon name="download" size={16} />
+                    Export support bundle
                   </button>
                 </div>
               </div>
@@ -11114,6 +12329,40 @@ export default function App() {
                             disabled={instanceSettingsBusy}
                           />
                         </div>
+
+                        {autoProfileRecommendation ? (
+                          <div className="settingCard">
+                            <div className="settingTitle">Smart auto-profile recommendation</div>
+                            <div className="settingSub">
+                              Suggestion based on enabled mod count and recent launch outcomes.
+                            </div>
+                            <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                              <span className="chip subtle">{autoProfileRecommendation.confidence} confidence</span>
+                              <span className="chip">{Math.round(autoProfileRecommendation.memory_mb / 1024)} GB RAM</span>
+                              <span className="chip subtle">{autoProfileRecommendation.graphics_preset}</span>
+                            </div>
+                            <div className="muted" style={{ marginTop: 8 }}>
+                              {autoProfileRecommendation.reasons.join(" • ") || "Balanced recommendation."}
+                            </div>
+                            <div className="muted" style={{ marginTop: 8, wordBreak: "break-word" }}>
+                              JVM args: <code>{autoProfileRecommendation.jvm_args}</code>
+                            </div>
+                            {autoProfileAppliedAt ? (
+                              <div className="muted" style={{ marginTop: 6 }}>
+                                Last applied {formatDateTime(autoProfileAppliedAt, "recently")}
+                              </div>
+                            ) : null}
+                            <div className="row">
+                              <button
+                                className="btn primary"
+                                onClick={() => applyAutoProfileRecommendation(inst, autoProfileRecommendation)}
+                                disabled={instanceSettingsBusy}
+                              >
+                                Apply recommendation
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                     </>
                   )}
@@ -12046,7 +13295,26 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {error ? <div className="errorBox topStatusBanner" style={{ marginTop: 0, marginBottom: 12 }}>{error}</div> : null}
+        {error ? (
+          <div className="errorBox topStatusBanner statusBanner">
+            <div className="statusBannerMessage">{error}</div>
+            <div className="statusBannerActions">
+              <button className="btn subtle" onClick={() => setError(null)}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
+        {installNotice ? (
+          <div className="noticeBox topStatusBanner statusBanner">
+            <div className="statusBannerMessage">{installNotice}</div>
+            <div className="statusBannerActions">
+              <button className="btn subtle" onClick={() => setInstallNotice(null)}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
         {renderContent()}
       </main>
 
@@ -12124,6 +13392,16 @@ export default function App() {
               >
                 <Icon name="upload" size={16} />
                 Export mods zip
+              </button>
+              <button
+                className="libraryContextItem"
+                onClick={() => {
+                  setLibraryContextMenu(null);
+                  setSupportBundleModalInstanceId(libraryContextTarget.id);
+                }}
+              >
+                <Icon name="download" size={16} />
+                Export support bundle
               </button>
               <div className="libraryContextDivider" />
               <button
@@ -12230,6 +13508,218 @@ export default function App() {
             </button>
           </div>
         </Modal>
+      ) : null}
+
+      {preflightReportModal ? (
+        <Modal
+          title="Launch compatibility checks"
+          onClose={() => setPreflightReportModal(null)}
+        >
+          <div className="modalBody">
+            <div className="p" style={{ marginTop: 0 }}>
+              {preflightReportModal.report.status === "blocked"
+                ? "Launch is blocked until required fixes are handled."
+                : "Compatibility checks returned warnings."}
+            </div>
+            <div className="card" style={{ marginTop: 8, padding: 10, borderRadius: 12 }}>
+              <div className="rowBetween">
+                <div style={{ fontWeight: 900 }}>Checks</div>
+                <span className="chip subtle">
+                  {preflightReportModal.report.blocking_count} blocker{preflightReportModal.report.blocking_count === 1 ? "" : "s"} ·{" "}
+                  {preflightReportModal.report.warning_count} warning{preflightReportModal.report.warning_count === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                {preflightReportModal.report.items.map((item) => (
+                  <div key={`${item.code}:${item.title}`} className="rowBetween">
+                    <div>
+                      <div style={{ fontWeight: 800 }}>{item.title}</div>
+                      <div className="muted">{item.message}</div>
+                    </div>
+                    <span className={`chip ${item.blocking ? "danger" : "subtle"}`}>{item.severity}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="footerBar">
+            <button
+              className="btn"
+              onClick={() => {
+                setPreflightReportModal(null);
+                setRoute("instance");
+                setInstanceSettingsSection("java");
+                setInstanceSettingsOpen(true);
+              }}
+            >
+              Open Java settings
+            </button>
+            <button
+              className="btn"
+              onClick={() =>
+                void openInstancePath({
+                  instanceId: preflightReportModal.instanceId,
+                  target: "mods",
+                }).catch(() => null)
+              }
+            >
+              Open mods folder
+            </button>
+            <button
+              className="btn"
+              onClick={() =>
+                void runLocalResolverBackfill(preflightReportModal.instanceId, "all", {
+                  silent: false,
+                  refreshListAfterResolve: true,
+                })
+              }
+            >
+              Identify local JARs
+            </button>
+            <button
+              className="btn primary"
+              onClick={async () => {
+                const report = await preflightLaunchCompatibility({
+                  instanceId: preflightReportModal.instanceId,
+                }).catch(() => null);
+                if (!report) return;
+                setPreflightReportModal((prev) => (prev ? { ...prev, report } : null));
+                if (report.status !== "blocked") {
+                  setInstallNotice("Preflight blockers cleared.");
+                }
+              }}
+            >
+              Re-check
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {launchFixModalInstanceId ? (
+        (() => {
+          const inst = instances.find((item) => item.id === launchFixModalInstanceId);
+          const plan = inst ? launchFixPlanByInstance[inst.id] : null;
+          const draft = inst ? launchFixPlanDraftByInstance[inst.id] ?? [] : [];
+          const applyResult = inst ? launchFixApplyResultByInstance[inst.id] : null;
+          if (!inst || !plan) return null;
+          return (
+            <Modal
+              title={`Fix My Launch · ${inst.name}`}
+              size="wide"
+              onClose={() => setLaunchFixModalInstanceId(null)}
+            >
+              <div className="modalBody">
+                <div className="p" style={{ marginTop: 0 }}>
+                  Review actions, keep selected fixes, and apply safely. No destructive deletes are performed.
+                </div>
+                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                  {plan.causes.slice(0, 5).map((cause) => (
+                    <span key={cause} className="chip subtle">{cause}</span>
+                  ))}
+                </div>
+                <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
+                  <div className="rowBetween">
+                    <div style={{ fontWeight: 900 }}>Actions</div>
+                    <span className="chip subtle">{draft.filter((item) => item.selected).length}/{draft.length} selected</span>
+                  </div>
+                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                    {draft.map((action) => (
+                      <label key={action.id} className="rowBetween" style={{ gap: 10 }}>
+                        <div className="row" style={{ marginTop: 0, gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={action.selected}
+                            onChange={(e) =>
+                              setLaunchFixPlanDraftByInstance((prev) => ({
+                                ...prev,
+                                [inst.id]: (prev[inst.id] ?? []).map((row) =>
+                                  row.id === action.id ? { ...row, selected: e.target.checked } : row
+                                ),
+                              }))
+                            }
+                          />
+                          <div>
+                            <div style={{ fontWeight: 800 }}>{action.title}</div>
+                            <div className="muted">{action.detail}</div>
+                          </div>
+                        </div>
+                        <span className="chip subtle">{action.kind}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                {applyResult ? (
+                  <div className="noticeBox" style={{ marginTop: 10 }}>
+                    Applied {applyResult.applied}, failed {applyResult.failed}, skipped {applyResult.skipped}.
+                  </div>
+                ) : null}
+              </div>
+              <div className="footerBar">
+                <button
+                  className="btn"
+                  onClick={() => void prepareLaunchFixPlan(inst)}
+                  disabled={launchFixBusyInstanceId === inst.id}
+                >
+                  {launchFixBusyInstanceId === inst.id ? "Refreshing…" : "Refresh plan"}
+                </button>
+                <button
+                  className="btn primary"
+                  onClick={() => void applyLaunchFixPlan(inst)}
+                  disabled={launchFixApplyBusyInstanceId === inst.id}
+                >
+                  {launchFixApplyBusyInstanceId === inst.id ? "Applying…" : "Apply selected fixes"}
+                </button>
+              </div>
+            </Modal>
+          );
+        })()
+      ) : null}
+
+      {supportBundleModalInstanceId ? (
+        (() => {
+          const inst = instances.find((item) => item.id === supportBundleModalInstanceId);
+          if (!inst) return null;
+          return (
+            <Modal
+              title={`Export support bundle · ${inst.name}`}
+              onClose={() => {
+                if (supportBundleBusy) return;
+                setSupportBundleModalInstanceId(null);
+              }}
+            >
+              <div className="modalBody">
+                <div className="p" style={{ marginTop: 0 }}>
+                  Exports redacted logs, installed mods, config allowlist, and recent timing telemetry.
+                </div>
+                <label className="toggleRow" style={{ marginTop: 12 }}>
+                  <input
+                    type="checkbox"
+                    checked={supportBundleIncludeRawLogs}
+                    onChange={(e) => setSupportBundleIncludeRawLogs(e.target.checked)}
+                    disabled={supportBundleBusy}
+                  />
+                  <span className="togglePill" />
+                  <span>Include raw (unredacted) logs</span>
+                </label>
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Redaction is enabled by default. Only include raw logs when explicitly requested for debugging.
+                </div>
+              </div>
+              <div className="footerBar">
+                <button className="btn" onClick={() => setSupportBundleModalInstanceId(null)} disabled={supportBundleBusy}>
+                  Cancel
+                </button>
+                <button
+                  className="btn primary"
+                  onClick={() => void onExportSupportBundle(inst, supportBundleIncludeRawLogs)}
+                  disabled={supportBundleBusy}
+                >
+                  {supportBundleBusy ? "Exporting…" : "Export bundle"}
+                </button>
+              </div>
+            </Modal>
+          );
+        })()
       ) : null}
 
       {showCreate ? (

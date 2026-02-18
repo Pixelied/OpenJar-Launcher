@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
 import type {
+  CreatorConflictSuggestion,
   Instance,
   Layer,
   LayerDiffResult,
@@ -227,6 +228,8 @@ export default function ModpackMaker({
   const [applySettings, setApplySettings] = useState<ResolutionSettings>(defaultSettings());
   const [applySettingsOpen, setApplySettingsOpen] = useState(false);
   const [applyInstanceId, setApplyInstanceId] = useState<string>(selectedInstanceId ?? "");
+  const [conflictWizardOpen, setConflictWizardOpen] = useState(false);
+  const [selectedConflictSuggestionIds, setSelectedConflictSuggestionIds] = useState<string[]>([]);
 
   const selectedSpec = useMemo(
     () => specs.find((spec) => spec.id === selectedSpecId) ?? null,
@@ -274,6 +277,79 @@ export default function ModpackMaker({
   const packConflictCount = useMemo(() => {
     return allEntries.filter((row) => row.duplicateCount > 1).length;
   }, [allEntries]);
+
+  const conflictSuggestions = useMemo<CreatorConflictSuggestion[]>(() => {
+    if (!editorSpec) return [];
+    const suggestions: CreatorConflictSuggestion[] = [];
+    const seen = new Set<string>();
+    const addSuggestion = (item: CreatorConflictSuggestion) => {
+      if (seen.has(item.id)) return;
+      seen.add(item.id);
+      suggestions.push(item);
+    };
+
+    const duplicateGroups = new Map<string, EntryRow[]>();
+    for (const row of allEntries) {
+      if (row.duplicateCount <= 1) continue;
+      const list = duplicateGroups.get(row.identity);
+      if (list) list.push(row);
+      else duplicateGroups.set(row.identity, [row]);
+    }
+    for (const [identity, rows] of duplicateGroups.entries()) {
+      const ordered = [...rows].sort((a, b) => a.layerIndex - b.layerIndex);
+      const keep = ordered[ordered.length - 1];
+      const remove = ordered.filter((row) => row.key !== keep.key);
+      addSuggestion({
+        id: `dup:${identity}:${keep.layerId}`,
+        conflict_code: "LAYER_DUPLICATE",
+        title: `Keep ${keep.layerName} for ${entryDisplayName(keep.entry)}`,
+        detail: `Remove ${remove.length} duplicate entr${remove.length === 1 ? "y" : "ies"} from earlier layers.`,
+        patch_preview: [
+          `KEEP ${keep.layerName}: ${entryDisplayName(keep.entry)}`,
+          ...remove.map((row) => `REMOVE ${row.layerName}: ${entryDisplayName(row.entry)}`),
+        ].join("\n"),
+        risk: "low",
+      });
+    }
+
+    for (const row of allEntries) {
+      const layer = editorSpec.layers.find((item) => item.id === row.layerId);
+      if (!layer) continue;
+      const isOverrideLayer =
+        layer.id.toLowerCase().includes("override") || layer.name.toLowerCase().includes("override");
+      if (!isOverrideLayer) continue;
+      const hasBase = allEntries.some(
+        (candidate) => candidate.identity === row.identity && candidate.layerIndex < row.layerIndex
+      );
+      if (hasBase) continue;
+      addSuggestion({
+        id: `override:${row.key}`,
+        conflict_code: "OVERRIDE_WITHOUT_BASE",
+        title: `Move ${entryDisplayName(row.entry)} to User Additions`,
+        detail: "Override entry has no base entry. Convert it to a normal add entry.",
+        patch_preview: [
+          `ADD User Additions: ${entryDisplayName(row.entry)}`,
+          `REMOVE ${layer.name}: ${entryDisplayName(row.entry)}`,
+        ].join("\n"),
+        risk: "low",
+      });
+    }
+
+    for (const conflict of plan?.conflicts ?? []) {
+      if (!String(conflict.code).toUpperCase().includes("FILE_COLLISION")) continue;
+      const key = conflict.keys?.[0] ?? conflict.message;
+      addSuggestion({
+        id: `file:${key}`,
+        conflict_code: "FILE_COLLISION",
+        title: "Resolve file collision by single winner",
+        detail: "Choose one entry as winner and remove alternate colliding entries.",
+        patch_preview: `Resolve ${key}\nApply a single source/layer winner for this file key.`,
+        risk: "medium",
+      });
+    }
+
+    return suggestions.slice(0, 24);
+  }, [editorSpec, allEntries, plan]);
 
   const failureKeySet = useMemo(() => {
     if (!plan || !editorSpec || plan.modpack_id !== editorSpec.id) return new Set<string>();
@@ -358,6 +434,11 @@ export default function ModpackMaker({
       setSelectedEntryKey(null);
     }
   }, [selectedEntryKey, allEntries]);
+
+  useEffect(() => {
+    if (!conflictWizardOpen) return;
+    setSelectedConflictSuggestionIds(conflictSuggestions.map((item) => item.id));
+  }, [conflictWizardOpen, conflictSuggestions]);
 
   useEffect(() => {
     if (!homeActionsOpen) return;
@@ -539,6 +620,86 @@ export default function ModpackMaker({
     setApplyInstanceId(selectedInstanceId ?? instances[0]?.id ?? "");
     setPlan(null);
     setApplyWizardOpen(true);
+  }
+
+  function applySelectedConflictSuggestions() {
+    if (!editorSpec) return;
+    const selectedSet = new Set(selectedConflictSuggestionIds);
+    if (selectedSet.size === 0) {
+      onNotice("Select at least one suggestion.");
+      return;
+    }
+    const copy = cloneSpec(editorSpec);
+    let applied = 0;
+
+    for (const suggestion of conflictSuggestions) {
+      if (!selectedSet.has(suggestion.id)) continue;
+      if (suggestion.id.startsWith("dup:")) {
+        const payload = suggestion.id.slice(4);
+        const lastColon = payload.lastIndexOf(":");
+        if (lastColon <= 0) continue;
+        const identity = payload.slice(0, lastColon);
+        const keepLayerId = payload.slice(lastColon + 1);
+        let changed = false;
+        for (const layer of copy.layers) {
+          if (layer.id === keepLayerId) continue;
+          const before = layer.entries_delta.add.length;
+          layer.entries_delta.add = layer.entries_delta.add.filter(
+            (entry) => entryIdentity(entry) !== identity
+          );
+          if (layer.entries_delta.add.length !== before) changed = true;
+        }
+        if (changed) applied += 1;
+      } else if (suggestion.id.startsWith("override:")) {
+        const rowKey = suggestion.id.slice("override:".length);
+        const row = allEntries.find((item) => item.key === rowKey);
+        if (!row) continue;
+        const sourceLayer = copy.layers.find((layer) => layer.id === row.layerId);
+        if (!sourceLayer) continue;
+        const targetLayerId = firstUserLayerId(copy);
+        const targetLayer = targetLayerId
+          ? copy.layers.find((layer) => layer.id === targetLayerId)
+          : null;
+        if (!targetLayer || targetLayer.id === sourceLayer.id) continue;
+        const entry = sourceLayer.entries_delta.add[row.entryIndex];
+        if (!entry) continue;
+        sourceLayer.entries_delta.add = sourceLayer.entries_delta.add.filter(
+          (_, idx) => idx !== row.entryIndex
+        );
+        targetLayer.entries_delta.add.push({ ...entry });
+        applied += 1;
+      } else if (suggestion.id.startsWith("file:")) {
+        const duplicates = new Map<string, EntryRow[]>();
+        for (const row of allEntries) {
+          if (row.duplicateCount <= 1) continue;
+          const rows = duplicates.get(row.identity);
+          if (rows) rows.push(row);
+          else duplicates.set(row.identity, [row]);
+        }
+        let changedAny = false;
+        for (const [identity, rows] of duplicates.entries()) {
+          const keep = [...rows].sort((a, b) => a.layerIndex - b.layerIndex).pop();
+          if (!keep) continue;
+          for (const layer of copy.layers) {
+            if (layer.id === keep.layerId) continue;
+            const before = layer.entries_delta.add.length;
+            layer.entries_delta.add = layer.entries_delta.add.filter(
+              (entry) => entryIdentity(entry) !== identity
+            );
+            if (layer.entries_delta.add.length !== before) changedAny = true;
+          }
+        }
+        if (changedAny) applied += 1;
+      }
+    }
+
+    setEditorSpec(copy);
+    setConflictWizardOpen(false);
+    if (applied > 0) {
+      onNotice(`Applied ${applied} conflict suggestion patch${applied === 1 ? "" : "es"}.`);
+    } else {
+      onNotice("No matching changes were applied from the selected suggestions.");
+    }
   }
 
   const templateLayerSelected = Boolean(
@@ -907,6 +1068,11 @@ export default function ModpackMaker({
               <span className={`chip ${packConflictCount > 0 ? "danger" : "subtle"}`} title="Duplicate entries across layers.">
                 Potential conflicts: {packConflictCount}
               </span>
+              {conflictSuggestions.length > 0 ? (
+                <button className="btn" onClick={() => setConflictWizardOpen(true)}>
+                  Conflict wizard
+                </button>
+              ) : null}
               {plan && plan.modpack_id === editorSpec.id ? (
                 <span className={`chip ${plan.failed_mods.length > 0 ? "danger" : "subtle"}`} title="From latest preview resolve.">
                   Last preview failures: {plan.failed_mods.length}
@@ -1553,6 +1719,75 @@ export default function ModpackMaker({
             </div>
           </div>
         </>
+      ) : null}
+
+      {conflictWizardOpen ? (
+        <div className="modalOverlay" onMouseDown={() => setConflictWizardOpen(false)}>
+          <div className="modal wide" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modalHeader">
+              <div className="modalTitle">Creator conflict wizard</div>
+              <button className="iconBtn" onClick={() => setConflictWizardOpen(false)} aria-label="Close">
+                ✕
+              </button>
+            </div>
+            <div className="modalBody">
+              <div className="muted">
+                Deterministic suggestions only. Review patch previews, then apply to the draft spec.
+              </div>
+              {conflictSuggestions.length === 0 ? (
+                <div className="card" style={{ marginTop: 10, padding: 12, borderRadius: 12 }}>
+                  <div className="muted">No conflict suggestions available right now.</div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                  {conflictSuggestions.map((suggestion) => {
+                    const checked = selectedConflictSuggestionIds.includes(suggestion.id);
+                    return (
+                      <div key={suggestion.id} className="card" style={{ padding: 10, borderRadius: 12 }}>
+                        <div className="rowBetween" style={{ alignItems: "flex-start", gap: 10 }}>
+                          <label className="row" style={{ marginTop: 0, gap: 8, alignItems: "flex-start", flex: 1 }}>
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) =>
+                                setSelectedConflictSuggestionIds((prev) => {
+                                  if (e.target.checked) {
+                                    if (prev.includes(suggestion.id)) return prev;
+                                    return [...prev, suggestion.id];
+                                  }
+                                  return prev.filter((id) => id !== suggestion.id);
+                                })
+                              }
+                            />
+                            <div>
+                              <div style={{ fontWeight: 900 }}>{suggestion.title}</div>
+                              <div className="muted" style={{ marginTop: 4 }}>{suggestion.detail}</div>
+                            </div>
+                          </label>
+                          <div className="row" style={{ marginTop: 0, gap: 6 }}>
+                            <span className="chip subtle">{suggestion.conflict_code}</span>
+                            <span className={`chip ${suggestion.risk === "medium" || suggestion.risk === "high" ? "danger" : "subtle"}`}>
+                              {suggestion.risk} risk
+                            </span>
+                          </div>
+                        </div>
+                        <pre style={{ marginTop: 8, whiteSpace: "pre-wrap", fontSize: 12 }}>{suggestion.patch_preview}</pre>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="footerBar">
+              <button className="btn" onClick={() => setConflictWizardOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn primary" onClick={applySelectedConflictSuggestions}>
+                Apply selected suggestions
+              </button>
+            </div>
+          </div>
+        </div>
       ) : null}
 
       {addModalOpen ? (

@@ -476,6 +476,43 @@ struct ExportInstanceModsZipArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct PreflightLaunchCompatibilityArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveLocalModSourcesArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(default)]
+    mode: Option<String>, // missing_only | all
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupportPerfAction {
+    id: String,
+    name: String,
+    #[serde(default)]
+    detail: Option<String>,
+    status: String,
+    duration_ms: f64,
+    finished_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportInstanceSupportBundleArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(alias = "outputPath", default)]
+    output_path: Option<String>,
+    #[serde(alias = "includeRawLogs", default)]
+    include_raw_logs: Option<bool>,
+    #[serde(alias = "perfActions", default)]
+    perf_actions: Vec<SupportPerfAction>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PollMicrosoftLoginArgs {
     #[serde(alias = "sessionId")]
     session_id: String,
@@ -880,6 +917,11 @@ struct CurseforgeFilesResponse {
     data: Vec<CurseforgeFile>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CurseforgeFileResponse {
+    data: CurseforgeFile,
+}
+
 #[derive(Debug, Deserialize, Default)]
 struct CurseforgeFingerprintData {
     #[serde(default)]
@@ -1064,6 +1106,14 @@ struct ContentUpdateInfo {
     latest_version_number: String,
     enabled: bool,
     target_worlds: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    latest_download_url: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    latest_hashes: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    required_dependencies: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1094,6 +1144,57 @@ struct LaunchResult {
     prism_instance_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prism_root: Option<String>,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LaunchCompatibilityItem {
+    code: String,
+    title: String,
+    message: String,
+    severity: String, // blocker | warning | info
+    blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LaunchCompatibilityReport {
+    instance_id: String,
+    status: String, // ok | warning | blocked
+    checked_at: String,
+    blocking_count: usize,
+    warning_count: usize,
+    unresolved_local_entries: usize,
+    items: Vec<LaunchCompatibilityItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalResolverMatch {
+    key: String,
+    from_source: String,
+    to_source: String,
+    project_id: String,
+    version_id: String,
+    name: String,
+    version_number: String,
+    confidence: String, // deterministic | high
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalResolverResult {
+    instance_id: String,
+    scanned_entries: usize,
+    resolved_entries: usize,
+    remaining_local_entries: usize,
+    matches: Vec<LocalResolverMatch>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SupportBundleResult {
+    output_path: String,
+    files_count: usize,
+    redactions_applied: usize,
     message: String,
 }
 
@@ -2648,6 +2749,14 @@ struct LocalImportedProviderMatch {
     name: String,
     version_number: String,
     hashes: HashMap<String, String>,
+    confidence: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LocalMetadataHint {
+    project_hint: Option<String>,
+    display_name_hint: Option<String>,
 }
 
 fn sha512_hex(bytes: &[u8]) -> String {
@@ -2662,7 +2771,6 @@ fn sha512_hex(bytes: &[u8]) -> String {
 }
 
 fn curseforge_murmur2_fingerprint(bytes: &[u8]) -> u32 {
-    // CurseForge expects the Java-style MurmurHash2 fingerprint for file matching.
     let m: u32 = 0x5bd1e995;
     let r: u32 = 24;
     let len = bytes.len() as u32;
@@ -2735,16 +2843,43 @@ fn fetch_modrinth_version_by_sha512(
     Ok(Some(version))
 }
 
-fn fetch_curseforge_match_by_fingerprint(
+fn curseforge_fingerprint_candidates(bytes: &[u8]) -> Vec<u32> {
+    // CurseForge fingerprinting commonly hashes a whitespace-stripped byte stream.
+    let filtered: Vec<u8> = bytes
+        .iter()
+        .copied()
+        .filter(|b| !matches!(*b, 9 | 10 | 13 | 32))
+        .collect();
+    let mut out = Vec::with_capacity(2);
+    if !filtered.is_empty() {
+        out.push(curseforge_murmur2_fingerprint(&filtered));
+    }
+    let raw = curseforge_murmur2_fingerprint(bytes);
+    if !out.iter().any(|existing| *existing == raw) {
+        out.push(raw);
+    }
+    out
+}
+
+fn fetch_curseforge_match_by_fingerprints(
     client: &Client,
     api_key: &str,
-    fingerprint: u32,
+    fingerprints: &[u32],
 ) -> Result<Option<(CurseforgeMod, CurseforgeFile)>, String> {
+    let mut unique: Vec<u32> = Vec::with_capacity(fingerprints.len());
+    for fingerprint in fingerprints {
+        if !unique.iter().any(|existing| existing == fingerprint) {
+            unique.push(*fingerprint);
+        }
+    }
+    if unique.is_empty() {
+        return Ok(None);
+    }
     let url = format!(
         "{}/fingerprints/{}",
         CURSEFORGE_API_BASE, CURSEFORGE_GAME_ID_MINECRAFT
     );
-    let body = serde_json::json!({ "fingerprints": [fingerprint] });
+    let body = serde_json::json!({ "fingerprints": unique });
     let resp = client
         .post(&url)
         .header("Accept", "application/json")
@@ -2787,12 +2922,230 @@ fn fetch_curseforge_match_by_fingerprint(
     Ok(Some((project, file)))
 }
 
+fn normalize_hint_token(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        let lc = ch.to_ascii_lowercase();
+        if lc.is_ascii_alphanumeric() || lc == '_' || lc == '-' {
+            out.push(lc);
+        } else if lc.is_whitespace() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+fn parse_toml_assignment(text: &str, key: &str) -> Option<String> {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if !lower.starts_with(&format!("{key}=")) && !lower.starts_with(&format!("{key} =")) {
+            continue;
+        }
+        let idx = line.find('=')?;
+        let value = line[idx + 1..].trim().trim_matches('"').trim_matches('\'').trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn parse_json_hint(raw: &str, id_keys: &[&str], name_keys: &[&str]) -> LocalMetadataHint {
+    let mut hint = LocalMetadataHint::default();
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return hint;
+    };
+
+    let mut stack: Vec<&serde_json::Value> = vec![&value];
+    while let Some(node) = stack.pop() {
+        match node {
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    let key = k.trim().to_ascii_lowercase();
+                    if hint.project_hint.is_none() && id_keys.iter().any(|c| *c == key) {
+                        if let Some(s) = v.as_str() {
+                            let normalized = normalize_hint_token(s);
+                            if !normalized.is_empty() {
+                                hint.project_hint = Some(normalized);
+                            }
+                        }
+                    }
+                    if hint.display_name_hint.is_none() && name_keys.iter().any(|c| *c == key) {
+                        if let Some(s) = v.as_str() {
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                hint.display_name_hint = Some(trimmed.to_string());
+                            }
+                        }
+                    }
+                    stack.push(v);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    stack.push(item);
+                }
+            }
+            _ => {}
+        }
+        if hint.project_hint.is_some() && hint.display_name_hint.is_some() {
+            break;
+        }
+    }
+
+    hint
+}
+
+fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHint> {
+    let mut archive = ZipArchive::new(Cursor::new(file_bytes)).ok()?;
+    let candidates = [
+        "fabric.mod.json",
+        "quilt.mod.json",
+        "META-INF/mods.toml",
+        "mcmod.info",
+    ];
+    let mut merged = LocalMetadataHint::default();
+
+    for path in candidates {
+        let mut file = match archive.by_name(path) {
+            Ok(file) => file,
+            Err(_) => continue,
+        };
+        let mut raw = String::new();
+        if file.read_to_string(&mut raw).is_err() || raw.trim().is_empty() {
+            continue;
+        }
+        let hint = if path.ends_with(".json") {
+            parse_json_hint(
+                &raw,
+                &["id", "modid", "slug", "project_id", "projectid"],
+                &["name", "displayname", "title"],
+            )
+        } else if path.ends_with("mods.toml") {
+            LocalMetadataHint {
+                project_hint: parse_toml_assignment(&raw, "modid")
+                    .map(|v| normalize_hint_token(&v))
+                    .filter(|v| !v.is_empty()),
+                display_name_hint: parse_toml_assignment(&raw, "displayName"),
+            }
+        } else {
+            LocalMetadataHint::default()
+        };
+        if merged.project_hint.is_none() {
+            merged.project_hint = hint.project_hint;
+        }
+        if merged.display_name_hint.is_none() {
+            merged.display_name_hint = hint.display_name_hint;
+        }
+        if merged.project_hint.is_some() && merged.display_name_hint.is_some() {
+            break;
+        }
+    }
+
+    if merged.project_hint.is_none() && merged.display_name_hint.is_none() {
+        None
+    } else {
+        Some(merged)
+    }
+}
+
+fn detect_provider_from_metadata_hint(
+    client: &Client,
+    safe_filename: &str,
+    metadata: &LocalMetadataHint,
+    sha512: &str,
+) -> Option<LocalImportedProviderMatch> {
+    let project_hint = metadata.project_hint.as_ref()?;
+    let versions = fetch_project_versions(client, project_hint).ok()?;
+    let mut exact_matches: Vec<(String, ModrinthVersion, ModrinthVersionFile)> = Vec::new();
+
+    for version in versions {
+        for file in &version.files {
+            if sanitize_filename(&file.filename).eq_ignore_ascii_case(safe_filename) {
+                exact_matches.push((project_hint.clone(), version.clone(), file.clone()));
+            }
+        }
+    }
+
+    if exact_matches.len() == 1 {
+        let (_, version, file) = exact_matches.into_iter().next()?;
+        let mut hashes = file.hashes.clone();
+        hashes
+            .entry("sha512".to_string())
+            .or_insert_with(|| sha512.to_string());
+        let name = metadata
+            .display_name_hint
+            .clone()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| version.name.clone().filter(|v| !v.trim().is_empty()))
+            .or_else(|| fetch_project_title(client, project_hint))
+            .unwrap_or_else(|| infer_local_name(safe_filename));
+        return Some(LocalImportedProviderMatch {
+            source: "modrinth".to_string(),
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+            name,
+            version_number: if version.version_number.trim().is_empty() {
+                file.filename.clone()
+            } else {
+                version.version_number.clone()
+            },
+            hashes,
+            confidence: "high".to_string(),
+            reason: "Metadata hint + exact filename match on Modrinth.".to_string(),
+        });
+    }
+
+    None
+}
+
 fn detect_provider_for_local_mod(
     client: &Client,
     file_bytes: &[u8],
     safe_filename: &str,
+    include_metadata_fallback: bool,
 ) -> Option<LocalImportedProviderMatch> {
     let sha512 = sha512_hex(file_bytes);
+    if let Some(api_key) = curseforge_api_key() {
+        let fingerprints = curseforge_fingerprint_candidates(file_bytes);
+        if let Ok(Some((project, file))) =
+            fetch_curseforge_match_by_fingerprints(client, &api_key, &fingerprints)
+        {
+            let mut hashes = parse_cf_hashes(&file);
+            hashes
+                .entry("sha512".to_string())
+                .or_insert_with(|| sha512.clone());
+            let version_number = if file.display_name.trim().is_empty() {
+                if file.file_name.trim().is_empty() {
+                    "unknown".to_string()
+                } else {
+                    file.file_name.clone()
+                }
+            } else {
+                file.display_name.clone()
+            };
+            let name = if project.name.trim().is_empty() {
+                infer_local_name(safe_filename)
+            } else {
+                project.name.clone()
+            };
+            return Some(LocalImportedProviderMatch {
+                source: "curseforge".to_string(),
+                project_id: format!("cf:{}", project.id),
+                version_id: format!("cf_file:{}", file.id),
+                name,
+                version_number,
+                hashes,
+                confidence: "deterministic".to_string(),
+                reason: "Exact CurseForge fingerprint match.".to_string(),
+            });
+        }
+    }
+
     if let Ok(Some(version)) = fetch_modrinth_version_by_sha512(client, &sha512) {
         let project_id = version.project_id.trim().to_string();
         if !project_id.is_empty() {
@@ -2837,45 +3190,41 @@ fn detect_provider_for_local_mod(
                 name,
                 version_number,
                 hashes,
+                confidence: "deterministic".to_string(),
+                reason: "Exact Modrinth SHA-512 match.".to_string(),
             });
         }
     }
 
-    if let Some(api_key) = curseforge_api_key() {
-        let fingerprint = curseforge_murmur2_fingerprint(file_bytes);
-        if let Ok(Some((project, file))) =
-            fetch_curseforge_match_by_fingerprint(client, &api_key, fingerprint)
-        {
-            let mut hashes = parse_cf_hashes(&file);
-            hashes
-                .entry("sha512".to_string())
-                .or_insert_with(|| sha512.clone());
-            let version_number = if file.display_name.trim().is_empty() {
-                if file.file_name.trim().is_empty() {
-                    "unknown".to_string()
-                } else {
-                    file.file_name.clone()
-                }
-            } else {
-                file.display_name.clone()
-            };
-            let name = if project.name.trim().is_empty() {
-                infer_local_name(safe_filename)
-            } else {
-                project.name.clone()
-            };
-            return Some(LocalImportedProviderMatch {
-                source: "curseforge".to_string(),
-                project_id: format!("cf:{}", project.id),
-                version_id: format!("cf_file:{}", file.id),
-                name,
-                version_number,
-                hashes,
-            });
+    if include_metadata_fallback {
+        if let Some(metadata) = parse_mod_metadata_hint_from_jar(file_bytes) {
+            if let Some(matched) =
+                detect_provider_from_metadata_hint(client, safe_filename, &metadata, &sha512)
+            {
+                return Some(matched);
+            }
         }
     }
 
     None
+}
+
+fn local_entry_key(entry: &LockEntry) -> String {
+    format!(
+        "{}:{}:{}",
+        entry.source.trim().to_lowercase(),
+        normalize_lock_content_type(&entry.content_type),
+        entry.project_id.trim().to_lowercase()
+    )
+}
+
+fn apply_provider_match_to_lock_entry(entry: &mut LockEntry, found: &LocalImportedProviderMatch) {
+    entry.source = found.source.clone();
+    entry.project_id = found.project_id.clone();
+    entry.version_id = found.version_id.clone();
+    entry.name = found.name.clone();
+    entry.version_number = found.version_number.clone();
+    entry.hashes = found.hashes.clone();
 }
 
 fn mod_paths(instance_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
@@ -3118,6 +3467,44 @@ fn is_transient_network_error(err: &reqwest::Error) -> bool {
         || msg.contains("connection refused")
         || msg.contains("connection closed")
         || msg.contains("network is unreachable")
+}
+
+fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+}
+
+fn download_bytes_with_retry(client: &Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
+    let max_attempts = 3usize;
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        match client.get(url).send() {
+            Ok(mut response) => {
+                let status = response.status();
+                if status.is_success() {
+                    let mut bytes = Vec::new();
+                    response
+                        .copy_to(&mut bytes)
+                        .map_err(|e| format!("download read failed for {label}: {e}"))?;
+                    return Ok(bytes);
+                }
+                if attempt < max_attempts && should_retry_http_status(status) {
+                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    continue;
+                }
+                return Err(format!("download failed for {label} with status {status}"));
+            }
+            Err(err) => {
+                if attempt < max_attempts && is_transient_network_error(&err) {
+                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    continue;
+                }
+                return Err(format!("download failed for {label}: {err}"));
+            }
+        }
+    }
 }
 
 fn network_block_hint(url: &str) -> Option<&'static str> {
@@ -4730,6 +5117,19 @@ fn check_single_content_update_entry(
         if latest.id == entry.version_id {
             return Ok((None, warnings));
         }
+        let latest_file = latest
+            .files
+            .iter()
+            .find(|f| f.primary.unwrap_or(false))
+            .or_else(|| latest.files.first());
+        let required_dependencies = latest
+            .dependencies
+            .iter()
+            .filter(|dep| dep.dependency_type.eq_ignore_ascii_case("required"))
+            .filter_map(|dep| dep.project_id.as_ref())
+            .map(|project_id| project_id.trim().to_string())
+            .filter(|project_id| !project_id.is_empty() && project_id != &entry.project_id)
+            .collect::<Vec<_>>();
         return Ok((
             Some(ContentUpdateInfo {
                 source: "modrinth".to_string(),
@@ -4742,6 +5142,10 @@ fn check_single_content_update_entry(
                 latest_version_number: latest.version_number,
                 enabled: entry.enabled,
                 target_worlds: entry.target_worlds.clone(),
+                latest_file_name: latest_file.map(|f| f.filename.clone()),
+                latest_download_url: latest_file.map(|f| f.url.clone()),
+                latest_hashes: latest_file.map(|f| f.hashes.clone()).unwrap_or_default(),
+                required_dependencies,
             }),
             warnings,
         ));
@@ -4766,6 +5170,25 @@ fn check_single_content_update_entry(
         if latest_version_id == entry.version_id {
             return Ok((None, warnings));
         }
+        let latest_version_number = if latest.display_name.trim().is_empty() {
+            latest.file_name.clone()
+        } else {
+            latest.display_name.clone()
+        };
+        let mut latest_download_url = latest
+            .download_url
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if latest_download_url.is_none() {
+            match resolve_curseforge_file_download_url(client, api_key, mod_id, &latest) {
+                Ok(url) => latest_download_url = Some(url),
+                Err(err) => warnings.push(format!(
+                    "Could not resolve download url for CurseForge update '{}' ({}): {}",
+                    entry.name, entry.project_id, err
+                )),
+            }
+        }
         return Ok((
             Some(ContentUpdateInfo {
                 source: "curseforge".to_string(),
@@ -4775,13 +5198,19 @@ fn check_single_content_update_entry(
                 current_version_id: entry.version_id.clone(),
                 current_version_number: entry.version_number.clone(),
                 latest_version_id,
-                latest_version_number: if latest.display_name.trim().is_empty() {
-                    latest.file_name
-                } else {
-                    latest.display_name
-                },
+                latest_version_number,
                 enabled: entry.enabled,
                 target_worlds: entry.target_worlds.clone(),
+                latest_file_name: Some(latest.file_name.clone()),
+                latest_download_url,
+                latest_hashes: parse_cf_hashes(&latest),
+                required_dependencies: latest
+                    .dependencies
+                    .iter()
+                    .filter(|dep| dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type))
+                    .map(|dep| format!("cf:{}", dep.mod_id))
+                    .filter(|project_id| project_id != &entry.project_id)
+                    .collect(),
             }),
             warnings,
         ));
@@ -4906,6 +5335,324 @@ fn check_instance_content_updates_inner(
     })
 }
 
+fn lock_has_enabled_modrinth_mod(lock: &Lockfile, project_id: &str) -> bool {
+    lock.entries.iter().any(|entry| {
+        entry.source.eq_ignore_ascii_case("modrinth")
+            && normalize_lock_content_type(&entry.content_type) == "mods"
+            && entry.enabled
+            && entry.project_id == project_id
+    })
+}
+
+fn lock_has_enabled_curseforge_mod(lock: &Lockfile, mod_id: i64) -> bool {
+    if mod_id <= 0 {
+        return false;
+    }
+    lock.entries.iter().any(|entry| {
+        if !entry.source.eq_ignore_ascii_case("curseforge")
+            || normalize_lock_content_type(&entry.content_type) != "mods"
+            || !entry.enabled
+        {
+            return false;
+        }
+        parse_curseforge_project_id(&entry.project_id)
+            .map(|entry_mod_id| entry_mod_id == mod_id)
+            .unwrap_or(false)
+    })
+}
+
+fn modrinth_required_dependencies_satisfied(lock: &Lockfile, version: &ModrinthVersion) -> bool {
+    let root_project_id = version.project_id.trim();
+    for dep in &version.dependencies {
+        if !dep.dependency_type.eq_ignore_ascii_case("required") {
+            continue;
+        }
+        let Some(project_id) = dep.project_id.as_ref() else {
+            return false;
+        };
+        let project_id = project_id.trim();
+        if project_id.is_empty() || project_id == root_project_id {
+            continue;
+        }
+        if !lock_has_enabled_modrinth_mod(lock, project_id) {
+            return false;
+        }
+    }
+    true
+}
+
+fn modrinth_required_dependency_list_satisfied(lock: &Lockfile, dependencies: &[String]) -> bool {
+    for dependency in dependencies {
+        let project_id = dependency.trim();
+        if project_id.is_empty() {
+            continue;
+        }
+        if !lock_has_enabled_modrinth_mod(lock, project_id) {
+            return false;
+        }
+    }
+    true
+}
+
+fn curseforge_required_dependencies_satisfied(lock: &Lockfile, file: &CurseforgeFile, root_mod_id: i64) -> bool {
+    for dep in &file.dependencies {
+        if dep.mod_id <= 0 || !curseforge_relation_is_required(dep.relation_type) || dep.mod_id == root_mod_id {
+            continue;
+        }
+        if !lock_has_enabled_curseforge_mod(lock, dep.mod_id) {
+            return false;
+        }
+    }
+    true
+}
+
+fn curseforge_required_dependency_list_satisfied(lock: &Lockfile, dependencies: &[String]) -> bool {
+    for dependency in dependencies {
+        let Some(mod_id) = parse_curseforge_project_id(dependency).ok() else {
+            continue;
+        };
+        if !lock_has_enabled_curseforge_mod(lock, mod_id) {
+            return false;
+        }
+    }
+    true
+}
+
+fn parse_curseforge_file_id(version_id: &str) -> Option<i64> {
+    let trimmed = version_id.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(raw) = trimmed.strip_prefix("cf_file:") {
+        return raw.trim().parse::<i64>().ok().filter(|id| *id > 0);
+    }
+    trimmed.parse::<i64>().ok().filter(|id| *id > 0)
+}
+
+fn disable_mod_file(instance_dir: &Path, filename: &str) -> Result<(), String> {
+    let (enabled_path, disabled_path) = mod_paths(instance_dir, filename);
+    if disabled_path.exists() {
+        return Ok(());
+    }
+    if !enabled_path.exists() {
+        return Err("mod file not found on disk".to_string());
+    }
+    fs::rename(&enabled_path, &disabled_path).map_err(|e| format!("disable mod failed: {e}"))?;
+    Ok(())
+}
+
+fn try_fast_install_content_update(
+    instances_dir: &Path,
+    instance: &Instance,
+    args: &CheckUpdatesArgs,
+    client: &Client,
+    cf_key: Option<&str>,
+    update: &ContentUpdateInfo,
+) -> Result<Option<InstalledMod>, String> {
+    let source = update.source.trim().to_lowercase();
+    let normalized = normalize_lock_content_type(&update.content_type);
+    if !is_updatable_content_type(&normalized) {
+        return Ok(None);
+    }
+
+    let instance_dir = instances_dir.join(&args.instance_id);
+    let mut lock = read_lockfile(instances_dir, &args.instance_id)?;
+
+    if source == "modrinth" {
+        let latest_version_id = update.latest_version_id.trim();
+        if latest_version_id.is_empty() {
+            return Ok(None);
+        }
+        let mut download_url = update
+            .latest_download_url
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut latest_file_name = update
+            .latest_file_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut latest_hashes = update.latest_hashes.clone();
+        let mut latest_version_number = update.latest_version_number.clone();
+
+        if normalized == "mods"
+            && !update.required_dependencies.is_empty()
+            && !modrinth_required_dependency_list_satisfied(&lock, &update.required_dependencies)
+        {
+            return Ok(None);
+        }
+
+        if download_url.is_none() || latest_file_name.is_none() || latest_hashes.is_empty() {
+            let mut version = fetch_version_by_id(client, latest_version_id)?;
+            if version.project_id.trim().is_empty() {
+                version.project_id = update.project_id.clone();
+            }
+            if normalized == "mods" && !modrinth_required_dependencies_satisfied(&lock, &version) {
+                return Ok(None);
+            }
+            let file = version
+                .files
+                .iter()
+                .find(|f| f.primary.unwrap_or(false))
+                .or_else(|| version.files.first())
+                .cloned()
+                .ok_or_else(|| format!("Version {} has no downloadable files", version.id))?;
+            download_url = Some(file.url.clone());
+            latest_file_name = Some(file.filename.clone());
+            latest_hashes = file.hashes.clone();
+            latest_version_number = version.version_number.clone();
+        }
+
+        let download_url = download_url.ok_or_else(|| "Missing Modrinth download URL".to_string())?;
+        let latest_file_name = latest_file_name.ok_or_else(|| "Missing Modrinth filename".to_string())?;
+        let safe_filename = sanitize_filename(&latest_file_name);
+        if safe_filename.is_empty() {
+            return Err("Resolved filename is invalid".to_string());
+        }
+
+        let bytes = download_bytes_with_retry(client, &download_url, &update.project_id)?;
+
+        let worlds = if normalized == "datapacks" {
+            normalize_target_worlds_for_datapack(&instance_dir, &update.target_worlds)?
+        } else {
+            vec![]
+        };
+        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
+        remove_replaced_entries_for_content(&mut lock, &instance_dir, &update.project_id, &normalized)?;
+
+        let new_entry = LockEntry {
+            source: "modrinth".to_string(),
+            project_id: update.project_id.clone(),
+            version_id: latest_version_id.to_string(),
+            name: if update.name.trim().is_empty() {
+                update.project_id.clone()
+            } else {
+                update.name.clone()
+            },
+            version_number: latest_version_number,
+            filename: safe_filename,
+            content_type: normalized.clone(),
+            target_scope: if normalized == "datapacks" {
+                "world".to_string()
+            } else {
+                "instance".to_string()
+            },
+            target_worlds: worlds,
+            pinned_version: None,
+            enabled: update.enabled,
+            hashes: latest_hashes,
+        };
+        if normalized == "mods" && !new_entry.enabled {
+            disable_mod_file(&instance_dir, &new_entry.filename)?;
+        }
+        lock.entries.push(new_entry.clone());
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(instances_dir, &args.instance_id, &lock)?;
+        return Ok(Some(lock_entry_to_installed(&instance_dir, &new_entry)));
+    }
+
+    if source == "curseforge" {
+        let Some(api_key) = cf_key else {
+            return Ok(None);
+        };
+        let mod_id = parse_curseforge_project_id(&update.project_id)?;
+        let Some(latest_file_id) = parse_curseforge_file_id(&update.latest_version_id) else {
+            return Ok(None);
+        };
+        if normalized == "mods"
+            && !update.required_dependencies.is_empty()
+            && !curseforge_required_dependency_list_satisfied(&lock, &update.required_dependencies)
+        {
+            return Ok(None);
+        }
+
+        let mut latest_file_name = update
+            .latest_file_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut download_url = update
+            .latest_download_url
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut latest_hashes = update.latest_hashes.clone();
+        let mut latest_version_number = update.latest_version_number.clone();
+
+        if latest_file_name.is_none() || download_url.is_none() || latest_hashes.is_empty() {
+            let file = fetch_curseforge_file(client, api_key, mod_id, latest_file_id)?;
+            if file.file_name.trim().is_empty() || !file_looks_compatible_with_instance(&file, instance) {
+                return Ok(None);
+            }
+            if normalized == "mods" && !curseforge_required_dependencies_satisfied(&lock, &file, mod_id) {
+                return Ok(None);
+            }
+            latest_file_name = Some(file.file_name.clone());
+            download_url = Some(resolve_curseforge_file_download_url(client, api_key, mod_id, &file)?);
+            latest_hashes = parse_cf_hashes(&file);
+            latest_version_number = if file.display_name.trim().is_empty() {
+                file.file_name.clone()
+            } else {
+                file.display_name.clone()
+            };
+        }
+
+        let latest_file_name =
+            latest_file_name.ok_or_else(|| "Missing CurseForge filename".to_string())?;
+        let download_url =
+            download_url.ok_or_else(|| "Missing CurseForge download URL".to_string())?;
+        let safe_filename = sanitize_filename(&latest_file_name);
+        if safe_filename.is_empty() {
+            return Err("Resolved CurseForge filename is invalid".to_string());
+        }
+        let bytes = download_bytes_with_retry(client, &download_url, &format!("cf:{mod_id}:{latest_file_id}"))?;
+
+        let worlds = if normalized == "datapacks" {
+            normalize_target_worlds_for_datapack(&instance_dir, &update.target_worlds)?
+        } else {
+            vec![]
+        };
+        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
+        let project_key = format!("cf:{mod_id}");
+        remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
+
+        let new_entry = LockEntry {
+            source: "curseforge".to_string(),
+            project_id: project_key,
+            version_id: format!("cf_file:{}", latest_file_id),
+            name: if update.name.trim().is_empty() {
+                format!("CurseForge {mod_id}")
+            } else {
+                update.name.clone()
+            },
+            version_number: latest_version_number,
+            filename: safe_filename,
+            content_type: normalized.clone(),
+            target_scope: if normalized == "datapacks" {
+                "world".to_string()
+            } else {
+                "instance".to_string()
+            },
+            target_worlds: worlds,
+            pinned_version: None,
+            enabled: update.enabled,
+            hashes: latest_hashes,
+        };
+        if normalized == "mods" && !new_entry.enabled {
+            disable_mod_file(&instance_dir, &new_entry.filename)?;
+        }
+        lock.entries.push(new_entry.clone());
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(instances_dir, &args.instance_id, &lock)?;
+        return Ok(Some(lock_entry_to_installed(&instance_dir, &new_entry)));
+    }
+
+    Ok(None)
+}
+
 fn content_updates_to_modrinth_result(content: ContentUpdateCheckResult) -> ModUpdateCheckResult {
     let mut updates: Vec<ModUpdateInfo> = content
         .updates
@@ -5026,6 +5773,33 @@ fn fetch_curseforge_files(client: &Client, api_key: &str, mod_id: i64) -> Result
     Ok(files_resp
         .json::<CurseforgeFilesResponse>()
         .map_err(|e| format!("parse CurseForge files failed: {e}"))?
+        .data)
+}
+
+fn fetch_curseforge_file(
+    client: &Client,
+    api_key: &str,
+    mod_id: i64,
+    file_id: i64,
+) -> Result<CurseforgeFile, String> {
+    let resp = client
+        .get(format!(
+            "{}/mods/{}/files/{}",
+            CURSEFORGE_API_BASE, mod_id, file_id
+        ))
+        .header("Accept", "application/json")
+        .header("x-api-key", api_key)
+        .send()
+        .map_err(|e| format!("CurseForge file lookup failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!(
+            "CurseForge file lookup failed with status {}",
+            resp.status()
+        ));
+    }
+    Ok(resp
+        .json::<CurseforgeFileResponse>()
+        .map_err(|e| format!("parse CurseForge file failed: {e}"))?
         .data)
 }
 
@@ -9696,11 +10470,11 @@ fn import_local_mod_file(
 
     let detected_provider = Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(8))
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(4))
         .build()
         .ok()
-        .and_then(|client| detect_provider_for_local_mod(&client, &file_bytes, &safe_filename));
+        .and_then(|client| detect_provider_for_local_mod(&client, &file_bytes, &safe_filename, false));
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| e.filename != safe_filename);
@@ -9755,6 +10529,114 @@ fn import_local_mod_file(
     Ok(lock_entry_to_installed(&instance_dir, &new_entry))
 }
 
+fn resolve_local_mod_sources_inner(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    mode: &str,
+) -> Result<LocalResolverResult, String> {
+    let instances_dir = app_instances_dir(app)?;
+    let _ = find_instance(&instances_dir, instance_id)?;
+    let instance_dir = instances_dir.join(instance_id);
+    let mut lock = read_lockfile(&instances_dir, instance_id)?;
+    let strict_local_only = mode.trim().to_ascii_lowercase() != "all";
+
+    let client = Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("build http client failed: {e}"))?;
+
+    let mut scanned_entries = 0usize;
+    let mut resolved_entries = 0usize;
+    let mut matches: Vec<LocalResolverMatch> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut changed = false;
+
+    for idx in 0..lock.entries.len() {
+        let source = lock.entries[idx].source.trim().to_ascii_lowercase();
+        let is_local = source == "local";
+        if strict_local_only && !is_local {
+            continue;
+        }
+        if !is_local {
+            continue;
+        }
+        if normalize_lock_content_type(&lock.entries[idx].content_type) != "mods" {
+            continue;
+        }
+        scanned_entries += 1;
+        let filename = lock.entries[idx].filename.clone();
+        let (enabled_path, disabled_path) = mod_paths(&instance_dir, &filename);
+        let existing = if enabled_path.exists() {
+            Some(enabled_path)
+        } else if disabled_path.exists() {
+            Some(disabled_path)
+        } else {
+            None
+        };
+        let Some(read_path) = existing else {
+            warnings.push(format!("Skipped '{}': file missing on disk.", filename));
+            continue;
+        };
+        let file_bytes = match fs::read(&read_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                warnings.push(format!("Skipped '{}': read failed ({err}).", filename));
+                continue;
+            }
+        };
+        let Some(found) = detect_provider_for_local_mod(&client, &file_bytes, &filename, true) else {
+            continue;
+        };
+        let key_before = local_entry_key(&lock.entries[idx]);
+        apply_provider_match_to_lock_entry(&mut lock.entries[idx], &found);
+        resolved_entries += 1;
+        changed = true;
+        matches.push(LocalResolverMatch {
+            key: key_before,
+            from_source: "local".to_string(),
+            to_source: found.source.clone(),
+            project_id: found.project_id.clone(),
+            version_id: found.version_id.clone(),
+            name: found.name.clone(),
+            version_number: found.version_number.clone(),
+            confidence: found.confidence.clone(),
+            reason: found.reason.clone(),
+        });
+    }
+
+    if changed {
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(&instances_dir, instance_id, &lock)?;
+    }
+
+    let remaining_local_entries = lock
+        .entries
+        .iter()
+        .filter(|entry| entry.source.trim().eq_ignore_ascii_case("local"))
+        .count();
+
+    Ok(LocalResolverResult {
+        instance_id: instance_id.to_string(),
+        scanned_entries,
+        resolved_entries,
+        remaining_local_entries,
+        matches,
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn resolve_local_mod_sources(
+    app: tauri::AppHandle,
+    args: ResolveLocalModSourcesArgs,
+) -> Result<LocalResolverResult, String> {
+    let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
+    resolve_local_mod_sources_inner(&app, &args.instance_id, &mode)
+}
+
 #[tauri::command]
 fn check_instance_content_updates(
     app: tauri::AppHandle,
@@ -9784,24 +10666,69 @@ fn update_all_instance_content_inner(
     let mut warnings = check.warnings.clone();
     let mut by_source: HashMap<String, usize> = HashMap::new();
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
+    let cf_key = curseforge_api_key();
 
     for update in &check.updates {
-        let install_result = install_discover_content_inner(
-            app.clone(),
-            &InstallDiscoverContentArgs {
-                instance_id: args.instance_id.clone(),
-                source: update.source.clone(),
-                project_id: update.project_id.clone(),
-                project_title: Some(update.name.clone()),
-                content_type: update.content_type.clone(),
-                target_worlds: update.target_worlds.clone(),
-            },
-            None,
-        );
+        let mut used_fast_path = false;
+        let install_result = match try_fast_install_content_update(
+            &instances_dir,
+            &instance,
+            &args,
+            &client,
+            cf_key.as_deref(),
+            update,
+        ) {
+            Ok(Some(installed)) => {
+                used_fast_path = true;
+                Ok(installed)
+            }
+            Ok(None) => install_discover_content_inner(
+                app.clone(),
+                &InstallDiscoverContentArgs {
+                    instance_id: args.instance_id.clone(),
+                    source: update.source.clone(),
+                    project_id: update.project_id.clone(),
+                    project_title: Some(update.name.clone()),
+                    content_type: update.content_type.clone(),
+                    target_worlds: update.target_worlds.clone(),
+                },
+                None,
+            ),
+            Err(fast_err) => {
+                warnings.push(format!(
+                    "Fast update fallback for '{}': {}",
+                    update.name, fast_err
+                ));
+                install_discover_content_inner(
+                    app.clone(),
+                    &InstallDiscoverContentArgs {
+                        instance_id: args.instance_id.clone(),
+                        source: update.source.clone(),
+                        project_id: update.project_id.clone(),
+                        project_title: Some(update.name.clone()),
+                        content_type: update.content_type.clone(),
+                        target_worlds: update.target_worlds.clone(),
+                    },
+                    None,
+                )
+            }
+        };
 
         match install_result {
             Ok(installed) => {
-                if update.content_type == "mods" && !update.enabled {
+                if installed.version_id.trim() == update.current_version_id.trim() {
+                    warnings.push(format!(
+                        "No version change for '{}' (still {}).",
+                        update.name,
+                        if installed.version_number.trim().is_empty() {
+                            installed.version_id.clone()
+                        } else {
+                            installed.version_number.clone()
+                        }
+                    ));
+                    continue;
+                }
+                if !used_fast_path && update.content_type == "mods" && !update.enabled {
                     let disable_res = set_installed_mod_enabled(
                         app.clone(),
                         SetInstalledModEnabledArgs {
@@ -10440,6 +11367,438 @@ async fn launch_instance(
     }
 }
 
+fn count_occurrences(text: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    text.match_indices(needle).count()
+}
+
+fn replace_with_count(text: String, needle: &str, replacement: &str, applied: &mut usize) -> String {
+    if needle.is_empty() || !text.contains(needle) {
+        return text;
+    }
+    *applied += count_occurrences(&text, needle);
+    text.replace(needle, replacement)
+}
+
+fn is_uuid_like(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !(c.is_ascii_alphanumeric() || c == '-'));
+    if t.len() != 36 {
+        return false;
+    }
+    let bytes = t.as_bytes();
+    for (idx, ch) in bytes.iter().enumerate() {
+        let ok = if [8, 13, 18, 23].contains(&idx) {
+            *ch == b'-'
+        } else {
+            (*ch as char).is_ascii_hexdigit()
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_ipv4_like(token: &str) -> bool {
+    let t = token.trim_matches(|c: char| !(c.is_ascii_digit() || c == '.'));
+    let parts: Vec<&str> = t.split('.').collect();
+    if parts.len() != 4 {
+        return false;
+    }
+    for part in parts {
+        if part.is_empty() || part.len() > 3 {
+            return false;
+        }
+        if let Ok(value) = part.parse::<u16>() {
+            if value > 255 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+fn redact_sensitive_text(input: &str) -> (String, usize) {
+    let mut out = input.to_string();
+    let mut redactions = 0usize;
+    if let Some(home) = home_dir() {
+        let home_text = home.display().to_string();
+        if !home_text.trim().is_empty() {
+            out = replace_with_count(out, &home_text, "<HOME>", &mut redactions);
+        }
+    }
+
+    let token_keys = [
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "bearer",
+        "xuid",
+        "session",
+    ];
+
+    let mut lines_out: Vec<String> = Vec::new();
+    for raw_line in out.lines() {
+        let mut line = raw_line.to_string();
+        let lower = line.to_ascii_lowercase();
+        for key in token_keys {
+            if !lower.contains(key) {
+                continue;
+            }
+            if let Some(pos) = line.find('=') {
+                line = format!("{}=<REDACTED>", line[..pos].trim_end());
+                redactions += 1;
+                break;
+            }
+            if let Some(pos) = line.find(':') {
+                line = format!("{}: <REDACTED>", line[..pos].trim_end());
+                redactions += 1;
+                break;
+            }
+        }
+
+        let words: Vec<String> = line
+            .split_whitespace()
+            .map(|token| {
+                if is_uuid_like(token) || is_ipv4_like(token) {
+                    redactions += 1;
+                    "[REDACTED]".to_string()
+                } else {
+                    token.to_string()
+                }
+            })
+            .collect();
+        lines_out.push(words.join(" "));
+    }
+    (lines_out.join("\n"), redactions)
+}
+
+fn write_zip_text(
+    zip: &mut zip::ZipWriter<File>,
+    path: &str,
+    text: &str,
+    opts: FileOptions,
+    files_count: &mut usize,
+) -> Result<(), String> {
+    zip.start_file(path, opts)
+        .map_err(|e| format!("zip write header failed for '{path}': {e}"))?;
+    zip.write_all(text.as_bytes())
+        .map_err(|e| format!("zip write failed for '{path}': {e}"))?;
+    *files_count += 1;
+    Ok(())
+}
+
+fn detect_duplicate_enabled_mod_filenames(lock: &Lockfile) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for entry in &lock.entries {
+        if !entry.enabled || normalize_lock_content_type(&entry.content_type) != "mods" {
+            continue;
+        }
+        let key = entry.filename.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    let mut out: Vec<(String, usize)> = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+#[tauri::command]
+fn preflight_launch_compatibility(
+    app: tauri::AppHandle,
+    args: PreflightLaunchCompatibilityArgs,
+) -> Result<LaunchCompatibilityReport, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_settings = normalize_instance_settings(instance.settings.clone());
+    let lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let instance_dir = instances_dir.join(&args.instance_id);
+    let settings = read_launcher_settings(&app)?;
+
+    let mut items: Vec<LaunchCompatibilityItem> = Vec::new();
+    let required_java = required_java_major_for_mc(&instance.mc_version);
+    let java_executable = if !instance_settings.java_path.trim().is_empty() {
+        instance_settings.java_path.trim().to_string()
+    } else {
+        resolve_java_executable(&settings).unwrap_or_default()
+    };
+    if java_executable.trim().is_empty() {
+        items.push(LaunchCompatibilityItem {
+            code: "JAVA_PATH_UNRESOLVED".to_string(),
+            title: "Java runtime path missing".to_string(),
+            message: "Could not resolve a Java executable for this instance.".to_string(),
+            severity: "blocker".to_string(),
+            blocking: true,
+        });
+    } else if let Ok((java_major, version_line)) = detect_java_major(&java_executable) {
+        if java_major < required_java {
+            items.push(LaunchCompatibilityItem {
+                code: "JAVA_VERSION_INCOMPATIBLE".to_string(),
+                title: "Java version is too old".to_string(),
+                message: format!(
+                    "Java {java_major} detected ({version_line}), but Minecraft {} needs Java {}+.",
+                    instance.mc_version, required_java
+                ),
+                severity: "blocker".to_string(),
+                blocking: true,
+            });
+        }
+    } else {
+        items.push(LaunchCompatibilityItem {
+            code: "JAVA_VERSION_CHECK_FAILED".to_string(),
+            title: "Could not verify Java version".to_string(),
+            message: "Launch may fail until Java runtime is verified.".to_string(),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    let mut missing_enabled = 0usize;
+    for entry in &lock.entries {
+        if !entry.enabled {
+            continue;
+        }
+        if !entry_file_exists(&instance_dir, entry) {
+            missing_enabled += 1;
+        }
+    }
+    if missing_enabled > 0 {
+        items.push(LaunchCompatibilityItem {
+            code: "MISSING_ENABLED_FILES".to_string(),
+            title: "Enabled content file missing".to_string(),
+            message: format!("{missing_enabled} enabled lock entries are missing on disk."),
+            severity: "blocker".to_string(),
+            blocking: true,
+        });
+    }
+
+    let duplicates = detect_duplicate_enabled_mod_filenames(&lock);
+    if !duplicates.is_empty() {
+        let preview = duplicates
+            .iter()
+            .take(3)
+            .map(|(name, count)| format!("{name} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        items.push(LaunchCompatibilityItem {
+            code: "DUPLICATE_MOD_FILENAMES".to_string(),
+            title: "Duplicate enabled mod entries".to_string(),
+            message: format!("Conflicting filenames detected: {preview}"),
+            severity: "blocker".to_string(),
+            blocking: true,
+        });
+    }
+
+    let unresolved_local_entries = lock
+        .entries
+        .iter()
+        .filter(|entry| entry.source.trim().eq_ignore_ascii_case("local"))
+        .count();
+    if unresolved_local_entries > 0 {
+        items.push(LaunchCompatibilityItem {
+            code: "LOCAL_ENTRIES_UNRESOLVED".to_string(),
+            title: "Some local imports are unresolved".to_string(),
+            message: format!(
+                "{unresolved_local_entries} local entries are still source:\"local\" and may hide dependency/update metadata."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    if let Ok(store) = friend_link::store::read_store(&app) {
+        if let Some(session) = friend_link::store::get_session(&store, &args.instance_id) {
+            if !session.pending_conflicts.is_empty() {
+                items.push(LaunchCompatibilityItem {
+                    code: "FRIEND_LINK_PENDING_CONFLICTS".to_string(),
+                    title: "Friend Link has pending conflicts".to_string(),
+                    message: format!(
+                        "{} conflicts pending; prelaunch reconcile may block launch.",
+                        session.pending_conflicts.len()
+                    ),
+                    severity: "warning".to_string(),
+                    blocking: false,
+                });
+            }
+        }
+    }
+
+    let blocking_count = items.iter().filter(|item| item.blocking).count();
+    let warning_count = items
+        .iter()
+        .filter(|item| !item.blocking && item.severity == "warning")
+        .count();
+    let status = if blocking_count > 0 {
+        "blocked"
+    } else if warning_count > 0 {
+        "warning"
+    } else {
+        "ok"
+    };
+
+    Ok(LaunchCompatibilityReport {
+        instance_id: args.instance_id,
+        status: status.to_string(),
+        checked_at: now_iso(),
+        blocking_count,
+        warning_count,
+        unresolved_local_entries,
+        items,
+    })
+}
+
+#[tauri::command]
+fn export_instance_support_bundle(
+    app: tauri::AppHandle,
+    args: ExportInstanceSupportBundleArgs,
+) -> Result<SupportBundleResult, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instances_dir.join(&args.instance_id);
+    let include_raw_logs = args.include_raw_logs.unwrap_or(false);
+    let output = if let Some(custom) = args.output_path.as_ref() {
+        PathBuf::from(custom)
+    } else {
+        let base = home_dir()
+            .map(|h| h.join("Downloads"))
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| instance_dir.clone());
+        let name = sanitize_filename(&instance.name.replace(' ', "-"));
+        base.join(format!(
+            "{}-support-bundle-{}.zip",
+            if name.is_empty() { "instance" } else { name.as_str() },
+            Local::now().format("%Y%m%d-%H%M%S")
+        ))
+    };
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir export directory failed: {e}"))?;
+    }
+
+    let file = File::create(&output).map_err(|e| format!("create support bundle failed: {e}"))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let mut files_count = 0usize;
+    let mut redactions_applied = 0usize;
+
+    let lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let installed = lock
+        .entries
+        .iter()
+        .map(|entry| lock_entry_to_installed(&instance_dir, entry))
+        .collect::<Vec<_>>();
+    let installed_raw =
+        serde_json::to_string_pretty(&installed).map_err(|e| format!("serialize installed mods failed: {e}"))?;
+    write_zip_text(
+        &mut zip,
+        "mods/installed_mods.json",
+        &installed_raw,
+        opts,
+        &mut files_count,
+    )?;
+
+    let allowlist = friend_link::state::default_allowlist();
+    let config_files = friend_link::state::collect_allowlisted_config_files(
+        &instances_dir,
+        &args.instance_id,
+        &allowlist,
+    )
+    .unwrap_or_default();
+    for file in &config_files {
+        let (redacted, count) = redact_sensitive_text(&file.content);
+        redactions_applied += count;
+        write_zip_text(
+            &mut zip,
+            &format!("config/{}.redacted", file.path),
+            &redacted,
+            opts,
+            &mut files_count,
+        )?;
+    }
+
+    let log_targets = [
+        ("logs/latest_launch", latest_launch_log_path(&instance_dir)),
+        ("logs/latest_crash", latest_crash_report_path(&instance_dir)),
+    ];
+    for (base_name, maybe_path) in log_targets {
+        let Some(path) = maybe_path else {
+            continue;
+        };
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let (redacted, count) = redact_sensitive_text(&raw);
+        redactions_applied += count;
+        write_zip_text(
+            &mut zip,
+            &format!("{base_name}.redacted.log"),
+            &redacted,
+            opts,
+            &mut files_count,
+        )?;
+        if include_raw_logs {
+            write_zip_text(
+                &mut zip,
+                &format!("{base_name}.raw.log"),
+                &raw,
+                opts,
+                &mut files_count,
+            )?;
+        }
+    }
+
+    let perf_json = serde_json::to_string_pretty(&args.perf_actions)
+        .map_err(|e| format!("serialize perf actions failed: {e}"))?;
+    write_zip_text(
+        &mut zip,
+        "telemetry/perf_actions.json",
+        &perf_json,
+        opts,
+        &mut files_count,
+    )?;
+
+    let manifest = serde_json::json!({
+        "format": "openjar-support-bundle/v1",
+        "generated_at": now_iso(),
+        "instance": {
+            "id": instance.id,
+            "name": instance.name,
+            "mc_version": instance.mc_version,
+            "loader": instance.loader
+        },
+        "include_raw_logs": include_raw_logs,
+        "files_count": files_count,
+        "redactions_applied": redactions_applied,
+        "config_files": config_files.len(),
+        "mod_entries": installed.len(),
+    });
+    write_zip_text(
+        &mut zip,
+        "manifest.json",
+        &serde_json::to_string_pretty(&manifest).map_err(|e| format!("serialize manifest failed: {e}"))?,
+        opts,
+        &mut files_count,
+    )?;
+
+    zip.finish()
+        .map_err(|e| format!("finalize support bundle failed: {e}"))?;
+
+    Ok(SupportBundleResult {
+        output_path: output.display().to_string(),
+        files_count,
+        redactions_applied,
+        message: "Support bundle exported.".to_string(),
+    })
+}
+
 #[tauri::command]
 fn list_installed_mods(
     app: tauri::AppHandle,
@@ -10562,8 +11921,10 @@ fn main() {
             check_modrinth_updates,
             update_all_modrinth_mods,
             import_local_mod_file,
+            resolve_local_mod_sources,
             list_installed_mods,
             set_installed_mod_enabled,
+            preflight_launch_compatibility,
             launch_instance,
             get_launcher_settings,
             get_dev_mode_state,
@@ -10630,7 +11991,8 @@ fn main() {
             apply_selected_account_appearance,
             open_instance_path,
             reveal_config_editor_file,
-            export_instance_mods_zip
+            export_instance_mods_zip,
+            export_instance_support_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

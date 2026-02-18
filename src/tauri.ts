@@ -10,6 +10,7 @@ import type {
   DiscoverSearchResult,
   DiscoverSource,
   ExportModsResult,
+  LaunchCompatibilityReport,
   ImportInstanceFromLauncherResult,
   InstanceSettings,
   InstanceWorld,
@@ -21,6 +22,7 @@ import type {
   LauncherAccount,
   LauncherSettings,
   LaunchResult,
+  LocalResolverResult,
   LaunchMethod,
   Loader,
   MicrosoftLoginState,
@@ -57,6 +59,8 @@ import type {
   ReadWorldConfigFileResult,
   WriteInstanceConfigFileResult,
   WriteWorldConfigFileResult,
+  SupportBundleResult,
+  SupportPerfAction,
   WorldRollbackResult,
 } from "./types";
 
@@ -159,6 +163,13 @@ export function importLocalModFile(input: {
   return invoke("import_local_mod_file", { args: input });
 }
 
+export function resolveLocalModSources(input: {
+  instanceId: string;
+  mode?: "missing_only" | "all" | string;
+}): Promise<LocalResolverResult> {
+  return invoke("resolve_local_mod_sources", { args: input });
+}
+
 export function previewModrinthInstall(input: {
   instanceId: string;
   projectId: string;
@@ -216,6 +227,12 @@ export function launchInstance(input: {
   method?: LaunchMethod;
 }): Promise<LaunchResult> {
   return invoke("launch_instance", { args: input });
+}
+
+export function preflightLaunchCompatibility(input: {
+  instanceId: string;
+}): Promise<LaunchCompatibilityReport> {
+  return invoke("preflight_launch_compatibility", { args: input });
 }
 
 export function getLauncherSettings(): Promise<LauncherSettings> {
@@ -298,6 +315,15 @@ export function exportInstanceModsZip(input: {
   outputPath?: string;
 }): Promise<ExportModsResult> {
   return invoke("export_instance_mods_zip", { args: input });
+}
+
+export function exportInstanceSupportBundle(input: {
+  instanceId: string;
+  outputPath?: string;
+  includeRawLogs?: boolean;
+  perfActions?: SupportPerfAction[];
+}): Promise<SupportBundleResult> {
+  return invoke("export_instance_support_bundle", { args: input });
 }
 
 export function getSelectedAccountDiagnostics(): Promise<AccountDiagnostics> {
