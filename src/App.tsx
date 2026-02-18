@@ -147,7 +147,7 @@ import {
 } from "./lib/logAnalysis";
 
 type Route = "home" | "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
-type AccentPreset = "neutral" | "gray" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
+type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
 type MotionPreset = "calm" | "standard" | "expressive";
 type DensityPreset = "comfortable" | "compact";
@@ -1567,7 +1567,6 @@ const DISCOVER_LOADER_GROUPS: CatGroup[] = [
 
 const ACCENT_OPTIONS: { value: AccentPreset; label: string }[] = [
   { value: "neutral", label: "Neutral" },
-  { value: "gray", label: "Neutral Gray" },
   { value: "blue", label: "Blue" },
   { value: "emerald", label: "Emerald" },
   { value: "amber", label: "Amber" },
@@ -1656,7 +1655,6 @@ const CURSEFORGE_DETAIL_TABS: { value: string; label: string }[] = [
 function isAccentPreset(value: string | null): value is AccentPreset {
   return (
     value === "neutral" ||
-    value === "gray" ||
     value === "blue" ||
     value === "emerald" ||
     value === "amber" ||
@@ -3983,6 +3981,7 @@ export default function App() {
   const [updateAutoApplyMode, setUpdateAutoApplyMode] = useState<SchedulerAutoApplyMode>("never");
   const [updateApplyScope, setUpdateApplyScope] = useState<SchedulerApplyScope>("scheduled_only");
   const [launcherSettings, setLauncherSettingsState] = useState<LauncherSettings | null>(null);
+  const [autoIdentifyLocalJarsBusy, setAutoIdentifyLocalJarsBusy] = useState(false);
   const [launcherAccounts, setLauncherAccounts] = useState<LauncherAccount[]>([]);
   const [runningInstances, setRunningInstances] = useState<RunningInstance[]>([]);
   const [launcherErr, setLauncherErr] = useState<string | null>(null);
@@ -5902,16 +5901,24 @@ export default function App() {
     }
   }
 
-  async function refreshInstalledMods(instanceId: string) {
+  async function refreshInstalledMods(
+    instanceId: string,
+    options?: { autoIdentifyAfterRefresh?: boolean }
+  ) {
     setModsBusy(true);
     setModsErr(null);
     try {
       const mods = await listInstalledMods(instanceId);
       setInstalledMods(mods);
-      void runLocalResolverBackfill(instanceId, "missing_only", {
-        silent: true,
-        refreshListAfterResolve: true,
-      });
+      const shouldAutoIdentify =
+        options?.autoIdentifyAfterRefresh === true &&
+        Boolean(launcherSettings?.auto_identify_local_jars);
+      if (shouldAutoIdentify) {
+        void runLocalResolverBackfill(instanceId, "missing_only", {
+          silent: true,
+          refreshListAfterResolve: true,
+        });
+      }
     } catch (e: any) {
       setModsErr(e?.toString?.() ?? String(e));
       setInstalledMods([]);
@@ -6388,7 +6395,7 @@ export default function App() {
           failedPaths.push(filePath);
         }
       }
-      await refreshInstalledMods(inst.id);
+      await refreshInstalledMods(inst.id, { autoIdentifyAfterRefresh: successCount > 0 });
       if (successCount > 0) {
         setInstallNotice(
           `Added ${successCount} mod file${successCount === 1 ? "" : "s"} from your computer.`
@@ -6693,6 +6700,25 @@ export default function App() {
       setLauncherErr(e?.toString?.() ?? String(e));
     } finally {
       setLauncherBusy(false);
+    }
+  }
+
+  async function onToggleAutoIdentifyLocalJars() {
+    const nextEnabled = !Boolean(launcherSettings?.auto_identify_local_jars);
+    setAutoIdentifyLocalJarsBusy(true);
+    setLauncherErr(null);
+    try {
+      const next = await setLauncherSettings({
+        autoIdentifyLocalJars: nextEnabled,
+      });
+      setLauncherSettingsState(next);
+      setInstallNotice(`Automatic identify local JARs ${nextEnabled ? "enabled" : "disabled"}.`);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setAutoIdentifyLocalJarsBusy(false);
     }
   }
 
@@ -7231,17 +7257,6 @@ export default function App() {
     setUpdateErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, selectedId]);
-
-  useEffect(() => {
-    if (!selectedId || route !== "instance" || instanceTab !== "content") return;
-    const timer = window.setTimeout(() => {
-      void runLocalResolverBackfill(selectedId, "missing_only", {
-        silent: true,
-        refreshListAfterResolve: true,
-      });
-    }, 1200);
-    return () => window.clearTimeout(timer);
-  }, [selectedId, route, instanceTab]);
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
@@ -8630,7 +8645,7 @@ export default function App() {
           }))
         )
         .sort((a, b) => b.at - a.at)
-        .slice(0, 8);
+        .slice(0, 6);
       const focusLaunchStage = focusInstance ? launchStageByInstance[focusInstance.id] ?? null : null;
       const focusLaunchStageLabel = focusLaunchStage?.label?.trim() || launchStageBadgeLabel(
         focusLaunchStage?.status,
@@ -8642,7 +8657,7 @@ export default function App() {
         .slice(0, 48)
         .sort((a, b) => b.duration_ms - a.duration_ms)
         .slice(0, 5);
-      const topSlowPerfActions = slowPerfActions.slice(0, 3);
+      const topSlowPerfActions = slowPerfActions.slice(0, 2);
       const recentPerfWindow = perfActions.slice(0, 10);
       const recentPerfA = recentPerfWindow.slice(0, 5).map((entry) => Math.max(0, Number(entry.duration_ms) || 0));
       const recentPerfB = recentPerfWindow.slice(5, 10).map((entry) => Math.max(0, Number(entry.duration_ms) || 0));
@@ -8771,20 +8786,6 @@ export default function App() {
                     </span>
                   ) : null}
                   {runningIds.has(focusInstance.id) ? <span className="chip">Running</span> : null}
-                  {focusFriendStatus?.linked ? (
-                    <span
-                      className={`chip ${
-                        (focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : "subtle"
-                      }`}
-                    >
-                      Friend Link: {(focusFriendStatus.status || "linked").replace(/_/g, " ")}
-                    </span>
-                  ) : null}
-                  {focusLaunchStageLabel ? (
-                    <span className="chip">
-                      {focusLaunchStage?.status === "starting" ? `Launching: ${focusLaunchStageLabel}` : focusLaunchStageLabel}
-                    </span>
-                  ) : null}
                 </div>
               ) : null}
               <div className="homePanelActions">
@@ -8806,14 +8807,6 @@ export default function App() {
                     <button className="btn" onClick={() => openInstance(focusInstance.id)}>
                       Open instance
                     </button>
-                    {focusFriendStatus?.linked ? (
-                      <button
-                        className={`btn ${(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : ""}`}
-                        onClick={() => openInstance(focusInstance.id)}
-                      >
-                        {(focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "Resolve Friend Link" : "Friend Link"}
-                      </button>
-                    ) : null}
                   </>
                 ) : (
                   <>
@@ -8850,15 +8843,7 @@ export default function App() {
 
           <div className="homeMainGrid">
             <section className="homeMainCol">
-              {topAttention.length === 0 ? (
-                <div className="card homeAttentionClear">
-                  <div className="homePanelHead">
-                    <div className="homePanelTitle">Action required</div>
-                    <span className="chip subtle">All clear</span>
-                  </div>
-                  <div className="homeRowMeta">No blockers detected.</div>
-                </div>
-              ) : (
+              {topAttention.length > 0 ? (
                 <div className="card homePanel">
                   <div className="homePanelHead">
                     <div className="homePanelTitle">Action required</div>
@@ -8884,7 +8869,7 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-              )}
+              ) : null}
 
               <div className="card homePanel">
                 <div className="homePanelHead">
@@ -8925,7 +8910,7 @@ export default function App() {
               <div className="card homePanel">
                 <div className="homePanelHead">
                   <div className="homePanelTitle">Recent activity</div>
-                  <span className="chip subtle">{recentActivity.length}</span>
+                  <span className="homeMeta">Latest {recentActivity.length}</span>
                 </div>
                 {recentActivity.length === 0 ? (
                   <div className="homeEmpty">
@@ -8952,15 +8937,15 @@ export default function App() {
                 )}
               </div>
 
-              <div className="card homePanel">
-                <div className="homePanelHead">
+              <details className="card homePanel homeFoldPanel">
+                <summary className="homeFoldSummary">
                   <div className="homePanelTitle">Performance pulse</div>
+                  <span className="homeMeta">
+                    Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"} · P95 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}
+                  </span>
+                </summary>
+                <div className="homePanelActions" style={{ marginTop: 10 }}>
                   <button className="btn" onClick={() => setRoute("updates")}>View full timings</button>
-                </div>
-                <div className="homeChipRow">
-                  <span className="chip subtle">Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"}</span>
-                  <span className="chip subtle">P95 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}</span>
-                  <span className="chip">Slowest {perfActionMetrics ? formatDurationMs(perfActionMetrics.slowest_ms) : "n/a"}</span>
                 </div>
                 <div className="homeMeta">{perfTrendLabel}</div>
                 {topSlowPerfActions.length === 0 ? (
@@ -8979,14 +8964,13 @@ export default function App() {
                           </div>
                         </div>
                         <div className="homeRowActions">
-                          <span className={`chip ${entry.status === "error" ? "danger" : "subtle"}`}>{entry.status}</span>
                           <span className="chip">{formatDurationMs(entry.duration_ms)}</span>
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
-              </div>
+              </details>
             </section>
 
             <aside className="homeSideCol">
@@ -9075,20 +9059,20 @@ export default function App() {
                 {hasUpdaterAttention ? (
                   <div className="homeMeta">Launcher update actions are pinned in Action required.</div>
                 ) : null}
-                <div className="homePanelActions">
+                <div className="homePanelActions homeMaintenanceActions">
+                  <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
+                  <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
+                    {scheduledUpdateBusy ? "Checking…" : "Run content check"}
+                  </button>
                   {!hasUpdaterAttention ? (
                     <button
-                      className="btn"
+                      className="btn subtle"
                       onClick={onLauncherMaintenanceAction}
                       disabled={appUpdaterBusy || appUpdaterInstallBusy}
                     >
                       {launcherActionLabel}
                     </button>
                   ) : null}
-                  <button className="btn" onClick={() => setRoute("updates")}>Open content updates</button>
-                  <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
-                    {scheduledUpdateBusy ? "Checking…" : "Run content check"}
-                  </button>
                 </div>
               </div>
 
@@ -9138,20 +9122,14 @@ export default function App() {
                           <div className="homeRowTitle">{inst.name}</div>
                           <div className="homeRowMeta">
                             {loaderLabelFor(inst)} • Minecraft {inst.mc_version}
+                            {instanceHealthById[inst.id]
+                              ? ` • Health ${instanceHealthById[inst.id].grade} ${instanceHealthById[inst.id].score}`
+                              : ""}
                           </div>
                         </div>
-                        <div className="homeRowActions">
-                          {instanceHealthById[inst.id] ? (
-                            <span
-                              className={`chip ${
-                                (instanceHealthById[inst.id].score ?? 100) < 60 ? "danger" : "subtle"
-                              }`}
-                              title={(instanceHealthById[inst.id].reasons ?? []).join(" • ")}
-                            >
-                              {instanceHealthById[inst.id].grade} {instanceHealthById[inst.id].score}
-                            </span>
-                          ) : null}
+                        <div className="homeRowActions homeRecentActions">
                           {runningIds.has(inst.id) ? <span className="chip">Running</span> : null}
+                          <button className="btn" onClick={() => openInstance(inst.id)}>Open</button>
                           <button
                             className={`btn ${launchBusyInstanceId === inst.id ? "danger" : "primary"}`}
                             onClick={() => onPlayInstance(inst)}
@@ -9162,7 +9140,6 @@ export default function App() {
                           >
                             {launchBusyInstanceId === inst.id ? "Cancel" : "Play"}
                           </button>
-                          <button className="btn" onClick={() => openInstance(inst.id)}>Open</button>
                         </div>
                       </div>
                     ))}
@@ -9177,114 +9154,209 @@ export default function App() {
 
     if (route === "settings") {
       return (
-        <div style={{ maxWidth: 980 }}>
+        <div className="settingsPage">
           <div className="h1">Settings</div>
-          <div className="p">Theme, accent, and interaction feel.</div>
+          <div className="p">Appearance, account, and launcher behavior.</div>
 
-          <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
-            <div style={{ fontWeight: 980, fontSize: 14 }}>Appearance</div>
-            <div className="p" style={{ marginTop: 8 }}>Tune the app look without changing layout behavior.</div>
+          <div className="settingsLayout">
+            <section className="settingsCol">
+              <div className="card settingsSectionCard">
+                <div className="settingsSectionTitle">Appearance</div>
+                <div className="p settingsSectionSub">Tune the app look without changing layout behavior.</div>
 
-            <div className="settingStack">
-              <div>
-                <div className="settingTitle">Theme</div>
-                <div className="settingSub">Switch between dark and light.</div>
-                <div className="row">
-                  <button
-                    className={`btn ${theme === "dark" ? "primary" : ""}`}
-                    onClick={() => setTheme("dark")}
-                  >
-                    Dark
-                  </button>
-                  <button
-                    className={`btn ${theme === "light" ? "primary" : ""}`}
-                    onClick={() => setTheme("light")}
-                  >
-                    Light
-                  </button>
+                <div className="settingStack">
+                  <div>
+                    <div className="settingTitle">Theme</div>
+                    <div className="settingSub">Switch between dark and light.</div>
+                    <div className="row">
+                      <button
+                        className={`btn ${theme === "dark" ? "primary" : ""}`}
+                        onClick={() => setTheme("dark")}
+                      >
+                        Dark
+                      </button>
+                      <button
+                        className={`btn ${theme === "light" ? "primary" : ""}`}
+                        onClick={() => setTheme("light")}
+                      >
+                        Light
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">Accent</div>
+                    <div className="settingSub">Pick an accent. Neutral stays subtle, colors are bolder.</div>
+                    <div className="row accentPicker">
+                      {ACCENT_OPTIONS.map((opt) => (
+                        <button
+                          key={opt.value}
+                          className={`btn accentChoice ${accentPreset === opt.value ? "primary" : ""}`}
+                          onClick={() => setAccentPreset(opt.value)}
+                        >
+                          <span className={`accentSwatch accent-${opt.value}`} />
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">Accent strength</div>
+                    <div className="settingSub">Adjust accent opacity and intensity from subtle to max.</div>
+                    <div className="row">
+                      <SegmentedControl
+                        value={accentStrength}
+                        options={ACCENT_STRENGTH_OPTIONS}
+                        onChange={(v) => setAccentStrength((v ?? "normal") as AccentStrength)}
+                        variant="scroll"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">Motion profile</div>
+                    <div className="settingSub">Choose how animated the interface should feel.</div>
+                    <div className="row">
+                      <SegmentedControl
+                        value={motionPreset}
+                        options={MOTION_OPTIONS}
+                        onChange={(v) => setMotionPreset((v ?? "standard") as MotionPreset)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">UI density</div>
+                    <div className="settingSub">Comfortable keeps more space, compact fits more on screen.</div>
+                    <div className="row">
+                      <SegmentedControl
+                        value={densityPreset}
+                        options={DENSITY_OPTIONS}
+                        onChange={(v) => setDensityPreset((v ?? "comfortable") as DensityPreset)}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">Reset UI settings</div>
+                    <div className="settingSub">
+                      Restore theme, accent, accent strength, motion profile, and density to defaults.
+                    </div>
+                    <div className="row">
+                      <button className="btn" onClick={onResetUiSettings}>
+                        Reset appearance
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <div className="settingTitle">Accent</div>
-                <div className="settingSub">Pick your accent vibe. Neutral blends in, colors add personality.</div>
-                <div className="row accentPicker">
-                  {ACCENT_OPTIONS.map((opt) => (
-                    <button
-                      key={opt.value}
-                      className={`btn accentChoice ${accentPreset === opt.value ? "primary" : ""}`}
-                      onClick={() => setAccentPreset(opt.value)}
-                    >
-                      <span className={`accentSwatch accent-${opt.value}`} />
-                      {opt.label}
+              <div className="card settingsSectionCard">
+                <div className="settingsSectionTitle">Launch configuration</div>
+                <div className="p settingsSectionSub">Set default launcher behavior and Java runtime.</div>
+
+                <div className="settingStack">
+                  <div>
+                    <div className="settingTitle">Default launch method</div>
+                    <div className="settingSub">Use native launcher or Prism launcher by default.</div>
+                    <div className="row">
+                      <SegmentedControl
+                        value={launchMethodPick}
+                        onChange={(v) => setLaunchMethodPick((v ?? "native") as LaunchMethod)}
+                        options={[
+                          { label: "Native", value: "native" },
+                          { label: "Prism", value: "prism" },
+                        ]}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="settingTitle">Java executable</div>
+                    <div className="settingSub">
+                      Absolute path to Java, or leave blank to use `java` from PATH. Minecraft 1.20.5+ needs Java 21+.
+                    </div>
+                    <input
+                      className="input"
+                      value={javaPathDraft}
+                      onChange={(e) => setJavaPathDraft(e.target.value)}
+                      placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
+                    />
+                    <div className="row">
+                      <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
+                        <span className="btnIcon">
+                          <Icon name="upload" size={17} />
+                        </span>
+                        Browse…
+                      </button>
+                      <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
+                        {javaRuntimeBusy ? "Detecting…" : "Detect installed Java"}
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
+                      >
+                        Get Java 21
+                      </button>
+                    </div>
+                    {javaRuntimeCandidates.length > 0 ? (
+                      <div className="settingListMini">
+                        {javaRuntimeCandidates.map((runtime) => (
+                          <div key={runtime.path} className="settingListMiniRow">
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
+                              <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
+                            </div>
+                            <button
+                              className={`btn ${javaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
+                              onClick={() => setJavaPathDraft(runtime.path)}
+                              disabled={launcherBusy}
+                            >
+                              {javaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div>
+                    <button className="btn" onClick={() => setShowAdvancedClientId((v) => !v)}>
+                      {showAdvancedClientId ? "Hide advanced OAuth settings" : "Show advanced OAuth settings"}
                     </button>
-                  ))}
+                    {showAdvancedClientId ? (
+                      <div style={{ marginTop: 10 }}>
+                        <div className="settingSub">
+                          Client ID is a public identifier, not a secret API key. Leave blank to use the bundled default.
+                        </div>
+                        <input
+                          className="input"
+                          value={oauthClientIdDraft}
+                          onChange={(e) => setOauthClientIdDraft(e.target.value)}
+                          placeholder="Optional override client ID"
+                          style={{ marginTop: 8 }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="settingsSaveRow">
+                    <button className="btn primary" onClick={onSaveLauncherPrefs} disabled={launcherBusy}>
+                      {launcherBusy ? "Saving…" : "Save launcher settings"}
+                    </button>
+                  </div>
                 </div>
               </div>
+            </section>
 
-              <div>
-                <div className="settingTitle">Accent strength</div>
-                <div className="settingSub">Adjust accent opacity and intensity from subtle to max.</div>
-                <div className="row">
-                  <SegmentedControl
-                    value={accentStrength}
-                    options={ACCENT_STRENGTH_OPTIONS}
-                    onChange={(v) => setAccentStrength((v ?? "normal") as AccentStrength)}
-                    variant="scroll"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="settingTitle">Motion profile</div>
-                <div className="settingSub">Choose how animated the interface should feel.</div>
-                <div className="row">
-                  <SegmentedControl
-                    value={motionPreset}
-                    options={MOTION_OPTIONS}
-                    onChange={(v) => setMotionPreset((v ?? "standard") as MotionPreset)}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="settingTitle">UI density</div>
-                <div className="settingSub">Comfortable keeps more space, compact fits more on screen.</div>
-                <div className="row">
-                  <SegmentedControl
-                    value={densityPreset}
-                    options={DENSITY_OPTIONS}
-                    onChange={(v) => setDensityPreset((v ?? "comfortable") as DensityPreset)}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="settingTitle">Reset UI settings</div>
-                <div className="settingSub">
-                  Restore theme, accent, accent strength, motion profile, and density to defaults.
-                </div>
-                <div className="row">
-                  <button className="btn" onClick={onResetUiSettings}>
-                    Reset appearance
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="card" style={{ padding: 16, marginTop: 14, borderRadius: 22 }}>
-            <div style={{ fontWeight: 980, fontSize: 14 }}>Launcher</div>
-            <div className="p" style={{ marginTop: 8 }}>
-              Sign into Minecraft with one click, then tune launcher behavior.
-            </div>
-
-            <div className="settingStack">
-              <div>
-                <div className="settingTitle">Microsoft account</div>
-                <div className="settingSub">
+            <section className="settingsCol">
+              <div className="card settingsSectionCard">
+                <div className="settingsSectionTitle">Microsoft account</div>
+                <div className="p settingsSectionSub">
                   Connect the Microsoft account that owns Minecraft. You normally do not need to configure any client ID.
                 </div>
+
                 <div className="row" style={{ marginTop: 8 }}>
                   <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
                     {msLoginSessionId ? "Waiting for login…" : "Connect Microsoft"}
@@ -9299,16 +9371,17 @@ export default function App() {
                   </button>
                   {msLoginState?.message ? <div className="muted">{msLoginState.message}</div> : null}
                 </div>
-                <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+
+                <div className="settingsAccountList">
                   {launcherAccounts.length === 0 ? (
                     <div className="muted">No connected account yet.</div>
                   ) : (
                     launcherAccounts.map((acct) => {
                       const selectedAccount = launcherSettings?.selected_account_id === acct.id;
                       return (
-                        <div key={acct.id} className="card" style={{ padding: 10, borderRadius: 14 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-                            <div>
+                        <div key={acct.id} className="card settingsAccountCard">
+                          <div className="settingsAccountRow">
+                            <div style={{ minWidth: 0 }}>
                               <div style={{ fontWeight: 900 }}>{acct.username}</div>
                               <div className="muted">{acct.id}</div>
                             </div>
@@ -9336,26 +9409,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div>
-                <div className="settingTitle">Default launch method</div>
-                <div className="settingSub">Use native launcher or Prism launcher by default.</div>
-                <div className="row">
-                  <SegmentedControl
-                    value={launchMethodPick}
-                    onChange={(v) => setLaunchMethodPick((v ?? "native") as LaunchMethod)}
-                    options={[
-                      { label: "Native", value: "native" },
-                      { label: "Prism", value: "prism" },
-                    ]}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="settingTitle">App updates</div>
-                <div className="settingSub">
+              <div className="card settingsSectionCard">
+                <div className="settingsSectionTitle">App updates</div>
+                <div className="p settingsSectionSub">
                   Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
                 </div>
+
                 <div className="row">
                   <span className="chip subtle">Current: v{appVersion || "unknown"}</span>
                   {appUpdaterState ? (
@@ -9400,99 +9459,51 @@ export default function App() {
                 ) : null}
               </div>
 
-              <div>
-                <div className="settingTitle">3D skin preview</div>
-                <div className="settingSub">
-                  Disable this for faster Account and Skins page loads on lower-end hardware.
-                </div>
-                <div className="row">
-                  <button
-                    className={`btn ${skinPreviewEnabled ? "primary" : ""}`}
-                    onClick={() => setSkinPreviewEnabled((prev) => !prev)}
-                  >
-                    {skinPreviewEnabled ? "Enabled" : "Disabled"}
-                  </button>
-                </div>
-              </div>
+              <div className="card settingsSectionCard">
+                <div className="settingsSectionTitle">Content and visuals</div>
+                <div className="p settingsSectionSub">Quick toggles for launcher behavior outside game runtime.</div>
 
-              <div>
-                <div className="settingTitle">Java executable</div>
-                <div className="settingSub">
-                  Absolute path to Java, or leave blank to use `java` from PATH. Minecraft 1.20.5+ needs Java 21+.
-                </div>
-                <input
-                  className="input"
-                  value={javaPathDraft}
-                  onChange={(e) => setJavaPathDraft(e.target.value)}
-                  placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
-                />
-                <div className="row">
-                  <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
-                    <span className="btnIcon">
-                      <Icon name="upload" size={17} />
-                    </span>
-                    Browse…
-                  </button>
-                  <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
-                    {javaRuntimeBusy ? "Detecting…" : "Detect installed Java"}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
-                  >
-                    Get Java 21
-                  </button>
-                </div>
-                {javaRuntimeCandidates.length > 0 ? (
-                  <div className="settingListMini">
-                    {javaRuntimeCandidates.map((runtime) => (
-                      <div key={runtime.path} className="settingListMiniRow">
-                        <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
-                          <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
-                        </div>
-                        <button
-                          className={`btn ${javaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
-                          onClick={() => setJavaPathDraft(runtime.path)}
-                          disabled={launcherBusy}
-                        >
-                          {javaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <div>
-                <button className="btn" onClick={() => setShowAdvancedClientId((v) => !v)}>
-                  {showAdvancedClientId ? "Hide advanced OAuth settings" : "Show advanced OAuth settings"}
-                </button>
-                {showAdvancedClientId ? (
-                  <div style={{ marginTop: 10 }}>
+                <div className="settingStack">
+                  <div>
+                    <div className="settingTitle">Automatic identify local JARs</div>
                     <div className="settingSub">
-                      Client ID is a public identifier, not a secret API key. Leave blank to use the bundled default.
+                      When enabled, local JAR imports automatically run Identify local JARs in Instance and Creator Studio.
                     </div>
-                    <input
-                      className="input"
-                      value={oauthClientIdDraft}
-                      onChange={(e) => setOauthClientIdDraft(e.target.value)}
-                      placeholder="Optional override client ID"
-                      style={{ marginTop: 8 }}
-                    />
+                    <div className="row">
+                      <button
+                        className={`btn ${launcherSettings?.auto_identify_local_jars ? "primary" : ""}`}
+                        onClick={() => void onToggleAutoIdentifyLocalJars()}
+                        disabled={autoIdentifyLocalJarsBusy}
+                      >
+                        {autoIdentifyLocalJarsBusy
+                          ? "Saving…"
+                          : launcherSettings?.auto_identify_local_jars
+                            ? "Enabled"
+                            : "Disabled"}
+                      </button>
+                    </div>
                   </div>
-                ) : null}
-              </div>
 
-              <div className="row">
-                <button className="btn primary" onClick={onSaveLauncherPrefs} disabled={launcherBusy}>
-                  {launcherBusy ? "Saving…" : "Save launcher settings"}
-                </button>
+                  <div>
+                    <div className="settingTitle">3D skin preview</div>
+                    <div className="settingSub">
+                      Disable this for faster Account and Skins page loads on lower-end hardware.
+                    </div>
+                    <div className="row">
+                      <button
+                        className={`btn ${skinPreviewEnabled ? "primary" : ""}`}
+                        onClick={() => setSkinPreviewEnabled((prev) => !prev)}
+                      >
+                        {skinPreviewEnabled ? "Enabled" : "Disabled"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-
-              {launcherErr ? <div className="errorBox">{launcherErr}</div> : null}
-            </div>
+            </section>
           </div>
+
+          {launcherErr ? <div className="errorBox" style={{ marginTop: 14 }}>{launcherErr}</div> : null}
         </div>
       );
     }
@@ -10046,6 +10057,7 @@ export default function App() {
               <ModpackMaker
                 instances={instances}
                 selectedInstanceId={selectedId}
+                autoIdentifyLocalJarsEnabled={Boolean(launcherSettings?.auto_identify_local_jars)}
                 onSelectInstance={setSelectedId}
                 onOpenDiscover={(context) => {
                   setDiscoverAddContext(context ?? null);
@@ -11032,100 +11044,54 @@ export default function App() {
                       />
                     </div>
 
-                    <div className="instanceContentControlCard instanceContentToolsCard">
-                      <div className="instanceContentControlHead">
-                        <div className="instanceContentControlTitle">Content tools</div>
-                        <div className="muted instanceContentControlMeta">
-                          {installedMods.length} item{installedMods.length === 1 ? "" : "s"} in lockfile
-                        </div>
+                    <div className="instanceContentMaintenanceBar">
+                      <div className="instanceContentUpdateRow">
+                        <button
+                          className="btn"
+                          onClick={() => onCheckUpdates(inst)}
+                          disabled={updateBusy || updateAllBusy}
+                        >
+                          {updateBusy ? "Checking…" : "Refresh"}
+                        </button>
+                        <button
+                          className="btn primary"
+                          onClick={() => onUpdateAll(inst)}
+                          disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
+                        >
+                          {updateAllBusy ? "Updating…" : "Update all"}
+                        </button>
+                        <span className="muted instanceContentControlHint">
+                          {updateCheck?.update_count
+                            ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending`
+                            : "Run refresh to check updates"}
+                        </span>
                       </div>
-                      <div className="instanceContentToolsGrid">
-                        <div className="instanceContentToolsPane">
-                          <div className="instanceContentToolsPaneHead">Selection</div>
-                          <div className="muted instanceContentStatText">
-                            Visible {visibleInstalledMods.length} · Selected {selectedInstalledModCount}
-                          </div>
-                          {instanceContentType === "mods" ? (
-                            <div className="instanceModsBulkRow">
-                              <button
-                                className="btn"
-                                onClick={() => onToggleAllVisibleModSelection(visibleInstalledMods, !allVisibleModsSelected)}
-                                disabled={selectableVisibleMods.length === 0 || toggleBusyVersion === "__bulk__"}
-                              >
-                                {allVisibleModsSelected ? "Unselect visible" : "Select visible"}
-                              </button>
-                              <button
-                                className="btn"
-                                onClick={() => setSelectedModVersionIds([])}
-                                disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
-                              >
-                                Clear selection
-                              </button>
-                            </div>
-                          ) : (
-                            <div className="muted instanceContentControlHint">
-                              Switch to Installed mods to use bulk selection.
-                            </div>
-                          )}
+                      {snapshots.length > 0 ? (
+                        <div className="instanceSnapshotRow">
+                          <MenuSelect
+                            value={rollbackSnapshotId ?? snapshots[0].id}
+                            labelPrefix="Snapshot"
+                            options={snapshots.slice(0, 30).map((s) => ({
+                              value: s.id,
+                              label: `${s.id} • ${s.reason}`,
+                            }))}
+                            align="start"
+                            onChange={(v) => setRollbackSnapshotId(v)}
+                          />
+                          <button
+                            className="btn instanceSnapshotRollbackBtn"
+                            onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
+                            disabled={rollbackBusy}
+                            title={`Rollback to ${rollbackSnapshotId ?? snapshots[0]?.id ?? "latest snapshot"}`}
+                          >
+                            {rollbackBusy ? "Rolling back…" : "Rollback"}
+                          </button>
                         </div>
-                        <div className="instanceContentToolsPane">
-                          <div className="instanceContentToolsPaneHeader">
-                            <div className="instanceContentToolsPaneHead">Maintenance</div>
-                            <div className="muted instanceContentControlHint">
-                              {updateCheck?.update_count
-                                ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending`
-                                : "Run refresh to check updates"}
-                            </div>
-                          </div>
-                          <div className="instanceContentUpdateRow">
-                            <button
-                              className="btn"
-                              onClick={() => onCheckUpdates(inst)}
-                              disabled={updateBusy || updateAllBusy}
-                            >
-                              {updateBusy ? "Checking…" : "Refresh"}
-                            </button>
-                            <button
-                              className="btn primary"
-                              onClick={() => onUpdateAll(inst)}
-                              disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
-                            >
-                              {updateAllBusy ? "Updating…" : "Update all"}
-                            </button>
-                          </div>
-                          <div className="instanceSnapshotRow">
-                            {snapshots.length > 0 ? (
-                              <MenuSelect
-                                value={rollbackSnapshotId ?? snapshots[0].id}
-                                labelPrefix="Snapshot"
-                                options={snapshots.slice(0, 30).map((s) => ({
-                                  value: s.id,
-                                  label: `${s.id} • ${s.reason}`,
-                                }))}
-                                align="start"
-                                onChange={(v) => setRollbackSnapshotId(v)}
-                              />
-                            ) : null}
-                            <button
-                              className="btn instanceSnapshotRollbackBtn"
-                              onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
-                              disabled={rollbackBusy || snapshots.length === 0}
-                              title={
-                                snapshots.length === 0
-                                  ? "No snapshot available yet"
-                                  : `Rollback to ${rollbackSnapshotId ?? snapshots[0]?.id ?? "latest snapshot"}`
-                              }
-                            >
-                              {rollbackBusy ? "Rolling back…" : "Rollback"}
-                            </button>
-                          </div>
-                          {snapshots.length === 0 ? (
-                            <div className="muted instanceContentControlHint">
-                              Installing or updating content creates a snapshot automatically.
-                            </div>
-                          ) : null}
+                      ) : (
+                        <div className="muted instanceContentControlHint">
+                          Installing or updating content creates a snapshot automatically.
                         </div>
-                      </div>
+                      )}
                     </div>
 
                     {updateErr ? <div className="errorBox" style={{ marginTop: 4 }}>{updateErr}</div> : null}

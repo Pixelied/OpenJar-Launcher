@@ -19,6 +19,7 @@ use crate::modpack::store::{
 };
 use crate::modpack::types::*;
 use std::fs;
+use std::path::PathBuf;
 
 #[tauri::command]
 pub fn list_modpack_specs(app: tauri::AppHandle) -> Result<Vec<ModpackSpec>, String> {
@@ -362,6 +363,510 @@ pub fn apply_template_layer_update(
     write_store(&app, &store)?;
 
     Ok(spec)
+}
+
+#[derive(Debug, Clone)]
+struct ProviderResolution {
+    source: String,
+    project_id: String,
+    version_id: String,
+    name: String,
+    version_number: String,
+    confidence: String,
+    reason: String,
+}
+
+fn provider_resolution_from_import(found: crate::LocalImportedProviderMatch) -> ProviderResolution {
+    ProviderResolution {
+        source: found.source,
+        project_id: found.project_id,
+        version_id: found.version_id,
+        name: found.name,
+        version_number: found.version_number,
+        confidence: found.confidence,
+        reason: found.reason,
+    }
+}
+
+fn local_file_name_from_entry(entry: &ModEntry) -> String {
+    if let Some(name) = entry
+        .local_file_name
+        .as_ref()
+        .map(|v| crate::sanitize_filename(v))
+        .filter(|v| !v.trim().is_empty())
+    {
+        return name;
+    }
+
+    if let Some(path_text) = entry.local_file_path.as_ref() {
+        let path = PathBuf::from(path_text);
+        if let Some(name) = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(crate::sanitize_filename)
+            .filter(|value| !value.trim().is_empty())
+        {
+            return name;
+        }
+    }
+
+    let local_id = entry.project_id.trim().trim_start_matches("local:");
+    let candidate = if local_id.to_ascii_lowercase().ends_with(".jar") {
+        local_id.to_string()
+    } else if local_id.is_empty() {
+        "local-mod.jar".to_string()
+    } else {
+        format!("{local_id}.jar")
+    };
+    let safe = crate::sanitize_filename(&candidate);
+    if safe.trim().is_empty() {
+        "local-mod.jar".to_string()
+    } else {
+        safe
+    }
+}
+
+fn local_entry_display_name(entry: &ModEntry, safe_file_name: &str) -> String {
+    entry
+        .notes
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| crate::infer_local_name(safe_file_name))
+}
+
+fn detect_provider_from_entry_metadata(
+    client: &reqwest::blocking::Client,
+    entry: &ModEntry,
+) -> Option<ProviderResolution> {
+    let safe_file_name = local_file_name_from_entry(entry);
+    let sha512 = entry
+        .local_sha512
+        .as_ref()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+
+    if let Some(api_key) = crate::curseforge_api_key() {
+        if !entry.local_fingerprints.is_empty() {
+            if let Ok(Some((project, file))) =
+                crate::fetch_curseforge_match_by_fingerprints(client, &api_key, &entry.local_fingerprints)
+            {
+                let name = if project.name.trim().is_empty() {
+                    local_entry_display_name(entry, &safe_file_name)
+                } else {
+                    project.name.clone()
+                };
+                let version_number = if file.display_name.trim().is_empty() {
+                    if file.file_name.trim().is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        file.file_name.clone()
+                    }
+                } else {
+                    file.display_name.clone()
+                };
+                return Some(ProviderResolution {
+                    source: "curseforge".to_string(),
+                    project_id: format!("cf:{}", project.id),
+                    version_id: format!("cf_file:{}", file.id),
+                    name,
+                    version_number,
+                    confidence: "deterministic".to_string(),
+                    reason: "Exact CurseForge fingerprint match from local metadata.".to_string(),
+                });
+            }
+        }
+    }
+
+    if let Some(sha) = sha512 {
+        if let Ok(Some(version)) = crate::fetch_modrinth_version_by_sha512(client, &sha) {
+            let project_id = version.project_id.trim().to_string();
+            if !project_id.is_empty() {
+                let matched_file = version
+                    .files
+                    .iter()
+                    .find(|f| {
+                        f.hashes
+                            .get("sha512")
+                            .map(|value| value.eq_ignore_ascii_case(&sha))
+                            .unwrap_or(false)
+                    })
+                    .or_else(|| {
+                        version
+                            .files
+                            .iter()
+                            .find(|f| crate::sanitize_filename(&f.filename).eq_ignore_ascii_case(&safe_file_name))
+                    })
+                    .or_else(|| version.files.first());
+                let version_number = if version.version_number.trim().is_empty() {
+                    matched_file
+                        .map(|f| f.filename.clone())
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    version.version_number.clone()
+                };
+                let name = version
+                    .name
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| crate::fetch_project_title(client, &project_id))
+                    .unwrap_or_else(|| local_entry_display_name(entry, &safe_file_name));
+                return Some(ProviderResolution {
+                    source: "modrinth".to_string(),
+                    project_id,
+                    version_id: version.id,
+                    name,
+                    version_number,
+                    confidence: "deterministic".to_string(),
+                    reason: "Exact Modrinth SHA-512 match from local metadata.".to_string(),
+                });
+            }
+        }
+    }
+
+    None
+}
+
+fn is_local_mod_entry(entry: &ModEntry) -> bool {
+    entry.provider.trim().eq_ignore_ascii_case("local") && normalize_content_type(&entry.content_type) == "mods"
+}
+
+fn count_remaining_local_entries(spec: &ModpackSpec) -> usize {
+    spec.layers
+        .iter()
+        .flat_map(|layer| layer.entries_delta.add.iter())
+        .filter(|entry| is_local_mod_entry(entry))
+        .count()
+}
+
+#[tauri::command]
+pub fn import_local_jars_to_modpack_layer(
+    app: tauri::AppHandle,
+    args: ImportLocalJarsToLayerArgs,
+) -> Result<ModpackImportLocalJarsResult, String> {
+    if args.file_paths.is_empty() {
+        return Err("Pick at least one .jar file.".to_string());
+    }
+
+    let mut store = read_store(&app)?;
+    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let layer_idx = spec
+        .layers
+        .iter()
+        .position(|layer| layer.id == args.layer_id)
+        .ok_or_else(|| "Layer not found".to_string())?;
+
+    if spec.layers[layer_idx].is_frozen {
+        return Err("Layer is frozen. Unfreeze before adding local jars.".to_string());
+    }
+
+    let auto_identify = args.auto_identify.unwrap_or(false);
+    let client = if auto_identify {
+        Some(crate::build_http_client()?)
+    } else {
+        None
+    };
+
+    let mut added_entries = 0usize;
+    let mut updated_entries = 0usize;
+    let mut resolved_entries = 0usize;
+    let mut warnings: Vec<String> = Vec::new();
+
+    for path_text in args.file_paths {
+        let trimmed = path_text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(trimmed);
+        if !path.exists() {
+            warnings.push(format!("Skipped '{}': file was not found.", trimmed));
+            continue;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "jar" {
+            warnings.push(format!("Skipped '{}': only .jar files are supported.", path.display()));
+            continue;
+        }
+
+        let file_name_raw = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("local-mod.jar");
+        let safe_file_name = crate::sanitize_filename(file_name_raw);
+        if safe_file_name.trim().is_empty() {
+            warnings.push(format!("Skipped '{}': filename could not be sanitized.", path.display()));
+            continue;
+        }
+
+        let bytes = match fs::read(&path) {
+            Ok(value) => value,
+            Err(err) => {
+                warnings.push(format!("Skipped '{}': read failed ({err}).", path.display()));
+                continue;
+            }
+        };
+
+        let sha512 = crate::sha512_hex(&bytes);
+        let fingerprints = crate::curseforge_fingerprint_candidates(&bytes);
+        let display_name = crate::infer_local_name(&safe_file_name);
+        let detected = client
+            .as_ref()
+            .and_then(|http| crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true))
+            .map(provider_resolution_from_import);
+
+        let mut entry = normalize_entry_for_add(ModEntry {
+            provider: detected
+                .as_ref()
+                .map(|value| value.source.clone())
+                .unwrap_or_else(|| "local".to_string()),
+            project_id: detected
+                .as_ref()
+                .map(|value| value.project_id.clone())
+                .unwrap_or_else(|| format!("local:{}", safe_file_name.to_ascii_lowercase())),
+            slug: Some(display_name.clone()),
+            content_type: "mods".to_string(),
+            required: true,
+            pin: detected.as_ref().map(|value| value.version_id.clone()),
+            channel_policy: "stable".to_string(),
+            fallback_policy: "inherit".to_string(),
+            replacement_group: None,
+            notes: Some(
+                detected
+                    .as_ref()
+                    .map(|value| value.name.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or(display_name),
+            ),
+            disabled_by_default: false,
+            optional: false,
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            local_file_name: Some(safe_file_name.clone()),
+            local_file_path: Some(path.display().to_string()),
+            local_sha512: Some(sha512.clone()),
+            local_fingerprints: fingerprints,
+        });
+
+        if let Some(found) = detected {
+            resolved_entries += 1;
+            if entry.notes.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+                entry.notes = Some(found.name);
+            }
+        } else if auto_identify {
+            warnings.push(format!(
+                "Added '{}' as local entry (provider match not found yet).",
+                safe_file_name
+            ));
+        }
+
+        let key = entry_key_for(&entry);
+        let layer = &mut spec.layers[layer_idx];
+        if let Some(existing_idx) = layer
+            .entries_delta
+            .add
+            .iter()
+            .position(|current| entry_key_for(current) == key)
+        {
+            layer.entries_delta.add[existing_idx] = entry;
+            updated_entries += 1;
+        } else {
+            layer.entries_delta.add.push(entry);
+            added_entries += 1;
+        }
+    }
+
+    if added_entries == 0 && updated_entries == 0 {
+        return Err("No local jars were imported.".to_string());
+    }
+
+    spec.updated_at = crate::now_iso();
+    normalize_spec_for_write(&mut spec);
+    upsert_spec(&mut store, spec.clone());
+    write_store(&app, &store)?;
+
+    Ok(ModpackImportLocalJarsResult {
+        remaining_local_entries: count_remaining_local_entries(&spec),
+        spec,
+        added_entries,
+        updated_entries,
+        resolved_entries,
+        warnings,
+    })
+}
+
+#[tauri::command]
+pub fn resolve_local_modpack_entries(
+    app: tauri::AppHandle,
+    args: ResolveLocalModpackEntriesArgs,
+) -> Result<ModpackLocalResolverResult, String> {
+    let mut store = read_store(&app)?;
+    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
+    let scan_all_candidates = mode.trim().eq_ignore_ascii_case("all");
+    let layer_scope = args
+        .layer_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let client = crate::build_http_client()?;
+    let mut scanned_entries = 0usize;
+    let mut resolved_entries = 0usize;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut matches: Vec<ModpackLocalResolverMatch> = Vec::new();
+    let mut changed = false;
+
+    for layer in &mut spec.layers {
+        if let Some(scope) = layer_scope.as_ref() {
+            if &layer.id != scope {
+                continue;
+            }
+        }
+
+        for entry in &mut layer.entries_delta.add {
+            if normalize_content_type(&entry.content_type) != "mods" {
+                continue;
+            }
+            let provider = entry.provider.trim().to_ascii_lowercase();
+            let project_looks_local = entry
+                .project_id
+                .trim()
+                .to_ascii_lowercase()
+                .starts_with("local:");
+            let has_local_metadata = entry
+                .local_sha512
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+                || !entry.local_fingerprints.is_empty()
+                || entry
+                    .local_file_path
+                    .as_ref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false);
+
+            if !scan_all_candidates {
+                if provider != "local" {
+                    continue;
+                }
+            } else if provider != "local" && !project_looks_local {
+                continue;
+            }
+            if provider == "local" && !has_local_metadata {
+                warnings.push(format!(
+                    "Skipped '{}': no local jar metadata. Re-add from computer first.",
+                    entry.project_id
+                ));
+                continue;
+            }
+
+            scanned_entries += 1;
+            let key_before = entry_key_for(entry);
+            let from_source = provider.clone();
+            let safe_file_name = local_file_name_from_entry(entry);
+            let mut detected: Option<ProviderResolution> = None;
+
+            if let Some(path_text) = entry
+                .local_file_path
+                .as_ref()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+            {
+                let path = PathBuf::from(&path_text);
+                if path.exists() {
+                    match fs::read(&path) {
+                        Ok(bytes) => {
+                            let refreshed_name = path
+                                .file_name()
+                                .and_then(|value| value.to_str())
+                                .map(crate::sanitize_filename)
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or_else(|| safe_file_name.clone());
+                            entry.local_file_name = Some(refreshed_name.clone());
+                            entry.local_sha512 = Some(crate::sha512_hex(&bytes));
+                            entry.local_fingerprints = crate::curseforge_fingerprint_candidates(&bytes);
+                            changed = true;
+                            detected = crate::detect_provider_for_local_mod(
+                                &client,
+                                &bytes,
+                                &refreshed_name,
+                                true,
+                            )
+                            .map(provider_resolution_from_import);
+                        }
+                        Err(err) => {
+                            warnings.push(format!("Failed to read '{}': {err}", path.display()));
+                        }
+                    }
+                } else {
+                    warnings.push(format!(
+                        "Local jar path missing for '{}': {}",
+                        entry.project_id, path_text
+                    ));
+                }
+            }
+
+            if detected.is_none() {
+                detected = detect_provider_from_entry_metadata(&client, entry);
+            }
+
+            let Some(found) = detected else {
+                continue;
+            };
+
+            entry.provider = found.source.clone();
+            entry.project_id = found.project_id.clone();
+            entry.pin = Some(found.version_id.clone());
+            if entry.slug.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+                entry.slug = Some(found.name.clone());
+            }
+            if from_source == "local"
+                || entry
+                    .notes
+                    .as_ref()
+                    .map(|value| value.trim().is_empty())
+                    .unwrap_or(true)
+            {
+                entry.notes = Some(found.name.clone());
+            }
+            changed = true;
+            resolved_entries += 1;
+            matches.push(ModpackLocalResolverMatch {
+                key: key_before,
+                from_source,
+                to_source: found.source,
+                project_id: found.project_id,
+                version_id: found.version_id,
+                name: found.name,
+                version_number: found.version_number,
+                confidence: found.confidence,
+                reason: found.reason,
+            });
+        }
+    }
+
+    if changed {
+        spec.updated_at = crate::now_iso();
+        normalize_spec_for_write(&mut spec);
+        upsert_spec(&mut store, spec.clone());
+        write_store(&app, &store)?;
+    }
+
+    Ok(ModpackLocalResolverResult {
+        remaining_local_entries: count_remaining_local_entries(&spec),
+        spec,
+        scanned_entries,
+        resolved_entries,
+        matches,
+        warnings,
+    })
 }
 
 #[tauri::command]
@@ -772,6 +1277,10 @@ fn lock_entry_to_mod_entry(entry: &crate::LockEntry) -> ModEntry {
             "world".to_string()
         },
         target_worlds: entry.target_worlds.clone(),
+        local_file_name: None,
+        local_file_path: None,
+        local_sha512: None,
+        local_fingerprints: vec![],
     })
 }
 
@@ -795,6 +1304,10 @@ fn creator_entry_to_mod_entry(entry: crate::CreatorPresetEntry) -> ModEntry {
             "world".to_string()
         },
         target_worlds: entry.target_worlds,
+        local_file_name: None,
+        local_file_path: None,
+        local_sha512: None,
+        local_fingerprints: vec![],
     })
 }
 

@@ -37,6 +37,14 @@ pub struct ModEntry {
     pub target_scope: String,
     #[serde(default)]
     pub target_worlds: Vec<String>,
+    #[serde(default)]
+    pub local_file_name: Option<String>,
+    #[serde(default)]
+    pub local_file_path: Option<String>,
+    #[serde(default)]
+    pub local_sha512: Option<String>,
+    #[serde(default)]
+    pub local_fingerprints: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -503,6 +511,64 @@ pub struct SeedDevResult {
     pub created_spec_id: String,
     pub created_instance_id: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportLocalJarsToLayerArgs {
+    #[serde(alias = "modpackId")]
+    pub modpack_id: String,
+    #[serde(alias = "layerId")]
+    pub layer_id: String,
+    #[serde(alias = "filePaths")]
+    pub file_paths: Vec<String>,
+    #[serde(alias = "autoIdentify", default)]
+    pub auto_identify: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResolveLocalModpackEntriesArgs {
+    #[serde(alias = "modpackId")]
+    pub modpack_id: String,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(alias = "layerId", default)]
+    pub layer_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModpackLocalResolverMatch {
+    pub key: String,
+    pub from_source: String,
+    pub to_source: String,
+    pub project_id: String,
+    pub version_id: String,
+    pub name: String,
+    pub version_number: String,
+    pub confidence: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModpackLocalResolverResult {
+    pub spec: ModpackSpec,
+    pub scanned_entries: usize,
+    pub resolved_entries: usize,
+    pub remaining_local_entries: usize,
+    #[serde(default)]
+    pub matches: Vec<ModpackLocalResolverMatch>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModpackImportLocalJarsResult {
+    pub spec: ModpackSpec,
+    pub added_entries: usize,
+    pub updated_entries: usize,
+    pub resolved_entries: usize,
+    pub remaining_local_entries: usize,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 pub fn default_true() -> bool {

@@ -71,6 +71,10 @@ pub fn seed_dev_data(
                 optional: false,
                 target_scope: "instance".to_string(),
                 target_worlds: vec![],
+                local_file_name: None,
+                local_file_path: None,
+                local_sha512: None,
+                local_fingerprints: vec![],
             }),
             normalize_entry_for_add(ModEntry {
                 provider: "modrinth".to_string(),
@@ -87,6 +91,10 @@ pub fn seed_dev_data(
                 optional: false,
                 target_scope: "instance".to_string(),
                 target_worlds: vec![],
+                local_file_name: None,
+                local_file_path: None,
+                local_sha512: None,
+                local_fingerprints: vec![],
             }),
         ];
     }

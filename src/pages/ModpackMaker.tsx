@@ -17,12 +17,14 @@ import {
   duplicateModpackSpec,
   exportModpackSpecJson,
   getModpackSpec,
+  importLocalJarsToModpackLayer,
   importModpackLayerFromProvider,
   importModpackLayerFromSpec,
   importModpackSpecJson,
   listModpackSpecs,
   migrateLegacyCreatorPresets,
   previewTemplateLayerUpdate,
+  resolveLocalModpackEntries,
   resolveModpackForInstance,
   seedDevModpackData,
   upsertModpackSpec,
@@ -31,6 +33,7 @@ import {
 type Props = {
   instances: Instance[];
   selectedInstanceId: string | null;
+  autoIdentifyLocalJarsEnabled: boolean;
   onSelectInstance: (id: string) => void;
   onOpenDiscover: (context?: {
     modpackId: string;
@@ -182,6 +185,7 @@ function fmtDate(value?: string | null): string {
 export default function ModpackMaker({
   instances,
   selectedInstanceId,
+  autoIdentifyLocalJarsEnabled,
   onSelectInstance,
   onOpenDiscover,
   isDevMode,
@@ -208,6 +212,8 @@ export default function ModpackMaker({
 
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [entryDraft, setEntryDraft] = useState<ModEntry>(emptyEntry());
+  const [importLocalJarsBusy, setImportLocalJarsBusy] = useState(false);
+  const [identifyLocalJarsBusy, setIdentifyLocalJarsBusy] = useState(false);
 
   const [providerImport, setProviderImport] = useState({
     source: "modrinth",
@@ -560,6 +566,76 @@ export default function ModpackMaker({
       layerId: selectedLayer?.id ?? null,
       layerName: selectedLayer?.name ?? null,
     });
+  }
+
+  async function addLocalJarsFromComputer() {
+    if (!editorSpec || !selectedLayer) {
+      onError("Select a layer first.");
+      return;
+    }
+    if (selectedLayer.is_frozen) {
+      onError(`Layer "${selectedLayer.name}" is frozen. Unfreeze before adding content.`);
+      return;
+    }
+    const picked = await openDialog({
+      multiple: true,
+      filters: [{ name: "Java archives", extensions: ["jar"] }],
+    });
+    if (!picked) return;
+    const filePaths = Array.isArray(picked) ? picked : [picked];
+    if (filePaths.length === 0) return;
+
+    setImportLocalJarsBusy(true);
+    try {
+      const out = await importLocalJarsToModpackLayer({
+        modpackId: editorSpec.id,
+        layerId: selectedLayer.id,
+        filePaths,
+        autoIdentify: autoIdentifyLocalJarsEnabled,
+      });
+      setEditorSpec(cloneSpec(out.spec));
+      const warningText =
+        out.warnings.length > 0 ? ` ${out.warnings.slice(0, 2).join(" | ")}` : "";
+      const resolvedText =
+        out.resolved_entries > 0
+          ? ` Identified ${out.resolved_entries} entr${out.resolved_entries === 1 ? "y" : "ies"}.`
+          : "";
+      onNotice(
+        `Added ${out.added_entries} entr${out.added_entries === 1 ? "y" : "ies"} and updated ${out.updated_entries}.${resolvedText}${warningText}`
+      );
+    } catch (err: any) {
+      onError(err?.toString?.() ?? String(err));
+    } finally {
+      setImportLocalJarsBusy(false);
+    }
+  }
+
+  async function identifyLocalJarsInCreator(mode: "missing_only" | "all" = "all") {
+    if (!editorSpec) {
+      onError("Open a modpack first.");
+      return;
+    }
+    setIdentifyLocalJarsBusy(true);
+    try {
+      const out = await resolveLocalModpackEntries({
+        modpackId: editorSpec.id,
+        mode,
+      });
+      setEditorSpec(cloneSpec(out.spec));
+      if (out.resolved_entries > 0) {
+        onNotice(
+          `Identified ${out.resolved_entries} local entr${out.resolved_entries === 1 ? "y" : "ies"} (${out.remaining_local_entries} remaining local).`
+        );
+      } else if (out.warnings.length > 0) {
+        onError(out.warnings[0] ?? "No local entries were identified.");
+      } else {
+        onNotice("No additional local JAR entries were identified.");
+      }
+    } catch (err: any) {
+      onError(err?.toString?.() ?? String(err));
+    } finally {
+      setIdentifyLocalJarsBusy(false);
+    }
   }
 
   function openAddModal() {
@@ -1353,18 +1429,40 @@ export default function ModpackMaker({
             </div>
 
             <div className="card mpmEntriesPanel" style={{ padding: 12, borderRadius: 16 }}>
-              <div className="rowBetween">
-                <div className="h3">Entries</div>
-                <div className="mpmInlineActions">
-                  <button className="btn" onClick={openAddModal} title="Add content directly by id/slug.">
-                    Add in-place
-                  </button>
-                  <button className="btn" onClick={openDiscoverForSelectedLayer} title="Search in Discover and add directly to this modpack/layer.">
-                    Open in Discover
-                  </button>
+              <div className="mpmEntriesTop">
+                <div className="rowBetween mpmEntriesHead">
+                  <div className="h3">Entries</div>
+                  <div className="mpmInlineActions mpmEntriesPrimaryActions">
+                    <button className="btn" onClick={openAddModal} title="Add content directly by id/slug.">
+                      Add in-place
+                    </button>
+                    <button className="btn" onClick={openDiscoverForSelectedLayer} title="Search in Discover and add directly to this modpack/layer.">
+                      Open in Discover
+                    </button>
+                  </div>
                 </div>
+                <details className="mpmEntryToolsFold">
+                  <summary>Local JAR tools</summary>
+                  <div className="mpmEntryToolsRow">
+                    <button
+                      className="btn"
+                      onClick={() => void addLocalJarsFromComputer()}
+                      disabled={importLocalJarsBusy}
+                      title="Add one or more local .jar files into the selected layer."
+                    >
+                      {importLocalJarsBusy ? "Adding..." : "Add mod(s) from computer"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => void identifyLocalJarsInCreator("all")}
+                      disabled={identifyLocalJarsBusy}
+                      title="Try to match local entries to Modrinth/CurseForge metadata."
+                    >
+                      {identifyLocalJarsBusy ? "Identifying..." : "Identify local JARs"}
+                    </button>
+                  </div>
+                </details>
               </div>
-
               <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr auto", gap: 8 }}>
                 <input
                   className="input"
@@ -1404,17 +1502,18 @@ export default function ModpackMaker({
                 </div>
               ) : null}
 
-              <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                <span className="chip subtle">Showing: {filteredEntries.length}</span>
-                <span className="chip subtle">Total: {allEntries.length}</span>
+              <div className="mpmEntryStatsRow">
+                <span className="muted">
+                  Showing {filteredEntries.length} of {allEntries.length}
+                </span>
                 {entryFilter === "failing" && !plan ? (
-                  <span className="chip subtle" title="Run preview resolve in apply wizard to populate this filter.">
-                    No preview yet
+                  <span className="muted" title="Run preview resolve in apply wizard to populate this filter.">
+                    No preview data yet
                   </span>
                 ) : null}
               </div>
               <div className="muted" style={{ marginTop: 6 }}>
-                Click an entry to edit it in Inspector. Use Remove on a row for quick delete.
+                Click an entry to edit it in Inspector.
               </div>
 
               <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
@@ -1434,10 +1533,19 @@ export default function ModpackMaker({
                     const active = selectedEntryKey === row.key;
                     const isFailing = failureKeySet.has(entryIdentity(row.entry));
                     const layerFrozen = editorSpec.layers.find((layer) => layer.id === row.layerId)?.is_frozen;
+                    const metaBits = [
+                      row.entry.provider,
+                      row.entry.content_type,
+                      row.layerName,
+                      !row.entry.required ? "Optional" : null,
+                      row.entry.pin ? "Pinned" : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ");
                     return (
                       <div
                         key={row.key}
-                        className="card"
+                        className="card mpmEntryCard"
                         style={{
                           padding: 10,
                           borderRadius: 12,
@@ -1457,24 +1565,20 @@ export default function ModpackMaker({
                         title="Select entry to edit in inspector."
                       >
                         <div className="rowBetween mpmEntryRow">
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <div className="mpmEntryMain">
+                            <div className="mpmEntryTitle">
                               {entryDisplayName(row.entry)}
                             </div>
-                            <div className="muted" style={{ marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <div className="muted mpmEntryProjectId">
                               {row.entry.project_id}
                             </div>
+                            <div className="mpmEntryMetaText">{metaBits}</div>
                           </div>
-                          <div className="mpmEntryBadges">
-                            <span className="chip subtle">{row.entry.provider}</span>
-                            <span className="chip subtle">{row.entry.content_type}</span>
-                            <span className="chip subtle">{row.layerName}</span>
-                            {!row.entry.required ? <span className="chip subtle">Optional</span> : null}
-                            {row.entry.pin ? <span className="chip subtle">Pinned</span> : null}
+                          <div className="mpmEntryActions">
                             {row.duplicateCount > 1 ? <span className="chip danger">Conflict</span> : null}
                             {isFailing ? <span className="chip danger">Failing</span> : null}
                             <button
-                              className="btn subtle"
+                              className="btn subtle mpmEntryRemoveBtn"
                               disabled={Boolean(layerFrozen)}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -1515,10 +1619,8 @@ export default function ModpackMaker({
                 </div>
               ) : (
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-                  <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-                    <span className="chip subtle">Layer: {selectedEntryRow.layerName}</span>
-                    <span className="chip subtle">{selectedEntryRow.entry.provider}</span>
-                    <span className="chip subtle">{selectedEntryRow.entry.content_type}</span>
+                  <div className="mpmInspectorMeta">
+                    {selectedEntryRow.layerName} · {selectedEntryRow.entry.provider} · {selectedEntryRow.entry.content_type}
                     {selectedEntryRow.duplicateCount > 1 ? <span className="chip danger">Conflict candidate</span> : null}
                   </div>
 

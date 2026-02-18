@@ -544,6 +544,8 @@ struct SetLauncherSettingsArgs {
     update_auto_apply_mode: Option<String>,
     #[serde(alias = "updateApplyScope", default)]
     update_apply_scope: Option<String>,
+    #[serde(alias = "autoIdentifyLocalJars", default)]
+    auto_identify_local_jars: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1242,6 +1244,7 @@ struct LauncherSettings {
     #[serde(default = "default_update_apply_scope")]
     update_apply_scope: String,
     selected_account_id: Option<String>,
+    auto_identify_local_jars: bool,
 }
 
 impl Default for LauncherSettings {
@@ -1254,6 +1257,7 @@ impl Default for LauncherSettings {
             update_auto_apply_mode: default_update_auto_apply_mode(),
             update_apply_scope: default_update_apply_scope(),
             selected_account_id: None,
+            auto_identify_local_jars: false,
         }
     }
 }
@@ -8158,6 +8162,9 @@ fn set_launcher_settings(
     if let Some(scope) = args.update_apply_scope {
         settings.update_apply_scope = normalize_update_apply_scope(&scope);
     }
+    if let Some(auto_identify) = args.auto_identify_local_jars {
+        settings.auto_identify_local_jars = auto_identify;
+    }
     write_launcher_settings(&app, &settings)?;
     Ok(settings)
 }
@@ -11983,8 +11990,10 @@ fn main() {
             modpack::export_modpack_spec_json,
             modpack::import_modpack_layer_from_provider,
             modpack::import_modpack_layer_from_spec,
+            modpack::import_local_jars_to_modpack_layer,
             modpack::preview_template_layer_update,
             modpack::apply_template_layer_update,
+            modpack::resolve_local_modpack_entries,
             modpack::resolve_modpack_for_instance,
             modpack::apply_modpack_plan,
             modpack::get_instance_modpack_status,

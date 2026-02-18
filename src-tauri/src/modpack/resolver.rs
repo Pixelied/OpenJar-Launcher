@@ -227,6 +227,10 @@ fn resolve_dependencies(
                     optional: false,
                     target_scope: "instance".to_string(),
                     target_worlds: vec![],
+                    local_file_name: None,
+                    local_file_path: None,
+                    local_sha512: None,
+                    local_fingerprints: vec![],
                 };
                 match resolve_single_entry(client, instance, &dep_entry, settings) {
                     Ok(candidate) => {
@@ -511,7 +515,12 @@ fn resolve_single_entry(
         name: resolved_name,
         reason_code: "ProviderError".to_string(),
         reason_text: "Unsupported provider. Expected modrinth or curseforge.".to_string(),
-        actionable_hint: "Update entry provider.".to_string(),
+        actionable_hint: if entry.provider.trim().eq_ignore_ascii_case("local") {
+            "Run Identify local JARs in Creator Studio or set provider manually."
+                .to_string()
+        } else {
+            "Update entry provider.".to_string()
+        },
         constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
         required: entry.required,
     })

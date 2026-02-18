@@ -116,24 +116,6 @@
   --accent-text-base: rgba(21, 56, 120, 0.96);
 }
 
-:root[data-accent="gray"]{
-  --accent-base: rgba(146, 154, 171, 0.82);
-  --accent-strong-base: rgba(196, 203, 218, 0.98);
-  --accent-soft-base: rgba(146, 154, 171, 0.22);
-  --accent-soft-2-base: rgba(146, 154, 171, 0.31);
-  --accent-ring-base: rgba(146, 154, 171, 0.36);
-  --accent-text-base: rgba(236, 241, 250, 0.98);
-}
-
-:root[data-theme="light"][data-accent="gray"]{
-  --accent-base: rgba(124, 132, 149, 0.74);
-  --accent-strong-base: rgba(91, 99, 116, 0.94);
-  --accent-soft-base: rgba(124, 132, 149, 0.14);
-  --accent-soft-2-base: rgba(124, 132, 149, 0.22);
-  --accent-ring-base: rgba(124, 132, 149, 0.28);
-  --accent-text-base: rgba(65, 73, 88, 0.96);
-}
-
 :root[data-accent="emerald"]{
   --accent-base: rgba(50, 186, 130, 0.86);
   --accent-strong-base: rgba(142, 239, 197, 0.98);
@@ -1750,6 +1732,43 @@ button, input, select { font-family: inherit; }
 .mpmInlineActions{
   display: flex;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mpmEntriesTop{
+  display: grid;
+  gap: 8px;
+}
+.mpmEntriesHead{
+  align-items: center;
+}
+.mpmEntriesPrimaryActions .btn{
+  min-width: 0;
+}
+.mpmEntryToolsFold{
+  border: 1px solid color-mix(in srgb, var(--stroke2) 88%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+  padding: 8px 10px;
+}
+.mpmEntryToolsFold > summary{
+  cursor: pointer;
+  font-weight: 850;
+  color: var(--muted);
+  list-style-position: inside;
+}
+.mpmEntryToolsRow{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.mpmEntryStatsRow{
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
 }
@@ -1836,8 +1855,45 @@ button, input, select { font-family: inherit; }
   font-size: 0.95em;
 }
 .mpmEntryRow{
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
+}
+.mpmEntryCard{
+  background: color-mix(in srgb, var(--surface) 96%, var(--panel2) 4%);
+}
+.mpmEntryMain{
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.mpmEntryTitle{
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mpmEntryProjectId{
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mpmEntryMetaText{
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 760;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mpmEntryActions{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.mpmEntryRemoveBtn{
+  min-height: 34px;
 }
 .mpmEntryBadges{
   display: flex;
@@ -1845,6 +1901,15 @@ button, input, select { font-family: inherit; }
   gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+.mpmInspectorMeta{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-weight: 760;
+  font-size: 12px;
 }
 @media (max-width: 1320px){
   .mpmEditorGrid{
@@ -1859,12 +1924,19 @@ button, input, select { font-family: inherit; }
   .mpmEditorHeaderActions{
     justify-content: flex-start;
   }
+  .mpmEntriesHead{
+    align-items: flex-start;
+    flex-direction: column;
+  }
   .mpmEditorMetaGrid{
     grid-template-columns: 1fr;
   }
   .mpmEntryRow{
     align-items: flex-start;
     flex-direction: column;
+  }
+  .mpmEntryActions{
+    justify-content: flex-start;
   }
   .mpmEntryBadges{
     justify-content: flex-start;
@@ -2458,20 +2530,23 @@ button, input, select { font-family: inherit; }
   gap: 12px;
 }
 .homeSpotlight{
-  margin-top: 2px;
-  padding: 14px;
+  margin-top: 0;
+  padding: 16px;
   border-radius: 20px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
-  gap: 14px;
+  gap: 12px;
   align-items: stretch;
-  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
+  background:
+    linear-gradient(152deg, color-mix(in srgb, var(--accent-soft) 16%, transparent), transparent 56%),
+    var(--surface);
 }
 .homeSpotlightMain{
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .homeKicker{
   font-size: 11px;
@@ -2492,7 +2567,7 @@ button, input, select { font-family: inherit; }
   font-weight: 760;
 }
 .homeChipRow{
-  margin-top: 2px;
+  margin-top: 4px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2508,13 +2583,13 @@ button, input, select { font-family: inherit; }
 .homeKpis{
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 .homeKpi{
-  border: 1px solid var(--stroke);
+  border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
-  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+  padding: 11px;
 }
 .homeKpiLabel{
   font-size: 11px;
@@ -2531,8 +2606,8 @@ button, input, select { font-family: inherit; }
 }
 .homeMainGrid{
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
-  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
+  gap: 12px;
   align-items: start;
 }
 .homeMainCol,
@@ -2545,6 +2620,8 @@ button, input, select { font-family: inherit; }
 .homePanel{
   padding: 12px;
   border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 70%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--panel2) 4%);
 }
 .homeAttentionClear{
   padding: 10px 12px;
@@ -2558,58 +2635,63 @@ button, input, select { font-family: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
+}
+.homePanelHead .homeMeta{
+  margin-top: 0;
 }
 .homePanelTitle{
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 960;
   letter-spacing: -0.01em;
 }
 .homePanelActions{
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 .homePanelActions .btn{
   min-width: 108px;
 }
 .homeLaunchpad{
-  margin-top: 10px;
+  margin-top: 12px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 12px;
 }
 .homeLaunchAction{
-  border: 1px solid var(--stroke);
-  border-radius: 12px;
-  background: rgba(127,127,127,0.08);
-  min-height: 84px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 82%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 93%, var(--panel2) 7%);
+  min-height: 82px;
   padding: 12px;
   color: var(--text);
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   text-align: left;
   transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
 .homeLaunchAction:hover{
   transform: translateY(var(--hover-lift-soft));
-  border-color: var(--stroke2);
-  background: color-mix(in srgb, var(--accent-soft) 28%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent-ring) 54%, var(--stroke2));
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent-soft) 12%);
 }
 .homeList{
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 7px;
 }
 .homeListRow{
-  border: 1px solid var(--stroke);
-  border-radius: 12px;
-  background: rgba(127,127,127,0.08);
-  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 62%, transparent);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
+  padding: 9px 11px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2635,7 +2717,7 @@ button, input, select { font-family: inherit; }
 .homeRowActions{
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -2646,13 +2728,13 @@ button, input, select { font-family: inherit; }
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .homeAlertRow{
-  border: 1px solid var(--stroke2);
+  border: 1px solid color-mix(in srgb, var(--stroke2) 78%, transparent);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
-  padding: 9px 10px;
+  background: var(--surface);
+  padding: 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2670,17 +2752,31 @@ button, input, select { font-family: inherit; }
   margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+}
+.homeFoldPanel{
+  overflow: hidden;
+}
+.homeFoldSummary{
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+}
+.homeFoldSummary::-webkit-details-marker{
+  display: none;
 }
 .homeSideCol .homePanel{
-  padding: 10px;
-  border-radius: 16px;
+  padding: 11px;
+  border-radius: 17px;
 }
 .homeSideCol .homeListRow{
-  padding: 8px 9px;
+  padding: 9px 10px;
 }
 .homeSideCol .homePanelActions{
-  margin-top: 6px;
+  margin-top: 8px;
   gap: 6px;
 }
 .homeSideCol .homePanelActions .btn{
@@ -2697,6 +2793,12 @@ button, input, select { font-family: inherit; }
   display: grid;
   gap: 8px;
   color: var(--muted);
+}
+.homeMaintenanceActions .btn{
+  min-width: 0;
+}
+.homeRecentActions .btn{
+  min-width: 70px;
 }
 
 .libraryLayout{
@@ -3329,6 +3431,15 @@ button, input, select { font-family: inherit; }
   grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
+.instanceContentMaintenanceBar{
+  border: 1px solid var(--stroke);
+  border-radius: 14px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .instanceContentControlGrid{
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3411,6 +3522,9 @@ button, input, select { font-family: inherit; }
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.instanceContentUpdateRow .instanceContentControlHint{
+  margin-left: auto;
 }
 .instanceContentHeaderRight{
   display: flex;
@@ -4431,6 +4545,10 @@ button, input, select { font-family: inherit; }
     flex: 1 1 140px;
     justify-content: center;
   }
+  .instanceContentUpdateRow .instanceContentControlHint{
+    margin-left: 0;
+    width: 100%;
+  }
   .instanceSnapshotRow{
     grid-template-columns: 1fr;
   }
@@ -4568,6 +4686,110 @@ button, input, select { font-family: inherit; }
   display:flex;
   flex-direction: column;
   gap: 18px;
+}
+.settingsPage{
+  max-width: 1240px;
+}
+.settingsLayout{
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.settingsCol{
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+.settingsSectionCard{
+  padding: 14px;
+  border-radius: 20px;
+}
+.settingsSectionTitle{
+  font-weight: 980;
+  font-size: 15px;
+}
+.settingsSectionSub{
+  margin-top: 6px;
+  color: var(--muted);
+}
+.settingsSaveRow{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settingsSectionCard .settingStack{
+  margin-top: 10px;
+  gap: 10px;
+}
+.settingsSectionCard .settingStack > div{
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
+}
+.settingsSectionCard .settingStack > div:first-child{
+  padding-top: 0;
+  border-top: none;
+}
+.settingsSectionCard .row{
+  margin-top: 8px;
+  gap: 8px;
+}
+.settingsSectionCard .btn{
+  border-radius: 12px;
+}
+.settingsSectionCard .accentPicker{
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.settingsSectionCard .accentChoice{
+  min-width: 0;
+  width: 100%;
+  padding-inline: 10px;
+}
+.settingsSectionCard .input{
+  margin-top: 8px;
+}
+.settingsSectionCard .settingListMini{
+  max-height: 216px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.settingsSectionCard .settingListMiniRow{
+  background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
+  border-color: color-mix(in srgb, var(--stroke) 76%, transparent);
+}
+.settingsAccountList{
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+.settingsAccountCard{
+  padding: 10px;
+  border-radius: 14px;
+}
+.settingsAccountRow{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+@media (max-width: 1120px){
+  .settingsLayout{
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 700px){
+  .settingsSectionCard .accentPicker{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .settingsAccountRow{
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 .accountPage{
   max-width: 1180px;
@@ -5366,7 +5588,6 @@ button, input, select { font-family: inherit; }
   flex: 0 0 12px;
 }
 .accent-neutral{ background: linear-gradient(120deg, rgba(143,151,169,0.92), rgba(176,184,201,0.84)); }
-.accent-gray{ background: linear-gradient(120deg, rgba(122,130,145,0.95), rgba(182,190,205,0.88)); }
 .accent-blue{ background: linear-gradient(120deg, rgba(66,122,243,0.95), rgba(141,188,255,0.9)); }
 .accent-emerald{ background: linear-gradient(120deg, rgba(30,170,118,0.95), rgba(126,234,188,0.88)); }
 .accent-amber{ background: linear-gradient(120deg, rgba(212,143,29,0.95), rgba(255,217,142,0.9)); }

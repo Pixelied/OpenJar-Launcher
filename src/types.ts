@@ -247,6 +247,7 @@ export type LauncherSettings = {
   update_auto_apply_mode?: UpdateAutoApplyMode;
   update_apply_scope?: UpdateApplyScope;
   selected_account_id?: string | null;
+  auto_identify_local_jars?: boolean;
 };
 
 export type LauncherAccount = {
@@ -675,6 +676,10 @@ export type ModEntry = {
   optional?: boolean;
   target_scope?: "instance" | "world" | string;
   target_worlds?: string[];
+  local_file_name?: string | null;
+  local_file_path?: string | null;
+  local_sha512?: string | null;
+  local_fingerprints?: number[];
 };
 
 export type EntriesDelta = {
@@ -897,4 +902,34 @@ export type SeedDevResult = {
   created_spec_id: string;
   created_instance_id: string;
   message: string;
+};
+
+export type ModpackLocalResolverMatch = {
+  key: string;
+  from_source: string;
+  to_source: string;
+  project_id: string;
+  version_id: string;
+  name: string;
+  version_number: string;
+  confidence: string;
+  reason: string;
+};
+
+export type ModpackLocalResolverResult = {
+  spec: ModpackSpec;
+  scanned_entries: number;
+  resolved_entries: number;
+  remaining_local_entries: number;
+  matches: ModpackLocalResolverMatch[];
+  warnings: string[];
+};
+
+export type ModpackImportLocalJarsResult = {
+  spec: ModpackSpec;
+  added_entries: number;
+  updated_entries: number;
+  resolved_entries: number;
+  remaining_local_entries: number;
+  warnings: string[];
 };

@@ -51,6 +51,8 @@ import type {
   FriendLinkStatus,
   ConflictResolutionPayload,
   MigrationReport,
+  ModpackImportLocalJarsResult,
+  ModpackLocalResolverResult,
   InstanceConfigFileEntry,
   ReadInstanceConfigFileResult,
   UpdateAllContentResult,
@@ -264,6 +266,7 @@ export function setLauncherSettings(input: {
   updateCheckCadence?: "off" | "hourly" | "every_3_hours" | "every_6_hours" | "every_12_hours" | "daily" | "weekly";
   updateAutoApplyMode?: "never" | "opt_in_instances" | "all_instances";
   updateApplyScope?: "scheduled_only" | "scheduled_and_manual";
+  autoIdentifyLocalJars?: boolean;
 }): Promise<LauncherSettings> {
   return invoke("set_launcher_settings", { args: input });
 }
@@ -552,6 +555,15 @@ export function importModpackLayerFromSpec(input: {
   return invoke("import_modpack_layer_from_spec", { args: input });
 }
 
+export function importLocalJarsToModpackLayer(input: {
+  modpackId: string;
+  layerId: string;
+  filePaths: string[];
+  autoIdentify?: boolean;
+}): Promise<ModpackImportLocalJarsResult> {
+  return invoke("import_local_jars_to_modpack_layer", { args: input });
+}
+
 export function previewTemplateLayerUpdate(input: {
   modpackId: string;
   layerId: string;
@@ -564,6 +576,14 @@ export function applyTemplateLayerUpdate(input: {
   layerId: string;
 }): Promise<ModpackSpec> {
   return invoke("apply_template_layer_update", { args: input });
+}
+
+export function resolveLocalModpackEntries(input: {
+  modpackId: string;
+  mode?: "missing_only" | "all" | string;
+  layerId?: string;
+}): Promise<ModpackLocalResolverResult> {
+  return invoke("resolve_local_modpack_entries", { args: input });
 }
 
 export function resolveModpackForInstance(input: {

@@ -100,7 +100,7 @@ pub fn normalize_entry_for_add(mut entry: ModEntry) -> ModEntry {
     entry.content_type = normalize_content_type(&entry.content_type);
     entry.provider = entry.provider.trim().to_lowercase();
     entry.project_id = entry.project_id.trim().to_string();
-    if entry.provider != "modrinth" && entry.provider != "curseforge" {
+    if entry.provider != "modrinth" && entry.provider != "curseforge" && entry.provider != "local" {
         entry.provider = "modrinth".to_string();
     }
     if entry.content_type != "datapacks" {
@@ -115,6 +115,18 @@ pub fn normalize_entry_for_add(mut entry: ModEntry) -> ModEntry {
     if entry.fallback_policy.trim().is_empty() {
         entry.fallback_policy = "inherit".to_string();
     }
+    entry.local_file_name = entry
+        .local_file_name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    entry.local_file_path = entry
+        .local_file_path
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    entry.local_sha512 = entry
+        .local_sha512
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
     entry
 }
 
@@ -181,6 +193,10 @@ fn materially_different(a: &ModEntry, b: &ModEntry) -> bool {
         || a.optional != b.optional
         || a.target_scope != b.target_scope
         || a.target_worlds != b.target_worlds
+        || a.local_file_name != b.local_file_name
+        || a.local_file_path != b.local_file_path
+        || a.local_sha512 != b.local_sha512
+        || a.local_fingerprints != b.local_fingerprints
 }
 
 pub fn ensure_default_profiles(spec: &mut ModpackSpec) {

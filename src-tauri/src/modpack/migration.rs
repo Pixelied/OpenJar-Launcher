@@ -120,6 +120,10 @@ pub fn migrate_legacy_payload(payload: &serde_json::Value) -> (MigrationReport, 
                     "world".to_string()
                 },
                 target_worlds,
+                local_file_name: None,
+                local_file_path: None,
+                local_sha512: None,
+                local_fingerprints: vec![],
             };
             migrated_entries.push(normalize_entry_for_add(item));
         }
