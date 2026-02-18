@@ -407,7 +407,11 @@ What makes it unique:
 
 ### Friend Link (LAN Sync for Shared Packs)
 
-Friend Link lets two to four peers keep linked instances in sync over LAN/VPN with pre-launch safety checks.
+Friend Link is built for the exact “works on my PC” problem when playing modded with friends.
+
+Link your instances once, and OpenJar keeps everyone aligned before launch so your group can actually join the same local hosted world without the usual “missing mod / wrong version” chaos.
+
+In short: this is how you avoid the classic “can’t join your friend’s world” mod mismatch headache.
 
 What v1 syncs:
 - Lockfile-backed content state (mods/resourcepacks/shaderpacks/datapacks)
@@ -418,8 +422,7 @@ Safety behavior:
 - Explicit conflict resolution (`keep mine` / `take theirs`)
 - Pre-launch sync gate for linked instances
 - Offline fallback:
-  - launch allowed only when local state matches last-good group snapshot
-  - stale offline state is blocked with a clear reason
+  launch is allowed only when local state matches last-good group snapshot; stale offline state is blocked with a clear reason
 
 How pairing works:
 - Create host link -> share invite code
@@ -429,7 +432,7 @@ How pairing works:
 Current scope:
 - Designed for small groups (max 4 peers)
 - No cloud relay/WAN server in v1
-- No world save replication (content/config parity only)
+- No world save replication in v1 (content/config parity only)
 
 ---
 
