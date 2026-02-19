@@ -41,6 +41,7 @@ import type {
   ContentUpdateInfo,
   AutoProfileRecommendation,
   FriendLinkReconcileResult,
+  FriendLinkDriftPreview,
   FriendLinkStatus,
   InstanceHealthScore,
   LaunchCompatibilityReport,
@@ -100,6 +101,7 @@ import {
   reconcileFriendLink,
   resolveFriendLinkConflicts,
   getFriendLinkStatus,
+  previewFriendLinkDrift,
   pollMicrosoftLogin,
   previewModrinthInstall,
   preflightLaunchCompatibility,
@@ -1192,6 +1194,39 @@ function launchCompatibilityFingerprint(report: LaunchCompatibilityReport) {
 function normalizeMinecraftUuid(uuid?: string | null) {
   if (!uuid) return null;
   return uuid.replace(/-/g, "").trim() || null;
+}
+
+function friendLinkDriftBadge(preview?: FriendLinkDriftPreview | null): string | null {
+  if (!preview || preview.total_changes <= 0 || preview.status !== "unsynced") return null;
+  const modItems = (preview.items ?? []).filter((item) => item.kind === "lock_entry");
+  if (modItems.length === 0) return null;
+  const added = modItems.filter((item) => item.change === "added").length;
+  const removed = modItems.filter((item) => item.change === "removed").length;
+  const changed = modItems.filter((item) => item.change === "changed").length;
+  return `+${added} / -${removed} / ~${changed}`;
+}
+
+function friendLinkDriftBadgeTooltip(preview?: FriendLinkDriftPreview | null): string {
+  if (!preview) {
+    return "Unsynced counters compare friends to your instance: + items friends have that you do not, - items you have that friends do not, ~ same item changed version/settings.";
+  }
+  const modItems = (preview.items ?? []).filter((item) => item.kind === "lock_entry");
+  const cfgItems = (preview.items ?? []).filter((item) => item.kind !== "lock_entry");
+  const modAdded = modItems.filter((item) => item.change === "added").length;
+  const modRemoved = modItems.filter((item) => item.change === "removed").length;
+  const modChanged = modItems.filter((item) => item.change === "changed").length;
+  if (modItems.length === 0) {
+    return `Mods are currently aligned. There are ${cfgItems.length} config drift item${cfgItems.length === 1 ? "" : "s"}.`;
+  }
+  return `Unsynced mod drift vs your instance: +${modAdded} mods friends have that you do not, -${modRemoved} mods you have that friends do not, ~${modChanged} mods changed version/settings.${cfgItems.length > 0 ? ` (${cfgItems.length} config drift item${cfgItems.length === 1 ? "" : "s"} also present.)` : ""}`;
+}
+
+function friendLinkDriftSignature(preview?: FriendLinkDriftPreview | null): string {
+  if (!preview) return "";
+  const rows = (preview.items ?? [])
+    .map((item) => `${item.kind}|${item.key}|${item.change}|${item.peer_id}`)
+    .sort();
+  return `${preview.status}|${preview.added}|${preview.removed}|${preview.changed}|${rows.join("||")}`;
 }
 
 const SKIN_HEAD_CACHE_MAX = 120;
@@ -4188,13 +4223,25 @@ export default function App() {
       .filter((msg) => msg.length > 0);
     if (!instanceId || cleaned.length === 0) return;
     setInstanceActivityById((prev) => {
+      const existing = prev[instanceId] ?? [];
+      const now = Date.now();
+      const latest = existing[0];
+      if (
+        latest &&
+        cleaned.length === 1 &&
+        latest.message === cleaned[0] &&
+        (tone == null || latest.tone === tone) &&
+        now - latest.at < 60_000
+      ) {
+        return prev;
+      }
       const newEntries = cleaned.map((message) => ({
-        id: `activity_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        id: `activity_${now}_${Math.random().toString(36).slice(2, 8)}`,
         message,
-        at: Date.now(),
+        at: now,
         tone: tone ?? inferActivityTone(message),
       }));
-      const nextItems = [...newEntries, ...(prev[instanceId] ?? [])].slice(0, 20);
+      const nextItems = [...newEntries, ...existing].slice(0, 20);
       return {
         ...prev,
         [instanceId]: nextItems,
@@ -4310,6 +4357,8 @@ export default function App() {
   );
   const [instanceFriendLinkStatus, setInstanceFriendLinkStatus] = useState<FriendLinkStatus | null>(null);
   const [friendLinkStatusByInstance, setFriendLinkStatusByInstance] = useState<Record<string, FriendLinkStatus>>({});
+  const [friendLinkDriftByInstance, setFriendLinkDriftByInstance] = useState<Record<string, FriendLinkDriftPreview>>({});
+  const friendLinkDriftAnnounceRef = useRef<Record<string, string>>({});
   const [friendLinkSyncBusyInstanceId, setFriendLinkSyncBusyInstanceId] = useState<string | null>(null);
   const [friendConflictInstanceId, setFriendConflictInstanceId] = useState<string | null>(null);
   const [friendConflictResult, setFriendConflictResult] = useState<FriendLinkReconcileResult | null>(null);
@@ -6328,7 +6377,12 @@ export default function App() {
         setFriendConflictResult(out);
         setInstallNotice("Friend Link found conflicts. Resolve before launching.");
       } else {
-        setInstallNotice(`Friend Link sync: ${out.status}.`);
+        const warningSuffix =
+          out.warnings.length > 0 ? ` ${out.warnings.length} warning${out.warnings.length === 1 ? "" : "s"}.` : "";
+        setInstallNotice(`Friend Link sync: ${out.status}. Applied ${out.actions_applied} changes.${warningSuffix}`);
+      }
+      if (selectedId === instanceId && route === "instance" && out.actions_applied > 0) {
+        await refreshInstalledMods(instanceId);
       }
       const status = await getFriendLinkStatus({ instanceId }).catch(() => null);
       if (status) {
@@ -7010,7 +7064,11 @@ export default function App() {
           recordLaunchOutcome(inst.id, false, "Friend Link conflicts blocked launch.");
           return;
         }
-        if (friendReconcile.status === "blocked_offline_stale" || friendReconcile.status === "error") {
+        if (
+          friendReconcile.status === "blocked_offline_stale" ||
+          friendReconcile.status === "blocked_untrusted" ||
+          friendReconcile.status === "error"
+        ) {
           const reason = friendReconcile.blocked_reason ?? "Friend Link state is not safe to launch.";
           setError(reason);
           setLauncherErr(reason);
@@ -7765,15 +7823,40 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    getFriendLinkStatus({ instanceId: selectedId })
-      .then((status) => {
-        if (!cancelled) setInstanceFriendLinkStatus(status);
-      })
-      .catch(() => {
-        if (!cancelled) setInstanceFriendLinkStatus(null);
-      });
+    const loadStatus = () => {
+      void getFriendLinkStatus({ instanceId: selectedId })
+        .then(async (status) => {
+          if (cancelled) return;
+          setInstanceFriendLinkStatus(status);
+          setFriendLinkStatusByInstance((prev) => ({ ...prev, [selectedId]: status }));
+          if (!status.linked) {
+            setFriendLinkDriftByInstance((prev) => {
+              const next = { ...prev };
+              delete next[selectedId];
+              return next;
+            });
+            return;
+          }
+          const preview = await previewFriendLinkDrift({ instanceId: selectedId }).catch(() => null);
+          if (cancelled || !preview) return;
+          setFriendLinkDriftByInstance((prev) => ({ ...prev, [selectedId]: preview }));
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setInstanceFriendLinkStatus(null);
+            setFriendLinkDriftByInstance((prev) => {
+              const next = { ...prev };
+              delete next[selectedId];
+              return next;
+            });
+          }
+        });
+    };
+    loadStatus();
+    const timer = window.setInterval(loadStatus, 10000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [route, selectedId, instanceLinksOpen, friendConflictResult]);
 
@@ -7789,27 +7872,75 @@ export default function App() {
     }
     if (targetIds.size === 0) return;
     let cancelled = false;
-    void Promise.all(
-      Array.from(targetIds).map(async (instanceId) => {
-        const status = await getFriendLinkStatus({ instanceId }).catch(() => null);
-        return { instanceId, status };
-      })
-    ).then((items) => {
-      if (cancelled) return;
-      setFriendLinkStatusByInstance((prev) => {
-        const next = { ...prev };
+    const ids = Array.from(targetIds);
+    const loadStatuses = () => {
+      void Promise.all(
+        ids.map(async (instanceId) => {
+          const status = await getFriendLinkStatus({ instanceId }).catch(() => null);
+          const preview =
+            status?.linked ? await previewFriendLinkDrift({ instanceId }).catch(() => null) : null;
+          return { instanceId, status, preview };
+        })
+      ).then((items) => {
+        if (cancelled) return;
+        setFriendLinkStatusByInstance((prev) => {
+          const next = { ...prev };
+          for (const item of items) {
+            if (item.status) {
+              next[item.instanceId] = item.status;
+            } else {
+              delete next[item.instanceId];
+            }
+          }
+          return next;
+        });
+        setFriendLinkDriftByInstance((prev) => {
+          const next = { ...prev };
+          for (const item of items) {
+            if (item.preview && item.status?.linked) {
+              next[item.instanceId] = item.preview;
+            } else {
+              delete next[item.instanceId];
+            }
+          }
+          return next;
+        });
         for (const item of items) {
-          if (item.status) {
-            next[item.instanceId] = item.status;
+          const signature = friendLinkDriftSignature(item.preview);
+          const lastSignature = friendLinkDriftAnnounceRef.current[item.instanceId] ?? "";
+          if (item.preview && signature && signature !== lastSignature) {
+            if (item.preview.status === "unsynced" && item.preview.total_changes > 0) {
+              const modItems = item.preview.items.filter((row) => row.kind === "lock_entry");
+              if (modItems.length > 0) {
+                const added = modItems.filter((row) => row.change === "added").length;
+                const removed = modItems.filter((row) => row.change === "removed").length;
+                const changed = modItems.filter((row) => row.change === "changed").length;
+                const msg = `Friend Link mod drift detected: +${added} / -${removed} / ~${changed} not synced yet.`;
+                appendInstanceActivity(item.instanceId, [msg], "warn");
+              } else {
+                appendInstanceActivity(
+                  item.instanceId,
+                  [`Friend Link config drift detected (${item.preview.total_changes} item${item.preview.total_changes === 1 ? "" : "s"}). Mods are aligned.`],
+                  "info"
+                );
+              }
+            } else if (lastSignature && item.preview.status === "in_sync") {
+              appendInstanceActivity(item.instanceId, ["Friend Link is back in sync."], "success");
+            }
+          }
+          if (item.preview) {
+            friendLinkDriftAnnounceRef.current[item.instanceId] = signature;
           } else {
-            delete next[item.instanceId];
+            delete friendLinkDriftAnnounceRef.current[item.instanceId];
           }
         }
-        return next;
       });
-    });
+    };
+    loadStatuses();
+    const timer = window.setInterval(loadStatuses, 12000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
   }, [route, instances, selectedId, instanceLinksOpen, friendConflictResult]);
 
@@ -11428,13 +11559,18 @@ export default function App() {
       const instanceActivity = instanceActivityById[inst.id] ?? [];
       const selectedSnapshot =
         snapshots.find((s) => s.id === (rollbackSnapshotId ?? snapshots[0]?.id)) ?? snapshots[0] ?? null;
+      const instanceFriendDrift = friendLinkDriftByInstance[inst.id] ?? null;
+      const friendUnsyncedBadge = friendLinkDriftBadge(instanceFriendDrift);
+      const friendUnsyncedBadgeTooltip = friendLinkDriftBadgeTooltip(instanceFriendDrift);
       const friendLinkNeedsAttention =
         Boolean(instanceFriendLinkStatus?.linked) &&
-        (instanceFriendLinkStatus?.pending_conflicts_count ?? 0) > 0;
+        ((instanceFriendLinkStatus?.pending_conflicts_count ?? 0) > 0 || Boolean(friendUnsyncedBadge));
       const friendLinkStatusLabel = !instanceFriendLinkStatus?.linked
         ? "Unlinked"
         : (instanceFriendLinkStatus.pending_conflicts_count ?? 0) > 0
           ? `${instanceFriendLinkStatus.pending_conflicts_count} conflict${instanceFriendLinkStatus.pending_conflicts_count === 1 ? "" : "s"}`
+          : friendUnsyncedBadge
+            ? `Unsynced ${friendUnsyncedBadge}`
           : instanceFriendLinkStatus.status
             ? instanceFriendLinkStatus.status.replace(/_/g, " ")
             : "Linked";
@@ -11729,7 +11865,11 @@ export default function App() {
                         compactHeroActions ? "instHeroIconBtn" : ""
                       }`}
                       onClick={() => setInstanceLinksOpen(true)}
-                      title={`Open Modpack and Friend Link management (${friendLinkStatusLabel})`}
+                      title={
+                        friendUnsyncedBadge
+                          ? `Open Modpack and Friend Link management (${friendLinkStatusLabel}). ${friendUnsyncedBadgeTooltip}`
+                          : `Open Modpack and Friend Link management (${friendLinkStatusLabel})`
+                      }
                       aria-label="Open links"
                     >
                       <span className="btnIcon">
@@ -11739,7 +11879,10 @@ export default function App() {
                       {compactHeroActions ? (
                         friendLinkNeedsAttention ? <span className="instHeroToolDot" /> : null
                       ) : (
-                        <span className={`instanceLinkStatusPill ${friendLinkNeedsAttention ? "alert" : ""}`}>
+                        <span
+                          className={`instanceLinkStatusPill ${friendLinkNeedsAttention ? "alert" : ""}`}
+                          title={friendUnsyncedBadge ? friendUnsyncedBadgeTooltip : "Friend Link status"}
+                        >
                           {friendLinkStatusLabel}
                         </span>
                       )}
@@ -11766,14 +11909,19 @@ export default function App() {
                 <div className="card instanceNoticeCard">
                   <div className="instanceNoticeHead instanceNoticeHeadWrap">
                     <div>
-                      <div style={{ fontWeight: 950 }}>
-                        Friend Link readiness: {(instanceFriendLinkStatus.status || "linked").replace(/_/g, " ")}
+                      <div style={{ fontWeight: 950 }} title={friendUnsyncedBadge ? friendUnsyncedBadgeTooltip : "Friend Link readiness status for this instance."}>
+                        Friend Link readiness:{" "}
+                        {friendUnsyncedBadge
+                          ? `unsynced (${friendUnsyncedBadge})`
+                          : (instanceFriendLinkStatus.status || "linked").replace(/_/g, " ")}
                       </div>
                       <div className="muted">
                         {friendOnlinePeers}/{friendPeerTotal} peer{friendPeerTotal === 1 ? "" : "s"} online
                         {instanceFriendLinkStatus.pending_conflicts_count > 0
                           ? ` • ${instanceFriendLinkStatus.pending_conflicts_count} conflict${instanceFriendLinkStatus.pending_conflicts_count === 1 ? "" : "s"} pending`
-                          : " • No pending conflicts"}
+                          : friendUnsyncedBadge
+                            ? ` • Unsynced ${friendUnsyncedBadge}`
+                            : " • No pending conflicts"}
                       </div>
                     </div>
                     <div className="instanceNoticeActions">
@@ -11781,6 +11929,7 @@ export default function App() {
                         className="btn"
                         onClick={() => void onManualFriendLinkSync(inst.id)}
                         disabled={friendLinkSyncBusyInstanceId === inst.id}
+                        title="Run Friend Link sync now."
                       >
                         {friendLinkSyncBusyInstanceId === inst.id ? "Syncing…" : "Sync now"}
                       </button>
@@ -11800,7 +11949,7 @@ export default function App() {
                           Resolve conflicts
                         </button>
                       ) : null}
-                      <button className="btn" onClick={() => setInstanceLinksOpen(true)}>
+                      <button className="btn" title="Open full Links panel with sync policy, trust, and selective sync controls." onClick={() => setInstanceLinksOpen(true)}>
                         Open links
                       </button>
                     </div>
@@ -12911,9 +13060,37 @@ export default function App() {
                   instance={inst}
                   onNotice={(message) => setInstallNotice(message)}
                   onError={(message) => setError(message)}
+                  onFriendStatusChange={(instanceId, status) => {
+                    setFriendLinkStatusByInstance((prev) => {
+                      const next = { ...prev };
+                      if (status) next[instanceId] = status;
+                      else delete next[instanceId];
+                      return next;
+                    });
+                    if (selectedId === instanceId) {
+                      setInstanceFriendLinkStatus(status);
+                    }
+                  }}
+                  onDriftPreviewChange={(instanceId, preview) => {
+                    setFriendLinkDriftByInstance((prev) => {
+                      const next = { ...prev };
+                      if (preview) next[instanceId] = preview;
+                      else delete next[instanceId];
+                      return next;
+                    });
+                    const signature = friendLinkDriftSignature(preview);
+                    if (signature) friendLinkDriftAnnounceRef.current[instanceId] = signature;
+                    else delete friendLinkDriftAnnounceRef.current[instanceId];
+                  }}
+                  onActivity={(instanceId, message, tone) => appendInstanceActivity(instanceId, [message], tone)}
                   onFriendConflict={(instanceId, result) => {
                     setFriendConflictInstanceId(instanceId);
                     setFriendConflictResult(result);
+                  }}
+                  onContentSync={(instanceId) => {
+                    if (route === "instance" && selectedId === instanceId) {
+                      void refreshInstalledMods(instanceId);
+                    }
                   }}
                 />
               </div>

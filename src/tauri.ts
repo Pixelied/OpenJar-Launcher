@@ -45,6 +45,7 @@ import type {
   ModpackApplyResult,
   InstanceModpackStatus,
   DriftReport,
+  FriendLinkDriftPreview,
   FriendLinkDebugBundleResult,
   FriendLinkInvite,
   FriendLinkReconcileResult,
@@ -689,6 +690,12 @@ export function getFriendLinkStatus(input: {
   return invoke("get_friend_link_status", { args: input });
 }
 
+export function previewFriendLinkDrift(input: {
+  instanceId: string;
+}): Promise<FriendLinkDriftPreview> {
+  return invoke("preview_friend_link_drift", { args: input });
+}
+
 export function setFriendLinkAllowlist(input: {
   instanceId: string;
   allowlist: string[];
@@ -708,6 +715,34 @@ export function resolveFriendLinkConflicts(input: {
   resolution: ConflictResolutionPayload;
 }): Promise<FriendLinkReconcileResult> {
   return invoke("resolve_friend_link_conflicts", { args: input });
+}
+
+export function syncFriendLinkSelected(input: {
+  instanceId: string;
+  keys?: string[];
+  metadataOnly?: boolean;
+}): Promise<FriendLinkReconcileResult> {
+  return invoke("sync_friend_link_selected", { args: input });
+}
+
+export function setFriendLinkGuardrails(input: {
+  instanceId: string;
+  trustedPeerIds: string[];
+  maxAutoChanges?: number;
+  syncMods?: boolean;
+  syncResourcepacks?: boolean;
+  syncShaderpacks?: boolean;
+  syncDatapacks?: boolean;
+}): Promise<FriendLinkStatus> {
+  return invoke("set_friend_link_guardrails", { args: input });
+}
+
+export function setFriendLinkPeerAlias(input: {
+  instanceId: string;
+  peerId: string;
+  displayName?: string;
+}): Promise<FriendLinkStatus> {
+  return invoke("set_friend_link_peer_alias", { args: input });
 }
 
 export function exportFriendLinkDebugBundle(input: {

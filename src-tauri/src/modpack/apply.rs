@@ -31,7 +31,7 @@ pub fn apply_plan_to_instance(
 
     let instances_dir = crate::app_instances_dir(app)?;
     let instance = crate::find_instance(&instances_dir, &plan.target.id)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = crate::instance_dir_for_instance(&instances_dir, &instance);
     let mut lock = crate::read_lockfile(&instances_dir, &instance.id)?;
 
     let snapshot_id = if !plan.resolved_mods.is_empty() {

@@ -1,7 +1,7 @@
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -113,7 +113,7 @@ fn default_lock_version() -> u32 {
 fn normalized_content_type(input: &str) -> String {
     match input.trim().to_lowercase().as_str() {
         "mods" | "mod" => "mods".to_string(),
-        "resourcepacks" | "resourcepack" => "resourcepacks".to_string(),
+        "resourcepacks" | "resourcepack" | "texturepacks" | "texturepack" => "resourcepacks".to_string(),
         "shaderpacks" | "shaderpack" | "shader" | "shaders" => "shaderpacks".to_string(),
         "datapacks" | "datapack" => "datapacks".to_string(),
         _ => "mods".to_string(),
@@ -157,7 +157,8 @@ pub fn app_instances_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 pub fn instance_dir(instances_dir: &Path, instance_id: &str) -> PathBuf {
-    instances_dir.join(instance_id)
+    crate::instance_dir_for_id(instances_dir, instance_id)
+        .unwrap_or_else(|_| instances_dir.join(instance_id))
 }
 
 pub fn lock_file_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
@@ -194,6 +195,42 @@ fn compute_sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+fn normalize_hash_value(input: &str) -> String {
+    input
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn normalized_hashes_pairs(input: &HashMap<String, String>) -> Vec<(String, String)> {
+    let mut dedup = BTreeMap::<String, String>::new();
+    for (raw_key, raw_value) in input {
+        let key = raw_key.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        let value = normalize_hash_value(raw_value);
+        if value.is_empty() {
+            continue;
+        }
+        dedup
+            .entry(key)
+            .and_modify(|existing| {
+                if value < *existing {
+                    *existing = value.clone();
+                }
+            })
+            .or_insert(value);
+    }
+    dedup.into_iter().collect()
+}
+
+fn normalized_hashes_map(input: &HashMap<String, String>) -> HashMap<String, String> {
+    normalized_hashes_pairs(input).into_iter().collect()
+}
+
 fn lock_key_for(entry: &CanonicalLockEntry) -> String {
     format!(
         "lock::{}::{}::{}",
@@ -206,7 +243,22 @@ fn lock_key_for(entry: &CanonicalLockEntry) -> String {
 pub fn lock_entry_hash(entry: &CanonicalLockEntry) -> String {
     let mut normalized = entry.clone();
     normalized.target_worlds.sort();
-    let raw = serde_json::to_vec(&normalized).unwrap_or_default();
+    normalized.target_worlds.dedup();
+    let normalized_hashes = normalized_hashes_pairs(&normalized.hashes);
+    let canonical = (
+        normalized.source.trim().to_ascii_lowercase(),
+        normalized.project_id.trim().to_ascii_lowercase(),
+        normalized.version_id.trim().to_string(),
+        normalized.name.trim().to_string(),
+        normalized.version_number.trim().to_string(),
+        normalized.filename.trim().to_string(),
+        normalized_content_type(&normalized.content_type),
+        normalized_target_scope(&normalized.target_scope),
+        normalized.target_worlds,
+        normalized.enabled,
+        normalized_hashes,
+    );
+    let raw = serde_json::to_vec(&canonical).unwrap_or_default();
     compute_sha256_hex(&raw)
 }
 
@@ -307,26 +359,21 @@ pub fn collect_sync_state(
 
     let config_files = collect_allowlisted_config_files(instances_dir, instance_id, allowlist)?;
 
-    let manifest = serde_json::json!({
-        "lock": lock_entries,
-        "config": config_files
+    let manifest_for_hash = state_manifest(&SyncState {
+        state_hash: String::new(),
+        lock_entries: lock_entries.clone(),
+        config_files: config_files.clone(),
     });
     let state_hash = compute_sha256_hex(
-        serde_json::to_vec(&manifest)
+        serde_json::to_vec(&manifest_for_hash)
             .map_err(|e| format!("serialize sync state for hashing failed: {e}"))?
             .as_slice(),
     );
 
     Ok(SyncState {
         state_hash,
-        lock_entries: manifest
-            .get("lock")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
-        config_files: manifest
-            .get("config")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
+        lock_entries,
+        config_files,
     })
 }
 
@@ -405,9 +452,13 @@ pub fn read_lock_entries(instances_dir: &Path, instance_id: &str) -> Result<Vec<
             filename: entry.filename,
             content_type,
             target_scope,
-            target_worlds,
+            target_worlds: {
+                target_worlds.sort();
+                target_worlds.dedup();
+                target_worlds
+            },
             enabled: entry.enabled,
-            hashes: entry.hashes,
+            hashes: normalized_hashes_map(&entry.hashes),
         });
     }
     Ok(out)

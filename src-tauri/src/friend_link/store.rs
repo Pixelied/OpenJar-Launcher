@@ -80,6 +80,44 @@ pub struct FriendLinkSessionRecord {
     pub pending_conflicts: Vec<FriendSyncConflictRecord>,
     #[serde(default)]
     pub cached_peer_state: HashMap<String, SyncState>,
+    #[serde(default)]
+    pub bootstrap_host_peer_id: Option<String>,
+    #[serde(default)]
+    pub trusted_peer_ids: Vec<String>,
+    #[serde(default)]
+    pub trusted_peer_ids_initialized: bool,
+    #[serde(default)]
+    pub peer_aliases: HashMap<String, String>,
+    #[serde(default = "default_friend_link_max_auto_changes")]
+    pub max_auto_changes: usize,
+    #[serde(default = "default_sync_mods")]
+    pub sync_mods: bool,
+    #[serde(default = "default_sync_resourcepacks")]
+    pub sync_resourcepacks: bool,
+    #[serde(default = "default_sync_shaderpacks")]
+    pub sync_shaderpacks: bool,
+    #[serde(default = "default_sync_datapacks")]
+    pub sync_datapacks: bool,
+}
+
+fn default_friend_link_max_auto_changes() -> usize {
+    25
+}
+
+fn default_sync_mods() -> bool {
+    true
+}
+
+fn default_sync_resourcepacks() -> bool {
+    false
+}
+
+fn default_sync_shaderpacks() -> bool {
+    true
+}
+
+fn default_sync_datapacks() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

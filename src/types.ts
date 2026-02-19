@@ -3,6 +3,7 @@ export type Loader = "fabric" | "forge" | "quilt" | "neoforge" | "vanilla";
 export type Instance = {
   id: string;
   name: string;
+  folder_name?: string | null;
   mc_version: string;
   loader: Loader;
   created_at: string;
@@ -479,6 +480,37 @@ export type FriendLinkStatus = {
   pending_conflicts_count: number;
   status: string;
   last_good_hash?: string | null;
+  trusted_peer_ids: string[];
+  max_auto_changes: number;
+  sync_mods: boolean;
+  sync_resourcepacks: boolean;
+  sync_shaderpacks: boolean;
+  sync_datapacks: boolean;
+};
+
+export type FriendLinkDriftItem = {
+  id: string;
+  key: string;
+  kind: FriendSyncItemKind;
+  change: "added" | "removed" | "changed" | string;
+  peer_id: string;
+  peer_display_name: string;
+  mine_preview?: string | null;
+  theirs_preview?: string | null;
+  trusted_peer: boolean;
+};
+
+export type FriendLinkDriftPreview = {
+  instance_id: string;
+  status: "unlinked" | "in_sync" | "unsynced" | "offline" | "no_peers" | "conflicted" | string;
+  added: number;
+  removed: number;
+  changed: number;
+  total_changes: number;
+  items: FriendLinkDriftItem[];
+  online_peers: number;
+  peer_count: number;
+  has_untrusted_changes: boolean;
 };
 
 export type FriendSyncItemKind = "lock_entry" | "config_file" | string;

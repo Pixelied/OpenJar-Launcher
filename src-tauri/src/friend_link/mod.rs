@@ -4,7 +4,7 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::friend_link::net::{endpoint_for_port, request_lock_entry_file, HelloPayload};
+use crate::friend_link::net::{endpoint_for_port, request_lock_entry_file, request_state, HelloPayload};
 use crate::friend_link::state::{
     app_instances_dir, collect_sync_state, config_file_map, lock_entry_hash, lock_entry_map, preview_for_config_file,
     preview_for_lock_entry, state_manifest, CanonicalLockEntry, ConfigFileState, InstanceConfigFileEntry,
@@ -18,11 +18,23 @@ use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_P
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
 use uuid::Uuid;
 
 const PROTOCOL_VERSION: u32 = 1;
-const MAX_PEERS: usize = 4;
+const MAX_PEERS: usize = 8;
+
+async fn run_friend_link_blocking<T, F>(label: &str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| format!("{label} task join failed: {e}"))?
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FriendLinkInvite {
@@ -63,6 +75,48 @@ pub struct FriendLinkStatus {
     pub status: String,
     #[serde(default)]
     pub last_good_hash: Option<String>,
+    #[serde(default)]
+    pub trusted_peer_ids: Vec<String>,
+    #[serde(default)]
+    pub max_auto_changes: usize,
+    #[serde(default)]
+    pub sync_mods: bool,
+    #[serde(default)]
+    pub sync_resourcepacks: bool,
+    #[serde(default)]
+    pub sync_shaderpacks: bool,
+    #[serde(default)]
+    pub sync_datapacks: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendLinkDriftItem {
+    pub id: String,
+    pub key: String,
+    pub kind: FriendSyncItemKind,
+    pub change: String,
+    pub peer_id: String,
+    pub peer_display_name: String,
+    #[serde(default)]
+    pub mine_preview: Option<String>,
+    #[serde(default)]
+    pub theirs_preview: Option<String>,
+    pub trusted_peer: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendLinkDriftPreview {
+    pub instance_id: String,
+    pub status: String,
+    pub added: usize,
+    pub removed: usize,
+    pub changed: usize,
+    pub total_changes: usize,
+    #[serde(default)]
+    pub items: Vec<FriendLinkDriftItem>,
+    pub online_peers: usize,
+    pub peer_count: usize,
+    pub has_untrusted_changes: bool,
 }
 
 pub type FriendSyncItemKind = String;
@@ -200,6 +254,50 @@ pub struct ExportFriendLinkDebugBundleArgs {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct PreviewFriendLinkDriftArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SyncFriendLinkSelectedArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    #[serde(alias = "metadataOnly", default)]
+    pub metadata_only: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetFriendLinkGuardrailsArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    #[serde(alias = "trustedPeerIds", default)]
+    pub trusted_peer_ids: Vec<String>,
+    #[serde(alias = "maxAutoChanges", default)]
+    pub max_auto_changes: Option<usize>,
+    #[serde(alias = "syncMods", default)]
+    pub sync_mods: Option<bool>,
+    #[serde(alias = "syncResourcepacks", default)]
+    pub sync_resourcepacks: Option<bool>,
+    #[serde(alias = "syncShaderpacks", default)]
+    pub sync_shaderpacks: Option<bool>,
+    #[serde(alias = "syncDatapacks", default)]
+    pub sync_datapacks: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetFriendLinkPeerAliasArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    #[serde(alias = "peerId")]
+    pub peer_id: String,
+    #[serde(alias = "displayName", default)]
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ListInstanceConfigFilesArgs {
     #[serde(alias = "instanceId")]
     pub instance_id: String,
@@ -235,6 +333,25 @@ fn sanitize_display_name(input: Option<String>, fallback_suffix: &str) -> String
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| format!("Peer-{}", fallback_suffix))
+}
+
+fn sanitize_peer_alias(input: Option<String>) -> Option<String> {
+    let trimmed = input.unwrap_or_default().trim().to_string();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    for ch in trimmed.chars() {
+        if out.chars().count() >= 48 {
+            break;
+        }
+        out.push(ch);
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
 }
 
 fn random_secret_b64() -> String {
@@ -284,8 +401,128 @@ fn normalize_allowlist(input: &[String]) -> Vec<String> {
     out
 }
 
+fn normalize_trusted_peer_ids(session: &FriendLinkSessionRecord, input: &[String]) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for peer_id in input {
+        let normalized = peer_id.trim().to_string();
+        if normalized.is_empty() {
+            continue;
+        }
+        if !session.peers.iter().any(|peer| peer.peer_id == normalized) {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    out
+}
+
+fn default_trusted_peer_ids(session: &FriendLinkSessionRecord) -> Vec<String> {
+    session
+        .peers
+        .iter()
+        .map(|peer| peer.peer_id.clone())
+        .collect::<Vec<_>>()
+}
+
+fn ensure_trusted_peer_ids_initialized(session: &mut FriendLinkSessionRecord) {
+    let normalized = normalize_trusted_peer_ids(session, &session.trusted_peer_ids);
+    if session.trusted_peer_ids_initialized {
+        session.trusted_peer_ids = normalized;
+        return;
+    }
+    if normalized.is_empty() {
+        if session.peers.is_empty() {
+            session.trusted_peer_ids = normalized;
+            return;
+        }
+        session.trusted_peer_ids = default_trusted_peer_ids(session);
+    } else {
+        session.trusted_peer_ids = normalized;
+    }
+    session.trusted_peer_ids_initialized = true;
+}
+
+fn normalize_peer_aliases(session: &FriendLinkSessionRecord, input: &HashMap<String, String>) -> HashMap<String, String> {
+    let peer_ids = session
+        .peers
+        .iter()
+        .map(|peer| peer.peer_id.clone())
+        .collect::<HashSet<_>>();
+    let mut out = HashMap::<String, String>::new();
+    for (peer_id, alias) in input {
+        if !peer_ids.contains(peer_id) {
+            continue;
+        }
+        if let Some(cleaned) = sanitize_peer_alias(Some(alias.clone())) {
+            out.insert(peer_id.clone(), cleaned);
+        }
+    }
+    out
+}
+
+fn peer_display_name(session: &FriendLinkSessionRecord, peer_id: &str, fallback: &str) -> String {
+    session
+        .peer_aliases
+        .get(peer_id)
+        .and_then(|value| sanitize_peer_alias(Some(value.clone())))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn normalize_session_friend_link_settings(session: &mut FriendLinkSessionRecord) {
+    ensure_trusted_peer_ids_initialized(session);
+    session.peer_aliases = normalize_peer_aliases(session, &session.peer_aliases);
+    if session.max_auto_changes == 0 {
+        session.max_auto_changes = 25;
+    }
+}
+
+fn normalize_max_auto_changes(input: Option<usize>) -> usize {
+    input.unwrap_or(25).clamp(1, 500)
+}
+
+fn normalize_sync_mods(input: Option<bool>) -> bool {
+    input.unwrap_or(true)
+}
+
+fn normalize_sync_resourcepacks(input: Option<bool>) -> bool {
+    input.unwrap_or(false)
+}
+
+fn normalize_sync_shaderpacks(input: Option<bool>) -> bool {
+    input.unwrap_or(true)
+}
+
+fn normalize_sync_datapacks(input: Option<bool>) -> bool {
+    input.unwrap_or(true)
+}
+
+fn normalized_content_type_for_sync(input: &str) -> &'static str {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "mod" | "mods" => "mods",
+        "resourcepack" | "resourcepacks" | "texturepack" | "texturepacks" => "resourcepacks",
+        "shader" | "shaders" | "shaderpack" | "shaderpacks" => "shaderpacks",
+        "datapack" | "datapacks" => "datapacks",
+        _ => "mods",
+    }
+}
+
+fn lock_entry_sync_enabled(session: &FriendLinkSessionRecord, entry: &CanonicalLockEntry) -> bool {
+    match normalized_content_type_for_sync(&entry.content_type) {
+        "mods" => normalize_sync_mods(Some(session.sync_mods)),
+        "resourcepacks" => normalize_sync_resourcepacks(Some(session.sync_resourcepacks)),
+        "shaderpacks" => normalize_sync_shaderpacks(Some(session.sync_shaderpacks)),
+        "datapacks" => normalize_sync_datapacks(Some(session.sync_datapacks)),
+        _ => true,
+    }
+}
+
 fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> FriendLinkStatus {
     if let Some(session) = session {
+        let trusted_peer_ids = normalize_trusted_peer_ids(session, &session.trusted_peer_ids);
+        let peer_aliases = normalize_peer_aliases(session, &session.peer_aliases);
         FriendLinkStatus {
             instance_id: instance_id.to_string(),
             linked: true,
@@ -299,7 +536,10 @@ fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> Fr
                 .iter()
                 .map(|peer| FriendLinkPeer {
                     peer_id: peer.peer_id.clone(),
-                    display_name: peer.display_name.clone(),
+                    display_name: peer_aliases
+                        .get(&peer.peer_id)
+                        .cloned()
+                        .unwrap_or_else(|| peer.display_name.clone()),
                     endpoint: peer.endpoint.clone(),
                     online: peer.online,
                     last_seen_at: peer.last_seen_at.clone(),
@@ -315,6 +555,12 @@ fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> Fr
                 .last_good_snapshot
                 .as_ref()
                 .map(|snap| snap.state_hash.clone()),
+            trusted_peer_ids: trusted_peer_ids.clone(),
+            max_auto_changes: normalize_max_auto_changes(Some(session.max_auto_changes)),
+            sync_mods: normalize_sync_mods(Some(session.sync_mods)),
+            sync_resourcepacks: normalize_sync_resourcepacks(Some(session.sync_resourcepacks)),
+            sync_shaderpacks: normalize_sync_shaderpacks(Some(session.sync_shaderpacks)),
+            sync_datapacks: normalize_sync_datapacks(Some(session.sync_datapacks)),
         }
     } else {
         FriendLinkStatus {
@@ -329,6 +575,12 @@ fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> Fr
             pending_conflicts_count: 0,
             status: "unlinked".to_string(),
             last_good_hash: None,
+            trusted_peer_ids: vec![],
+            max_auto_changes: 25,
+            sync_mods: true,
+            sync_resourcepacks: false,
+            sync_shaderpacks: true,
+            sync_datapacks: true,
         }
     }
 }
@@ -462,6 +714,203 @@ fn sync_conflicts_public(conflicts: &[FriendSyncConflictRecord]) -> Vec<FriendSy
         .collect()
 }
 
+#[derive(Debug, Clone)]
+struct PeerStateSnapshot {
+    peer_id: String,
+    display_name: String,
+    state: SyncState,
+}
+
+fn collect_remote_peer_states(session: &mut FriendLinkSessionRecord) -> (Vec<PeerStateSnapshot>, usize) {
+    let mut snapshots = Vec::<PeerStateSnapshot>::new();
+    let mut online = 0usize;
+    for peer in session.peers.clone() {
+        let response = request_state(session, &peer.endpoint);
+        let peer_idx = session.peers.iter().position(|p| p.peer_id == peer.peer_id);
+        match response {
+            Ok(payload) => {
+                online += 1;
+                if let Some(idx) = peer_idx {
+                    session.peers[idx].online = true;
+                    session.peers[idx].last_seen_at = Some(now_iso());
+                    session.peers[idx].last_state_hash = Some(payload.state.state_hash.clone());
+                }
+                session
+                    .cached_peer_state
+                    .insert(peer.peer_id.clone(), payload.state.clone());
+                snapshots.push(PeerStateSnapshot {
+                    peer_id: peer.peer_id.clone(),
+                    display_name: peer.display_name.clone(),
+                    state: payload.state,
+                });
+            }
+            Err(_) => {
+                if let Some(idx) = peer_idx {
+                    session.peers[idx].online = false;
+                }
+            }
+        }
+    }
+    (snapshots, online)
+}
+
+fn build_friend_link_drift_preview(
+    instance_id: &str,
+    session: &FriendLinkSessionRecord,
+    local_state: &SyncState,
+    peer_states: &[PeerStateSnapshot],
+    online_peers: usize,
+) -> FriendLinkDriftPreview {
+    let local_lock = lock_entry_map(&local_state.lock_entries);
+    let local_config = config_file_map(&local_state.config_files);
+    let trusted_peers = normalize_trusted_peer_ids(session, &session.trusted_peer_ids)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut items = Vec::<FriendLinkDriftItem>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for peer in peer_states {
+        let peer_name = peer_display_name(session, &peer.peer_id, &peer.display_name);
+        let remote_lock = lock_entry_map(&peer.state.lock_entries);
+        for (key, remote_entry) in &remote_lock {
+            if !lock_entry_sync_enabled(session, remote_entry) {
+                continue;
+            }
+            let local = local_lock.get(key);
+            let change = if local.is_none() {
+                Some("added")
+            } else if local.map(lock_entry_hash).as_deref() != Some(lock_entry_hash(remote_entry).as_str()) {
+                Some("changed")
+            } else {
+                None
+            };
+            let Some(change) = change else { continue };
+            let dedupe = format!("{}::{key}::{change}", peer.peer_id);
+            if !seen.insert(dedupe) {
+                continue;
+            }
+            items.push(FriendLinkDriftItem {
+                id: format!("drift_{}", Uuid::new_v4()),
+                key: key.clone(),
+                kind: "lock_entry".to_string(),
+                change: change.to_string(),
+                peer_id: peer.peer_id.clone(),
+                peer_display_name: peer_name.clone(),
+                mine_preview: local.map(preview_for_lock_entry),
+                theirs_preview: Some(preview_for_lock_entry(remote_entry)),
+                trusted_peer: trusted_peers.contains(&peer.peer_id),
+            });
+        }
+        if peer_states.len() == 1 {
+            for (key, local_entry) in &local_lock {
+                if !lock_entry_sync_enabled(session, local_entry) {
+                    continue;
+                }
+                if remote_lock.contains_key(key) {
+                    continue;
+                }
+                let dedupe = format!("{}::{key}::removed", peer.peer_id);
+                if !seen.insert(dedupe) {
+                    continue;
+                }
+                items.push(FriendLinkDriftItem {
+                    id: format!("drift_{}", Uuid::new_v4()),
+                    key: key.clone(),
+                    kind: "lock_entry".to_string(),
+                    change: "removed".to_string(),
+                    peer_id: peer.peer_id.clone(),
+                    peer_display_name: peer_name.clone(),
+                    mine_preview: Some(preview_for_lock_entry(local_entry)),
+                    theirs_preview: None,
+                    trusted_peer: trusted_peers.contains(&peer.peer_id),
+                });
+            }
+        }
+
+        let remote_config = config_file_map(&peer.state.config_files);
+        for (key, remote_file) in &remote_config {
+            let local = local_config.get(key);
+            let change = if local.is_none() {
+                Some("added")
+            } else if local.map(|v| v.hash.as_str()) != Some(remote_file.hash.as_str()) {
+                Some("changed")
+            } else {
+                None
+            };
+            let Some(change) = change else { continue };
+            let dedupe = format!("{}::{key}::{change}", peer.peer_id);
+            if !seen.insert(dedupe) {
+                continue;
+            }
+            items.push(FriendLinkDriftItem {
+                id: format!("drift_{}", Uuid::new_v4()),
+                key: key.clone(),
+                kind: "config_file".to_string(),
+                change: change.to_string(),
+                peer_id: peer.peer_id.clone(),
+                peer_display_name: peer_name.clone(),
+                mine_preview: local.map(preview_for_config_file),
+                theirs_preview: Some(preview_for_config_file(remote_file)),
+                trusted_peer: trusted_peers.contains(&peer.peer_id),
+            });
+        }
+        if peer_states.len() == 1 {
+            for (key, local_file) in &local_config {
+                if remote_config.contains_key(key) {
+                    continue;
+                }
+                let dedupe = format!("{}::{key}::removed", peer.peer_id);
+                if !seen.insert(dedupe) {
+                    continue;
+                }
+                items.push(FriendLinkDriftItem {
+                    id: format!("drift_{}", Uuid::new_v4()),
+                    key: key.clone(),
+                    kind: "config_file".to_string(),
+                    change: "removed".to_string(),
+                    peer_id: peer.peer_id.clone(),
+                    peer_display_name: peer_name.clone(),
+                    mine_preview: Some(preview_for_config_file(local_file)),
+                    theirs_preview: None,
+                    trusted_peer: trusted_peers.contains(&peer.peer_id),
+                });
+            }
+        }
+    }
+
+    let added = items.iter().filter(|item| item.change == "added").count();
+    let removed = items.iter().filter(|item| item.change == "removed").count();
+    let changed = items.iter().filter(|item| item.change == "changed").count();
+    let total_changes = items.len();
+    let has_untrusted_changes = items.iter().any(|item| !item.trusted_peer);
+    let status = if session.pending_conflicts.is_empty() {
+        if session.peers.is_empty() {
+            "no_peers".to_string()
+        } else if online_peers == 0 {
+            "offline".to_string()
+        } else if total_changes == 0 {
+            "in_sync".to_string()
+        } else {
+            "unsynced".to_string()
+        }
+    } else {
+        "conflicted".to_string()
+    };
+
+    FriendLinkDriftPreview {
+        instance_id: instance_id.to_string(),
+        status,
+        added,
+        removed,
+        changed,
+        total_changes,
+        items,
+        online_peers,
+        peer_count: session.peers.len(),
+        has_untrusted_changes,
+    }
+}
+
 fn store_last_good(session: &mut FriendLinkSessionRecord, local_state: &SyncState) {
     let manifest = state_manifest(local_state)
         .into_iter()
@@ -499,11 +948,138 @@ fn apply_config_file(
     Ok(())
 }
 
+fn remove_lock_entry_binaries(
+    instances_dir: &PathBuf,
+    instance_id: &str,
+    entry: &CanonicalLockEntry,
+) -> Result<usize, String> {
+    let mut removed = 0usize;
+    for path in state::lock_entry_paths(instances_dir, instance_id, entry) {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("remove content file failed: {e}"))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn remove_config_file_by_key(
+    instances_dir: &PathBuf,
+    instance_id: &str,
+    key: &str,
+) -> Result<bool, String> {
+    let Some(rel) = key.strip_prefix("config::") else {
+        return Ok(false);
+    };
+    let instance_dir = state::instance_dir(instances_dir, instance_id);
+    let path = instance_dir.join(rel);
+    if !path.exists() {
+        return Ok(false);
+    }
+    fs::remove_file(&path).map_err(|e| format!("remove config file failed: {e}"))?;
+    Ok(true)
+}
+
 fn supports_binary_sync(entry: &CanonicalLockEntry) -> bool {
     matches!(
         entry.content_type.trim().to_lowercase().as_str(),
         "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
     )
+}
+
+fn normalize_hash_hex(input: &str) -> String {
+    input
+        .trim()
+        .chars()
+        .filter(|ch| ch.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn verify_bytes_against_entry_hashes(bytes: &[u8], entry: &CanonicalLockEntry) -> Result<(), String> {
+    let mut expected_sha512 = None::<String>;
+    let mut expected_sha256 = None::<String>;
+    for (key, value) in &entry.hashes {
+        let normalized_key = key.trim().to_ascii_lowercase();
+        if expected_sha512.is_none() && (normalized_key == "sha512" || normalized_key == "sha-512") {
+            let cleaned = normalize_hash_hex(value);
+            if !cleaned.is_empty() {
+                expected_sha512 = Some(cleaned);
+            }
+        } else if expected_sha256.is_none() && (normalized_key == "sha256" || normalized_key == "sha-256") {
+            let cleaned = normalize_hash_hex(value);
+            if !cleaned.is_empty() {
+                expected_sha256 = Some(cleaned);
+            }
+        }
+    }
+    if expected_sha512.is_none() && expected_sha256.is_none() {
+        return Ok(());
+    }
+
+    if let Some(expected) = expected_sha512 {
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha512::new();
+        hasher.update(bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != expected {
+            return Err("sha512 mismatch".to_string());
+        }
+        return Ok(());
+    }
+
+    if let Some(expected) = expected_sha256 {
+        use sha2::Digest as _;
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(bytes);
+        let actual = format!("{:x}", hasher.finalize());
+        if actual != expected {
+            return Err("sha256 mismatch".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn download_lock_entry_bytes_from_provider(
+    client: &reqwest::blocking::Client,
+    entry: &CanonicalLockEntry,
+) -> Result<Option<Vec<u8>>, String> {
+    let source = entry.source.trim().to_ascii_lowercase();
+    if source == "modrinth" {
+        let version_id = entry.version_id.trim();
+        if version_id.is_empty() {
+            return Ok(None);
+        }
+        let version = crate::fetch_version_by_id(client, version_id)?;
+        let file = version
+            .files
+            .iter()
+            .find(|f| f.filename.trim().eq_ignore_ascii_case(entry.filename.trim()))
+            .or_else(|| version.files.iter().find(|f| f.primary.unwrap_or(false)))
+            .or_else(|| version.files.first())
+            .ok_or_else(|| format!("Modrinth version {} has no files", version.id))?;
+        let bytes = crate::download_bytes_with_retry(client, &file.url, &entry.project_id)?;
+        verify_bytes_against_entry_hashes(&bytes, entry)?;
+        return Ok(Some(bytes));
+    }
+
+    if source == "curseforge" {
+        let Some(api_key) = crate::curseforge_api_key() else {
+            return Ok(None);
+        };
+        let mod_id = crate::parse_curseforge_project_id(&entry.project_id)?;
+        let Some(file_id) = crate::parse_curseforge_file_id(&entry.version_id) else {
+            return Ok(None);
+        };
+        let file = crate::fetch_curseforge_file(client, &api_key, mod_id, file_id)?;
+        let url = crate::resolve_curseforge_file_download_url(client, &api_key, mod_id, &file)?;
+        let bytes = crate::download_bytes_with_retry(client, &url, &format!("cf:{mod_id}:{file_id}"))?;
+        verify_bytes_against_entry_hashes(&bytes, entry)?;
+        return Ok(Some(bytes));
+    }
+
+    Ok(None)
 }
 
 fn sync_lock_entry_binaries(
@@ -515,16 +1091,23 @@ fn sync_lock_entry_binaries(
     actions: &mut Vec<FriendLinkReconcileAction>,
     warnings: &mut Vec<String>,
 ) -> Result<usize, String> {
+    let trusted_peer_ids = normalize_trusted_peer_ids(session, &session.trusted_peer_ids)
+        .into_iter()
+        .collect::<HashSet<_>>();
     let peer_endpoint_by_id = session
         .peers
         .iter()
-        .filter(|peer| peer.online)
+        .filter(|peer| peer.online && trusted_peer_ids.contains(&peer.peer_id))
         .map(|peer| (peer.peer_id.clone(), peer.endpoint.clone()))
         .collect::<HashMap<_, _>>();
+    let provider_client = crate::build_http_client().ok();
 
     let mut failure_count = 0usize;
     for (key, entry) in lock_map {
         if !supports_binary_sync(entry) {
+            continue;
+        }
+        if !lock_entry_sync_enabled(session, entry) {
             continue;
         }
         let missing = state::lock_entry_file_missing(instances_dir, instance_id, entry);
@@ -595,6 +1178,31 @@ fn sync_lock_entry_binaries(
             }
         }
 
+        if !synced {
+            if let Some(client) = provider_client.as_ref() {
+                match download_lock_entry_bytes_from_provider(client, entry) {
+                    Ok(Some(bytes)) => {
+                        let wrote = state::write_lock_entry_bytes(instances_dir, instance_id, entry, &bytes)?;
+                        actions.push(FriendLinkReconcileAction {
+                            kind: "lock_entry".to_string(),
+                            key: key.clone(),
+                            peer_id: "provider".to_string(),
+                            applied: true,
+                            message: format!(
+                                "Recovered {} binary file(s) for '{}' from provider fallback.",
+                                wrote, entry.name
+                            ),
+                        });
+                        synced = true;
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        last_error = Some(format!("provider fallback failed: {err}"));
+                    }
+                }
+            }
+        }
+
         if !synced && (missing || should_force_refresh) {
             failure_count += 1;
             warnings.push(format!(
@@ -632,6 +1240,7 @@ fn reconcile_internal(
 
     let app_data = app_data_dir(app)?;
     let _ = net::ensure_listener(app_data, session)?;
+    normalize_session_friend_link_settings(session);
 
     let instances_dir = app_instances_dir(app)?;
     let local_state = collect_sync_state(&instances_dir, instance_id, &session.allowlist)?;
@@ -648,9 +1257,24 @@ fn reconcile_internal(
     let mut warnings = Vec::<String>::new();
     let mut conflicts = Vec::<FriendSyncConflictRecord>::new();
     let mut offline_peers = 0usize;
+    let trusted_peer_ids = normalize_trusted_peer_ids(session, &session.trusted_peer_ids)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let mut skipped_review_only_peers = 0usize;
     let mut binary_preferred_peer_by_key = HashMap::<String, String>::new();
+    let bootstrap_host_peer_id = session.bootstrap_host_peer_id.clone();
+    let seed_from_host_snapshot = session.last_good_snapshot.is_none() && bootstrap_host_peer_id.is_some();
+    let seed_from_single_peer_without_baseline = session.last_good_snapshot.is_none() && session.peers.len() == 1;
 
     for peer in session.peers.clone() {
+        let peer_name = peer_display_name(session, &peer.peer_id, &peer.display_name);
+        let is_bootstrap_host_peer = seed_from_host_snapshot
+            && bootstrap_host_peer_id
+                .as_ref()
+                .map(|peer_id| peer_id == &peer.peer_id)
+                .unwrap_or(false);
+        let is_single_seed_peer = seed_from_single_peer_without_baseline;
+        let should_seed_from_peer = is_bootstrap_host_peer || is_single_seed_peer;
         let response = net::request_state(session, &peer.endpoint);
         let peer_idx = session.peers.iter().position(|p| p.peer_id == peer.peer_id);
         match response {
@@ -663,9 +1287,18 @@ fn reconcile_internal(
                 session
                     .cached_peer_state
                     .insert(peer.peer_id.clone(), payload.state.clone());
+                if !trusted_peer_ids.contains(&peer.peer_id) {
+                    if payload.state.state_hash != local_state.state_hash {
+                        skipped_review_only_peers += 1;
+                    }
+                    continue;
+                }
 
                 let remote_lock = lock_entry_map(&payload.state.lock_entries);
                 for (key, remote_entry) in &remote_lock {
+                    if !lock_entry_sync_enabled(session, remote_entry) {
+                        continue;
+                    }
                     let local = current_lock.get(key);
                     let local_hash = local.map(lock_entry_hash);
                     let remote_hash = lock_entry_hash(remote_entry);
@@ -690,7 +1323,20 @@ fn reconcile_internal(
                             key: key.clone(),
                             peer_id: peer.peer_id.clone(),
                             applied: true,
-                            message: format!("Applied lock entry from {}", peer.display_name),
+                            message: format!("Applied lock entry from {}", peer_name),
+                        });
+                    } else if remote_changed && should_seed_from_peer {
+                        current_lock.insert(key.clone(), remote_entry.clone());
+                        binary_preferred_peer_by_key.insert(key.clone(), peer.peer_id.clone());
+                        actions.push(FriendLinkReconcileAction {
+                            kind: "lock_entry".to_string(),
+                            key: key.clone(),
+                            peer_id: peer.peer_id.clone(),
+                            applied: true,
+                            message: format!(
+                                "Applied initial baseline lock entry from {}",
+                                peer_name
+                            ),
                         });
                     } else if remote_changed {
                         conflicts.push(conflict_from_lock(
@@ -725,7 +1371,19 @@ fn reconcile_internal(
                             key: key.clone(),
                             peer_id: peer.peer_id.clone(),
                             applied: true,
-                            message: format!("Applied config file from {}", peer.display_name),
+                            message: format!("Applied config file from {}", peer_name),
+                        });
+                    } else if remote_changed && should_seed_from_peer {
+                        current_config.insert(key.clone(), remote_file.clone());
+                        actions.push(FriendLinkReconcileAction {
+                            kind: "config_file".to_string(),
+                            key: key.clone(),
+                            peer_id: peer.peer_id.clone(),
+                            applied: true,
+                            message: format!(
+                                "Applied initial baseline config file from {}",
+                                peer_name
+                            ),
                         });
                     } else if remote_changed {
                         conflicts.push(conflict_from_config(
@@ -741,7 +1399,7 @@ fn reconcile_internal(
                 offline_peers += 1;
                 warnings.push(format!(
                     "Peer '{}' is offline or unreachable: {}",
-                    peer.display_name, err
+                    peer_name, err
                 ));
                 if let Some(idx) = peer_idx {
                     session.peers[idx].online = false;
@@ -756,7 +1414,7 @@ fn reconcile_internal(
             apply_config_file(&instances_dir, instance_id, file)?;
         }
     }
-    let binary_sync_failures = sync_lock_entry_binaries(
+    let mut binary_sync_failures = sync_lock_entry_binaries(
         &instances_dir,
         instance_id,
         session,
@@ -765,6 +1423,25 @@ fn reconcile_internal(
         &mut actions,
         &mut warnings,
     )?;
+    if binary_sync_failures > 0 && !mode.eq_ignore_ascii_case("prelaunch") {
+        let failures_before_retry = binary_sync_failures;
+        std::thread::sleep(Duration::from_millis(180));
+        binary_sync_failures = sync_lock_entry_binaries(
+            &instances_dir,
+            instance_id,
+            session,
+            &current_lock,
+            &binary_preferred_peer_by_key,
+            &mut actions,
+            &mut warnings,
+        )?;
+        let recovered = failures_before_retry.saturating_sub(binary_sync_failures);
+        if recovered > 0 {
+            warnings.push(format!(
+                "Auto-retry recovered {recovered} missing content file(s) after initial sync."
+            ));
+        }
+    }
 
     let local_after = collect_sync_state(&instances_dir, instance_id, &session.allowlist)?;
     let mut status = "synced".to_string();
@@ -776,6 +1453,12 @@ fn reconcile_internal(
         status = "error".to_string();
         blocked_reason = Some(format!(
             "Friend Link could not fetch {} required content file(s) from peers.",
+            binary_sync_failures
+        ));
+    } else if binary_sync_failures > 0 {
+        status = "degraded_missing_files".to_string();
+        warnings.push(format!(
+            "Friend Link applied metadata but could not fetch {} content file(s).",
             binary_sync_failures
         ));
     } else if offline_peers > 0 {
@@ -800,10 +1483,23 @@ fn reconcile_internal(
             status = "error".to_string();
         }
     }
+    if skipped_review_only_peers > 0 && status == "synced" {
+        status = "blocked_untrusted".to_string();
+        if mode.eq_ignore_ascii_case("prelaunch") {
+            blocked_reason = Some(
+                "Friend Link found changes from untrusted peers. Trust those peers before launch."
+                    .to_string(),
+                );
+        }
+        warnings.push(format!(
+            "Skipped sync from {skipped_review_only_peers} untrusted peer(s)."
+        ));
+    }
 
     session.pending_conflicts = conflicts.clone();
     if status == "synced" {
         store_last_good(session, &local_after);
+        session.bootstrap_host_peer_id = None;
         let now = now_millis();
         for peer in &session.peers {
             if peer.online {
@@ -860,12 +1556,22 @@ pub fn create_friend_link_session(
             last_good_snapshot: None,
             pending_conflicts: vec![],
             cached_peer_state: HashMap::new(),
+            bootstrap_host_peer_id: None,
+            trusted_peer_ids: vec![],
+            trusted_peer_ids_initialized: false,
+            peer_aliases: HashMap::new(),
+            max_auto_changes: 25,
+            sync_mods: true,
+            sync_resourcepacks: false,
+            sync_shaderpacks: true,
+            sync_datapacks: true,
         }
     };
 
     let app_data = app_data_dir(&app)?;
     let endpoint = net::ensure_listener(app_data, &mut session)?;
     session.listener_endpoint = Some(endpoint);
+    normalize_session_friend_link_settings(&mut session);
 
     upsert_session(&mut store, session.clone());
     write_store(&app, &store)?;
@@ -897,6 +1603,15 @@ pub fn join_friend_link_session(
         last_good_snapshot: None,
         pending_conflicts: vec![],
         cached_peer_state: HashMap::new(),
+        bootstrap_host_peer_id: Some(invite.host_peer_id.clone()),
+        trusted_peer_ids: vec![],
+        trusted_peer_ids_initialized: false,
+        peer_aliases: HashMap::new(),
+        max_auto_changes: 25,
+        sync_mods: true,
+        sync_resourcepacks: false,
+        sync_shaderpacks: true,
+        sync_datapacks: true,
     };
 
     let app_data = app_data_dir(&app)?;
@@ -939,8 +1654,9 @@ pub fn join_friend_link_session(
     }
 
     if session.peers.len() + 1 > MAX_PEERS {
-        return Err("Linked group is full. Maximum group size is 4 peers.".to_string());
+        return Err("Linked group is full. Maximum group size is 8 peers.".to_string());
     }
+    normalize_session_friend_link_settings(&mut session);
 
     upsert_session(&mut store, session.clone());
     write_store(&app, &store)?;
@@ -971,8 +1687,20 @@ pub fn get_friend_link_status(
     if let Some(session) = get_session_mut(&mut store, &args.instance_id) {
         let app_data = app_data_dir(&app)?;
         let endpoint = net::ensure_listener(app_data, session)?;
+        let trusted_before = session.trusted_peer_ids.clone();
+        let trusted_initialized_before = session.trusted_peer_ids_initialized;
+        let peer_aliases_before = session.peer_aliases.clone();
+        let max_auto_before = session.max_auto_changes;
+        normalize_session_friend_link_settings(session);
         if session.listener_endpoint.as_deref() != Some(endpoint.as_str()) {
             session.listener_endpoint = Some(endpoint);
+            changed = true;
+        }
+        if session.trusted_peer_ids != trusted_before
+            || session.trusted_peer_ids_initialized != trusted_initialized_before
+            || session.peer_aliases != peer_aliases_before
+            || session.max_auto_changes != max_auto_before
+        {
             changed = true;
         }
     }
@@ -991,6 +1719,7 @@ pub fn set_friend_link_allowlist(
     let mut store = read_store(&app)?;
     let session = get_session_mut(&mut store, &args.instance_id)
         .ok_or_else(|| "Instance is not linked".to_string())?;
+    normalize_session_friend_link_settings(session);
     session.allowlist = normalize_allowlist(&args.allowlist);
     let session_snapshot = session.clone();
     write_store(&app, &store)?;
@@ -998,16 +1727,409 @@ pub fn set_friend_link_allowlist(
 }
 
 #[tauri::command]
-pub fn reconcile_friend_link(
+pub fn set_friend_link_guardrails(
     app: tauri::AppHandle,
-    args: ReconcileFriendLinkArgs,
-) -> Result<FriendLinkReconcileResult, String> {
-    let mode = args.mode.unwrap_or_else(|| "manual".to_string());
-    reconcile_internal(&app, &args.instance_id, &mode)
+    args: SetFriendLinkGuardrailsArgs,
+) -> Result<FriendLinkStatus, String> {
+    let mut store = read_store(&app)?;
+    let session = get_session_mut(&mut store, &args.instance_id)
+        .ok_or_else(|| "Instance is not linked".to_string())?;
+    normalize_session_friend_link_settings(session);
+    session.trusted_peer_ids = normalize_trusted_peer_ids(session, &args.trusted_peer_ids);
+    session.trusted_peer_ids_initialized = true;
+    if let Some(limit) = args.max_auto_changes {
+        session.max_auto_changes = normalize_max_auto_changes(Some(limit));
+    } else if session.max_auto_changes == 0 {
+        session.max_auto_changes = 25;
+    }
+    if let Some(value) = args.sync_mods {
+        session.sync_mods = value;
+    }
+    if let Some(value) = args.sync_resourcepacks {
+        session.sync_resourcepacks = value;
+    }
+    if let Some(value) = args.sync_shaderpacks {
+        session.sync_shaderpacks = value;
+    }
+    if let Some(value) = args.sync_datapacks {
+        session.sync_datapacks = value;
+    }
+    let session_snapshot = session.clone();
+    write_store(&app, &store)?;
+    Ok(to_status(Some(&session_snapshot), &args.instance_id))
 }
 
 #[tauri::command]
-pub fn resolve_friend_link_conflicts(
+pub fn set_friend_link_peer_alias(
+    app: tauri::AppHandle,
+    args: SetFriendLinkPeerAliasArgs,
+) -> Result<FriendLinkStatus, String> {
+    let mut store = read_store(&app)?;
+    let session = get_session_mut(&mut store, &args.instance_id)
+        .ok_or_else(|| "Instance is not linked".to_string())?;
+    normalize_session_friend_link_settings(session);
+    let peer_id = args.peer_id.trim().to_string();
+    if peer_id.is_empty() {
+        return Err("Peer id is required".to_string());
+    }
+    if !session.peers.iter().any(|peer| peer.peer_id == peer_id) {
+        return Err("Peer not found in this Friend Link session".to_string());
+    }
+    if let Some(alias) = sanitize_peer_alias(args.display_name) {
+        session.peer_aliases.insert(peer_id, alias);
+    } else {
+        session.peer_aliases.remove(&peer_id);
+    }
+    session.peer_aliases = normalize_peer_aliases(session, &session.peer_aliases);
+    let session_snapshot = session.clone();
+    write_store(&app, &store)?;
+    Ok(to_status(Some(&session_snapshot), &args.instance_id))
+}
+
+#[tauri::command]
+pub async fn preview_friend_link_drift(
+    app: tauri::AppHandle,
+    args: PreviewFriendLinkDriftArgs,
+) -> Result<FriendLinkDriftPreview, String> {
+    run_friend_link_blocking("friend link drift preview", move || {
+        preview_friend_link_drift_inner(app, args)
+    })
+    .await
+}
+
+fn preview_friend_link_drift_inner(
+    app: tauri::AppHandle,
+    args: PreviewFriendLinkDriftArgs,
+) -> Result<FriendLinkDriftPreview, String> {
+    let mut store = read_store(&app)?;
+    let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
+        return Ok(FriendLinkDriftPreview {
+            instance_id: args.instance_id,
+            status: "unlinked".to_string(),
+            added: 0,
+            removed: 0,
+            changed: 0,
+            total_changes: 0,
+            items: vec![],
+            online_peers: 0,
+            peer_count: 0,
+            has_untrusted_changes: false,
+        });
+    };
+    let app_data = app_data_dir(&app)?;
+    let _ = net::ensure_listener(app_data, session)?;
+    normalize_session_friend_link_settings(session);
+    let instances_dir = app_instances_dir(&app)?;
+    let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
+    let (peer_states, online_peers) = collect_remote_peer_states(session);
+    let preview = build_friend_link_drift_preview(
+        &args.instance_id,
+        session,
+        &local_state,
+        &peer_states,
+        online_peers,
+    );
+    write_store(&app, &store)?;
+    Ok(preview)
+}
+
+#[tauri::command]
+pub async fn sync_friend_link_selected(
+    app: tauri::AppHandle,
+    args: SyncFriendLinkSelectedArgs,
+) -> Result<FriendLinkReconcileResult, String> {
+    run_friend_link_blocking("friend link selective sync", move || {
+        sync_friend_link_selected_inner(app, args)
+    })
+    .await
+}
+
+fn sync_friend_link_selected_inner(
+    app: tauri::AppHandle,
+    args: SyncFriendLinkSelectedArgs,
+) -> Result<FriendLinkReconcileResult, String> {
+    let mut store = read_store(&app)?;
+    let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
+        return Ok(FriendLinkReconcileResult {
+            status: "unlinked".to_string(),
+            mode: if args.metadata_only {
+                "selected_metadata".to_string()
+            } else {
+                "selected_all".to_string()
+            },
+            actions_applied: 0,
+            actions_pending: 0,
+            actions: vec![],
+            conflicts: vec![],
+            warnings: vec![],
+            blocked_reason: None,
+            local_state_hash: String::new(),
+            last_good_hash: None,
+            offline_peers: 0,
+        });
+    };
+    let app_data = app_data_dir(&app)?;
+    let _ = net::ensure_listener(app_data, session)?;
+    normalize_session_friend_link_settings(session);
+    let instances_dir = app_instances_dir(&app)?;
+    let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
+    let (peer_states, online_peers) = collect_remote_peer_states(session);
+    let preview = build_friend_link_drift_preview(
+        &args.instance_id,
+        session,
+        &local_state,
+        &peer_states,
+        online_peers,
+    );
+
+    let requested_keys = args
+        .keys
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let use_all = requested_keys.is_empty();
+    let selected_items = preview
+        .items
+        .iter()
+        .filter(|item| use_all || requested_keys.contains(&item.key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut skipped_review_only_items = 0usize;
+    let selected_items = selected_items
+        .into_iter()
+        .filter(|item| {
+            if item.trusted_peer {
+                true
+            } else {
+                skipped_review_only_items += 1;
+                false
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut actions = Vec::<FriendLinkReconcileAction>::new();
+    let mut warnings = Vec::<String>::new();
+    if selected_items.is_empty() {
+        let local_after = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
+        if skipped_review_only_items > 0 {
+            warnings.push(format!(
+                "Selected changes are from untrusted peers ({skipped_review_only_items} item(s))."
+            ));
+        }
+        let result = FriendLinkReconcileResult {
+            status: if skipped_review_only_items > 0 {
+                "blocked_untrusted".to_string()
+            } else {
+                "in_sync".to_string()
+            },
+            mode: if args.metadata_only {
+                "selected_metadata".to_string()
+            } else {
+                "selected_all".to_string()
+            },
+            actions_applied: 0,
+            actions_pending: 0,
+            actions,
+            conflicts: vec![],
+            warnings,
+            blocked_reason: None,
+            local_state_hash: local_after.state_hash,
+            last_good_hash: session.last_good_snapshot.as_ref().map(|v| v.state_hash.clone()),
+            offline_peers: session.peers.iter().filter(|peer| !peer.online).count(),
+        };
+        write_store(&app, &store)?;
+        return Ok(result);
+    }
+
+    let mut lock_map = lock_entry_map(&local_state.lock_entries);
+    let mut config_map = config_file_map(&local_state.config_files);
+
+    let peer_lock_maps = peer_states
+        .iter()
+        .map(|peer| (peer.peer_id.clone(), lock_entry_map(&peer.state.lock_entries)))
+        .collect::<HashMap<_, _>>();
+    let peer_config_maps = peer_states
+        .iter()
+        .map(|peer| (peer.peer_id.clone(), config_file_map(&peer.state.config_files)))
+        .collect::<HashMap<_, _>>();
+    let mut preferred_peer_by_key = HashMap::<String, String>::new();
+    let mut selected_lock_entries = HashMap::<String, CanonicalLockEntry>::new();
+    let mut touched_lock = false;
+    let mut touched_config = false;
+
+    for item in &selected_items {
+        if item.kind == "lock_entry" {
+            if item.change == "removed" {
+                if let Some(existing) = lock_map.remove(&item.key) {
+                    let removed_files = remove_lock_entry_binaries(&instances_dir, &args.instance_id, &existing)?;
+                    touched_lock = true;
+                    actions.push(FriendLinkReconcileAction {
+                        kind: "lock_entry".to_string(),
+                        key: item.key.clone(),
+                        peer_id: item.peer_id.clone(),
+                        applied: true,
+                        message: format!("Removed '{}' from local state ({removed_files} file(s) removed).", existing.name),
+                    });
+                }
+                continue;
+            }
+            if let Some(remote_map) = peer_lock_maps.get(&item.peer_id) {
+                if let Some(entry) = remote_map.get(&item.key) {
+                    lock_map.insert(item.key.clone(), entry.clone());
+                    selected_lock_entries.insert(item.key.clone(), entry.clone());
+                    preferred_peer_by_key.insert(item.key.clone(), item.peer_id.clone());
+                    touched_lock = true;
+                    actions.push(FriendLinkReconcileAction {
+                        kind: "lock_entry".to_string(),
+                        key: item.key.clone(),
+                        peer_id: item.peer_id.clone(),
+                        applied: true,
+                        message: format!("Applied '{}' from {}.", entry.name, item.peer_display_name),
+                    });
+                }
+            }
+        } else if item.kind == "config_file" {
+            if item.change == "removed" {
+                config_map.remove(&item.key);
+                let removed = remove_config_file_by_key(&instances_dir, &args.instance_id, &item.key)?;
+                touched_config = true;
+                actions.push(FriendLinkReconcileAction {
+                    kind: "config_file".to_string(),
+                    key: item.key.clone(),
+                    peer_id: item.peer_id.clone(),
+                    applied: true,
+                    message: if removed {
+                        "Removed config file from local state.".to_string()
+                    } else {
+                        "Removed config key from local state.".to_string()
+                    },
+                });
+                continue;
+            }
+            if let Some(remote_map) = peer_config_maps.get(&item.peer_id) {
+                if let Some(file) = remote_map.get(&item.key) {
+                    config_map.insert(item.key.clone(), file.clone());
+                    touched_config = true;
+                    actions.push(FriendLinkReconcileAction {
+                        kind: "config_file".to_string(),
+                        key: item.key.clone(),
+                        peer_id: item.peer_id.clone(),
+                        applied: true,
+                        message: format!("Applied config '{}' from {}.", file.path, item.peer_display_name),
+                    });
+                }
+            }
+        }
+    }
+
+    if touched_lock {
+        apply_lock_map(&instances_dir, &args.instance_id, &lock_map)?;
+    }
+    if touched_config {
+        for file in config_map.values() {
+            apply_config_file(&instances_dir, &args.instance_id, file)?;
+        }
+    }
+
+    let mut binary_sync_failures = 0usize;
+    if !args.metadata_only && !selected_lock_entries.is_empty() {
+        binary_sync_failures = sync_lock_entry_binaries(
+            &instances_dir,
+            &args.instance_id,
+            session,
+            &selected_lock_entries,
+            &preferred_peer_by_key,
+            &mut actions,
+            &mut warnings,
+        )?;
+    }
+
+    let local_after = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
+    let mut status = if binary_sync_failures > 0 {
+        "degraded_missing_files".to_string()
+    } else {
+        "synced".to_string()
+    };
+    if skipped_review_only_items > 0 {
+        warnings.push(format!(
+            "Skipped {skipped_review_only_items} selected item(s) from untrusted peers."
+        ));
+        if status == "synced" {
+            status = "blocked_untrusted".to_string();
+        }
+    }
+    let selected_key_set = selected_items
+        .iter()
+        .map(|item| item.key.clone())
+        .collect::<HashSet<_>>();
+    let remaining_changes = preview
+        .items
+        .iter()
+        .filter(|item| !selected_key_set.contains(&item.key))
+        .count();
+    if remaining_changes > 0 && status == "synced" {
+        status = "partial_pending".to_string();
+        warnings.push(format!(
+            "{remaining_changes} drift item(s) remain unsynced after selective sync."
+        ));
+    }
+    if binary_sync_failures > 0 {
+        warnings.push(format!(
+            "Selective sync could not fetch {binary_sync_failures} binary file(s)."
+        ));
+    }
+
+    if status == "synced" && remaining_changes == 0 {
+        store_last_good(session, &local_after);
+    }
+
+    let result = FriendLinkReconcileResult {
+        status,
+        mode: if args.metadata_only {
+            "selected_metadata".to_string()
+        } else {
+            "selected_all".to_string()
+        },
+        actions_applied: actions.iter().filter(|action| action.applied).count(),
+        actions_pending: 0,
+        actions,
+        conflicts: vec![],
+        warnings,
+        blocked_reason: None,
+        local_state_hash: local_after.state_hash,
+        last_good_hash: session.last_good_snapshot.as_ref().map(|v| v.state_hash.clone()),
+        offline_peers: session.peers.iter().filter(|peer| !peer.online).count(),
+    };
+
+    write_store(&app, &store)?;
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn reconcile_friend_link(
+    app: tauri::AppHandle,
+    args: ReconcileFriendLinkArgs,
+) -> Result<FriendLinkReconcileResult, String> {
+    run_friend_link_blocking("friend link reconcile", move || {
+        let mode = args.mode.unwrap_or_else(|| "manual".to_string());
+        reconcile_internal(&app, &args.instance_id, &mode)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn resolve_friend_link_conflicts(
+    app: tauri::AppHandle,
+    args: ResolveFriendLinkConflictsArgs,
+) -> Result<FriendLinkReconcileResult, String> {
+    run_friend_link_blocking("friend link resolve conflicts", move || {
+        resolve_friend_link_conflicts_inner(app, args)
+    })
+    .await
+}
+
+fn resolve_friend_link_conflicts_inner(
     app: tauri::AppHandle,
     args: ResolveFriendLinkConflictsArgs,
 ) -> Result<FriendLinkReconcileResult, String> {

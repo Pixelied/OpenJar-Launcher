@@ -796,6 +796,31 @@ fn preprocess_local_jar_task(
     })
 }
 
+fn adaptive_local_jar_import_workers(total_files: usize) -> usize {
+    if total_files <= 1 {
+        return total_files.max(1);
+    }
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 16);
+    let target_by_workload = if total_files >= 48 {
+        12
+    } else if total_files >= 24 {
+        10
+    } else if total_files >= 12 {
+        8
+    } else if total_files >= 6 {
+        6
+    } else {
+        4
+    };
+    target_by_workload
+        .min(cpu.saturating_mul(2))
+        .min(total_files.max(1))
+        .max(1)
+}
+
 #[tauri::command]
 pub fn import_local_jars_to_modpack_layer(
     app: tauri::AppHandle,
@@ -839,7 +864,7 @@ pub fn import_local_jars_to_modpack_layer(
             .enumerate()
             .collect::<VecDeque<(usize, String)>>(),
     ));
-    let worker_count = std::cmp::min(5, total.max(1));
+    let worker_count = adaptive_local_jar_import_workers(total);
     let (tx, rx) = mpsc::channel::<PreparedLocalImportOutcome>();
 
     for _ in 0..worker_count {
@@ -1467,7 +1492,7 @@ pub fn rollback_instance_to_last_modpack_snapshot(
 
     let instances_dir = crate::app_instances_dir(&app)?;
     let _ = crate::find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = crate::instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let snapshots = crate::list_snapshots(&instance_dir)?;
     let selected = snapshots
         .into_iter()

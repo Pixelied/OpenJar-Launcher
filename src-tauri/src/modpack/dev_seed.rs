@@ -29,21 +29,26 @@ pub fn seed_dev_data(
         let inst = crate::Instance {
             id: uuid::Uuid::new_v4().to_string(),
             name,
+            folder_name: None,
             mc_version: "1.21.1".to_string(),
             loader: "fabric".to_string(),
             created_at: crate::now_iso(),
             icon_path: None,
             settings: Default::default(),
         };
+        let mut inst_with_folder = inst.clone();
+        let folder_name =
+            crate::allocate_instance_folder_name(&instances_dir, &idx, &inst_with_folder.name, None, None);
+        inst_with_folder.folder_name = Some(folder_name.clone());
 
-        let inst_dir = instances_dir.join(&inst.id);
+        let inst_dir = instances_dir.join(folder_name);
         std::fs::create_dir_all(&inst_dir)
             .map_err(|e| format!("mkdir seed instance dir failed: {e}"))?;
-        crate::write_instance_meta(&inst_dir, &inst)?;
-        crate::write_lockfile(&instances_dir, &inst.id, &crate::Lockfile::default())?;
-        idx.instances.push(inst.clone());
+        crate::write_instance_meta(&inst_dir, &inst_with_folder)?;
+        idx.instances.push(inst_with_folder.clone());
         crate::write_index(&instances_dir, &idx)?;
-        inst
+        crate::write_lockfile(&instances_dir, &inst_with_folder.id, &crate::Lockfile::default())?;
+        inst_with_folder
     };
 
     let mut spec = make_base_spec(

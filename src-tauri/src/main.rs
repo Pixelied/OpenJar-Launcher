@@ -52,6 +52,16 @@ const DEFAULT_SNAPSHOT_MAX_AGE_DAYS: u32 = 14;
 const MENU_CHECK_FOR_UPDATES_ID: &str = "menu_check_for_updates";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT: &str = "app_menu_check_for_updates";
 
+async fn run_blocking_task<T, F>(label: &str, task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|e| format!("{label} task join failed: {e}"))?
+}
+
 fn updater_check_menu_item() -> CustomMenuItem {
     CustomMenuItem::new(MENU_CHECK_FOR_UPDATES_ID.to_string(), "Check for Updates...")
 }
@@ -225,6 +235,8 @@ fn parse_curseforge_project_id(raw: &str) -> Result<i64, String> {
 struct Instance {
     id: String,
     name: String,
+    #[serde(default)]
+    folder_name: Option<String>,
     mc_version: String,
     loader: String, // "fabric" | "forge"
     created_at: String,
@@ -1589,8 +1601,58 @@ fn index_path(instances_dir: &Path) -> PathBuf {
     instances_dir.join("instances.json")
 }
 
+fn normalize_instance_folder_name(raw: &str) -> String {
+    let cleaned = sanitize_name(raw);
+    let collapsed = cleaned
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let normalized = collapsed.trim().trim_matches('.').to_string();
+    if normalized.is_empty() {
+        "Instance".to_string()
+    } else {
+        normalized
+    }
+}
+
+fn instance_folder_name_or_legacy(inst: &Instance) -> String {
+    if let Some(raw) = inst
+        .folder_name
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
+        return normalize_instance_folder_name(raw);
+    }
+    if !inst.id.trim().is_empty() {
+        return inst.id.trim().to_string();
+    }
+    normalize_instance_folder_name(&inst.name)
+}
+
+pub(crate) fn instance_dir_for_instance(instances_dir: &Path, inst: &Instance) -> PathBuf {
+    let preferred = instances_dir.join(instance_folder_name_or_legacy(inst));
+    if preferred.exists() {
+        return preferred;
+    }
+    let legacy = instances_dir.join(&inst.id);
+    if legacy.exists() {
+        legacy
+    } else {
+        preferred
+    }
+}
+
+pub(crate) fn instance_dir_for_id(instances_dir: &Path, instance_id: &str) -> Result<PathBuf, String> {
+    let inst = find_instance(instances_dir, instance_id)?;
+    Ok(instance_dir_for_instance(instances_dir, &inst))
+}
+
 fn lock_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
-    instances_dir.join(instance_id).join("lock.json")
+    instance_dir_for_id(instances_dir, instance_id)
+        .unwrap_or_else(|_| instances_dir.join(instance_id))
+        .join("lock.json")
 }
 
 fn launcher_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -2154,7 +2216,7 @@ fn create_instance_snapshot(
     instance_id: &str,
     reason: &str,
 ) -> Result<SnapshotMeta, String> {
-    let instance_dir = instances_dir.join(instance_id);
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
     let lock = read_lockfile(instances_dir, instance_id)?;
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let reason_slug = snapshot_reason_slug(reason);
@@ -2426,7 +2488,7 @@ fn create_world_backups_for_instance(
     reason: &str,
     keep_per_world: usize,
 ) -> Result<usize, String> {
-    let instance_dir = instances_dir.join(instance_id);
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
     let worlds = list_instance_world_names(&instance_dir)?;
     if worlds.is_empty() {
         return Ok(0);
@@ -2455,6 +2517,86 @@ fn sanitize_name(name: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+pub(crate) fn allocate_instance_folder_name(
+    instances_dir: &Path,
+    idx: &InstanceIndex,
+    requested_name: &str,
+    skip_instance_id: Option<&str>,
+    allow_existing: Option<&str>,
+) -> String {
+    let base = normalize_instance_folder_name(requested_name);
+    let mut used: HashSet<String> = HashSet::new();
+    for inst in &idx.instances {
+        if skip_instance_id.map(|skip| skip == inst.id).unwrap_or(false) {
+            continue;
+        }
+        used.insert(instance_folder_name_or_legacy(inst).to_ascii_lowercase());
+    }
+    let allow_existing_lc = allow_existing.map(|value| value.to_ascii_lowercase());
+    let mut candidate = base.clone();
+    let mut suffix = 2usize;
+    loop {
+        let key = candidate.to_ascii_lowercase();
+        let candidate_exists = instances_dir.join(&candidate).exists();
+        let allow_this_existing = allow_existing_lc
+            .as_ref()
+            .map(|value| *value == key)
+            .unwrap_or(false);
+        if !used.contains(&key) && (!candidate_exists || allow_this_existing) {
+            return candidate;
+        }
+        candidate = format!("{base} ({suffix})");
+        suffix += 1;
+    }
+}
+
+fn migrate_instance_folder_names(instances_dir: &Path, idx: &mut InstanceIndex) -> Result<bool, String> {
+    let mut changed = false;
+    for pos in 0..idx.instances.len() {
+        let current = idx.instances[pos]
+            .folder_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if current.is_some() {
+            continue;
+        }
+        let instance_id = idx.instances[pos].id.clone();
+        let instance_name = idx.instances[pos].name.clone();
+        let legacy_dir = instances_dir.join(&instance_id);
+        let next_folder = allocate_instance_folder_name(
+            instances_dir,
+            idx,
+            &instance_name,
+            Some(&instance_id),
+            Some(&instance_id),
+        );
+        if legacy_dir.exists() && legacy_dir.is_dir() && next_folder != instance_id {
+            let target_dir = instances_dir.join(&next_folder);
+            if !target_dir.exists() {
+                if let Err(err) = fs::rename(&legacy_dir, &target_dir) {
+                    eprintln!(
+                        "instance folder migration skipped ({} -> {}): {}",
+                        legacy_dir.display(),
+                        target_dir.display(),
+                        err
+                    );
+                    idx.instances[pos].folder_name = Some(instance_id.clone());
+                    changed = true;
+                    continue;
+                }
+            } else {
+                idx.instances[pos].folder_name = Some(instance_id.clone());
+                changed = true;
+                continue;
+            }
+        }
+        idx.instances[pos].folder_name = Some(next_folder);
+        changed = true;
+    }
+    Ok(changed)
 }
 
 fn normalize_instance_settings(mut settings: InstanceSettings) -> InstanceSettings {
@@ -2628,7 +2770,7 @@ fn world_root_dir(instances_dir: &Path, instance_id: &str, world_id: &str) -> Re
     if world_name.contains('/') || world_name.contains('\\') || world_name == "." || world_name == ".." {
         return Err("Invalid world ID".to_string());
     }
-    let saves_dir = instances_dir.join(instance_id).join("saves");
+    let saves_dir = instance_dir_for_id(instances_dir, instance_id)?.join("saves");
     let world_dir = saves_dir.join(world_name);
     if !world_dir.exists() || !world_dir.is_dir() {
         return Err(format!("World '{}' was not found in this instance.", world_name));
@@ -5509,6 +5651,58 @@ struct PrefetchJob {
     update: ContentUpdateInfo,
 }
 
+fn adaptive_update_prefetch_worker_cap(updates: &[ContentUpdateInfo]) -> usize {
+    let mut eligible = 0usize;
+    let mut curseforge_jobs = 0usize;
+    for update in updates {
+        let normalized = normalize_lock_content_type(&update.content_type);
+        if !is_updatable_content_type(&normalized) {
+            continue;
+        }
+        let has_url = update
+            .latest_download_url
+            .as_ref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false);
+        if !has_url {
+            continue;
+        }
+        eligible += 1;
+        if update.source.trim().eq_ignore_ascii_case("curseforge") {
+            curseforge_jobs += 1;
+        }
+    }
+    if eligible <= 1 {
+        return eligible.max(1);
+    }
+
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 16);
+    let target_by_workload = if eligible >= 32 {
+        14
+    } else if eligible >= 20 {
+        12
+    } else if eligible >= 12 {
+        10
+    } else if eligible >= 6 {
+        8
+    } else {
+        6
+    };
+    let mut cap = target_by_workload.min(cpu.saturating_mul(2)).min(eligible).max(1);
+    if curseforge_jobs > 0 {
+        // CF can throttle aggressively; keep mixed-source prefetch stable.
+        cap = if curseforge_jobs * 2 >= eligible {
+            cap.min(6)
+        } else {
+            cap.min(8)
+        };
+    }
+    cap.max(1)
+}
+
 fn prefetch_update_downloads(
     client: &Client,
     updates: &[ContentUpdateInfo],
@@ -5540,7 +5734,7 @@ fn prefetch_update_downloads(
 
     let jobs = Arc::new(Mutex::new(queue));
     let out: Arc<Mutex<HashMap<usize, PrefetchedDownload>>> = Arc::new(Mutex::new(HashMap::new()));
-    let worker_count = worker_cap.max(1).min(8).min({
+    let worker_count = worker_cap.max(1).min(16).min({
         let guard = jobs.lock();
         match guard {
             Ok(items) => items.len(),
@@ -5605,7 +5799,7 @@ fn try_fast_install_content_update(
         return Ok(None);
     }
 
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(instances_dir, &args.instance_id)?;
 
     if source == "modrinth" {
@@ -8357,15 +8551,18 @@ fn logout_microsoft_account(
 }
 
 #[tauri::command]
-fn begin_microsoft_login(
+async fn begin_microsoft_login(
     app: tauri::AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
 ) -> Result<BeginMicrosoftLoginResult, String> {
     let (client_id, client_id_source) = resolve_oauth_client_id_with_source(&app)?;
     let session_id = format!("ms_{}", Uuid::new_v4());
-    let client = build_http_client()?;
-
-    let flow = microsoft_begin_device_code(&client, &client_id)?;
+    let client_id_for_flow = client_id.clone();
+    let flow = run_blocking_task("microsoft device code", move || {
+        let client = build_http_client()?;
+        microsoft_begin_device_code(&client, &client_id_for_flow)
+    })
+    .await?;
     let verification_uri = flow.verification_uri.clone();
     let user_code = flow.user_code.clone();
     let interval = if flow.interval == 0 { 5 } else { flow.interval };
@@ -8739,7 +8936,7 @@ fn open_instance_path(
 ) -> Result<OpenInstancePathResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let (target, resolved_path, create_if_missing) =
         resolve_target_instance_path(&instance_dir, &args.target)?;
     open_path_in_shell(&resolved_path, create_if_missing)?;
@@ -8756,7 +8953,7 @@ fn reveal_config_editor_file(
 ) -> Result<RevealConfigEditorFileResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let scope = args.scope.trim().to_lowercase();
 
     if scope == "instance" {
@@ -8809,7 +9006,7 @@ fn read_instance_logs(
 ) -> Result<ReadInstanceLogsResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let source_raw = args.source.trim().to_lowercase();
     let max_lines = args.max_lines.unwrap_or(2500).clamp(200, 12000);
     let before_line = args.before_line;
@@ -8917,7 +9114,7 @@ fn list_instance_snapshots(
 ) -> Result<Vec<SnapshotMeta>, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     list_snapshots(&instance_dir)
 }
 
@@ -8938,7 +9135,7 @@ fn rollback_instance(
             return Err("Stop the running Minecraft session before rolling back this instance.".to_string());
         }
     }
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let snapshots = list_snapshots(&instance_dir)?;
     if snapshots.is_empty() {
         return Err("No snapshots found for this instance".to_string());
@@ -8979,7 +9176,7 @@ fn list_instance_worlds(
 ) -> Result<Vec<InstanceWorld>, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let saves_dir = instance_dir.join("saves");
     fs::create_dir_all(&saves_dir).map_err(|e| format!("mkdir saves failed: {e}"))?;
 
@@ -9224,7 +9421,7 @@ fn rollback_instance_world_backup(
     if world_id.is_empty() {
         return Err("World ID is required".to_string());
     }
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let backups = list_world_backups(&instance_dir)?;
     let selected = if let Some(backup_id) = args.backup_id.as_ref() {
         backups
@@ -9287,7 +9484,7 @@ fn install_discover_content_inner(
 
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let client = build_http_client()?;
 
@@ -9329,12 +9526,15 @@ fn install_discover_content_inner(
 }
 
 #[tauri::command]
-fn install_discover_content(
+async fn install_discover_content(
     app: tauri::AppHandle,
     args: InstallDiscoverContentArgs,
 ) -> Result<InstalledMod, String> {
-    let reason = format!("before-install-discover:{}", args.project_id);
-    install_discover_content_inner(app, &args, Some(reason.as_str()))
+    run_blocking_task("install discover content", move || {
+        let reason = format!("before-install-discover:{}", args.project_id);
+        install_discover_content_inner(app, &args, Some(reason.as_str()))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -9679,7 +9879,11 @@ fn import_presets_json(args: ImportPresetsJsonArgs) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-fn get_selected_account_diagnostics(app: tauri::AppHandle) -> Result<AccountDiagnostics, String> {
+async fn get_selected_account_diagnostics(app: tauri::AppHandle) -> Result<AccountDiagnostics, String> {
+    run_blocking_task("account diagnostics", move || get_selected_account_diagnostics_inner(app)).await
+}
+
+fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<AccountDiagnostics, String> {
     let total_started = Instant::now();
     let settings = read_launcher_settings(&app)?;
     let mut diag = make_account_diagnostics_base(&settings);
@@ -9819,7 +10023,17 @@ fn get_selected_account_diagnostics(app: tauri::AppHandle) -> Result<AccountDiag
 }
 
 #[tauri::command]
-fn apply_selected_account_appearance(
+async fn apply_selected_account_appearance(
+    app: tauri::AppHandle,
+    args: ApplySelectedAccountAppearanceArgs,
+) -> Result<AccountDiagnostics, String> {
+    run_blocking_task("apply selected account appearance", move || {
+        apply_selected_account_appearance_inner(app, args)
+    })
+    .await
+}
+
+fn apply_selected_account_appearance_inner(
     app: tauri::AppHandle,
     args: ApplySelectedAccountAppearanceArgs,
 ) -> Result<AccountDiagnostics, String> {
@@ -9845,7 +10059,7 @@ fn apply_selected_account_appearance(
         apply_minecraft_cape(&client, &mc_access_token, args.cape_id.as_deref())?;
     }
 
-    get_selected_account_diagnostics(app)
+    get_selected_account_diagnostics_inner(app)
 }
 
 #[tauri::command]
@@ -9855,7 +10069,7 @@ fn export_instance_mods_zip(
 ) -> Result<ExportModsResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mods_dir = instance_dir.join("mods");
     if !mods_dir.exists() {
         return Err("Instance mods folder does not exist".to_string());
@@ -9912,7 +10126,10 @@ fn export_instance_mods_zip(
 #[tauri::command]
 fn list_instances(app: tauri::AppHandle) -> Result<Vec<Instance>, String> {
     let dir = app_instances_dir(&app)?;
-    let idx = read_index(&dir)?;
+    let mut idx = read_index(&dir)?;
+    if migrate_instance_folder_names(&dir, &mut idx)? {
+        write_index(&dir, &idx)?;
+    }
     Ok(idx.instances)
 }
 
@@ -9935,10 +10152,15 @@ fn create_instance_internal(
 
     let dir = app_instances_dir(app)?;
     let mut idx = read_index(&dir)?;
+    if migrate_instance_folder_names(&dir, &mut idx)? {
+        write_index(&dir, &idx)?;
+    }
+    let folder_name = allocate_instance_folder_name(&dir, &idx, &clean_name, None, None);
 
     let mut inst = Instance {
         id: gen_id(),
         name: clean_name,
+        folder_name: Some(folder_name.clone()),
         mc_version: clean_mc,
         loader: loader_lc,
         created_at: now_iso(),
@@ -9946,7 +10168,7 @@ fn create_instance_internal(
         settings: InstanceSettings::default(),
     };
 
-    let inst_dir = dir.join(&inst.id);
+    let inst_dir = dir.join(folder_name);
     fs::create_dir_all(inst_dir.join("mods")).map_err(|e| format!("mkdir mods failed: {e}"))?;
     fs::create_dir_all(inst_dir.join("config")).map_err(|e| format!("mkdir config failed: {e}"))?;
     fs::create_dir_all(inst_dir.join("resourcepacks"))
@@ -9966,10 +10188,9 @@ fn create_instance_internal(
     }
 
     write_instance_meta(&inst_dir, &inst)?;
-    write_lockfile(&dir, &inst.id, &Lockfile::default())?;
-
     idx.instances.insert(0, inst.clone());
     write_index(&dir, &idx)?;
+    write_lockfile(&dir, &inst.id, &Lockfile::default())?;
 
     Ok(inst)
 }
@@ -10013,7 +10234,7 @@ fn create_instance_from_modpack_file(
         args.icon_path.clone(),
     )?;
     let instances_dir = app_instances_dir(&app)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let imported_files = extract_overrides_from_modpack(&file_path, &instance_dir, &override_roots)?;
     if imported_files == 0 {
         warnings.push("No override files were found in the archive.".to_string());
@@ -10057,7 +10278,7 @@ fn import_instance_from_launcher(
         args.icon_path.clone(),
     )?;
     let instances_dir = app_instances_dir(&app)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let imported_files = copy_launcher_source_into_instance(&source_path, &instance_dir)?;
     Ok(ImportInstanceFromLauncherResult {
         instance,
@@ -10069,12 +10290,17 @@ fn import_instance_from_launcher(
 fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<Instance, String> {
     let dir = app_instances_dir(&app)?;
     let mut idx = read_index(&dir)?;
+    if migrate_instance_folder_names(&dir, &mut idx)? {
+        write_index(&dir, &idx)?;
+    }
     let pos = idx
         .instances
         .iter()
         .position(|x| x.id == args.instance_id)
         .ok_or_else(|| "instance not found".to_string())?;
     let mut inst = idx.instances[pos].clone();
+    let prev_dir = instance_dir_for_instance(&dir, &inst);
+    let mut folder_name_override: Option<String> = None;
 
     if let Some(name) = args.name.as_ref() {
         let clean_name = sanitize_name(name);
@@ -10082,6 +10308,14 @@ fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<In
             return Err("name is required".to_string());
         }
         inst.name = clean_name;
+        let next_folder = allocate_instance_folder_name(
+            &dir,
+            &idx,
+            &inst.name,
+            Some(&inst.id),
+            inst.folder_name.as_deref(),
+        );
+        folder_name_override = Some(next_folder);
     }
     if let Some(mc_version) = args.mc_version.as_ref() {
         let clean_mc = mc_version.trim().to_string();
@@ -10101,7 +10335,22 @@ fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<In
         inst.settings = normalize_instance_settings(inst.settings);
     }
 
-    let inst_dir = dir.join(&inst.id);
+    if let Some(next_folder) = folder_name_override {
+        inst.folder_name = Some(next_folder);
+    } else if inst.folder_name.as_ref().map(|v| v.trim().is_empty()).unwrap_or(true) {
+        inst.folder_name = Some(inst.id.clone());
+    }
+
+    let inst_dir = instance_dir_for_instance(&dir, &inst);
+    if prev_dir != inst_dir && prev_dir.exists() && !inst_dir.exists() {
+        fs::rename(&prev_dir, &inst_dir).map_err(|e| {
+            format!(
+                "rename instance folder failed ({} -> {}): {e}",
+                prev_dir.display(),
+                inst_dir.display()
+            )
+        })?;
+    }
     fs::create_dir_all(&inst_dir).map_err(|e| format!("mkdir instance dir failed: {e}"))?;
     write_instance_meta(&inst_dir, &inst)?;
     idx.instances[pos] = inst.clone();
@@ -10125,7 +10374,7 @@ fn set_instance_icon(app: tauri::AppHandle, args: SetInstanceIconArgs) -> Result
         .ok_or_else(|| "instance not found".to_string())?;
 
     let mut inst = idx.instances[pos].clone();
-    let inst_dir = dir.join(&inst.id);
+    let inst_dir = instance_dir_for_instance(&dir, &inst);
     fs::create_dir_all(&inst_dir).map_err(|e| format!("mkdir instance dir failed: {e}"))?;
 
     let next_icon_path = args
@@ -10181,6 +10430,16 @@ fn read_local_image_data_url(args: ReadLocalImageDataUrlArgs) -> Result<String, 
 fn delete_instance(app: tauri::AppHandle, args: DeleteInstanceArgs) -> Result<(), String> {
     let dir = app_instances_dir(&app)?;
     let mut idx = read_index(&dir)?;
+    if migrate_instance_folder_names(&dir, &mut idx)? {
+        write_index(&dir, &idx)?;
+    }
+
+    let target = idx
+        .instances
+        .iter()
+        .find(|x| x.id == args.id)
+        .cloned()
+        .ok_or_else(|| "instance not found".to_string())?;
 
     let before = idx.instances.len();
     idx.instances.retain(|x| x.id != args.id);
@@ -10188,7 +10447,7 @@ fn delete_instance(app: tauri::AppHandle, args: DeleteInstanceArgs) -> Result<()
         return Err("instance not found".into());
     }
 
-    let inst_dir = dir.join(&args.id);
+    let inst_dir = instance_dir_for_instance(&dir, &target);
     if inst_dir.exists() {
         fs::remove_dir_all(inst_dir).map_err(|e| format!("remove dir failed: {e}"))?;
     }
@@ -10204,7 +10463,7 @@ fn install_modrinth_mod_inner(
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let mods_dir = instance_dir.join("mods");
     fs::create_dir_all(&mods_dir).map_err(|e| format!("mkdir mods failed: {e}"))?;
 
@@ -10455,21 +10714,27 @@ fn install_modrinth_mod_inner(
 }
 
 #[tauri::command]
-fn install_modrinth_mod(
+async fn install_modrinth_mod(
     app: tauri::AppHandle,
     args: InstallModrinthModArgs,
 ) -> Result<InstalledMod, String> {
-    let reason = format!("before-install-modrinth:{}", args.project_id);
-    install_modrinth_mod_inner(app, args, Some(reason.as_str()))
+    run_blocking_task("install modrinth mod", move || {
+        let reason = format!("before-install-modrinth:{}", args.project_id);
+        install_modrinth_mod_inner(app, args, Some(reason.as_str()))
+    })
+    .await
 }
 
 #[tauri::command]
-fn install_curseforge_mod(
+async fn install_curseforge_mod(
     app: tauri::AppHandle,
     args: InstallCurseforgeModArgs,
 ) -> Result<InstalledMod, String> {
-    let reason = format!("before-install-curseforge:{}", args.project_id);
-    install_curseforge_mod_inner(app, args, Some(reason.as_str()))
+    run_blocking_task("install curseforge mod", move || {
+        let reason = format!("before-install-curseforge:{}", args.project_id);
+        install_curseforge_mod_inner(app, args, Some(reason.as_str()))
+    })
+    .await
 }
 
 fn install_curseforge_mod_inner(
@@ -10479,7 +10744,7 @@ fn install_curseforge_mod_inner(
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let api_key = curseforge_api_key()
         .ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
@@ -10584,7 +10849,7 @@ fn preview_modrinth_install(
 ) -> Result<InstallPlanPreview, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&instance.id);
+    let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
     let client = Client::builder()
@@ -10606,13 +10871,20 @@ fn preview_modrinth_install(
 }
 
 #[tauri::command]
-fn import_local_mod_file(
+async fn import_local_mod_file(
+    app: tauri::AppHandle,
+    args: ImportLocalModFileArgs,
+) -> Result<InstalledMod, String> {
+    run_blocking_task("import local mod file", move || import_local_mod_file_inner(app, args)).await
+}
+
+fn import_local_mod_file_inner(
     app: tauri::AppHandle,
     args: ImportLocalModFileArgs,
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mods_dir = instance_dir.join("mods");
     fs::create_dir_all(&mods_dir).map_err(|e| format!("mkdir mods failed: {e}"))?;
 
@@ -10717,7 +10989,7 @@ fn resolve_local_mod_sources_inner(
 ) -> Result<LocalResolverResult, String> {
     let instances_dir = app_instances_dir(app)?;
     let _ = find_instance(&instances_dir, instance_id)?;
-    let instance_dir = instances_dir.join(instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, instance_id)?;
     let mut lock = read_lockfile(&instances_dir, instance_id)?;
     let strict_local_only = mode.trim().to_ascii_lowercase() != "all";
 
@@ -10819,7 +11091,17 @@ fn resolve_local_mod_sources(
 }
 
 #[tauri::command]
-fn check_instance_content_updates(
+async fn check_instance_content_updates(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<ContentUpdateCheckResult, String> {
+    run_blocking_task("check instance content updates", move || {
+        check_instance_content_updates_command_inner(app, args)
+    })
+    .await
+}
+
+fn check_instance_content_updates_command_inner(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<ContentUpdateCheckResult, String> {
@@ -10848,7 +11130,8 @@ fn update_all_instance_content_inner(
     let mut by_source: HashMap<String, usize> = HashMap::new();
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
     let cf_key = curseforge_api_key();
-    let prefetched_downloads = prefetch_update_downloads(&client, &check.updates, 5);
+    let prefetch_worker_cap = adaptive_update_prefetch_worker_cap(&check.updates);
+    let prefetched_downloads = prefetch_update_downloads(&client, &check.updates, prefetch_worker_cap);
 
     for (idx, update) in check.updates.iter().enumerate() {
         let mut used_fast_path = false;
@@ -10958,15 +11241,22 @@ fn update_all_instance_content_inner(
 }
 
 #[tauri::command]
-fn update_all_instance_content(
+async fn update_all_instance_content(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<UpdateAllContentResult, String> {
-    update_all_instance_content_inner(app, args)
+    run_blocking_task("update all instance content", move || update_all_instance_content_inner(app, args)).await
 }
 
 #[tauri::command]
-fn check_modrinth_updates(
+async fn check_modrinth_updates(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<ModUpdateCheckResult, String> {
+    run_blocking_task("check modrinth updates", move || check_modrinth_updates_inner(app, args)).await
+}
+
+fn check_modrinth_updates_inner(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<ModUpdateCheckResult, String> {
@@ -10984,7 +11274,14 @@ fn check_modrinth_updates(
 }
 
 #[tauri::command]
-fn update_all_modrinth_mods(
+async fn update_all_modrinth_mods(
+    app: tauri::AppHandle,
+    args: CheckUpdatesArgs,
+) -> Result<UpdateAllResult, String> {
+    run_blocking_task("update all modrinth mods", move || update_all_modrinth_mods_inner(app, args)).await
+}
+
+fn update_all_modrinth_mods_inner(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<UpdateAllResult, String> {
@@ -11034,7 +11331,7 @@ async fn launch_instance(
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_settings = normalize_instance_settings(instance.settings.clone());
-    let app_instance_dir = instances_dir.join(&args.instance_id);
+    let app_instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let settings = read_launcher_settings(&app)?;
     let method = if let Some(input) = args.method.as_ref() {
         LaunchMethod::parse(input).ok_or_else(|| "method must be prism or native".to_string())?
@@ -11728,7 +12025,7 @@ fn preflight_launch_compatibility(
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_settings = normalize_instance_settings(instance.settings.clone());
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let settings = read_launcher_settings(&app)?;
 
     let mut items: Vec<LaunchCompatibilityItem> = Vec::new();
@@ -11895,7 +12192,7 @@ fn export_instance_support_bundle(
 ) -> Result<SupportBundleResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let include_raw_logs = args.include_raw_logs.unwrap_or(false);
     let output = if let Some(custom) = args.output_path.as_ref() {
         PathBuf::from(custom)
@@ -12039,7 +12336,7 @@ fn list_installed_mods(
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
 
     let mut out: Vec<InstalledMod> = lock
         .entries
@@ -12057,7 +12354,7 @@ fn set_installed_mod_enabled(
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
     let idx = lock
@@ -12121,7 +12418,7 @@ fn remove_installed_mod(
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let instance_dir = instances_dir.join(&args.instance_id);
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
     let idx = lock
@@ -12246,6 +12543,10 @@ fn main() {
             friend_link::leave_friend_link_session,
             friend_link::get_friend_link_status,
             friend_link::set_friend_link_allowlist,
+            friend_link::set_friend_link_guardrails,
+            friend_link::set_friend_link_peer_alias,
+            friend_link::preview_friend_link_drift,
+            friend_link::sync_friend_link_selected,
             friend_link::reconcile_friend_link,
             friend_link::resolve_friend_link_conflicts,
             friend_link::export_friend_link_debug_bundle,

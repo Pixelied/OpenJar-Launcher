@@ -249,14 +249,39 @@ Link your instances once, and OpenJar keeps everyone aligned before launch so yo
 
 In short: this is how you avoid the classic “can’t join your friend’s world” mod mismatch headache.
 
-What v1 syncs:
+What syncs:
 - Lockfile-backed content state (mods/resourcepacks/shaderpacks/datapacks)
 - Allowlisted config files (`options.txt`, `config/**/*.json`, `config/**/*.toml`, `config/**/*.properties`)
+
+Sync UX and status (latest):
+- Background drift ping (metadata-only, no file transfer) runs periodically to detect remote changes quickly
+- Unsynced badge uses `+ / - / ~` counters:
+  - `+` = added on peer
+  - `-` = removed on peer
+  - `~` = changed between peers
+- Sync intent prompt: **Review changes**, **Sync now**, **Snooze 30m**
+- Selective sync: choose specific rows/keys to sync (instead of all-or-nothing)
+- Per-content sync toggles (per instance):
+  - Mods (default on)
+  - Resource packs / texture packs (default off)
+  - Shader packs (default on)
+  - Datapacks (default on)
+- Policy modes per instance:
+  - `Manual`
+  - `Ask every time` (default)
+  - `Auto-sync metadata only`
+  - `Auto-sync everything`
+- Trust guardrails:
+  - Per-peer trust toggle
+  - Max auto-change threshold before requiring confirmation
 
 Safety behavior:
 - Two-way reconcile with conflict detection
 - Explicit conflict resolution (`keep mine` / `take theirs`)
 - Pre-launch sync gate for linked instances
+- Sync reliability improvements:
+  - auto-retry on missing local files
+  - provider fallback download path when peer file transfer isn’t enough
 - Offline fallback:
   launch is allowed only when local state matches last-good group snapshot; stale offline state is blocked with a clear reason
 
@@ -266,7 +291,7 @@ How pairing works:
 - LAN transport with signed messages (shared secret + HMAC)
 
 Current scope:
-- Designed for small groups (max 4 peers)
+- Designed for small groups (max 8 peers)
 - No cloud relay/WAN server in v1
 - No world save replication in v1 (content/config parity only)
 

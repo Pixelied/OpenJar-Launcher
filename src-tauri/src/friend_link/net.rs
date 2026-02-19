@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
@@ -22,7 +22,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const MAX_CLOCK_SKEW_MS: i64 = 120_000;
 const MAX_SEEN_NONCES: usize = 4096;
-const PEER_LIMIT: usize = 4;
+const PEER_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelloPayload {
@@ -189,6 +189,24 @@ pub fn endpoint_for_port(port: u16) -> String {
     format!("{}:{}", local_ip_guess(), port)
 }
 
+fn normalize_peer_endpoint(advertised_endpoint: &str, stream_peer: Option<SocketAddr>) -> String {
+    let Some(stream_peer_addr) = stream_peer else {
+        return advertised_endpoint.to_string();
+    };
+    let Ok(advertised_addr) = advertised_endpoint.parse::<SocketAddr>() else {
+        return advertised_endpoint.to_string();
+    };
+    let advertised_ip = advertised_addr.ip();
+    let observed_ip = stream_peer_addr.ip();
+    if advertised_ip.is_loopback()
+        || advertised_ip.is_unspecified()
+        || (advertised_ip != observed_ip && advertised_ip.is_ipv4() == observed_ip.is_ipv4())
+    {
+        return format!("{}:{}", observed_ip, advertised_addr.port());
+    }
+    advertised_endpoint.to_string()
+}
+
 pub fn stop_listener(instance_id: &str) {
     if let Ok(mut map) = listener_map().lock() {
         if let Some(handle) = map.remove(instance_id) {
@@ -320,8 +338,9 @@ fn handle_incoming_frame(
     let mut payload = serde_json::json!({ "ok": false, "error": "unsupported payload" });
 
     if incoming.payload_type == "hello" {
-        let hello: HelloPayload = serde_json::from_value(incoming.payload)
+        let mut hello: HelloPayload = serde_json::from_value(incoming.payload)
             .map_err(|e| format!("parse hello payload failed: {e}"))?;
+        hello.endpoint = normalize_peer_endpoint(&hello.endpoint, stream.peer_addr().ok());
 
         let (peer_summaries, local_display_name, local_endpoint) = {
             let session = get_session_mut(&mut store, instance_id)
@@ -333,7 +352,7 @@ fn handle_incoming_frame(
                 .position(|p| p.peer_id == hello.peer_id);
             if existing.is_none() {
                 if session.peers.len() >= PEER_LIMIT.saturating_sub(1) {
-                    return Err("group is full (max 4 peers)".to_string());
+                    return Err("group is full (max 8 peers)".to_string());
                 }
                 session.peers.push(FriendPeerRecord {
                     peer_id: hello.peer_id.clone(),
