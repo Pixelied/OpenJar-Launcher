@@ -34,32 +34,32 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 
 ## Screenshots
 
-Screenshots live in `docs/screenshots/` — click any image to view full size.
+Screenshots live in `readme-assets/images/` — click any image to view full size.
 
 <p align="center">
-  <a href="docs/screenshots/modpack maker.png">
-    <img src="docs/screenshots/modpack maker.png" width="49%" alt="Instances" />
+  <a href="d/readme-assets/images/modpack maker.png">
+    <img src="readme-assets/images/modpack maker.png" width="49%" alt="Instances" />
   </a>
-  <a href="docs/screenshots/instance%20content.png">
-    <img src="docs/screenshots/instance%20content.png" width="49%" alt="Instance Content" />
+  <a href="readme-assets/images/instance%20content.png">
+    <img src="readme-assets/images/instance%20content.png" width="49%" alt="Instance Content" />
   </a>
 </p>
 
 <p align="center">
-  <a href="docs/screenshots/discover%20content.png">
-    <img src="docs/screenshots/discover%20content.png" width="49%" alt="Discover" />
+  <a href="readme-assets/images/discover%20content.png">
+    <img src="readme-assets/images/discover%20content.png" width="49%" alt="Discover" />
   </a>
-  <a href="docs/screenshots/config%20editor.png">
-    <img src="docs/screenshots/config%20editor.png" width="49%" alt="Config Editor" />
+  <a href="readme-assets/images/config%20editor.png">
+    <img src="readme-assets/images/config%20editor.png" width="49%" alt="Config Editor" />
   </a>
 </p>
 
 <p align="center">
-  <a href="docs/screenshots/mod%20updates.png">
-    <img src="docs/screenshots/mod%20updates.png" width="49%" alt="Mod Update Availability" />
+  <a href="readme-assets/images/mod%20updates.png">
+    <img src="readme-assets/images/mod%20updates.png" width="49%" alt="Mod Update Availability" />
   </a>
-  <a href="docs/screenshots/settings.png">
-    <img src="docs/screenshots/settings.png" width="49%" alt="Settings" />
+  <a href="readme-assets/images/settings.png">
+    <img src="readme-assets/images/settings.png" width="49%" alt="Settings" />
   </a>
 </p>
 
