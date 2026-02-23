@@ -1,36 +1,349 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
 
     <title>OpenJar Launcher — GitHub Repo</title>
-    <meta
-      name="description"
-      content="OpenJar Launcher is a mac-first, cross-platform Minecraft launcher / creator studio built with Tauri (Rust) + React. View the GitHub repository."
-    />
-
-    <!-- Canonical points to the real repo -->
+    <meta name="description" content="OpenJar Launcher — Mac-first Minecraft launcher / creator studio built with Tauri (Rust) + React. View the GitHub repository and README." />
     <link rel="canonical" href="https://github.com/Pixelied/OpenJar-Launcher" />
 
-    <!-- Open Graph (nice previews if shared) -->
     <meta property="og:title" content="OpenJar Launcher — GitHub Repo" />
-    <meta
-      property="og:description"
-      content="Mac-first, cross-platform Minecraft launcher / creator studio (Tauri Rust + React)."
-    />
-    <meta property="og:url" content="https://github.com/Pixelied/OpenJar-Launcher" />
+    <meta property="og:description" content="Mac-first Minecraft launcher / creator studio built with Tauri (Rust) + React." />
+    <meta property="og:url" content="https://pixelied.github.io/OpenJar-Launcher/" />
     <meta property="og:type" content="website" />
 
-    <!-- Redirect -->
-    <meta http-equiv="refresh" content="0; url=https://github.com/Pixelied/OpenJar-Launcher" />
-    <script>
-      window.location.replace("https://github.com/Pixelied/OpenJar-Launcher");
-    </script>
+    <!-- GitHub-like markdown styling -->
+    <link
+      rel="stylesheet"
+      href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.6.1/github-markdown.min.css"
+      referrerpolicy="no-referrer"
+    />
+
+    <style>
+      :root{
+        /* Light (default) */
+        --bg:#f6f8fa;
+        --bg2:#ffffff;
+        --card:#ffffff;
+        --border:#d0d7de;
+        --text:#1f2328;
+        --muted:rgba(31,35,40,.72);
+        --link:#0969da;
+        --shadow:0 18px 40px rgba(31,35,40,.12);
+        --soft:rgba(27,31,36,.06);
+        --soft2:rgba(27,31,36,.10);
+        --btn:#0969da;
+        --btnText:#fff;
+        --btn2:rgba(27,31,36,.06);
+        --ring:rgba(9,105,218,.25);
+      }
+      html[data-theme="dark"]{
+        --bg:#0d1117;
+        --bg2:#0b0f14;
+        --card:#161b22;
+        --border:rgba(240,246,252,.14);
+        --text:#e6edf3;
+        --muted:rgba(230,237,243,.70);
+        --link:#79c0ff;
+        --shadow:0 18px 40px rgba(0,0,0,.45);
+        --soft:rgba(255,255,255,.08);
+        --soft2:rgba(255,255,255,.12);
+        --btn:rgba(121,192,255,.22);
+        --btnText:#e6edf3;
+        --btn2:rgba(255,255,255,.06);
+        --ring:rgba(121,192,255,.25);
+      }
+
+      *{box-sizing:border-box}
+      body{
+        margin:0;
+        font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+        background:
+          radial-gradient(1200px 650px at 18% 0%, var(--soft) 0%, transparent 55%),
+          radial-gradient(1200px 650px at 80% 0%, var(--soft) 0%, transparent 60%),
+          linear-gradient(180deg, var(--bg2), var(--bg));
+        color:var(--text);
+        min-height:100vh;
+      }
+      .wrap{max-width:980px;margin:0 auto;padding:28px 16px 60px;}
+      .card{
+        background:var(--card);
+        border:1px solid var(--border);
+        border-radius:18px;
+        box-shadow:var(--shadow);
+        overflow:hidden;
+      }
+      .topbar{
+        display:flex;
+        align-items:center;
+        gap:14px;
+        padding:14px 16px;
+        border-bottom:1px solid var(--border);
+        background:linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0));
+      }
+      html[data-theme="dark"] .topbar{
+        background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0));
+      }
+
+      .logo{width:22px;height:22px;flex:0 0 22px;}
+      .titleblock{min-width:0;display:flex;flex-direction:column;gap:2px}
+      .kicker{font-size:12px;color:var(--muted);font-weight:800;letter-spacing:.2px}
+      .repo a{color:var(--link);text-decoration:none;font-weight:900;font-size:15px}
+      .repo a:hover{text-decoration:underline}
+      .actions{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+
+      .btn{
+        display:inline-flex;align-items:center;gap:8px;
+        padding:9px 12px;border-radius:12px;
+        border:1px solid transparent;
+        background:var(--btn);color:var(--btnText);
+        font-weight:900;text-decoration:none;cursor:pointer;user-select:none;
+        transition:transform .08s ease, filter .15s ease;
+      }
+      .btn:active{transform:translateY(1px)}
+      .btn:hover{filter:brightness(1.02)}
+      html[data-theme="light"] .btn{border-color:rgba(9,105,218,.25)}
+      html[data-theme="dark"]  .btn{border-color:rgba(121,192,255,.25)}
+
+      .btn.secondary{
+        background:var(--btn2);
+        color:var(--text);
+        border:1px solid var(--border);
+        font-weight:800;
+      }
+
+      .pill{
+        font-size:12px;color:var(--muted);
+        padding:6px 10px;border:1px solid var(--border);
+        border-radius:999px;background:var(--soft);
+        white-space:nowrap;
+      }
+
+      /* Theme toggle (nicer) */
+      .themeToggle{
+        position:relative;
+        width:54px;height:34px;
+        border-radius:999px;
+        border:1px solid var(--border);
+        background:var(--btn2);
+        cursor:pointer;
+        display:inline-flex;
+        align-items:center;
+        justify-content:space-between;
+        padding:0 10px;
+        transition:background .15s ease, border-color .15s ease, transform .08s ease;
+      }
+      .themeToggle:active{transform:translateY(1px)}
+      .themeToggle:focus{outline:none; box-shadow:0 0 0 4px var(--ring);}
+      .themeToggle svg{
+        width:14px;height:14px;
+        opacity:.80;
+      }
+      .themeKnob{
+        position:absolute;
+        top:4px;left:4px;
+        width:26px;height:26px;
+        border-radius:999px;
+        background:var(--card);
+        border:1px solid var(--border);
+        box-shadow:0 10px 22px rgba(0,0,0,.10);
+        transition:transform .18s ease;
+      }
+      html[data-theme="dark"] .themeKnob{transform:translateX(20px)}
+      html[data-theme="dark"] .themeToggle{background:var(--soft2)}
+
+      .content{padding:16px}
+      .markdown-wrap{
+        border:1px solid var(--border);
+        border-radius:14px;
+        padding:16px;
+        overflow:hidden;
+        background:transparent;
+      }
+      .markdown-body{background:transparent !important;color:var(--text) !important;}
+      .markdown-body a{color:var(--link) !important;}
+      .markdown-body pre,.markdown-body code{background:var(--btn2) !important;}
+      .markdown-body table th,.markdown-body table td{border-color:var(--border) !important;}
+      .loading{color:var(--muted);font-size:14px}
+      .footer{margin-top:12px;color:var(--muted);font-size:12px}
+      code{background:var(--btn2);padding:2px 6px;border-radius:8px;border:1px solid var(--border)}
+      .hide{display:none !important}
+
+      @media (max-width: 760px){
+        .actions{gap:8px}
+        .pill{display:none}
+      }
+    </style>
   </head>
 
   <body>
-    Redirecting to the GitHub repo…
-    <a href="https://github.com/Pixelied/OpenJar-Launcher">Click here if it doesn’t redirect</a>.
+    <div class="wrap">
+      <div class="card">
+        <div class="topbar">
+          <!-- GitHub mark -->
+          <svg class="logo" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path fill="currentColor" style="color:var(--text);" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+
+          <div class="titleblock">
+            <div class="kicker">GitHub Repository</div>
+            <div class="repo">
+              <a id="repoLink" href="https://github.com/Pixelied/OpenJar-Launcher" target="_blank" rel="noopener noreferrer">
+                Pixelied / OpenJar-Launcher
+              </a>
+            </div>
+          </div>
+
+          <div class="actions">
+            <a class="btn" id="openBtn" href="https://github.com/Pixelied/OpenJar-Launcher" target="_blank" rel="noopener noreferrer">
+              Open on GitHub
+            </a>
+
+            <button class="themeToggle" id="themeBtn" type="button" aria-label="Toggle light/dark">
+              <span class="themeKnob" aria-hidden="true"></span>
+            </button>
+
+            <button class="btn secondary" id="stayBtn" type="button" title="Disable auto-redirect for future visits">
+              Stay on this page
+            </button>
+
+            <div class="pill" id="statePill">Redirecting…</div>
+          </div>
+        </div>
+
+        <div class="content">
+          <div class="markdown-wrap">
+            <div class="loading" id="loading">Loading README…</div>
+            <article class="markdown-body" id="readme" style="display:none;"></article>
+
+            <noscript>
+              <p class="loading">
+                JavaScript is disabled. Open the repo here:
+                <a href="https://github.com/Pixelied/OpenJar-Launcher" target="_blank" rel="noopener noreferrer">Pixelied/OpenJar-Launcher</a>
+              </p>
+            </noscript>
+          </div>
+
+          <div class="footer">
+            Tip: to view without redirect, open <code>?stay=1</code> (example: <code>https://pixelied.github.io/OpenJar-Launcher/?stay=1</code>)
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Markdown renderer -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" referrerpolicy="no-referrer"></script>
+
+    <script>
+      /******************************************************************
+       * QUICK TOGGLES
+       * Change REDIRECT to false to stop redirect entirely.
+       ******************************************************************/
+      const REDIRECT = true;   // <-- change this ONE WORD to false
+
+      const REPO = {
+        github: "https://github.com/Pixelied/OpenJar-Launcher",
+        rawBase: "https://raw.githubusercontent.com/Pixelied/OpenJar-Launcher/main/",
+        readmeRaw: "https://raw.githubusercontent.com/Pixelied/OpenJar-Launcher/main/README.md",
+        defaultTheme: "light"
+      };
+
+      // Theme: default light, remember user choice
+      const savedTheme = localStorage.getItem("oj_theme");
+      document.documentElement.setAttribute("data-theme", savedTheme || REPO.defaultTheme);
+
+      // Redirect: instant (no setTimeout at all)
+      // Disabled by:
+      // - REDIRECT=false
+      // - ?stay=1
+      // - saved localStorage oj_stay=1
+      const qs = new URLSearchParams(location.search);
+      const stayParam = qs.get("stay") === "1";
+      const staySaved = localStorage.getItem("oj_stay") === "1";
+
+      const statePill = document.getElementById("statePill");
+      const openBtn = document.getElementById("openBtn");
+      const repoLink = document.getElementById("repoLink");
+
+      openBtn.href = REPO.github;
+      repoLink.href = REPO.github;
+
+      const canRedirect = REDIRECT && !stayParam && !staySaved;
+
+      if (canRedirect) {
+        statePill.textContent = "Redirecting…";
+        // fully instant:
+        window.location.replace(REPO.github);
+      } else {
+        if (!REDIRECT) statePill.textContent = "Redirect disabled (code)";
+        else if (stayParam) statePill.textContent = "Viewing mode: stay=1";
+        else if (staySaved) statePill.textContent = "Redirect disabled (saved)";
+        else statePill.textContent = "Not redirecting";
+      }
+
+      // Theme toggle
+      const themeBtn = document.getElementById("themeBtn");
+      themeBtn.addEventListener("click", () => {
+        const current = document.documentElement.getAttribute("data-theme") || "light";
+        const next = current === "light" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", next);
+        localStorage.setItem("oj_theme", next);
+      });
+
+      // Stay button: persist no-redirect
+      document.getElementById("stayBtn").addEventListener("click", () => {
+        localStorage.setItem("oj_stay", "1");
+        statePill.textContent = "Redirect disabled (saved)";
+      });
+
+      // README render (relative links/images -> absolute)
+      function absolutizeUrl(url, type) {
+        if (!url) return url;
+        if (url.startsWith("#") || url.startsWith("mailto:") || url.startsWith("http://") || url.startsWith("https://")) return url;
+        const clean = url.replace(/^\.\//, "").replace(/^\//, "");
+        if (type === "image") return REPO.rawBase + clean;
+        return REPO.github + "/blob/main/" + clean;
+      }
+
+      const renderer = new marked.Renderer();
+
+      const oldLink = renderer.link.bind(renderer);
+      renderer.link = (href, title, text) => {
+        href = absolutizeUrl(href, "link");
+        const html = oldLink(href, title, text);
+        return html.replace("<a ", '<a target="_blank" rel="noopener noreferrer" ');
+      };
+
+      const oldImage = renderer.image.bind(renderer);
+      renderer.image = (href, title, text) => {
+        href = absolutizeUrl(href, "image");
+        return oldImage(href, title, text);
+      };
+
+      marked.setOptions({ renderer, gfm: true, mangle: false, headerIds: true });
+
+      async function loadReadme() {
+        const loading = document.getElementById("loading");
+        const readmeEl = document.getElementById("readme");
+
+        try {
+          const res = await fetch(REPO.readmeRaw, { cache: "no-store" });
+          if (!res.ok) throw new Error("README fetch failed");
+          const md = await res.text();
+          readmeEl.innerHTML = marked.parse(md);
+          loading.classList.add("hide");
+          readmeEl.style.display = "block";
+        } catch (e) {
+          loading.innerHTML =
+            'Couldn\'t load README preview here. <a href="' + REPO.github + '" target="_blank" rel="noopener noreferrer">Open on GitHub</a>.';
+        }
+      }
+
+      loadReadme();
+
+      // Note: macOS Quick Look often doesn't execute JS for local HTML previews.
+      // In a real browser / on GitHub Pages, the README loads normally.
+    </script>
   </body>
 </html>
