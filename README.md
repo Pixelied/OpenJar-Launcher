@@ -1,6 +1,6 @@
 # OpenJar Launcher
 
-**OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher with a spec-driven Modpack Maker** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
+**OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
 
 It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
 
