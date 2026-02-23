@@ -37,7 +37,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
 Screenshots live in `readme-assets/images/` — click any image to view full size.
 
 <p align="center">
-  <a href="d/readme-assets/images/modpack maker.png">
+  <a href="readme-assets/images/modpack maker.png">
     <img src="readme-assets/images/modpack maker.png" width="49%" alt="Instances" />
   </a>
   <a href="readme-assets/images/instance%20content.png">
