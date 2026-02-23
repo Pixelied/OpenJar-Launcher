@@ -7,6 +7,7 @@
     <title>OpenJar Launcher — GitHub Repo</title>
     <meta name="description" content="OpenJar Launcher — Mac-first Minecraft launcher / creator studio built with Tauri (Rust) + React. View the GitHub repository and README." />
     <link rel="canonical" href="https://github.com/Pixelied/OpenJar-Launcher" />
+    <meta name="robots" content="index,follow" />
 
     <meta property="og:title" content="OpenJar Launcher — GitHub Repo" />
     <meta property="og:description" content="Mac-first Minecraft launcher / creator studio built with Tauri (Rust) + React." />
@@ -22,7 +23,6 @@
 
     <style>
       :root{
-        /* Light (default) */
         --bg:#f6f8fa;
         --bg2:#ffffff;
         --card:#ffffff;
@@ -74,35 +74,57 @@
         box-shadow:var(--shadow);
         overflow:hidden;
       }
+
+      /* Top bar */
       .topbar{
-        display:flex;
-        align-items:center;
+        display:grid;
+        grid-template-columns: 1fr auto;
         gap:14px;
         padding:14px 16px;
         border-bottom:1px solid var(--border);
         background:linear-gradient(180deg, rgba(255,255,255,.55), rgba(255,255,255,0));
+        align-items:center;
       }
       html[data-theme="dark"] .topbar{
         background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0));
       }
 
+      .left{
+        display:flex;
+        align-items:center;
+        gap:14px;
+        min-width:0;
+      }
       .logo{width:22px;height:22px;flex:0 0 22px;}
       .titleblock{min-width:0;display:flex;flex-direction:column;gap:2px}
       .kicker{font-size:12px;color:var(--muted);font-weight:800;letter-spacing:.2px}
       .repo a{color:var(--link);text-decoration:none;font-weight:900;font-size:15px}
       .repo a:hover{text-decoration:underline}
-      .actions{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 
+      .actions{
+        display:flex;
+        gap:10px;
+        align-items:center;
+        flex-wrap:wrap;
+        justify-content:flex-end;
+      }
+
+      /* Buttons */
       .btn{
-        display:inline-flex;align-items:center;gap:8px;
-        padding:9px 12px;border-radius:12px;
+        display:inline-flex;align-items:center;justify-content:center;
+        height:36px;
+        padding:0 12px;
+        border-radius:12px;
         border:1px solid transparent;
         background:var(--btn);color:var(--btnText);
         font-weight:900;text-decoration:none;cursor:pointer;user-select:none;
-        transition:transform .08s ease, filter .15s ease;
+        transition:transform .08s ease, filter .15s ease, box-shadow .15s ease;
+        white-space:nowrap;
       }
       .btn:active{transform:translateY(1px)}
       .btn:hover{filter:brightness(1.02)}
+      .btn:focus{outline:none; box-shadow:0 0 0 4px var(--ring);}
+
       html[data-theme="light"] .btn{border-color:rgba(9,105,218,.25)}
       html[data-theme="dark"]  .btn{border-color:rgba(121,192,255,.25)}
 
@@ -114,45 +136,43 @@
       }
 
       .pill{
+        height:36px;
+        display:inline-flex;align-items:center;
         font-size:12px;color:var(--muted);
-        padding:6px 10px;border:1px solid var(--border);
+        padding:0 10px;border:1px solid var(--border);
         border-radius:999px;background:var(--soft);
         white-space:nowrap;
       }
 
-      /* Theme toggle (nicer) */
+      /* Theme toggle (knob-only, clean) */
       .themeToggle{
         position:relative;
-        width:54px;height:34px;
+        width:54px;height:36px;
         border-radius:999px;
         border:1px solid var(--border);
         background:var(--btn2);
         cursor:pointer;
-        display:inline-flex;
-        align-items:center;
-        justify-content:space-between;
-        padding:0 10px;
-        transition:background .15s ease, border-color .15s ease, transform .08s ease;
+        transition:background .15s ease, border-color .15s ease, transform .08s ease, box-shadow .15s ease;
       }
       .themeToggle:active{transform:translateY(1px)}
       .themeToggle:focus{outline:none; box-shadow:0 0 0 4px var(--ring);}
-      .themeToggle svg{
-        width:14px;height:14px;
-        opacity:.80;
-      }
       .themeKnob{
         position:absolute;
         top:4px;left:4px;
-        width:26px;height:26px;
+        width:28px;height:28px;
         border-radius:999px;
-        background:var(--card);
+        background:linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.65));
         border:1px solid var(--border);
         box-shadow:0 10px 22px rgba(0,0,0,.10);
-        transition:transform .18s ease;
+        transition:transform .18s ease, background .15s ease;
       }
-      html[data-theme="dark"] .themeKnob{transform:translateX(20px)}
       html[data-theme="dark"] .themeToggle{background:var(--soft2)}
+      html[data-theme="dark"] .themeKnob{
+        transform:translateX(18px);
+        background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.10));
+      }
 
+      /* Content */
       .content{padding:16px}
       .markdown-wrap{
         border:1px solid var(--border);
@@ -165,13 +185,24 @@
       .markdown-body a{color:var(--link) !important;}
       .markdown-body pre,.markdown-body code{background:var(--btn2) !important;}
       .markdown-body table th,.markdown-body table td{border-color:var(--border) !important;}
+
+      /* Images inside README */
+      .markdown-body img{
+        max-width:100%;
+        border-radius:12px;
+        border:1px solid var(--border);
+        background:var(--card);
+        box-shadow:0 10px 22px rgba(0,0,0,.08);
+      }
+
       .loading{color:var(--muted);font-size:14px}
       .footer{margin-top:12px;color:var(--muted);font-size:12px}
       code{background:var(--btn2);padding:2px 6px;border-radius:8px;border:1px solid var(--border)}
       .hide{display:none !important}
 
       @media (max-width: 760px){
-        .actions{gap:8px}
+        .topbar{grid-template-columns: 1fr; gap:10px}
+        .actions{justify-content:flex-start}
         .pill{display:none}
       }
     </style>
@@ -181,17 +212,19 @@
     <div class="wrap">
       <div class="card">
         <div class="topbar">
-          <!-- GitHub mark -->
-          <svg class="logo" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path fill="currentColor" style="color:var(--text);" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
-          </svg>
+          <div class="left">
+            <!-- GitHub mark -->
+            <svg class="logo" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path fill="currentColor" style="color:var(--text);" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+            </svg>
 
-          <div class="titleblock">
-            <div class="kicker">GitHub Repository</div>
-            <div class="repo">
-              <a id="repoLink" href="https://github.com/Pixelied/OpenJar-Launcher" target="_blank" rel="noopener noreferrer">
-                Pixelied / OpenJar-Launcher
-              </a>
+            <div class="titleblock">
+              <div class="kicker">GitHub Repository</div>
+              <div class="repo">
+                <a id="repoLink" href="https://github.com/Pixelied/OpenJar-Launcher" target="_blank" rel="noopener noreferrer">
+                  Pixelied / OpenJar-Launcher
+                </a>
+              </div>
             </div>
           </div>
 
@@ -200,12 +233,12 @@
               Open on GitHub
             </a>
 
-            <button class="themeToggle" id="themeBtn" type="button" aria-label="Toggle light/dark">
-              <span class="themeKnob" aria-hidden="true"></span>
+            <button class="btn secondary" id="stayBtn" type="button">
+              Stay on this page
             </button>
 
-            <button class="btn secondary" id="stayBtn" type="button" title="Disable auto-redirect for future visits">
-              Stay on this page
+            <button class="themeToggle" id="themeBtn" type="button" aria-label="Toggle light/dark">
+              <span class="themeKnob" aria-hidden="true"></span>
             </button>
 
             <div class="pill" id="statePill">Redirecting…</div>
@@ -253,72 +286,93 @@
       const savedTheme = localStorage.getItem("oj_theme");
       document.documentElement.setAttribute("data-theme", savedTheme || REPO.defaultTheme);
 
-      // Redirect: instant (no setTimeout at all)
-      // Disabled by:
-      // - REDIRECT=false
-      // - ?stay=1
-      // - saved localStorage oj_stay=1
       const qs = new URLSearchParams(location.search);
       const stayParam = qs.get("stay") === "1";
-      const staySaved = localStorage.getItem("oj_stay") === "1";
 
       const statePill = document.getElementById("statePill");
       const openBtn = document.getElementById("openBtn");
       const repoLink = document.getElementById("repoLink");
+      const stayBtn = document.getElementById("stayBtn");
 
       openBtn.href = REPO.github;
       repoLink.href = REPO.github;
 
-      const canRedirect = REDIRECT && !stayParam && !staySaved;
+      const canRedirect = REDIRECT && !stayParam;
 
-      if (canRedirect) {
-        statePill.textContent = "Redirecting…";
-        // fully instant:
-        window.location.replace(REPO.github);
-      } else {
+      function setStayUI() {
+        const isStay = (new URLSearchParams(location.search).get("stay") === "1");
+        stayBtn.textContent = isStay ? "Enable redirect" : "Stay on this page";
         if (!REDIRECT) statePill.textContent = "Redirect disabled (code)";
-        else if (stayParam) statePill.textContent = "Viewing mode: stay=1";
-        else if (staySaved) statePill.textContent = "Redirect disabled (saved)";
+        else if (isStay) statePill.textContent = "Redirect paused (stay=1)";
         else statePill.textContent = "Not redirecting";
       }
 
+      if (canRedirect) {
+        statePill.textContent = "Redirecting…";
+        // 0-second redirect:
+        window.location.replace(REPO.github);
+      } else {
+        setStayUI();
+      }
+
+      // Stay button: session-only via URL param (NO localStorage)
+      // - Click "Stay on this page" -> adds ?stay=1 without reload
+      // - Click "Enable redirect" -> removes ?stay=1 and redirects instantly
+      stayBtn.addEventListener("click", () => {
+        const url = new URL(location.href);
+        const isStay = url.searchParams.get("stay") === "1";
+
+        if (!isStay) {
+          url.searchParams.set("stay", "1");
+          history.replaceState(null, "", url.toString());
+          setStayUI();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } else {
+          url.searchParams.delete("stay");
+          history.replaceState(null, "", url.toString());
+          if (REDIRECT) window.location.replace(REPO.github);
+          else setStayUI();
+        }
+      });
+
       // Theme toggle
-      const themeBtn = document.getElementById("themeBtn");
-      themeBtn.addEventListener("click", () => {
+      document.getElementById("themeBtn").addEventListener("click", () => {
         const current = document.documentElement.getAttribute("data-theme") || "light";
         const next = current === "light" ? "dark" : "light";
         document.documentElement.setAttribute("data-theme", next);
         localStorage.setItem("oj_theme", next);
       });
 
-      // Stay button: persist no-redirect
-      document.getElementById("stayBtn").addEventListener("click", () => {
-        localStorage.setItem("oj_stay", "1");
-        statePill.textContent = "Redirect disabled (saved)";
-      });
-
-      // README render (relative links/images -> absolute)
+      // README render: relative links/images -> absolute + proper encoding
       function absolutizeUrl(url, type) {
         if (!url) return url;
         if (url.startsWith("#") || url.startsWith("mailto:") || url.startsWith("http://") || url.startsWith("https://")) return url;
+
         const clean = url.replace(/^\.\//, "").replace(/^\//, "");
-        if (type === "image") return REPO.rawBase + clean;
-        return REPO.github + "/blob/main/" + clean;
+        const encoded = encodeURI(clean);
+
+        if (type === "image") return REPO.rawBase + encoded;
+        return REPO.github + "/blob/main/" + encoded;
       }
 
       const renderer = new marked.Renderer();
 
-      const oldLink = renderer.link.bind(renderer);
       renderer.link = (href, title, text) => {
-        href = absolutizeUrl(href, "link");
-        const html = oldLink(href, title, text);
-        return html.replace("<a ", '<a target="_blank" rel="noopener noreferrer" ');
+        href = href || "";
+        const isHash = href.startsWith("#");
+
+        const finalHref = isHash ? href : absolutizeUrl(href, "link");
+        const t = title ? ` title="${title.replace(/"/g, "&quot;")}"` : "";
+
+        if (isHash) return `<a href="${finalHref}"${t}>${text}</a>`;
+        return `<a href="${finalHref}" target="_blank" rel="noopener noreferrer"${t}>${text}</a>`;
       };
 
-      const oldImage = renderer.image.bind(renderer);
       renderer.image = (href, title, text) => {
-        href = absolutizeUrl(href, "image");
-        return oldImage(href, title, text);
+        const src = absolutizeUrl(href || "", "image");
+        const alt = (text || "").replace(/"/g, "&quot;");
+        const t = title ? ` title="${title.replace(/"/g, "&quot;")}"` : "";
+        return `<img src="${src}" alt="${alt}"${t} loading="lazy" decoding="async" referrerpolicy="no-referrer" />`;
       };
 
       marked.setOptions({ renderer, gfm: true, mangle: false, headerIds: true });
@@ -331,19 +385,33 @@
           const res = await fetch(REPO.readmeRaw, { cache: "no-store" });
           if (!res.ok) throw new Error("README fetch failed");
           const md = await res.text();
+
           readmeEl.innerHTML = marked.parse(md);
           loading.classList.add("hide");
           readmeEl.style.display = "block";
+
+          // Smooth-scroll internal anchors (TOC)
+          readmeEl.addEventListener("click", (e) => {
+            const a = e.target.closest("a");
+            if (!a) return;
+            const href = a.getAttribute("href") || "";
+            if (!href.startsWith("#")) return;
+
+            const id = decodeURIComponent(href.slice(1));
+            const el = document.getElementById(id);
+            if (!el) return;
+
+            e.preventDefault();
+            history.replaceState(null, "", href);
+            el.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
         } catch (e) {
           loading.innerHTML =
-            'Couldn\'t load README preview here. <a href="' + REPO.github + '" target="_blank" rel="noopener noreferrer">Open on GitHub</a>.';
+            `Couldn't load README preview here. <a href="${REPO.github}" target="_blank" rel="noopener noreferrer">Open on GitHub</a>.`;
         }
       }
 
       loadReadme();
-
-      // Note: macOS Quick Look often doesn't execute JS for local HTML previews.
-      // In a real browser / on GitHub Pages, the README loads normally.
     </script>
   </body>
 </html>
