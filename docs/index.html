@@ -14,7 +14,6 @@
     <meta property="og:url" content="https://pixelied.github.io/OpenJar-Launcher/" />
     <meta property="og:type" content="website" />
 
-    <!-- GitHub-like markdown styling -->
     <link
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/github-markdown-css/5.6.1/github-markdown.min.css"
@@ -75,7 +74,6 @@
         overflow:hidden;
       }
 
-      /* Top bar */
       .topbar{
         display:grid;
         grid-template-columns: 1fr auto;
@@ -109,7 +107,6 @@
         justify-content:flex-end;
       }
 
-      /* Buttons */
       .btn{
         display:inline-flex;align-items:center;justify-content:center;
         height:36px;
@@ -144,7 +141,6 @@
         white-space:nowrap;
       }
 
-      /* Theme toggle (knob-only, clean) */
       .themeToggle{
         position:relative;
         width:54px;height:36px;
@@ -157,22 +153,25 @@
       .themeToggle:active{transform:translateY(1px)}
       .themeToggle:focus{outline:none; box-shadow:0 0 0 4px var(--ring);}
       .themeKnob{
-        position:absolute;
-        top:4px;left:4px;
-        width:28px;height:28px;
-        border-radius:999px;
-        background:linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.65));
-        border:1px solid var(--border);
-        box-shadow:0 10px 22px rgba(0,0,0,.10);
-        transition:transform .18s ease, background .15s ease;
-      }
+  position:absolute;
+  top:50%;
+  left:4px;
+  width:28px;
+  height:28px;
+  border-radius:999px;
+  background:linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.78));
+  box-shadow:0 8px 22px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.08);
+  transform:translate(0,-50%);
+  transition:transform .22s cubic-bezier(.2,.8,.2,1), background .2s ease;
+}
+
       html[data-theme="dark"] .themeToggle{background:var(--soft2)}
       html[data-theme="dark"] .themeKnob{
-        transform:translateX(18px);
-        background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.10));
-      }
+  transform:translate(18px,-50%);
+  background:linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.12));
+}
 
-      /* Content */
+
       .content{padding:16px}
       .markdown-wrap{
         border:1px solid var(--border);
@@ -186,7 +185,6 @@
       .markdown-body pre,.markdown-body code{background:var(--btn2) !important;}
       .markdown-body table th,.markdown-body table td{border-color:var(--border) !important;}
 
-      /* Images inside README */
       .markdown-body img{
         max-width:100%;
         border-radius:12px;
@@ -205,7 +203,48 @@
         .actions{justify-content:flex-start}
         .pill{display:none}
       }
-    </style>
+    
+
+/* Anchor targeting (TOC) */
+h1, h2, h3, h4, h5, h6 { scroll-margin-top: 112px; }
+h1:target, h2:target, h3:target, h4:target, h5:target, h6:target {
+  outline: 2px solid var(--accent-200);
+  outline-offset: 6px;
+  border-radius: 14px;
+}
+
+/* Floating Back-to-top */
+.fab-top{
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--card-border);
+  background: var(--card);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: .2px;
+  opacity: 0;
+  transform: translateY(12px);
+  pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease, background .18s ease;
+}
+.fab-top.show{
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.fab-top:hover{
+  background: var(--card-2);
+}
+.fab-top:active{
+  transform: translateY(1px);
+}
+
+</style>
   </head>
 
   <body>
@@ -213,7 +252,6 @@
       <div class="card">
         <div class="topbar">
           <div class="left">
-            <!-- GitHub mark -->
             <svg class="logo" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path fill="currentColor" style="color:var(--text);" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
             </svg>
@@ -241,7 +279,7 @@
               <span class="themeKnob" aria-hidden="true"></span>
             </button>
 
-            <div class="pill" id="statePill">Redirecting…</div>
+            <div class="pill" id="statePill">—</div>
           </div>
         </div>
 
@@ -265,17 +303,20 @@
       </div>
     </div>
 
-    <!-- Markdown renderer -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" referrerpolicy="no-referrer"></script>
 
     <script>
       /******************************************************************
        * QUICK TOGGLES
-       * Change REDIRECT to false to stop redirect entirely.
        ******************************************************************/
-      const REDIRECT = true;   // <-- change this ONE WORD to false
+      const REDIRECT = true;             // <-- change this ONE WORD to false
+      const REDIRECT_GRACE_MS = 500;     // 0 = truly instant (button won't be clickable)
+      const SMOOTH_SCROLL = true;
 
       const REPO = {
+        owner: "Pixelied",
+        name: "OpenJar-Launcher",
+        branch: "main",
         github: "https://github.com/Pixelied/OpenJar-Launcher",
         rawBase: "https://raw.githubusercontent.com/Pixelied/OpenJar-Launcher/main/",
         readmeRaw: "https://raw.githubusercontent.com/Pixelied/OpenJar-Launcher/main/README.md",
@@ -286,9 +327,6 @@
       const savedTheme = localStorage.getItem("oj_theme");
       document.documentElement.setAttribute("data-theme", savedTheme || REPO.defaultTheme);
 
-      const qs = new URLSearchParams(location.search);
-      const stayParam = qs.get("stay") === "1";
-
       const statePill = document.getElementById("statePill");
       const openBtn = document.getElementById("openBtn");
       const repoLink = document.getElementById("repoLink");
@@ -297,32 +335,41 @@
       openBtn.href = REPO.github;
       repoLink.href = REPO.github;
 
-      const canRedirect = REDIRECT && !stayParam;
-
-      function setStayUI() {
-        const isStay = (new URLSearchParams(location.search).get("stay") === "1");
-        stayBtn.textContent = isStay ? "Enable redirect" : "Stay on this page";
-        if (!REDIRECT) statePill.textContent = "Redirect disabled (code)";
-        else if (isStay) statePill.textContent = "Redirect paused (stay=1)";
-        else statePill.textContent = "Not redirecting";
+      function isStay() {
+        return (new URLSearchParams(location.search).get("stay") === "1");
       }
 
-      if (canRedirect) {
-        statePill.textContent = "Redirecting…";
-        // 0-second redirect:
-        window.location.replace(REPO.github);
-      } else {
-        setStayUI();
+      function setStayUI(mode) {
+        const stay = isStay();
+        stayBtn.textContent = stay ? "Enable redirect" : "Stay on this page";
+
+        if (!REDIRECT) {
+          statePill.textContent = "Redirect disabled (code)";
+          return;
+        }
+        if (mode === "pendingRedirect") {
+          statePill.textContent = "Redirecting… (tap Stay)";
+          return;
+        }
+        statePill.textContent = stay ? "Redirect paused (stay=1)" : "Not redirecting";
       }
 
-      // Stay button: session-only via URL param (NO localStorage)
-      // - Click "Stay on this page" -> adds ?stay=1 without reload
-      // - Click "Enable redirect" -> removes ?stay=1 and redirects instantly
+      // Stay button: URL param only (NOT persistent)
+      let redirectTimer = null;
+      function cancelRedirectTimer() {
+        if (redirectTimer) {
+          clearTimeout(redirectTimer);
+          redirectTimer = null;
+        }
+      }
+
       stayBtn.addEventListener("click", () => {
-        const url = new URL(location.href);
-        const isStay = url.searchParams.get("stay") === "1";
+        cancelRedirectTimer();
 
-        if (!isStay) {
+        const url = new URL(location.href);
+        const stay = url.searchParams.get("stay") === "1";
+
+        if (!stay) {
           url.searchParams.set("stay", "1");
           history.replaceState(null, "", url.toString());
           setStayUI();
@@ -343,18 +390,83 @@
         localStorage.setItem("oj_theme", next);
       });
 
-      // README render: relative links/images -> absolute + proper encoding
+      // Redirect: scheduled after handlers exist, with a tiny grace window
+      const canRedirectNow = REDIRECT && !isStay();
+      if (canRedirectNow) {
+        setStayUI("pendingRedirect");
+        redirectTimer = setTimeout(() => {
+          window.location.replace(REPO.github);
+        }, Math.max(0, REDIRECT_GRACE_MS));
+      } else {
+        setStayUI();
+      }
+
+      function isAbsoluteUrl(u) {
+        return /^https?:\/\//i.test(u) || u.startsWith("data:") || u.startsWith("blob:") || u.startsWith("//");
+      }
+
+      function normalizeRel(p) {
+  if (!p) return p;
+  return p
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/^\.\//, "")
+    // Guard against accidental leading "d/" in some README links (typo-safe)
+    .replace(/^d\//, "")
+    // If a link accidentally includes the Pages base path, remove it.
+    .replace(/^OpenJar-Launcher\//, "");
+}
+
+
+
+function isImagePath(p) {
+        return /\.(png|jpe?g|gif|webp|svg)$/i.test(p.split("?")[0].split("#")[0]);
+      }
+
+      // Convert github.com/.../raw/... -> raw.githubusercontent.com/.../... (more reliable hotlink)
+      function toRawGithub(url) {
+        const m = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+)\/raw\/([^\/]+)\/(.+)$/i);
+        if (!m) return url;
+        const owner = m[1], repo = m[2], branch = m[3], path = m[4];
+        return `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${path}`;
+      }
+
       function absolutizeUrl(url, type) {
         if (!url) return url;
-        if (url.startsWith("#") || url.startsWith("mailto:") || url.startsWith("http://") || url.startsWith("https://")) return url;
+        if (url.startsWith("#") || url.startsWith("mailto:") || isAbsoluteUrl(url)) return url;
 
-        const clean = url.replace(/^\.\//, "").replace(/^\//, "");
+        const clean = normalizeRel(url);
         const encoded = encodeURI(clean);
 
         if (type === "image") return REPO.rawBase + encoded;
-        return REPO.github + "/blob/main/" + encoded;
+        // For plain links to images, better to go to GitHub blob (or raw) — we handle later
+        return REPO.github + "/blob/" + REPO.branch + "/" + encoded;
       }
 
+      // GitHub-like slugger for headings (TOC links in README usually use this)
+      function makeGitHubSlugger() {
+  const seen = new Map();
+  return function githubSlug(text) {
+    let slug = (text || "")
+      .toLowerCase()
+      .trim()
+      // remove punctuation (matches GitHub-ish behavior closely)
+      .replace(/[\u2000-\u206F\u2E00-\u2E7F'".,!?():;\[\]{}<>@#$%^&*+=|\\/`~]/g, "")
+      // replace EACH whitespace char with '-' (do not collapse)
+      .replace(/\s/g, "-")
+      // trim leading/trailing hyphens
+      .replace(/^-+|-+$/g, "");
+
+    // dedupe like GitHub: "heading", "heading-1", ...
+    const count = seen.get(slug) || 0;
+    seen.set(slug, count + 1);
+    if (count > 0) slug = slug + "-" + count;
+    return slug || "section";
+  };
+}
+
+
+// Marked renderer: still useful, but we'll post-process HTML too (for raw HTML <img>)
       const renderer = new marked.Renderer();
 
       renderer.link = (href, title, text) => {
@@ -375,9 +487,176 @@
         return `<img src="${src}" alt="${alt}"${t} loading="lazy" decoding="async" referrerpolicy="no-referrer" />`;
       };
 
-      marked.setOptions({ renderer, gfm: true, mangle: false, headerIds: true });
+      marked.setOptions({ renderer, gfm: true, mangle: false, headerIds: false });
 
-      async function loadReadme() {
+      function applyGithubHeadingIds(root) {
+        const slug = makeGitHubSlugger();
+        const headings = root.querySelectorAll("h1,h2,h3,h4,h5,h6");
+        headings.forEach(h => {
+          // Some headings contain links/icons — use textContent
+          const text = (h.textContent || "").trim();
+          const id = slug(text);
+          h.id = id;
+        });
+      }
+
+      function rewriteRelativeImagesAndLinks(root) {
+        const rawBase = `https://raw.githubusercontent.com/${REPO.owner}/${REPO.repo}/${REPO.branch}/`;
+        const ghRawBase = `https://github.com/${REPO.owner}/${REPO.repo}/raw/${REPO.branch}/`;
+
+        function uniq(arr) {
+          return Array.from(new Set(arr.filter(Boolean)));
+        }
+
+        function buildPathCandidates(rel) {
+          let p = normalizeRel(rel);
+          p = p.replace(/^\/+/, "");
+          const vars = [p];
+
+          // Helpful fallbacks if files live in older folders
+          if (p.startsWith("readme-assets/images/")) {
+            vars.push("docs/" + p);
+            vars.push(p.replace(/^readme-assets\/images\//, "docs/screenshots/"));
+          }
+          if (p.startsWith("readme-assets/")) {
+            vars.push("docs/" + p);
+          }
+          if (p.startsWith("docs/")) {
+            vars.push(p.replace(/^docs\//, ""));
+          }
+          return uniq(vars);
+        }
+
+        function buildUrlCandidates(rel) {
+          const vars = buildPathCandidates(rel);
+          const bases = [rawBase, ghRawBase];
+          const urls = [];
+          for (const base of bases) {
+            for (const v of vars) {
+              urls.push(base + encodeURI(v));
+            }
+          }
+          return uniq(urls);
+        }
+
+        function attachImgFallback(img, relSrc) {
+          const urls = buildUrlCandidates(relSrc);
+          img._ojCandidates = urls;
+          img._ojCandidateIndex = 0;
+
+          img.setAttribute("src", urls[0]);
+          img.loading = img.loading || "lazy";
+          img.decoding = img.decoding || "async";
+
+          img.addEventListener("error", () => {
+            const idx = (img._ojCandidateIndex ?? 0) + 1;
+            img._ojCandidateIndex = idx;
+            if (idx < (img._ojCandidates?.length ?? 0)) {
+              img.setAttribute("src", img._ojCandidates[idx]);
+            }
+          });
+        }
+
+        // Images
+        root.querySelectorAll("img").forEach(img => {
+          const src = img.getAttribute("src") || "";
+          if (!src) return;
+
+          if (isAbsoluteUrl(src)) {
+            img.setAttribute("src", toRawGithub(src));
+            img.loading = img.loading || "lazy";
+            img.decoding = img.decoding || "async";
+            return;
+          }
+
+          if (!isRelativePath(src)) return;
+          attachImgFallback(img, src);
+        });
+
+        // Links
+        root.querySelectorAll("a").forEach(a => {
+          const href = a.getAttribute("href") || "";
+          if (!href) return;
+          if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) return;
+
+          if (isAbsoluteUrl(href)) {
+            a.setAttribute("href", toRawGithub(href));
+            a.target = a.target || "_blank";
+            a.rel = a.rel || "noreferrer noopener";
+            return;
+          }
+
+          if (!isRelativePath(href)) return;
+          const normalized = normalizeRel(href);
+          a.setAttribute("href", rawBase + encodeURI(normalized));
+          a.target = a.target || "_blank";
+          a.rel = a.rel || "noreferrer noopener";
+        });
+      }
+
+
+      function setupTocAndAnchorScroll(readmeEl) {
+  const TOP_OFFSET = 96; // header height + breathing room
+
+  function uniq(arr) {
+    return Array.from(new Set(arr.filter(Boolean)));
+  }
+
+  function findTarget(rawId) {
+    if (!rawId) return null;
+    const decoded = decodeURIComponent(rawId);
+
+    const candidates = uniq([
+      decoded,
+      rawId,
+      decoded.replace(/^user-content-/, ""),
+      rawId.replace(/^user-content-/, ""),
+    ]);
+
+    for (const id of candidates) {
+      const el = document.getElementById(id);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function scrollToEl(el) {
+    const top = el.getBoundingClientRect().top + window.scrollY - TOP_OFFSET;
+    window.scrollTo({
+      top: Math.max(0, top),
+      behavior: prefersReducedMotion ? "auto" : "smooth",
+    });
+  }
+
+  // Smooth-scroll internal anchors and update the URL hash without a jump.
+  readmeEl.addEventListener("click", (e) => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    const href = a.getAttribute("href") || "";
+    if (!href.startsWith("#")) return;
+
+    const rawId = href.slice(1);
+    const target = findTarget(rawId);
+    if (!target) return;
+
+    e.preventDefault();
+    scrollToEl(target);
+    history.replaceState(null, "", "#" + rawId);
+  });
+
+  // If the page was loaded with a hash, scroll after the README renders.
+  if (location.hash && location.hash.length > 1) {
+    const rawId = location.hash.slice(1);
+    const target = findTarget(rawId);
+    if (target) {
+      setTimeout(() => scrollToEl(target), 0);
+    }
+  }
+}
+
+
+
+async function loadReadme() {
         const loading = document.getElementById("loading");
         const readmeEl = document.getElementById("readme");
 
@@ -386,25 +665,23 @@
           if (!res.ok) throw new Error("README fetch failed");
           const md = await res.text();
 
+          // Parse markdown (keeps raw HTML blocks intact)
           readmeEl.innerHTML = marked.parse(md);
+
+          // Post-process:
+          // 1) Apply GitHub-style heading IDs so TOC works
+          applyGithubHeadingIds(readmeEl);
+
+          // 2) Rewrite any relative <img> / <a> that came from raw HTML in README
+          rewriteRelativeImagesAndLinks(readmeEl);
+
+          // 3) Anchor scrolling for TOC
+          setupTocAndAnchorScroll(readmeEl);
+          setupBackToTop();
+          scrollToHashIfPresent();
+
           loading.classList.add("hide");
           readmeEl.style.display = "block";
-
-          // Smooth-scroll internal anchors (TOC)
-          readmeEl.addEventListener("click", (e) => {
-            const a = e.target.closest("a");
-            if (!a) return;
-            const href = a.getAttribute("href") || "";
-            if (!href.startsWith("#")) return;
-
-            const id = decodeURIComponent(href.slice(1));
-            const el = document.getElementById(id);
-            if (!el) return;
-
-            e.preventDefault();
-            history.replaceState(null, "", href);
-            el.scrollIntoView({ behavior: "smooth", block: "start" });
-          });
         } catch (e) {
           loading.innerHTML =
             `Couldn't load README preview here. <a href="${REPO.github}" target="_blank" rel="noopener noreferrer">Open on GitHub</a>.`;
@@ -413,5 +690,6 @@
 
       loadReadme();
     </script>
-  </body>
+    <button id="backTop" class="fab-top" type="button" aria-label="Back to top">Top</button>
+</body>
 </html>
