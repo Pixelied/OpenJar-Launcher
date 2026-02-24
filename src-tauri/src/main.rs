@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
-#[cfg(all(unix, debug_assertions))]
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -38,6 +38,7 @@ const LEGACY_KEYRING_SERVICES: [&str; 4] = [
 ];
 const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
 const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
+const LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE: &str = "tokens_recovery_fallback.json";
 #[cfg(debug_assertions)]
 const LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE: &str = "tokens_debug_fallback.json";
 const MS_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
@@ -1726,6 +1727,10 @@ fn launcher_token_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, Strin
     Ok(launcher_dir(app)?.join(LAUNCHER_TOKEN_FALLBACK_FILE))
 }
 
+fn launcher_token_recovery_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(launcher_dir(app)?.join(LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE))
+}
+
 #[cfg(debug_assertions)]
 fn launcher_token_debug_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join(LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE))
@@ -1863,7 +1868,6 @@ fn read_token_fallback_store_at_path(path: &Path) -> Result<LauncherTokenFallbac
     serde_json::from_str(&raw).map_err(|e| format!("parse launcher token fallback failed: {e}"))
 }
 
-#[cfg(debug_assertions)]
 fn write_token_fallback_store_at_path(
     path: &Path,
     store: &LauncherTokenFallbackStore,
@@ -1883,8 +1887,7 @@ fn write_token_fallback_store_at_path(
     Ok(())
 }
 
-#[cfg(debug_assertions)]
-fn debug_refresh_token_lookup_keys(
+fn refresh_token_lookup_keys(
     account: &LauncherAccount,
     accounts: &[LauncherAccount],
 ) -> Vec<String> {
@@ -1908,7 +1911,7 @@ fn persist_refresh_token_debug_fallback(
 ) -> Result<(), String> {
     let path = launcher_token_debug_fallback_path(app)?;
     let mut store = read_token_fallback_store_at_path(&path)?;
-    for key in debug_refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+    for key in refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
         store.refresh_tokens.insert(key, refresh_token.to_string());
     }
     write_token_fallback_store_at_path(&path, &store)
@@ -1940,7 +1943,7 @@ fn read_refresh_token_debug_fallback(
 ) -> Result<Option<String>, String> {
     let path = launcher_token_debug_fallback_path(app)?;
     let store = read_token_fallback_store_at_path(&path)?;
-    for key in debug_refresh_token_lookup_keys(account, accounts) {
+    for key in refresh_token_lookup_keys(account, accounts) {
         if let Some(token) = store.refresh_tokens.get(&key) {
             let trimmed = token.trim();
             if trimmed.is_empty() {
@@ -1963,12 +1966,84 @@ fn remove_refresh_token_debug_fallback(
     }
     let mut store = read_token_fallback_store_at_path(&path)?;
     let mut changed = false;
-    for key in debug_refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+    for key in refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
         if store.refresh_tokens.remove(&key).is_some() {
             changed = true;
         }
     }
     if changed {
+        write_token_fallback_store_at_path(&path, &store)?;
+    }
+    Ok(())
+}
+
+fn persist_refresh_token_recovery_fallback(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let path = launcher_token_recovery_fallback_path(app)?;
+    let mut store = read_token_fallback_store_at_path(&path)?;
+    for key in refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+        store.refresh_tokens.insert(key, refresh_token.to_string());
+    }
+    write_token_fallback_store_at_path(&path, &store)
+}
+
+fn read_refresh_token_recovery_fallback(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Result<Option<String>, String> {
+    let path = launcher_token_recovery_fallback_path(app)?;
+    let store = read_token_fallback_store_at_path(&path)?;
+    for key in refresh_token_lookup_keys(account, accounts) {
+        if let Some(token) = store.refresh_tokens.get(&key) {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Ok(Some(trimmed.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn remove_refresh_token_recovery_fallback(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+) -> Result<(), String> {
+    let path = launcher_token_recovery_fallback_path(app)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut store = read_token_fallback_store_at_path(&path)?;
+    let mut changed = false;
+    for key in refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+        if store.refresh_tokens.remove(&key).is_some() {
+            changed = true;
+        }
+    }
+    if changed {
+        write_token_fallback_store_at_path(&path, &store)?;
+    }
+    Ok(())
+}
+
+fn remove_refresh_token_recovery_fallback_for_key(
+    app: &tauri::AppHandle,
+    account_key: &str,
+) -> Result<(), String> {
+    let key = account_key.trim();
+    if key.is_empty() {
+        return Ok(());
+    }
+    let path = launcher_token_recovery_fallback_path(app)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut store = read_token_fallback_store_at_path(&path)?;
+    if store.refresh_tokens.remove(key).is_some() {
         write_token_fallback_store_at_path(&path, &store)?;
     }
     Ok(())
@@ -4590,6 +4665,13 @@ fn test_token_keyring_available_flag() -> &'static std::sync::atomic::AtomicBool
 }
 
 #[cfg(test)]
+fn test_token_keyring_read_fail_services() -> &'static Mutex<HashSet<String>> {
+    use std::sync::OnceLock;
+    static SERVICES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    SERVICES.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+#[cfg(test)]
 fn test_token_keyring_available() -> bool {
     use std::sync::atomic::Ordering;
     test_token_keyring_available_flag().load(Ordering::SeqCst)
@@ -4602,8 +4684,22 @@ fn set_test_token_keyring_available(value: bool) {
 }
 
 #[cfg(test)]
+fn set_test_token_keyring_read_failure(service: &str, should_fail: bool) {
+    if let Ok(mut guard) = test_token_keyring_read_fail_services().lock() {
+        if should_fail {
+            guard.insert(service.to_string());
+        } else {
+            guard.remove(service);
+        }
+    }
+}
+
+#[cfg(test)]
 fn clear_test_token_keyring_store() {
     if let Ok(mut guard) = test_token_keyring_store().lock() {
+        guard.clear();
+    }
+    if let Ok(mut guard) = test_token_keyring_read_fail_services().lock() {
         guard.clear();
     }
     runtime_refresh_token_cache_clear();
@@ -4642,6 +4738,15 @@ fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<Stri
         return Err(format!(
             "keyring read failed: {}",
             keyring_unavailable_hint()
+        ));
+    }
+    let should_fail = test_token_keyring_read_fail_services()
+        .lock()
+        .map_err(|_| "test keyring lock failed".to_string())?
+        .contains(service);
+    if should_fail {
+        return Err(format!(
+            "keyring read failed: simulated read failure for service '{service}'"
         ));
     }
     let guard = test_token_keyring_store()
@@ -4693,6 +4798,18 @@ fn keyring_set_refresh_token(account_id: &str, refresh_token: &str) -> Result<()
     for key in keys {
         for username in keyring_alias_usernames_for_key(&key) {
             token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
+            for legacy_service in LEGACY_KEYRING_SERVICES {
+                if legacy_service == KEYRING_SERVICE {
+                    continue;
+                }
+                if let Err(err) = token_keyring_set_secret(legacy_service, &username, refresh_token)
+                {
+                    eprintln!(
+                        "legacy secure-storage mirror write failed for alias '{}' in service '{}': {}",
+                        username, legacy_service, err
+                    );
+                }
+            }
         }
         runtime_refresh_token_cache_set(&key, refresh_token);
     }
@@ -4707,6 +4824,18 @@ fn keyring_set_refresh_token_for_account(
     for key in keys {
         for username in keyring_alias_usernames_for_key(&key) {
             token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
+            for legacy_service in LEGACY_KEYRING_SERVICES {
+                if legacy_service == KEYRING_SERVICE {
+                    continue;
+                }
+                if let Err(err) = token_keyring_set_secret(legacy_service, &username, refresh_token)
+                {
+                    eprintln!(
+                        "legacy secure-storage mirror write failed for alias '{}' in service '{}': {}",
+                        username, legacy_service, err
+                    );
+                }
+            }
         }
         runtime_refresh_token_cache_set(&key, refresh_token);
     }
@@ -4718,11 +4847,67 @@ fn keyring_set_selected_refresh_token(refresh_token: &str) -> Result<(), String>
         KEYRING_SERVICE,
         KEYRING_SELECTED_REFRESH_ALIAS,
         refresh_token,
-    )
+    )?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) = token_keyring_set_secret(
+            legacy_service,
+            KEYRING_SELECTED_REFRESH_ALIAS,
+            refresh_token,
+        ) {
+            eprintln!(
+                "legacy selected refresh-token alias mirror write failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
+    }
+    Ok(())
 }
 
 fn keyring_get_selected_refresh_token() -> Result<Option<String>, String> {
-    token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
+    let services = keyring_service_candidates();
+    let mut canonical_read_err: Option<String> = None;
+    for service in services {
+        let token = match token_keyring_get_secret(service, KEYRING_SELECTED_REFRESH_ALIAS) {
+            Ok(token) => token,
+            Err(err) => {
+                if service == KEYRING_SERVICE {
+                    if canonical_read_err.is_none() {
+                        canonical_read_err = Some(err);
+                    }
+                } else {
+                    eprintln!(
+                        "legacy selected refresh-token alias read failed in service '{}': {}",
+                        service, err
+                    );
+                }
+                continue;
+            }
+        };
+        let Some(token) = token else {
+            continue;
+        };
+        if token.trim().is_empty() {
+            continue;
+        }
+        if service != KEYRING_SERVICE {
+            if let Err(err) =
+                token_keyring_set_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS, &token)
+            {
+                eprintln!(
+                    "selected refresh-token alias canonical mirror write failed from service '{}': {}",
+                    service, err
+                );
+            }
+        }
+        return Ok(Some(token));
+    }
+    if let Some(err) = canonical_read_err {
+        return Err(err);
+    }
+    Ok(None)
 }
 
 fn keyring_get_dev_curseforge_key() -> Result<Option<String>, String> {
@@ -4768,6 +4953,8 @@ fn persist_refresh_token_for_account_with_app(
     account_id: &str,
     refresh_token: &str,
 ) -> Result<(), String> {
+    #[cfg(not(debug_assertions))]
+    let _ = app;
     persist_refresh_token_for_account(account_id, refresh_token)?;
     #[cfg(debug_assertions)]
     {
@@ -4796,6 +4983,18 @@ fn persist_refresh_token_for_launcher_account_with_app(
     refresh_token: &str,
 ) -> Result<(), String> {
     persist_refresh_token_for_launcher_account(account, refresh_token)?;
+    if let Err(err) = persist_refresh_token_recovery_fallback(app, account, refresh_token) {
+        eprintln!(
+            "refresh-token recovery fallback write failed for selected account '{}': {}",
+            account.id, err
+        );
+    }
+    if let Err(err) = verify_refresh_token_secure_storage_write(account, refresh_token) {
+        eprintln!(
+            "refresh-token secure-storage verification warning for account '{}': {}",
+            account.id, err
+        );
+    }
     #[cfg(debug_assertions)]
     {
         if let Err(err) = persist_refresh_token_debug_fallback(app, account, refresh_token) {
@@ -4863,6 +5062,80 @@ fn keyring_service_candidates() -> Vec<&'static str> {
     candidates
 }
 
+fn secure_storage_contains_refresh_token_for_aliases(
+    aliases: &[String],
+    expected_refresh_token: &str,
+) -> Result<bool, String> {
+    if expected_refresh_token.trim().is_empty() {
+        return Ok(false);
+    }
+    let services = keyring_service_candidates();
+    let mut canonical_read_err: Option<String> = None;
+    for service in services {
+        for alias in aliases {
+            let token = match keyring_try_read(service, alias) {
+                Ok(token) => token,
+                Err(err) => {
+                    if service == KEYRING_SERVICE {
+                        if canonical_read_err.is_none() {
+                            canonical_read_err = Some(err);
+                        }
+                    } else {
+                        eprintln!(
+                            "legacy secure-storage read failed for alias '{}' in service '{}': {}",
+                            alias, service, err
+                        );
+                    }
+                    continue;
+                }
+            };
+            let Some(token) = token else {
+                continue;
+            };
+            if token == expected_refresh_token {
+                return Ok(true);
+            }
+        }
+    }
+    if let Some(selected) = keyring_get_selected_refresh_token()? {
+        if selected == expected_refresh_token {
+            return Ok(true);
+        }
+    }
+    if let Some(err) = canonical_read_err {
+        return Err(err);
+    }
+    Ok(false)
+}
+
+fn verify_refresh_token_secure_storage_write(
+    account: &LauncherAccount,
+    refresh_token: &str,
+) -> Result<(), String> {
+    fn push_unique(out: &mut Vec<String>, value: String) {
+        if value.trim().is_empty() {
+            return;
+        }
+        if !out.iter().any(|item| item == &value) {
+            out.push(value);
+        }
+    }
+
+    let mut aliases = Vec::new();
+    for alias in keyring_alias_usernames_for_key(&account.id) {
+        push_unique(&mut aliases, alias);
+    }
+    for alias in keyring_alias_usernames_for_key(&account.username) {
+        push_unique(&mut aliases, alias);
+    }
+
+    if secure_storage_contains_refresh_token_for_aliases(&aliases, refresh_token)? {
+        return Ok(());
+    }
+
+    Err("Secure storage verification failed after writing refresh token. Reconnect Microsoft account and ensure your OS keychain is unlocked.".to_string())
+}
+
 fn recover_refresh_token_from_known_accounts(
     selected_account: &LauncherAccount,
     accounts: &[LauncherAccount],
@@ -4888,9 +5161,26 @@ fn recover_refresh_token_from_known_accounts(
     }
 
     let mut unique_tokens = Vec::<String>::new();
+    let mut canonical_read_err: Option<String> = None;
     for service in services {
         for username in &usernames {
-            let Some(token) = keyring_try_read(service, username)? else {
+            let token = match keyring_try_read(service, username) {
+                Ok(token) => token,
+                Err(err) => {
+                    if *service == KEYRING_SERVICE {
+                        if canonical_read_err.is_none() {
+                            canonical_read_err = Some(err);
+                        }
+                    } else {
+                        eprintln!(
+                            "legacy secure-storage read failed for alias '{}' in service '{}': {}",
+                            username, service, err
+                        );
+                    }
+                    continue;
+                }
+            };
+            let Some(token) = token else {
                 continue;
             };
             if token.trim().is_empty() {
@@ -4903,7 +5193,12 @@ fn recover_refresh_token_from_known_accounts(
     }
 
     match unique_tokens.len() {
-        0 => Ok(None),
+        0 => {
+            if let Some(err) = canonical_read_err {
+                return Err(err);
+            }
+            Ok(None)
+        }
         1 => {
             let token = unique_tokens.pop().expect("token list length checked");
             persist_refresh_token_for_launcher_account(selected_account, &token)?;
@@ -4927,10 +5222,27 @@ fn read_refresh_token_from_keyring_aliases_only(
     let canonical_username = keyring_username_for_account(&account.id);
     let usernames = keyring_username_candidates(account, accounts);
     let services = keyring_service_candidates();
+    let mut canonical_read_err: Option<String> = None;
 
     for service in &services {
         for username in &usernames {
-            let Some(token) = keyring_try_read(service, username)? else {
+            let token = match keyring_try_read(service, username) {
+                Ok(token) => token,
+                Err(err) => {
+                    if *service == KEYRING_SERVICE {
+                        if canonical_read_err.is_none() {
+                            canonical_read_err = Some(err);
+                        }
+                    } else {
+                        eprintln!(
+                            "legacy secure-storage read failed for alias '{}' in service '{}': {}",
+                            username, service, err
+                        );
+                    }
+                    continue;
+                }
+            };
+            let Some(token) = token else {
                 continue;
             };
 
@@ -4960,6 +5272,9 @@ fn read_refresh_token_from_keyring_aliases_only(
         }
     }
 
+    if let Some(err) = canonical_read_err {
+        return Err(err);
+    }
     Ok(None)
 }
 
@@ -5030,10 +5345,10 @@ fn keyring_get_refresh_token_for_account(
     match read_refresh_token_from_keyring(account, accounts) {
         Ok(token) => Ok(token),
         Err(err) => {
-            #[cfg(debug_assertions)]
+            if err.starts_with("No refresh token found in secure storage")
+                || err.starts_with("Multiple secure refresh tokens were found")
             {
-                if err.starts_with("No refresh token found in secure storage")
-                    || err.starts_with("Multiple secure refresh tokens were found")
+                #[cfg(debug_assertions)]
                 {
                     if let Some(token) = read_refresh_token_debug_fallback(app, account, accounts)?
                     {
@@ -5048,6 +5363,17 @@ fn keyring_get_refresh_token_for_account(
                         return Ok(token);
                     }
                 }
+                if let Some(token) = read_refresh_token_recovery_fallback(app, account, accounts)? {
+                    if let Err(write_err) =
+                        persist_refresh_token_for_launcher_account_with_app(app, account, &token)
+                    {
+                        eprintln!(
+                            "refresh-token recovery fallback write-back failed for account '{}': {}",
+                            account.id, write_err
+                        );
+                    }
+                    return Ok(token);
+                }
             }
             Err(err)
         }
@@ -5057,6 +5383,17 @@ fn keyring_get_refresh_token_for_account(
 fn keyring_delete_refresh_token(account_id: &str) -> Result<(), String> {
     for username in keyring_alias_usernames_for_key(account_id) {
         token_keyring_delete_secret(KEYRING_SERVICE, &username)?;
+        for legacy_service in LEGACY_KEYRING_SERVICES {
+            if legacy_service == KEYRING_SERVICE {
+                continue;
+            }
+            if let Err(err) = token_keyring_delete_secret(legacy_service, &username) {
+                eprintln!(
+                    "legacy secure-storage mirror delete failed for alias '{}' in service '{}': {}",
+                    username, legacy_service, err
+                );
+            }
+        }
     }
     runtime_refresh_token_cache_delete(account_id);
     Ok(())
@@ -5066,6 +5403,17 @@ fn keyring_delete_refresh_token_for_account(account: &LauncherAccount) -> Result
     for key in [&account.id, &account.username] {
         for username in keyring_alias_usernames_for_key(key) {
             token_keyring_delete_secret(KEYRING_SERVICE, &username)?;
+            for legacy_service in LEGACY_KEYRING_SERVICES {
+                if legacy_service == KEYRING_SERVICE {
+                    continue;
+                }
+                if let Err(err) = token_keyring_delete_secret(legacy_service, &username) {
+                    eprintln!(
+                        "legacy secure-storage mirror delete failed for alias '{}' in service '{}': {}",
+                        username, legacy_service, err
+                    );
+                }
+            }
         }
         runtime_refresh_token_cache_delete(key);
     }
@@ -5073,7 +5421,21 @@ fn keyring_delete_refresh_token_for_account(account: &LauncherAccount) -> Result
 }
 
 fn keyring_delete_selected_refresh_token() -> Result<(), String> {
-    token_keyring_delete_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
+    token_keyring_delete_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) =
+            token_keyring_delete_secret(legacy_service, KEYRING_SELECTED_REFRESH_ALIAS)
+        {
+            eprintln!(
+                "legacy selected refresh-token alias mirror delete failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
+    }
+    Ok(())
 }
 
 fn delete_refresh_token_everywhere(_app: &tauri::AppHandle, account_id: &str) {
@@ -9644,6 +10006,12 @@ fn logout_microsoft_account(
                 args.account_id, e
             );
         }
+        if let Err(e) = remove_refresh_token_recovery_fallback(&app, account) {
+            eprintln!(
+                "refresh-token recovery fallback cleanup failed for account {}: {}",
+                args.account_id, e
+            );
+        }
         #[cfg(debug_assertions)]
         if let Err(e) = remove_refresh_token_debug_fallback(&app, account) {
             eprintln!(
@@ -9653,6 +10021,12 @@ fn logout_microsoft_account(
         }
     } else {
         delete_refresh_token_everywhere(&app, &args.account_id);
+        if let Err(e) = remove_refresh_token_recovery_fallback_for_key(&app, &args.account_id) {
+            eprintln!(
+                "refresh-token recovery fallback cleanup failed for account key {}: {}",
+                args.account_id, e
+            );
+        }
     }
     if removed_selected {
         if let Err(e) = keyring_delete_selected_refresh_token() {
@@ -14077,6 +14451,34 @@ mod token_storage_tests {
     }
 
     #[test]
+    fn persist_launcher_refresh_token_succeeds_when_post_write_verification_cannot_read() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        set_test_token_keyring_read_failure(KEYRING_SERVICE, true);
+        for service in LEGACY_KEYRING_SERVICES {
+            set_test_token_keyring_read_failure(service, true);
+        }
+
+        let account = LauncherAccount {
+            id: "acct_verify_read_fail".to_string(),
+            username: "player_verify_read_fail".to_string(),
+            added_at: "now".to_string(),
+        };
+        persist_refresh_token_for_launcher_account(&account, "refresh_token_verify_read_fail")
+            .expect("persist should not fail when verification read is unavailable");
+
+        set_test_token_keyring_read_failure(KEYRING_SERVICE, false);
+        for service in LEGACY_KEYRING_SERVICES {
+            set_test_token_keyring_read_failure(service, false);
+        }
+        let canonical_alias = keyring_username_for_account(&account.id);
+        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_alias)
+            .expect("read canonical persisted token after clearing simulated read failures");
+        assert_eq!(canonical.as_deref(), Some("refresh_token_verify_read_fail"));
+    }
+
+    #[test]
     fn read_refresh_token_recovers_single_known_token_for_selected_account() {
         let _guard = token_test_guard();
         clear_test_token_keyring_store();
@@ -14188,5 +14590,148 @@ mod token_storage_tests {
         let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
             .expect("read canonical token");
         assert_eq!(canonical.as_deref(), Some("refresh_token_selected_alias"));
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_from_selected_alias_in_legacy_service() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        token_keyring_set_secret(
+            LEGACY_KEYRING_SERVICES[0],
+            KEYRING_SELECTED_REFRESH_ALIAS,
+            "refresh_token_selected_legacy",
+        )
+        .expect("seed selected refresh alias in legacy service");
+
+        let account = LauncherAccount {
+            id: "acct_selected_alias_legacy".to_string(),
+            username: "player_selected_legacy".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("recover token from selected alias in legacy service");
+        assert_eq!(token, "refresh_token_selected_legacy");
+
+        let canonical_selected =
+            token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
+                .expect("read canonical selected alias");
+        assert_eq!(
+            canonical_selected.as_deref(),
+            Some("refresh_token_selected_legacy")
+        );
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_from_selected_alias_even_if_legacy_read_fails() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        token_keyring_set_secret(
+            KEYRING_SERVICE,
+            KEYRING_SELECTED_REFRESH_ALIAS,
+            "refresh_token_selected_canonical",
+        )
+        .expect("seed selected refresh alias in canonical service");
+        set_test_token_keyring_read_failure(LEGACY_KEYRING_SERVICES[0], true);
+
+        let account = LauncherAccount {
+            id: "acct_selected_alias_canonical".to_string(),
+            username: "player_selected_canonical".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("recover token from selected alias despite legacy read failure");
+        assert_eq!(token, "refresh_token_selected_canonical");
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_known_account_despite_legacy_read_failure() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        let selected = LauncherAccount {
+            id: "acct_selected_legacy_read_fail".to_string(),
+            username: "player_selected_legacy_read_fail".to_string(),
+            added_at: "now".to_string(),
+        };
+        let known = LauncherAccount {
+            id: "acct_known_legacy_read_fail".to_string(),
+            username: "player_known_legacy_read_fail".to_string(),
+            added_at: "now".to_string(),
+        };
+
+        let known_alias = keyring_username_for_account(&known.id);
+        token_keyring_set_secret(
+            LEGACY_KEYRING_SERVICES[1],
+            &known_alias,
+            "refresh_token_legacy_recover",
+        )
+        .expect("seed known token in secondary legacy service");
+        set_test_token_keyring_read_failure(LEGACY_KEYRING_SERVICES[0], true);
+
+        let accounts = vec![selected.clone(), known];
+        let token = read_refresh_token_from_keyring(&selected, &accounts)
+            .expect("recover known token despite legacy read failure");
+        assert_eq!(token, "refresh_token_legacy_recover");
+    }
+
+    #[test]
+    fn read_refresh_token_survives_simulated_restart_for_launcher_account() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        let account = LauncherAccount {
+            id: "acct_restart_ok".to_string(),
+            username: "player_restart".to_string(),
+            added_at: "now".to_string(),
+        };
+        persist_refresh_token_for_launcher_account(&account, "refresh_token_restart")
+            .expect("persist launcher account refresh token");
+
+        // Simulate full app restart (runtime memory cache is gone).
+        runtime_refresh_token_cache_clear();
+
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("read refresh token after restart");
+        assert_eq!(token, "refresh_token_restart");
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_from_legacy_service_alias_after_restart() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        let account = LauncherAccount {
+            id: "acct_legacy_restart".to_string(),
+            username: "player_legacy_restart".to_string(),
+            added_at: "now".to_string(),
+        };
+        let legacy_alias = keyring_username_for_account(&account.id);
+        token_keyring_set_secret(
+            LEGACY_KEYRING_SERVICES[1],
+            &legacy_alias,
+            "refresh_token_from_legacy_service",
+        )
+        .expect("seed legacy service refresh token");
+
+        // Simulate full app restart (runtime memory cache is gone).
+        runtime_refresh_token_cache_clear();
+
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("read refresh token migrated from legacy service");
+        assert_eq!(token, "refresh_token_from_legacy_service");
+
+        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &legacy_alias)
+            .expect("read canonical migrated token");
+        assert_eq!(
+            canonical.as_deref(),
+            Some("refresh_token_from_legacy_service")
+        );
     }
 }

@@ -303,6 +303,7 @@ jobs:
           const config = JSON.parse(fs.readFileSync(confPath, "utf8"));
           config.tauri = config.tauri || {};
           config.tauri.updater = config.tauri.updater || {};
+          config.tauri.updater.active = true;
           config.tauri.updater.pubkey = pubEncoded;
           fs.writeFileSync(confPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
           console.log("Normalized updater key material and injected updater pubkey.");
@@ -313,6 +314,38 @@ jobs:
           console.log(`[diag] private key comment type: ${privCommentType}`);
           console.log(`[diag] private key decoded length: ${privDecoded.length}, sha256: ${shortHash(privDecoded)}`);
           console.log(`[diag] private key encoded length: ${privEncoded.length}, sha256: ${shortHash(privEncoded)}`);
+          NODE
+
+      - name: Ensure updater Cargo feature for release build
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("fs");
+          const cargoPath = "src-tauri/Cargo.toml";
+          let cargo = fs.readFileSync(cargoPath, "utf8");
+
+          const tauriDepRegex =
+            /^tauri\s*=\s*\{\s*version\s*=\s*"1\.6",\s*features\s*=\s*\[([^\]]*)\]\s*\}\s*$/m;
+          const match = cargo.match(tauriDepRegex);
+          if (!match) {
+            throw new Error("Could not find tauri dependency features in Cargo.toml");
+          }
+
+          const parsedFeatures = match[1]
+            .split(",")
+            .map((value) => value.trim().replace(/^"|"$/g, ""))
+            .filter(Boolean);
+          const featureSet = new Set(parsedFeatures);
+          featureSet.add("updater");
+
+          const features = [...featureSet];
+          const replacement = `tauri = { version = "1.6", features = [ ${features
+            .map((feature) => `"${feature}"`)
+            .join(", ")} ] }`;
+          cargo = cargo.replace(tauriDepRegex, replacement);
+          fs.writeFileSync(cargoPath, cargo, "utf8");
+          console.log(`Ensured tauri features include updater: ${features.join(", ")}`);
           NODE
 
       - name: Rust cache
