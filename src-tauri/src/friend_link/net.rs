@@ -8,11 +8,12 @@ use base64::Engine as _;
 use chacha20poly1305::aead::{Aead, KeyInit};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
+use igd::{search_gateway, PortMappingProtocol};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::path::PathBuf;
@@ -25,6 +26,8 @@ use uuid::Uuid;
 const MAX_CLOCK_SKEW_MS: i64 = 120_000;
 const MAX_SEEN_NONCES: usize = 4096;
 const PEER_LIMIT: usize = 8;
+const CONNECTION_RATE_WINDOW_MS: i64 = 10_000;
+const MAX_CONNECTIONS_PER_IP_PER_WINDOW: usize = 30;
 const FRAME_NONCE_BYTES: usize = 24;
 const MAX_FRAME_BYTES: usize = 5 * 1024 * 1024;
 const MAX_FRAME_PLAINTEXT_BYTES: usize = 1024 * 1024;
@@ -94,6 +97,7 @@ struct SignedFrame {
 struct ListenerHandle {
     port: u16,
     binding_fingerprint: String,
+    advertised_endpoints: Vec<String>,
     stop_tx: mpsc::Sender<()>,
 }
 
@@ -110,6 +114,11 @@ fn listener_binding_fingerprint(session: &FriendLinkSessionRecord) -> String {
     hasher.update(session.local_peer_id.as_bytes());
     hasher.update([0u8]);
     hasher.update(session.shared_secret_b64.as_bytes());
+    hasher.update([if session.allow_internet_endpoints {
+        1
+    } else {
+        0
+    }]);
     format!("{:x}", hasher.finalize())
 }
 
@@ -263,6 +272,46 @@ pub fn endpoint_for_port(port: u16) -> String {
     format!("{}:{}", local_ip_guess(), port)
 }
 
+fn endpoint_for_session_listener(session: &FriendLinkSessionRecord, port: u16) -> String {
+    if session.allow_internet_endpoints {
+        endpoint_for_port(port)
+    } else {
+        format!("{}:{}", Ipv4Addr::LOCALHOST, port)
+    }
+}
+
+fn try_map_upnp_listener_port(port: u16) -> Option<String> {
+    let local_v4 = match local_ip_guess() {
+        IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => v4,
+        _ => return None,
+    };
+    let gateway = search_gateway(Default::default()).ok()?;
+    let local_addr = std::net::SocketAddrV4::new(local_v4, port);
+    if gateway
+        .add_port(
+            PortMappingProtocol::TCP,
+            port,
+            local_addr,
+            3600,
+            "openjar-friendlink",
+        )
+        .is_err()
+    {
+        return None;
+    }
+    let external_ip = gateway.get_external_ip().ok()?;
+    Some(std::net::SocketAddr::new(IpAddr::V4(external_ip), port).to_string())
+}
+
+pub fn listener_bootstrap_endpoints(instance_id: &str) -> Vec<String> {
+    let Ok(map) = listener_map().lock() else {
+        return Vec::new();
+    };
+    map.get(instance_id)
+        .map(|entry| entry.advertised_endpoints.clone())
+        .unwrap_or_default()
+}
+
 fn normalize_peer_endpoint(advertised_endpoint: &str, stream_peer: Option<SocketAddr>) -> String {
     let Some(stream_peer_addr) = stream_peer else {
         return advertised_endpoint.to_string();
@@ -281,13 +330,6 @@ fn normalize_peer_endpoint(advertised_endpoint: &str, stream_peer: Option<Socket
     advertised_endpoint.to_string()
 }
 
-fn is_private_or_local_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local() || v4.is_documentation(),
-        IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
-    }
-}
-
 fn validate_endpoint_for_session(
     session: &FriendLinkSessionRecord,
     endpoint: &str,
@@ -299,16 +341,66 @@ fn validate_endpoint_for_session(
     if parsed.ip().is_unspecified() || parsed.ip().is_multicast() {
         return Err("peer endpoint has an invalid address".to_string());
     }
-    if parsed.ip().is_loopback() && !session.allow_loopback_endpoints {
+    if parsed.ip().is_loopback()
+        && session.allow_internet_endpoints
+        && !session.allow_loopback_endpoints
+    {
         return Err("loopback peer endpoints are blocked by session policy".to_string());
     }
-    if !parsed.ip().is_loopback()
-        && !is_private_or_local_ip(&parsed.ip())
-        && !session.allow_internet_endpoints
-    {
-        return Err("public internet peer endpoints are blocked by session policy".to_string());
+    if !parsed.ip().is_loopback() && !session.allow_internet_endpoints {
+        return Err(
+            "LAN/public internet peer endpoints are blocked by session policy. Enable internet mode to connect to other devices."
+                .to_string(),
+        );
     }
     Ok(parsed.to_string())
+}
+
+fn trim_connection_rate_window(attempts: &mut HashMap<IpAddr, VecDeque<i64>>, now_ms: i64) {
+    let cutoff = now_ms - CONNECTION_RATE_WINDOW_MS;
+    attempts.retain(|_, values| {
+        while values.front().is_some_and(|value| *value < cutoff) {
+            let _ = values.pop_front();
+        }
+        !values.is_empty()
+    });
+}
+
+fn is_connection_rate_limited(
+    attempts: &mut HashMap<IpAddr, VecDeque<i64>>,
+    ip: IpAddr,
+    now_ms: i64,
+) -> bool {
+    trim_connection_rate_window(attempts, now_ms);
+    let values = attempts.entry(ip).or_default();
+    if values.len() >= MAX_CONNECTIONS_PER_IP_PER_WINDOW {
+        return true;
+    }
+    values.push_back(now_ms);
+    false
+}
+
+fn note_nonce_or_replay(
+    seen_nonces: &mut HashMap<String, i64>,
+    nonce: &str,
+    now_ms: i64,
+) -> Result<(), String> {
+    let cutoff = now_ms - MAX_CLOCK_SKEW_MS;
+    seen_nonces.retain(|_, seen_at| *seen_at >= cutoff);
+    if seen_nonces.contains_key(nonce) {
+        return Err("replayed nonce".to_string());
+    }
+    if seen_nonces.len() >= MAX_SEEN_NONCES {
+        if let Some((oldest_nonce, _)) = seen_nonces
+            .iter()
+            .min_by_key(|(_, seen_at)| **seen_at)
+            .map(|(nonce, seen_at)| (nonce.clone(), *seen_at))
+        {
+            seen_nonces.remove(&oldest_nonce);
+        }
+    }
+    seen_nonces.insert(nonce.to_string(), now_ms);
+    Ok(())
 }
 
 pub fn stop_listener(instance_id: &str) {
@@ -329,7 +421,7 @@ pub fn ensure_listener(
     if let Ok(mut map) = listener_map().lock() {
         if let Some(existing) = map.get(&key) {
             if existing.binding_fingerprint == binding_fingerprint {
-                let endpoint = endpoint_for_port(existing.port);
+                let endpoint = endpoint_for_session_listener(session, existing.port);
                 session.listener_port = existing.port;
                 session.listener_endpoint = Some(endpoint.clone());
                 return Ok(endpoint);
@@ -345,7 +437,12 @@ pub fn ensure_listener(
         thread::sleep(Duration::from_millis(120));
     }
 
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, session.listener_port))
+    let bind_ip = if session.allow_internet_endpoints {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let listener = TcpListener::bind((bind_ip, session.listener_port))
         .map_err(|e| format!("bind friend-link listener failed: {e}"))?;
     let port = listener
         .local_addr()
@@ -362,13 +459,23 @@ pub fn ensure_listener(
     let shared_secret_b64 = session.shared_secret_b64.clone();
 
     thread::spawn(move || {
-        let mut seen_nonces = HashSet::<String>::new();
+        let mut seen_nonces = HashMap::<String, i64>::new();
+        let mut recent_connection_attempts = HashMap::<IpAddr, VecDeque<i64>>::new();
         loop {
             if stop_rx.try_recv().is_ok() {
                 break;
             }
             match listener.accept() {
-                Ok((mut stream, _addr)) => {
+                Ok((mut stream, addr)) => {
+                    let now_ms = now_millis();
+                    if is_connection_rate_limited(
+                        &mut recent_connection_attempts,
+                        addr.ip(),
+                        now_ms,
+                    ) {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        continue;
+                    }
                     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
                     let response = handle_incoming_frame(
@@ -406,20 +513,29 @@ pub fn ensure_listener(
         }
     });
 
+    let endpoint = endpoint_for_session_listener(session, port);
+    let mut advertised_endpoints = vec![endpoint.clone()];
+    if session.allow_internet_endpoints {
+        if let Some(mapped_endpoint) = try_map_upnp_listener_port(port) {
+            if !advertised_endpoints.contains(&mapped_endpoint) {
+                advertised_endpoints.push(mapped_endpoint);
+            }
+        }
+    }
+
+    session.listener_port = port;
+    session.listener_endpoint = Some(endpoint.clone());
     if let Ok(mut map) = listener_map().lock() {
         map.insert(
             key,
             ListenerHandle {
                 port,
                 binding_fingerprint,
+                advertised_endpoints,
                 stop_tx,
             },
         );
     }
-
-    let endpoint = endpoint_for_port(port);
-    session.listener_port = port;
-    session.listener_endpoint = Some(endpoint.clone());
     Ok(endpoint)
 }
 
@@ -430,22 +546,14 @@ fn handle_incoming_frame(
     local_peer_id: &str,
     shared_secret_b64: &str,
     stream: &mut TcpStream,
-    seen_nonces: &mut HashSet<String>,
+    seen_nonces: &mut HashMap<String, i64>,
 ) -> Result<(), String> {
     let incoming = read_frame(stream, shared_secret_b64)?;
     if incoming.group_id != group_id {
         return Err("group mismatch".to_string());
     }
     verify_frame(&incoming)?;
-    if !seen_nonces.insert(incoming.nonce.clone()) {
-        return Err("replayed nonce".to_string());
-    }
-    if seen_nonces.len() > MAX_SEEN_NONCES {
-        let first = seen_nonces.iter().next().cloned();
-        if let Some(old) = first {
-            seen_nonces.remove(&old);
-        }
-    }
+    note_nonce_or_replay(seen_nonces, &incoming.nonce, now_millis())?;
 
     let store_path = store_path_from_app_data(app_data_dir);
     let mut store = read_store_at_path(&store_path)?;
@@ -753,7 +861,7 @@ pub fn request_lock_entry_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::io::Cursor;
 
     fn test_secret_b64() -> String {
@@ -907,5 +1015,42 @@ mod tests {
 
         assert_ne!(first_fingerprint, second_fingerprint);
         stop_listener(&instance_id);
+    }
+
+    #[test]
+    fn listener_endpoint_defaults_to_loopback_when_internet_mode_is_disabled() {
+        let session = test_session("inst-loopback", &test_secret_b64());
+        let endpoint = endpoint_for_session_listener(&session, 45555);
+        assert_eq!(endpoint, "127.0.0.1:45555");
+    }
+
+    #[test]
+    fn nonce_replay_tracking_rejects_duplicates_within_time_window() {
+        let mut seen = HashMap::<String, i64>::new();
+        let now = now_millis();
+        note_nonce_or_replay(&mut seen, "abc", now).expect("first nonce insert");
+        let replay = note_nonce_or_replay(&mut seen, "abc", now + 1);
+        assert!(replay.is_err(), "duplicate nonce must be rejected");
+    }
+
+    #[test]
+    fn connection_rate_limit_rejects_after_threshold() {
+        let mut attempts = HashMap::<IpAddr, VecDeque<i64>>::new();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 25));
+        let base = now_millis();
+        for idx in 0..MAX_CONNECTIONS_PER_IP_PER_WINDOW {
+            assert!(
+                !is_connection_rate_limited(&mut attempts, ip, base + idx as i64),
+                "attempt {idx} should be allowed"
+            );
+        }
+        assert!(
+            is_connection_rate_limited(
+                &mut attempts,
+                ip,
+                base + MAX_CONNECTIONS_PER_IP_PER_WINDOW as i64 + 1
+            ),
+            "next attempt should be rate-limited"
+        );
     }
 }

@@ -28,6 +28,7 @@ globset = "0.4"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 hkdf = "0.12"
 rand = "0.8"
+igd = "0.12"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

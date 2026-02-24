@@ -43,15 +43,17 @@ fn invite_roundtrip() {
     let payload = parse_invite(&invite.invite_code, true, false).expect("parse invite");
     assert_eq!(payload.group_id, session.group_id);
     assert_eq!(payload.bootstrap_peer_endpoint, "127.0.0.1:45001");
+    assert_eq!(payload.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
+    assert_eq!(invite.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
     assert_eq!(payload.protocol_version, PROTOCOL_VERSION);
 }
 
 #[test]
-fn invite_parse_blocks_loopback_without_opt_in() {
+fn invite_parse_blocks_loopback_when_internet_mode_without_opt_in() {
     let session = sample_session();
     let invite = build_invite(&session).expect("build invite");
-    let err =
-        parse_invite(&invite.invite_code, false, false).expect_err("loopback should be blocked");
+    let err = parse_invite(&invite.invite_code, false, true)
+        .expect_err("loopback should be blocked in internet mode");
     assert!(err.to_ascii_lowercase().contains("loopback"));
 }
 
@@ -69,6 +71,24 @@ fn invite_parse_ignores_whitespace() {
     }
     let payload = parse_invite(&spaced, true, false).expect("parse invite with whitespace");
     assert_eq!(payload.group_id, session.group_id);
+}
+
+#[test]
+fn invite_parse_accepts_legacy_payload_without_endpoints_array() {
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    let legacy_payload = serde_json::json!({
+        "group_id": "group_legacy",
+        "bootstrap_peer_endpoint": "127.0.0.1:45001",
+        "shared_secret": random_secret_b64(),
+        "expires_at": expires_at,
+        "protocol_version": PROTOCOL_VERSION,
+        "host_peer_id": "peer_host"
+    });
+    let raw = serde_json::to_vec(&legacy_payload).expect("serialize legacy invite");
+    let invite_code = URL_SAFE_NO_PAD.encode(raw);
+    let parsed = parse_invite(&invite_code, true, false).expect("parse legacy invite");
+    assert_eq!(parsed.bootstrap_peer_endpoint, "127.0.0.1:45001");
+    assert_eq!(parsed.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
 }
 
 #[test]
@@ -353,6 +373,71 @@ fn safe_join_under_refuses_escape_attempts() {
     assert!(state::safe_join_under(&root, "../escape.txt").is_err());
     assert!(state::safe_join_under(&root, "/absolute/path").is_err());
     assert!(state::safe_join_under(&root, "config/ok.toml").is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn write_instance_config_file_refuses_symlink_parent_path() {
+    use std::os::unix::fs::symlink;
+
+    let temp = std::env::temp_dir().join(format!("openjar-symlink-write-{}", Uuid::new_v4()));
+    let instances_dir = temp.join("instances");
+    let instance_dir = instances_dir.join("inst_1");
+    let config_dir = instance_dir.join("config");
+    let outside_dir = temp.join("outside");
+
+    fs::create_dir_all(&config_dir).expect("create config dir");
+    fs::create_dir_all(&outside_dir).expect("create outside dir");
+    symlink(&outside_dir, config_dir.join("linked")).expect("create symlinked parent");
+
+    let err = state::write_instance_config_file(
+        &instances_dir,
+        "inst_1",
+        "config/linked/unsafe.toml",
+        "safe = false",
+        None,
+    )
+    .expect_err("symlink parent path must be rejected");
+    assert!(err.to_ascii_lowercase().contains("symlink"));
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+#[cfg(unix)]
+#[test]
+fn read_lock_entry_bytes_refuses_symlinked_target_file() {
+    use std::os::unix::fs::symlink;
+
+    let temp = std::env::temp_dir().join(format!("openjar-symlink-read-{}", Uuid::new_v4()));
+    let instances_dir = temp.join("instances");
+    let instance_dir = instances_dir.join("inst_1");
+    let mods_dir = instance_dir.join("mods");
+    let outside_dir = temp.join("outside");
+    let outside_file = outside_dir.join("outside.jar");
+
+    fs::create_dir_all(&mods_dir).expect("create mods dir");
+    fs::create_dir_all(&outside_dir).expect("create outside dir");
+    fs::write(&outside_file, b"outside").expect("write outside file");
+    symlink(&outside_file, mods_dir.join("linked.jar")).expect("create symlinked file");
+
+    let entry = state::CanonicalLockEntry {
+        source: "modrinth".to_string(),
+        project_id: "proj".to_string(),
+        version_id: "ver".to_string(),
+        name: "Linked".to_string(),
+        version_number: "1.0.0".to_string(),
+        filename: "linked.jar".to_string(),
+        content_type: "mods".to_string(),
+        target_scope: "instance".to_string(),
+        target_worlds: vec![],
+        enabled: true,
+        hashes: HashMap::new(),
+    };
+    let err = state::read_lock_entry_bytes(&instances_dir, "inst_1", &entry)
+        .expect_err("symlinked content file must be rejected");
+    assert!(err.to_ascii_lowercase().contains("symlink"));
+
+    let _ = fs::remove_dir_all(&temp);
 }
 
 #[test]

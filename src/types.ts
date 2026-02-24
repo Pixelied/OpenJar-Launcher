@@ -457,6 +457,7 @@ export type FriendLinkInvite = {
   group_id: string;
   expires_at: string;
   bootstrap_peer_endpoint: string;
+  bootstrap_peer_endpoints: string[];
   protocol_version: number;
 };
 

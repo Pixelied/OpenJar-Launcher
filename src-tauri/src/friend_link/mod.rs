@@ -24,7 +24,6 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
@@ -48,6 +47,8 @@ pub struct FriendLinkInvite {
     pub group_id: String,
     pub expires_at: String,
     pub bootstrap_peer_endpoint: String,
+    #[serde(default)]
+    pub bootstrap_peer_endpoints: Vec<String>,
     pub protocol_version: u32,
 }
 
@@ -195,6 +196,8 @@ pub struct ConflictResolutionPayload {
 struct InvitePayload {
     group_id: String,
     bootstrap_peer_endpoint: String,
+    #[serde(default)]
+    bootstrap_peer_endpoints: Vec<String>,
     shared_secret: String,
     expires_at: String,
     protocol_version: u32,
@@ -638,15 +641,6 @@ fn normalized_content_type_for_sync(input: &str) -> &'static str {
     }
 }
 
-fn is_private_or_local_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private() || v4.is_link_local() || v4.is_broadcast() || v4.is_documentation()
-        }
-        IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
-    }
-}
-
 fn validate_endpoint_value(
     endpoint: &str,
     allow_loopback: bool,
@@ -667,15 +661,15 @@ fn validate_endpoint_value(
     if addr.ip().is_unspecified() || addr.ip().is_multicast() {
         return Err("Endpoint uses an invalid network address".to_string());
     }
-    if addr.ip().is_loopback() && !allow_loopback {
+    if addr.ip().is_loopback() && allow_internet && !allow_loopback {
         return Err(
             "Loopback endpoints are blocked by default. Enable allowLoopback to use local-only peers."
                 .to_string(),
         );
     }
-    if !addr.ip().is_loopback() && !is_private_or_local_ip(&addr.ip()) && !allow_internet {
+    if !addr.ip().is_loopback() && !allow_internet {
         return Err(
-            "Public internet endpoints are blocked by default. Enable allowInternet to join over the internet."
+            "LAN/public internet endpoints are blocked by default. Enable allowInternet to connect to other devices."
                 .to_string(),
         );
     }
@@ -775,10 +769,33 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         .clone()
         .unwrap_or_else(|| endpoint_for_port(session.listener_port));
     let endpoint = validate_session_endpoint(session, &endpoint_raw)?;
+    let mut bootstrap_peer_endpoints = net::listener_bootstrap_endpoints(&session.instance_id);
+    if bootstrap_peer_endpoints.is_empty() {
+        bootstrap_peer_endpoints.push(endpoint.clone());
+    } else if !bootstrap_peer_endpoints.contains(&endpoint) {
+        bootstrap_peer_endpoints.insert(0, endpoint.clone());
+    }
+    if session.allow_internet_endpoints {
+        if let Some(candidate) = configured_public_endpoint_candidate(session.listener_port) {
+            if let Ok(validated) = validate_session_endpoint(session, &candidate) {
+                if !bootstrap_peer_endpoints.contains(&validated) {
+                    bootstrap_peer_endpoints.push(validated);
+                }
+            }
+        }
+        if let Some(candidate) = discovered_public_endpoint_candidate(session.listener_port) {
+            if let Ok(validated) = validate_session_endpoint(session, &candidate) {
+                if !bootstrap_peer_endpoints.contains(&validated) {
+                    bootstrap_peer_endpoints.push(validated);
+                }
+            }
+        }
+    }
     let expires_at = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
     let payload = InvitePayload {
         group_id: session.group_id.clone(),
         bootstrap_peer_endpoint: endpoint.clone(),
+        bootstrap_peer_endpoints: bootstrap_peer_endpoints.clone(),
         shared_secret: session.shared_secret_b64.clone(),
         expires_at: expires_at.clone(),
         protocol_version: PROTOCOL_VERSION,
@@ -792,6 +809,7 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         group_id: payload.group_id,
         expires_at,
         bootstrap_peer_endpoint: endpoint,
+        bootstrap_peer_endpoints,
         protocol_version: PROTOCOL_VERSION,
     })
 }
@@ -824,12 +842,91 @@ fn parse_invite(
     if expires.with_timezone(&chrono::Utc) < chrono::Utc::now() {
         return Err("Invite code has expired".to_string());
     }
-    payload.bootstrap_peer_endpoint = validate_endpoint_value(
-        &payload.bootstrap_peer_endpoint,
-        allow_loopback,
-        allow_internet,
-    )?;
+    let mut bootstrap_peer_endpoints = Vec::<String>::new();
+    for candidate in payload
+        .bootstrap_peer_endpoints
+        .iter()
+        .chain(std::iter::once(&payload.bootstrap_peer_endpoint))
+    {
+        let validated = validate_endpoint_value(candidate, allow_loopback, allow_internet)?;
+        if !bootstrap_peer_endpoints
+            .iter()
+            .any(|value| value == &validated)
+        {
+            bootstrap_peer_endpoints.push(validated);
+        }
+    }
+    if bootstrap_peer_endpoints.is_empty() {
+        return Err("Invite has no valid bootstrap endpoints".to_string());
+    }
+    payload.bootstrap_peer_endpoint = bootstrap_peer_endpoints[0].clone();
+    payload.bootstrap_peer_endpoints = bootstrap_peer_endpoints;
     Ok(payload)
+}
+
+fn parse_endpoint_candidate_with_port(raw: &str, fallback_port: u16) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = trimmed.parse::<std::net::SocketAddr>() {
+        return Some(addr.to_string());
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return Some(std::net::SocketAddr::new(ip, fallback_port).to_string());
+    }
+    None
+}
+
+fn configured_public_endpoint_candidate(listener_port: u16) -> Option<String> {
+    std::env::var("OPENJAR_FRIENDLINK_PUBLIC_ENDPOINT")
+        .ok()
+        .and_then(|raw| parse_endpoint_candidate_with_port(&raw, listener_port))
+}
+
+fn discovered_public_endpoint_candidate(listener_port: u16) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    for url in ["https://api.ipify.org", "https://ipv4.icanhazip.com"] {
+        let Ok(response) = client.get(url).send() else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(text) = response.text() else {
+            continue;
+        };
+        if let Some(endpoint) = parse_endpoint_candidate_with_port(&text, listener_port) {
+            return Some(endpoint);
+        }
+    }
+    None
+}
+
+fn send_hello_with_invite_endpoints(
+    session: &FriendLinkSessionRecord,
+    endpoints: &[String],
+    hello: &HelloPayload,
+) -> Result<net::HelloAckPayload, String> {
+    let mut failures = Vec::<String>::new();
+    for endpoint in endpoints {
+        match net::send_hello(session, endpoint, hello.clone()) {
+            Ok(ack) => return Ok(ack),
+            Err(err) => failures.push(format!("{endpoint} -> {err}")),
+        }
+    }
+    if failures.is_empty() {
+        return Err(
+            "Invite has no bootstrap endpoints. Ask the host to regenerate the invite.".to_string(),
+        );
+    }
+    Err(format!(
+        "Failed to reach host endpoint(s): {}. For cross-network syncing, host must enable internet mode and expose the listener port (router/NAT).",
+        failures.join(" | ")
+    ))
 }
 
 fn upsert_peer(session: &mut FriendLinkSessionRecord, peer: FriendPeerRecord) {
@@ -1993,7 +2090,7 @@ pub fn join_friend_link_session(
         display_name: session.display_name.clone(),
         endpoint,
     };
-    let ack = net::send_hello(&session, &invite.bootstrap_peer_endpoint, hello)?;
+    let ack = send_hello_with_invite_endpoints(&session, &invite.bootstrap_peer_endpoints, &hello)?;
     let ack_endpoint = validate_session_endpoint(&session, &ack.endpoint)?;
 
     upsert_peer(

@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalLockEntry {
@@ -168,12 +169,6 @@ pub fn instance_dir(instances_dir: &Path, instance_id: &str) -> PathBuf {
     })
 }
 
-pub fn lock_file_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
-    let root = instance_dir(instances_dir, instance_id);
-    safe_join_under(&root, "lock.json")
-        .expect("fixed lockfile path must resolve under instance dir")
-}
-
 const MAX_COMPONENT_LEN: usize = 255;
 const MAX_FILENAME_LEN: usize = 180;
 const MAX_WORLD_NAME_LEN: usize = 120;
@@ -227,6 +222,98 @@ pub fn safe_join_under(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
     Ok(joined)
 }
 
+fn path_metadata_no_symlink(path: &Path) -> Result<Option<fs::Metadata>, String> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(format!(
+                    "symlinked paths are not allowed for friend-link operations: {}",
+                    path.display()
+                ));
+            }
+            Ok(Some(meta))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "read path metadata failed for '{}': {err}",
+            path.display()
+        )),
+    }
+}
+
+fn resolve_path_under_root_no_symlink(
+    root: &Path,
+    rel_path: &str,
+    create_parent_dirs: bool,
+) -> Result<PathBuf, String> {
+    let normalized = normalize_relative_path(rel_path)?;
+    match path_metadata_no_symlink(root)? {
+        Some(meta) if !meta.file_type().is_dir() => {
+            return Err(format!(
+                "friend-link root is not a directory: {}",
+                root.display()
+            ));
+        }
+        Some(_) => {}
+        None if create_parent_dirs => fs::create_dir_all(root).map_err(|e| {
+            format!(
+                "mkdir friend-link root failed for '{}': {e}",
+                root.display()
+            )
+        })?,
+        None => {}
+    }
+
+    let parts = normalized.split('/').collect::<Vec<_>>();
+    let mut current = root.to_path_buf();
+    for (index, part) in parts.iter().enumerate() {
+        let is_last = index + 1 == parts.len();
+        current.push(part);
+        if is_last {
+            let _ = path_metadata_no_symlink(&current)?;
+            break;
+        }
+        match path_metadata_no_symlink(&current)? {
+            Some(meta) => {
+                if !meta.file_type().is_dir() {
+                    return Err(format!(
+                        "friend-link path parent is not a directory: {}",
+                        current.display()
+                    ));
+                }
+            }
+            None if create_parent_dirs => fs::create_dir(&current).map_err(|e| {
+                format!(
+                    "mkdir friend-link parent path failed for '{}': {e}",
+                    current.display()
+                )
+            })?,
+            None => {}
+        }
+    }
+    Ok(root.join(&normalized))
+}
+
+fn atomic_replace_file(path: &Path, bytes: &[u8], label: &str) -> Result<(), String> {
+    let ext = path
+        .extension()
+        .map(|v| format!("{}.", v.to_string_lossy()))
+        .unwrap_or_default();
+    let tmp = path.with_extension(format!("{ext}sync.tmp.{}", Uuid::new_v4()));
+    let mut file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&tmp)
+        .map_err(|e| format!("open temp {label} failed: {e}"))?;
+    file.write_all(bytes)
+        .map_err(|e| format!("write temp {label} failed: {e}"))?;
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("replace {label} failed: {err}"));
+    }
+    Ok(())
+}
+
 fn sanitize_single_component(raw: &str, label: &str, max_len: usize) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -259,7 +346,7 @@ pub fn sanitize_world_name(raw: &str) -> Result<String, String> {
 }
 
 fn resolve_instance_file_path(instance_dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
-    safe_join_under(instance_dir, rel_path)
+    resolve_path_under_root_no_symlink(instance_dir, rel_path, false)
 }
 
 pub fn resolve_instance_file_path_from_instances_dir(
@@ -488,13 +575,17 @@ pub fn collect_allowlisted_config_files(
 
     let mut candidate_paths: Vec<PathBuf> = Vec::new();
     let options_path = safe_join_under(&dir, "options.txt")?;
-    if options_path.exists() {
-        candidate_paths.push(options_path);
+    if let Some(meta) = path_metadata_no_symlink(&options_path)? {
+        if meta.file_type().is_file() {
+            candidate_paths.push(options_path);
+        }
     }
 
     let config_dir = safe_join_under(&dir, "config")?;
-    if config_dir.exists() && config_dir.is_dir() {
-        collect_files_recursive(&dir, &config_dir, &mut candidate_paths)?;
+    if let Some(meta) = path_metadata_no_symlink(&config_dir)? {
+        if meta.file_type().is_dir() {
+            collect_files_recursive(&dir, &config_dir, &mut candidate_paths)?;
+        }
     }
 
     let mut out = Vec::new();
@@ -530,8 +621,12 @@ pub fn read_lock_entries(
     instances_dir: &Path,
     instance_id: &str,
 ) -> Result<Vec<CanonicalLockEntry>, String> {
-    let path = lock_file_path(instances_dir, instance_id);
-    if !path.exists() {
+    let root = instance_dir(instances_dir, instance_id);
+    let path = resolve_path_under_root_no_symlink(&root, "lock.json", false)?;
+    let Some(meta) = path_metadata_no_symlink(&path)? else {
+        return Ok(vec![]);
+    };
+    if !meta.file_type().is_file() {
         return Ok(vec![]);
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("read lockfile failed: {e}"))?;
@@ -574,10 +669,8 @@ pub fn write_lock_entries(
     instance_id: &str,
     entries: &[CanonicalLockEntry],
 ) -> Result<(), String> {
-    let path = lock_file_path(instances_dir, instance_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir instance dir failed: {e}"))?;
-    }
+    let root = instance_dir(instances_dir, instance_id);
+    let path = resolve_path_under_root_no_symlink(&root, "lock.json", true)?;
     let mut normalized_entries = entries.to_vec();
     normalized_entries.sort_by(|a, b| lock_key_for(a).cmp(&lock_key_for(b)));
 
@@ -605,9 +698,9 @@ pub fn write_lock_entries(
             .collect(),
     };
 
-    let raw = serde_json::to_string_pretty(&lock)
-        .map_err(|e| format!("serialize lockfile failed: {e}"))?;
-    fs::write(path, raw).map_err(|e| format!("write lockfile failed: {e}"))
+    let raw =
+        serde_json::to_vec_pretty(&lock).map_err(|e| format!("serialize lockfile failed: {e}"))?;
+    atomic_replace_file(&path, &raw, "lockfile")
 }
 
 pub fn lock_entry_map(entries: &[CanonicalLockEntry]) -> HashMap<String, CanonicalLockEntry> {
@@ -669,45 +762,47 @@ pub fn list_instance_config_files(
     let mut files = Vec::new();
 
     let options = safe_join_under(&dir, "options.txt")?;
-    if options.exists() && options.is_file() {
-        let meta =
-            fs::metadata(&options).map_err(|e| format!("read options metadata failed: {e}"))?;
-        files.push(InstanceConfigFileEntry {
-            path: "options.txt".to_string(),
-            size_bytes: meta.len(),
-            modified_at: modified_millis(&meta),
-            editable: true,
-            kind: "text".to_string(),
-            readonly_reason: None,
-        });
+    if let Some(meta) = path_metadata_no_symlink(&options)? {
+        if meta.file_type().is_file() {
+            files.push(InstanceConfigFileEntry {
+                path: "options.txt".to_string(),
+                size_bytes: meta.len(),
+                modified_at: modified_millis(&meta),
+                editable: true,
+                kind: "text".to_string(),
+                readonly_reason: None,
+            });
+        }
     }
 
     let config_dir = safe_join_under(&dir, "config")?;
-    if config_dir.exists() && config_dir.is_dir() {
-        let mut raw = Vec::new();
-        collect_files_recursive(&dir, &config_dir, &mut raw)?;
-        for path in raw {
-            let Some(rel_path) = normalize_rel_path(&path, &dir) else {
-                continue;
-            };
-            let meta =
-                fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
-            let mut sample = vec![0u8; 512];
-            let mut file =
-                fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
-            let read_len = file
-                .read(&mut sample)
-                .map_err(|e| format!("read config sample failed: {e}"))?;
-            sample.truncate(read_len);
-            let readonly_reason = describe_non_editable_reason(&path, &sample);
-            files.push(InstanceConfigFileEntry {
-                path: rel_path.clone(),
-                size_bytes: meta.len(),
-                modified_at: modified_millis(&meta),
-                editable: readonly_reason.is_none(),
-                kind: infer_file_kind(&rel_path),
-                readonly_reason,
-            });
+    if let Some(meta) = path_metadata_no_symlink(&config_dir)? {
+        if meta.file_type().is_dir() {
+            let mut raw = Vec::new();
+            collect_files_recursive(&dir, &config_dir, &mut raw)?;
+            for path in raw {
+                let Some(rel_path) = normalize_rel_path(&path, &dir) else {
+                    continue;
+                };
+                let meta =
+                    fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+                let mut sample = vec![0u8; 512];
+                let mut file =
+                    fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
+                let read_len = file
+                    .read(&mut sample)
+                    .map_err(|e| format!("read config sample failed: {e}"))?;
+                sample.truncate(read_len);
+                let readonly_reason = describe_non_editable_reason(&path, &sample);
+                files.push(InstanceConfigFileEntry {
+                    path: rel_path.clone(),
+                    size_bytes: meta.len(),
+                    modified_at: modified_millis(&meta),
+                    editable: readonly_reason.is_none(),
+                    kind: infer_file_kind(&rel_path),
+                    readonly_reason,
+                });
+            }
         }
     }
 
@@ -722,8 +817,9 @@ pub fn read_instance_config_file(
 ) -> Result<ReadInstanceConfigFileResult, String> {
     let dir = instance_dir(instances_dir, instance_id);
     let path = resolve_instance_file_path(&dir, rel_path)?;
-    let meta = fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
-    if !meta.is_file() {
+    let meta = path_metadata_no_symlink(&path)?
+        .ok_or_else(|| "Requested config path does not exist".to_string())?;
+    if !meta.file_type().is_file() {
         return Err("Requested config path is not a file".to_string());
     }
     let mut sample = vec![0u8; 512];
@@ -772,20 +868,16 @@ pub fn write_instance_config_file(
     expected_modified_at: Option<i64>,
 ) -> Result<WriteInstanceConfigFileResult, String> {
     let dir = instance_dir(instances_dir, instance_id);
-    let path = resolve_instance_file_path(&dir, rel_path)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir config dir failed: {e}"))?;
-    }
+    let path = resolve_path_under_root_no_symlink(&dir, rel_path, true)?;
 
-    if path.exists() {
-        let meta = fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+    if let Some(meta) = path_metadata_no_symlink(&path)? {
         if let Some(expected) = expected_modified_at {
             let actual = modified_millis(&meta);
             if expected != actual {
                 return Err("File changed on disk. Reload and try saving again.".to_string());
             }
         }
-        if !meta.is_file() {
+        if !meta.file_type().is_file() {
             return Err("Requested config path is not a file".to_string());
         }
     }
@@ -798,20 +890,10 @@ pub fn write_instance_config_file(
         return Err("Binary or unsupported config file cannot be edited.".to_string());
     }
 
-    let tmp = path.with_extension(format!(
-        "{}.tmp",
-        path.extension()
-            .map(|v| v.to_string_lossy().to_string())
-            .unwrap_or_else(|| "write".to_string())
-    ));
-    fs::write(&tmp, content.as_bytes())
-        .map_err(|e| format!("write temp config file failed: {e}"))?;
-    if let Err(err) = fs::rename(&tmp, &path) {
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("replace config file failed: {err}"));
-    }
+    atomic_replace_file(&path, content.as_bytes(), "config file")?;
 
-    let meta = fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+    let meta = path_metadata_no_symlink(&path)?
+        .ok_or_else(|| "config file missing after save".to_string())?;
     Ok(WriteInstanceConfigFileResult {
         path: safe_rel_path(rel_path)?,
         size_bytes: meta.len(),
@@ -881,9 +963,9 @@ pub fn read_lock_entry_bytes(
     instance_id: &str,
     entry: &CanonicalLockEntry,
 ) -> Result<Option<Vec<u8>>, String> {
+    let instance_dir = instance_dir(instances_dir, instance_id);
     let mut paths = lock_entry_paths(instances_dir, instance_id, entry)?;
     if normalized_content_type(&entry.content_type) == "mods" {
-        let instance_dir = instance_dir(instances_dir, instance_id);
         let mods_dir = safe_join_under(&instance_dir, "mods")?;
         let filename = sanitize_lock_entry_filename(&entry.filename)?;
         if entry.enabled {
@@ -893,10 +975,17 @@ pub fn read_lock_entry_bytes(
         }
     }
     for path in paths {
-        if !path.exists() || !path.is_file() {
+        let Some(rel_path) = normalize_rel_path(&path, &instance_dir) else {
+            continue;
+        };
+        let secure_path = resolve_path_under_root_no_symlink(&instance_dir, &rel_path, false)?;
+        let Some(meta) = path_metadata_no_symlink(&secure_path)? else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
             continue;
         }
-        let bytes = fs::read(&path).map_err(|e| format!("read content file failed: {e}"))?;
+        let bytes = fs::read(&secure_path).map_err(|e| format!("read content file failed: {e}"))?;
         return Ok(Some(bytes));
     }
     Ok(None)
@@ -907,13 +996,26 @@ pub fn lock_entry_file_missing(
     instance_id: &str,
     entry: &CanonicalLockEntry,
 ) -> bool {
+    let instance_dir = instance_dir(instances_dir, instance_id);
     let Ok(paths) = lock_entry_paths(instances_dir, instance_id, entry) else {
         return true;
     };
     if paths.is_empty() {
         return true;
     }
-    !paths.iter().all(|path| path.exists() && path.is_file())
+    !paths.iter().all(|path| {
+        let Some(rel_path) = normalize_rel_path(path, &instance_dir) else {
+            return false;
+        };
+        let Ok(secure_path) = resolve_path_under_root_no_symlink(&instance_dir, &rel_path, false)
+        else {
+            return false;
+        };
+        matches!(
+            path_metadata_no_symlink(&secure_path),
+            Ok(Some(meta)) if meta.file_type().is_file()
+        )
+    })
 }
 
 pub fn write_lock_entry_bytes(
@@ -922,40 +1024,37 @@ pub fn write_lock_entry_bytes(
     entry: &CanonicalLockEntry,
     bytes: &[u8],
 ) -> Result<usize, String> {
+    let instance_dir = instance_dir(instances_dir, instance_id);
     let paths = lock_entry_paths(instances_dir, instance_id, entry)?;
     if paths.is_empty() {
         return Err("no writable target paths for entry".to_string());
     }
     let mut wrote = 0usize;
     for path in paths {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("mkdir content dir failed: {e}"))?;
-        }
-        let tmp = path.with_extension(format!(
-            "{}.sync.tmp",
-            path.extension()
-                .map(|v| v.to_string_lossy().to_string())
-                .unwrap_or_else(|| "file".to_string())
-        ));
-        fs::write(&tmp, bytes).map_err(|e| format!("write temp content file failed: {e}"))?;
-        if let Err(err) = fs::rename(&tmp, &path) {
-            let _ = fs::remove_file(&tmp);
-            return Err(format!("replace content file failed: {err}"));
-        }
+        let rel_path = normalize_rel_path(&path, &instance_dir)
+            .ok_or_else(|| format!("invalid entry target path: {}", path.display()))?;
+        let secure_path = resolve_path_under_root_no_symlink(&instance_dir, &rel_path, true)?;
+        atomic_replace_file(&secure_path, bytes, "content file")?;
         wrote += 1;
     }
 
     if normalized_content_type(&entry.content_type) == "mods" {
-        let instance_dir = instance_dir(instances_dir, instance_id);
         let mods_dir = safe_join_under(&instance_dir, "mods")?;
         let filename = sanitize_lock_entry_filename(&entry.filename)?;
-        let enabled_path = safe_join_under(&mods_dir, &filename)?;
-        let disabled_path = safe_join_under(&mods_dir, &format!("{filename}.disabled"))?;
+        let enabled_path = resolve_path_under_root_no_symlink(&mods_dir, &filename, false)?;
+        let disabled_path =
+            resolve_path_under_root_no_symlink(&mods_dir, &format!("{filename}.disabled"), false)?;
         if entry.enabled {
-            if disabled_path.exists() {
+            if path_metadata_no_symlink(&disabled_path)?
+                .map(|meta| meta.file_type().is_file())
+                .unwrap_or(false)
+            {
                 let _ = fs::remove_file(&disabled_path);
             }
-        } else if enabled_path.exists() {
+        } else if path_metadata_no_symlink(&enabled_path)?
+            .map(|meta| meta.file_type().is_file())
+            .unwrap_or(false)
+        {
             let _ = fs::remove_file(&enabled_path);
         }
     }
