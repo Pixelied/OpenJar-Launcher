@@ -153,24 +153,20 @@
       .themeToggle:active{transform:translateY(1px)}
       .themeToggle:focus{outline:none; box-shadow:0 0 0 4px var(--ring);}
       .themeKnob{
-  position:absolute;
-  top:50%;
-  left:4px;
-  width:28px;
-  height:28px;
-  border-radius:999px;
-  background:linear-gradient(180deg, rgba(255,255,255,.92), rgba(255,255,255,.78));
-  box-shadow:0 8px 22px rgba(0,0,0,.10), 0 2px 6px rgba(0,0,0,.08);
-  transform:translate(0,-50%);
-  transition:transform .22s cubic-bezier(.2,.8,.2,1), background .2s ease;
-}
-
+        position:absolute;
+        top: 50%;left:4px;
+        width:28px;height:28px;
+        border-radius:999px;
+        background:linear-gradient(180deg, rgba(255,255,255,.9), rgba(255,255,255,.65));
+        border:1px solid var(--border);
+        box-shadow:0 10px 22px rgba(0,0,0,.10);
+        transition:transform .18s ease, background .15s ease;
+       transform: translateY(-50%);}
       html[data-theme="dark"] .themeToggle{background:var(--soft2)}
       html[data-theme="dark"] .themeKnob{
-  transform:translate(18px,-50%);
-  background:linear-gradient(180deg, rgba(255,255,255,.22), rgba(255,255,255,.12));
-}
-
+        transform: translate(18px, -50%);
+        background:linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.10));
+      }
 
       .content{padding:16px}
       .markdown-wrap{
@@ -309,8 +305,8 @@ h1:target, h2:target, h3:target, h4:target, h5:target, h6:target {
       /******************************************************************
        * QUICK TOGGLES
        ******************************************************************/
-      const REDIRECT = true;             // <-- change this ONE WORD to false
-      const REDIRECT_GRACE_MS = 500;     // 0 = truly instant (button won't be clickable)
+      const REDIRECT = false;             // <-- change this ONE WORD to false
+      const REDIRECT_GRACE_MS = 250;     // 0 = truly instant (button won't be clickable)
       const SMOOTH_SCROLL = true;
 
       const REPO = {
@@ -408,16 +404,11 @@ h1:target, h2:target, h3:target, h4:target, h5:target, h6:target {
       function normalizeRel(p) {
   if (!p) return p;
   return p
-    .trim()
-    .replace(/^\/+/, "")
     .replace(/^\.\//, "")
+    .replace(/^\//, "")
     // Guard against accidental leading "d/" in some README links (typo-safe)
-    .replace(/^d\//, "")
-    // If a link accidentally includes the Pages base path, remove it.
-    .replace(/^OpenJar-Launcher\//, "");
+    .replace(/^d\/(?=readme-assets\/)/, "");
 }
-
-
 
 function isImagePath(p) {
         return /\.(png|jpe?g|gif|webp|svg)$/i.test(p.split("?")[0].split("#")[0]);
@@ -500,134 +491,94 @@ function isImagePath(p) {
         });
       }
 
-      function rewriteRelativeImagesAndLinks(root) {
-        const rawBase = `https://raw.githubusercontent.com/${REPO.owner}/${REPO.repo}/${REPO.branch}/`;
-        const ghRawBase = `https://github.com/${REPO.owner}/${REPO.repo}/raw/${REPO.branch}/`;
+      function rewriteRelativeImagesAndLinks(root){
+    // Convert README-relative links/images to stable URLs that work on GitHub Pages and when opened locally.
+    const imgs = root.querySelectorAll("img");
+    imgs.forEach(img => {
+      const original = (img.getAttribute("src") || "").trim();
+      if (!original) return;
 
-        function uniq(arr) {
-          return Array.from(new Set(arr.filter(Boolean)));
-        }
+      const isRelative =
+        original.startsWith("./") ||
+        original.startsWith("../") ||
+        (!original.startsWith("http") && !original.startsWith("data:") && !original.startsWith("blob:") && !original.startsWith("#"));
 
-        function buildPathCandidates(rel) {
-          let p = normalizeRel(rel);
-          p = p.replace(/^\/+/, "");
-          const vars = [p];
+      // Primary resolution
+      let resolved = original;
+      if (isRelative) {
+        let clean = original.replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+        resolved = REPO.rawBase + "/" + encodeURI(clean);
+      } else {
+        resolved = toRawGithub(original);
+      }
+      img.setAttribute("src", resolved);
 
-          // Helpful fallbacks if files live in older folders
-          if (p.startsWith("readme-assets/images/")) {
-            vars.push("docs/" + p);
-            vars.push(p.replace(/^readme-assets\/images\//, "docs/screenshots/"));
-          }
-          if (p.startsWith("readme-assets/")) {
-            vars.push("docs/" + p);
-          }
-          if (p.startsWith("docs/")) {
-            vars.push(p.replace(/^docs\//, ""));
-          }
-          return uniq(vars);
-        }
+      // Fallback resolution (if README references old paths or the file lives elsewhere in repo)
+      const clean0 = original.replace(/^(\.\/)+/, "").replace(/^\/+/, "");
 
-        function buildUrlCandidates(rel) {
-          const vars = buildPathCandidates(rel);
-          const bases = [rawBase, ghRawBase];
-          const urls = [];
-          for (const base of bases) {
-            for (const v of vars) {
-              urls.push(base + encodeURI(v));
-            }
-          }
-          return uniq(urls);
-        }
-
-        function attachImgFallback(img, relSrc) {
-          const urls = buildUrlCandidates(relSrc);
-          img._ojCandidates = urls;
-          img._ojCandidateIndex = 0;
-
-          img.setAttribute("src", urls[0]);
-          img.loading = img.loading || "lazy";
-          img.decoding = img.decoding || "async";
-
-          img.addEventListener("error", () => {
-            const idx = (img._ojCandidateIndex ?? 0) + 1;
-            img._ojCandidateIndex = idx;
-            if (idx < (img._ojCandidates?.length ?? 0)) {
-              img.setAttribute("src", img._ojCandidates[idx]);
-            }
-          });
-        }
-
-        // Images
-        root.querySelectorAll("img").forEach(img => {
-          const src = img.getAttribute("src") || "";
-          if (!src) return;
-
-          if (isAbsoluteUrl(src)) {
-            img.setAttribute("src", toRawGithub(src));
-            img.loading = img.loading || "lazy";
-            img.decoding = img.decoding || "async";
-            return;
-          }
-
-          if (!isRelativePath(src)) return;
-          attachImgFallback(img, src);
-        });
-
-        // Links
-        root.querySelectorAll("a").forEach(a => {
-          const href = a.getAttribute("href") || "";
-          if (!href) return;
-          if (href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) return;
-
-          if (isAbsoluteUrl(href)) {
-            a.setAttribute("href", toRawGithub(href));
-            a.target = a.target || "_blank";
-            a.rel = a.rel || "noreferrer noopener";
-            return;
-          }
-
-          if (!isRelativePath(href)) return;
-          const normalized = normalizeRel(href);
-          a.setAttribute("href", rawBase + encodeURI(normalized));
-          a.target = a.target || "_blank";
-          a.rel = a.rel || "noreferrer noopener";
-        });
+      const altPaths = [];
+      // Common historical /docs screenshots path → moved to readme-assets/images/
+      if (clean0.startsWith("docs/screenshots/")) {
+        altPaths.push("readme-assets/images/" + clean0.slice("docs/screenshots/".length));
+      }
+      // If it was referenced from /docs/ but lives at repo root, try stripping "docs/"
+      if (clean0.startsWith("docs/")) {
+        altPaths.push(clean0.slice("docs/".length));
+      }
+      // If it's *just* a filename or other folder, try the canonical screenshots folder
+      const fileOnly = clean0.split("/").pop();
+      if (fileOnly && !clean0.startsWith("readme-assets/images/")) {
+        altPaths.push("readme-assets/images/" + fileOnly);
       }
 
+      const altUrls = Array.from(new Set(
+        altPaths
+          .filter(Boolean)
+          .map(p => REPO.rawBase + "/" + encodeURI(p.replace(/^\/+/, "")))
+          .filter(u => u !== resolved)
+      ));
 
-      function setupTocAndAnchorScroll(readmeEl) {
-  const TOP_OFFSET = 96; // header height + breathing room
+      if (altUrls.length) {
+        img.dataset.ojRetryUrls = JSON.stringify(altUrls);
+        img.dataset.ojRetryIndex = "0";
+        img.addEventListener("error", () => {
+          try{
+            const urls = JSON.parse(img.dataset.ojRetryUrls || "[]");
+            const i = parseInt(img.dataset.ojRetryIndex || "0", 10);
+            if (!Number.isFinite(i) || i >= urls.length) return;
+            img.dataset.ojRetryIndex = String(i + 1);
+            img.setAttribute("src", urls[i]);
+          }catch(_e){}
+        }, { passive: true });
+      }
+    });
 
-  function uniq(arr) {
-    return Array.from(new Set(arr.filter(Boolean)));
-  }
+    const links = root.querySelectorAll("a[href]");
+    links.forEach(a => {
+      const href = (a.getAttribute("href") || "").trim();
+      if (!href) return;
 
-  function findTarget(rawId) {
-    if (!rawId) return null;
-    const decoded = decodeURIComponent(rawId);
+      // leave hash links alone so TOC + headings work
+      if (href.startsWith("#")) return;
 
-    const candidates = uniq([
-      decoded,
-      rawId,
-      decoded.replace(/^user-content-/, ""),
-      rawId.replace(/^user-content-/, ""),
-    ]);
+      const isRelative =
+        href.startsWith("./") ||
+        href.startsWith("../") ||
+        (!href.startsWith("http") && !href.startsWith("mailto:") && !href.startsWith("data:") && !href.startsWith("blob:"));
 
-    for (const id of candidates) {
-      const el = document.getElementById(id);
-      if (el) return el;
-    }
-    return null;
-  }
-
-  function scrollToEl(el) {
-    const top = el.getBoundingClientRect().top + window.scrollY - TOP_OFFSET;
-    window.scrollTo({
-      top: Math.max(0, top),
-      behavior: prefersReducedMotion ? "auto" : "smooth",
+      if (isRelative) {
+        let clean = href.replace(/^(\.\/)+/, "").replace(/^\/+/, "");
+        a.setAttribute("href", REPO.rawBase + "/" + encodeURI(clean));
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noopener noreferrer");
+      } else {
+        a.setAttribute("href", toRawGithub(href));
+      }
     });
   }
 
+
+      function setupTocAndAnchorScroll(readmeEl) {
   // Smooth-scroll internal anchors and update the URL hash without a jump.
   readmeEl.addEventListener("click", (e) => {
     const a = e.target.closest("a");
@@ -636,25 +587,49 @@ function isImagePath(p) {
     if (!href.startsWith("#")) return;
 
     const rawId = href.slice(1);
-    const target = findTarget(rawId);
+    const decoded = decodeURIComponent(rawId);
+
+    const target = document.getElementById(decoded) || document.getElementById(rawId);
     if (!target) return;
 
     e.preventDefault();
-    scrollToEl(target);
-    history.replaceState(null, "", "#" + rawId);
-  });
 
-  // If the page was loaded with a hash, scroll after the README renders.
-  if (location.hash && location.hash.length > 1) {
-    const rawId = location.hash.slice(1);
-    const target = findTarget(rawId);
-    if (target) {
-      setTimeout(() => scrollToEl(target), 0);
-    }
-  }
+    const nextUrl = location.pathname + location.search + "#" + encodeURIComponent(target.id);
+    history.pushState(null, "", nextUrl);
+
+    target.scrollIntoView({ behavior: SMOOTH_SCROLL ? "smooth" : "auto", block: "start" });
+  });
 }
 
+function scrollToHashIfPresent() {
+  const hash = location.hash || "";
+  if (!hash.startsWith("#")) return;
+  const rawId = hash.slice(1);
+  const decoded = decodeURIComponent(rawId);
+  const target = document.getElementById(decoded) || document.getElementById(rawId);
+  if (!target) return;
+  requestAnimationFrame(() => {
+    target.scrollIntoView({ behavior: "auto", block: "start" });
+  });
+}
 
+function setupBackToTop() {
+  const btn = document.getElementById("backTop");
+  if (!btn) return;
+
+  const update = () => {
+    const show = window.scrollY > 700;
+    btn.classList.toggle("show", show);
+  };
+
+  window.addEventListener("scroll", update, { passive: true });
+  update();
+
+  btn.addEventListener("click", () => {
+    history.replaceState(null, "", location.pathname + location.search);
+    window.scrollTo({ top: 0, behavior: SMOOTH_SCROLL ? "smooth" : "auto" });
+  });
+}
 
 async function loadReadme() {
         const loading = document.getElementById("loading");
