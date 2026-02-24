@@ -4,6 +4,8 @@
 
 It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
 
+Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
+
 ---
 
 ## Table of contents
@@ -17,7 +19,7 @@ It’s designed to feel clean and modern while still being powerful: manage inst
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
-  - [Friend Link (LAN Sync for Shared Packs)](#friend-link-lan-sync-for-shared-packs)
+  - [Friend Link (Peer Sync for Shared Packs)](#friend-link-peer-sync-for-shared-packs)
   - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
   - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
   - [Multi-Launch Explained (Isolated Runtime Sessions)](#multi-launch-explained-isolated-runtime-sessions)
@@ -95,6 +97,7 @@ Filters include:
 - Loader: Fabric / Forge / Quilt / NeoForge (and Vanilla where relevant)
 - Minecraft version
 - Sort: downloads / updated / newest / follows (depends on provider)
+- In `All + Mods`, results are still mixed across providers but ranking prefers Modrinth entries.
 
 #### Modrinth (works now)
 
@@ -241,7 +244,7 @@ What makes it unique:
 
 ---
 
-### Friend Link (LAN Sync for Shared Packs)
+### Friend Link (Peer Sync for Shared Packs)
 
 Friend Link is built for the exact “works on my PC” problem when playing modded with friends.
 
@@ -288,11 +291,15 @@ Safety behavior:
 How pairing works:
 - Create host link -> share invite code
 - Join link with invite code
-- LAN transport with signed messages (shared secret + HMAC)
+- Transport uses encrypted and authenticated frames (shared-secret derived keys + AEAD)
+- Endpoint policy defaults are safe:
+  - private/local addresses allowed by default
+  - loopback blocked by default (dev-only opt-in)
+  - public internet blocked by default (explicit opt-in required)
 
 Current scope:
 - Designed for small groups (max 8 peers)
-- No cloud relay/WAN server in v1
+- No hosted cloud relay service in v1 (direct peer endpoint model)
 - No world save replication in v1 (content/config parity only)
 
 ---
@@ -384,7 +391,8 @@ Sign in and stay signed in.
 - Select active account
 - Logout/disconnect
 - Account diagnostics (helps when auth gets weird)
-- Tokens are stored in the system keychain (with a safe fallback file inside app data)
+- Production builds store refresh tokens in OS secure storage only.
+- Dev builds (`npm run tauri:dev`) keep a debug-only recovery fallback file to avoid repeated local re-login loops during development.
 
 ---
 
@@ -495,8 +503,9 @@ Current build targets:
 - macOS Apple Silicon (`aarch64-apple-darwin`)
 - Linux x64 (`x86_64-unknown-linux-gnu`)
 - Windows x64 (`x86_64-pc-windows-msvc`, intended for Windows 11)
+- Windows ARM64 (`aarch64-pc-windows-msvc`, including Windows on ARM)
 
-CI now runs a Tauri build matrix for all of the targets above and uploads artifacts per platform.
+CI runs a Tauri build matrix for all of the targets above and uploads artifacts per platform.
 
 Known limitations:
 - Windows CI runs on GitHub-hosted Windows Server images, not a full Windows 11 desktop session.
