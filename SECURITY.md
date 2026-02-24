@@ -9,12 +9,17 @@ This document describes the security hardening for Microsoft/Minecraft auth stor
 - Instance lock/config sync integrity and confidentiality
 
 ## Auth Storage Hardening
-- Refresh tokens are persisted in OS secure storage only (`keyring` backend on macOS/Windows/Linux).
-- Plaintext fallback token persistence is removed from runtime auth flows.
+- Production builds persist refresh tokens in OS secure storage only (`keyring` backend on macOS/Windows/Linux).
+- Plaintext fallback token persistence is removed from production runtime auth flows.
+- Debug builds (`cfg(debug_assertions)`, for example `npm run tauri:dev`) keep a development recovery fallback at `launcher/tokens_debug_fallback.json` to avoid repeated account disconnects when local keychain access is unstable during development.
+  - This file is never used in production builds.
+  - On Unix it is written with restrictive permissions (`0600`).
 - Legacy `launcher/tokens_fallback.json` is treated as migration-only:
   - read once at startup
   - migrate tokens into keyring (best effort)
   - delete fallback file
+- Startup migration checks known legacy launcher data roots (including historical app identifiers) so old fallback files are migrated even after bundle-id changes.
+- Refresh-token lookup also supports secure-storage alias recovery (legacy service names and selected-account alias) and rewrites recovered tokens into canonical keyring entries.
 - No token values are logged.
 - If keyring storage is unavailable, auth operations fail with an actionable secure-storage error instead of falling back to disk.
 
@@ -53,6 +58,10 @@ This document describes the security hardening for Microsoft/Minecraft auth stor
 ## Session Rotation Safety
 - FriendLink listeners are now bound to a session fingerprint (group id + local peer id + secret material).
 - If host credentials rotate, the listener is restarted automatically so stale in-memory secrets do not cause persistent decrypt/auth failures.
+
+## Runtime Behavior Notes
+- FriendLink auto-sync execution is handled by app-level background scheduling and does not require the Friend Link modal to be open.
+- `manual`, `ask`, `auto_metadata`, and `auto_all` mode behavior remains policy-driven; only the execution trigger location changed (from modal-only to app-level scheduler).
 
 ## Debug/Export Redaction
 - FriendLink debug bundle export redacts secret-bearing fields (shared secret/key handles/bootstrap credentials).
