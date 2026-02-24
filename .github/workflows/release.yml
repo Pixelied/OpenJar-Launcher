@@ -64,6 +64,9 @@ jobs:
           node-version: "20"
           cache: "npm"
 
+      - name: Verify README/workflow platform matrix
+        run: npm run verify:platform-support
+
       - name: Install Linux system dependencies (Tauri/WebKitGTK/libsoup2)
         if: runner.os == 'Linux'
         shell: bash

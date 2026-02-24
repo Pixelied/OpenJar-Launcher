@@ -507,6 +507,10 @@ Current build targets:
 
 CI runs a Tauri build matrix for all of the targets above and uploads artifacts per platform.
 
+Contributor check:
+- Run `npm run verify:platform-support` before opening a PR if you change platform targets or support docs.
+- CI enforces this via the `Verify platform support claims` job in `.github/workflows/ci-build.yml`.
+
 Known limitations:
 - Windows CI runs on GitHub-hosted Windows Server images, not a full Windows 11 desktop session.
 - Linux desktop runtime depends on WebKitGTK/libsoup2 packages available on the target distro.
