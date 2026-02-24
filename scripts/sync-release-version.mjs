@@ -61,13 +61,11 @@ function updateTauriConf(version) {
 function updateCargoToml(version) {
   const filePath = "src-tauri/Cargo.toml";
   const raw = fs.readFileSync(filePath, "utf8");
-  const next = raw.replace(
-    /(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+(")/,
-    `$1${version}$2`
-  );
-  if (next === raw) {
+  const packageVersionRegex = /(\[package\][\s\S]*?\nversion\s*=\s*")[^"]+(")/;
+  if (!packageVersionRegex.test(raw)) {
     throw new Error(`Could not locate [package] version in ${filePath}`);
   }
+  const next = raw.replace(packageVersionRegex, `$1${version}$2`);
   return writeIfChanged(filePath, next);
 }
 
