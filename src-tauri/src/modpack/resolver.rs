@@ -525,7 +525,7 @@ fn resolve_single_entry(
         reason_code: "ProviderError".to_string(),
         reason_text: "Unsupported provider. Expected modrinth or curseforge.".to_string(),
         actionable_hint: if entry.provider.trim().eq_ignore_ascii_case("local") {
-            "Run Identify local JARs in Creator Studio or set provider manually.".to_string()
+            "Run Identify local files in Creator Studio or set provider manually.".to_string()
         } else {
             "Update entry provider.".to_string()
         },
@@ -673,7 +673,7 @@ fn select_curseforge_file(
             }
         }
 
-        if !curseforge_loader_matches(&file, &target_loader) {
+        if !curseforge_loader_matches(&file, &target_loader, &content_type) {
             continue;
         }
 
@@ -787,7 +787,14 @@ fn modrinth_loader_matches(
     })
 }
 
-fn curseforge_loader_matches(file: &crate::CurseforgeFile, target_loader: &str) -> bool {
+fn curseforge_loader_matches(
+    file: &crate::CurseforgeFile,
+    target_loader: &str,
+    content_type: &str,
+) -> bool {
+    if content_type != "mods" {
+        return true;
+    }
     let values = file
         .game_versions
         .iter()
@@ -967,4 +974,35 @@ fn parse_curseforge_file_id(raw: &str) -> Option<i64> {
 
 fn entry_key_for_resolved(item: &ResolvedMod) -> String {
     entry_key(&item.source, &item.project_id, &item.content_type)
+}
+
+#[cfg(test)]
+mod resolver_loader_tests {
+    use super::*;
+
+    fn make_file(game_versions: Vec<&str>) -> crate::CurseforgeFile {
+        crate::CurseforgeFile {
+            id: 1,
+            mod_id: 1,
+            display_name: "file".to_string(),
+            file_name: "file.zip".to_string(),
+            file_date: "2026-01-01T00:00:00Z".to_string(),
+            download_url: None,
+            game_versions: game_versions.into_iter().map(str::to_string).collect(),
+            hashes: vec![],
+            dependencies: vec![],
+        }
+    }
+
+    #[test]
+    fn curseforge_non_mod_loader_check_is_ignored() {
+        let file = make_file(vec!["1.20.1", "forge"]);
+        assert!(curseforge_loader_matches(&file, "fabric", "resourcepacks"));
+    }
+
+    #[test]
+    fn curseforge_mod_loader_check_is_enforced() {
+        let file = make_file(vec!["1.20.1", "forge"]);
+        assert!(!curseforge_loader_matches(&file, "fabric", "mods"));
+    }
 }

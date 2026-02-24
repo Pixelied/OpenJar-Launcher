@@ -192,6 +192,14 @@ type InstallTarget = {
   description?: string | null;
 };
 
+type CurseforgeBlockedRecoveryPrompt = {
+  instanceId: string;
+  instanceName: string;
+  contentView: "mods" | "resourcepacks" | "datapacks" | "shaders";
+  target: InstallTarget;
+  projectUrl: string;
+};
+
 type DiscoverAddContext = {
   modpackId: string;
   modpackName: string;
@@ -667,6 +675,70 @@ function normalizeInstanceContentType(input?: string): "mods" | "resourcepacks" 
   if (value === "resourcepacks") return "resourcepacks";
   if (value === "datapacks") return "datapacks";
   return "mods";
+}
+
+function instanceContentTypeToBackend(input: "mods" | "resourcepacks" | "datapacks" | "shaders") {
+  if (input === "shaders") return "shaderpacks";
+  return input;
+}
+
+function localImportExtensionsForInstanceType(input: "mods" | "resourcepacks" | "datapacks" | "shaders") {
+  if (input === "mods") return ["jar"];
+  if (input === "resourcepacks") return ["zip"];
+  if (input === "datapacks") return ["zip"];
+  return ["zip", "jar"];
+}
+
+function localImportTypeLabel(input: "mods" | "resourcepacks" | "datapacks" | "shaders") {
+  if (input === "mods") return "mod";
+  if (input === "resourcepacks") return "resourcepack";
+  if (input === "datapacks") return "datapack";
+  return "shaderpack";
+}
+
+function discoverContentTypeToInstanceView(
+  input?: DiscoverContentType
+): "mods" | "resourcepacks" | "datapacks" | "shaders" {
+  const normalized = normalizeCreatorEntryType(input);
+  if (normalized === "resourcepacks") return "resourcepacks";
+  if (normalized === "datapacks") return "datapacks";
+  if (normalized === "shaderpacks") return "shaders";
+  return "mods";
+}
+
+function curseforgeCategoryPathForContentType(contentType?: DiscoverContentType) {
+  const normalized = normalizeCreatorEntryType(contentType);
+  if (normalized === "resourcepacks") return "texture-packs";
+  if (normalized === "shaderpacks") return "shaders";
+  if (normalized === "datapacks") return "data-packs";
+  return "mc-mods";
+}
+
+function buildCurseforgeProjectUrl(target: InstallTarget) {
+  const slug = String(target.slug ?? "").trim();
+  if (slug) {
+    const category = curseforgeCategoryPathForContentType(target.contentType);
+    return `https://www.curseforge.com/minecraft/${category}/${slug}`;
+  }
+  return `https://www.curseforge.com/projects/${encodeURIComponent(target.projectId)}`;
+}
+
+function isCurseforgeBlockedDownloadUrlError(message?: string | null) {
+  const value = String(message ?? "").toLowerCase();
+  if (!value) return false;
+  return (
+    value.includes("curseforge blocked automated download url access") ||
+    (value.includes("curseforge download-url lookup failed with status 403") &&
+      value.includes("403"))
+  );
+}
+
+function installedContentTypeLabel(contentType?: string) {
+  const normalized = normalizeCreatorEntryType(contentType);
+  if (normalized === "resourcepacks") return "resourcepack";
+  if (normalized === "shaderpacks") return "shaderpack";
+  if (normalized === "datapacks") return "datapack";
+  return "mod";
 }
 
 function creatorEntryTypeLabel(input?: string) {
@@ -4192,6 +4264,8 @@ export default function App() {
   const [installProgress, setInstallProgress] = useState<InstallProgressEvent | null>(null);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
   const [installNotice, setInstallNotice] = useState<string | null>(null);
+  const [curseforgeBlockedRecoveryPrompt, setCurseforgeBlockedRecoveryPrompt] =
+    useState<CurseforgeBlockedRecoveryPrompt | null>(null);
   const [installProgressEtaSeconds, setInstallProgressEtaSeconds] = useState<number | null>(null);
   const [installProgressElapsedSeconds, setInstallProgressElapsedSeconds] = useState<number | null>(null);
   const installProgressTimingRef = useRef<Record<string, {
@@ -6040,7 +6114,11 @@ export default function App() {
   async function runLocalResolverBackfill(
     instanceId: string,
     mode: "missing_only" | "all" = "missing_only",
-    options?: { silent?: boolean; refreshListAfterResolve?: boolean }
+    options?: {
+      silent?: boolean;
+      refreshListAfterResolve?: boolean;
+      contentTypes?: Array<"mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string>;
+    }
   ) {
     const now = Date.now();
     const cooldownMs = mode === "all" ? 1000 : 5 * 60_000;
@@ -6056,11 +6134,19 @@ export default function App() {
     localResolverBusyRef.current[instanceId] = true;
     localResolverBackfillAtRef.current[instanceId] = now;
     try {
-      const result = await resolveLocalModSources({ instanceId, mode });
+      const result = await resolveLocalModSources({
+        instanceId,
+        mode,
+        contentTypes: options?.contentTypes,
+      });
       if (result.resolved_entries > 0) {
         if (!options?.silent) {
+          const contentLabel =
+            options?.contentTypes?.length === 1
+              ? localImportTypeLabel(normalizeInstanceContentType(options.contentTypes[0]))
+              : "file";
           setInstallNotice(
-            `Identified ${result.resolved_entries} local mod${result.resolved_entries === 1 ? "" : "s"} with provider metadata.`
+            `Identified ${result.resolved_entries} local ${contentLabel}${result.resolved_entries === 1 ? "" : "s"} with provider metadata.`
           );
         }
         if (options?.refreshListAfterResolve !== false) {
@@ -6495,6 +6581,7 @@ export default function App() {
     setInstallingKey(key);
     setInstallNotice(null);
     setError(null);
+    setCurseforgeBlockedRecoveryPrompt(null);
     setInstallProgress({
       instance_id: inst.id,
       project_id: target.projectId,
@@ -6542,6 +6629,7 @@ export default function App() {
       await refreshInstalledMods(inst.id);
       await refreshSnapshots(inst.id);
       await refreshInstances();
+      setCurseforgeBlockedRecoveryPrompt(null);
       setInstallNotice(`Installed ${mod.name} ${mod.version_number} in ${inst.name}.`);
       setInstallProgress({
         instance_id: inst.id,
@@ -6555,7 +6643,31 @@ export default function App() {
       setInstallProgressEtaSeconds(0);
       installSucceeded = true;
     } catch (e: any) {
-      setError(e?.toString?.() ?? String(e));
+      const errText = e?.toString?.() ?? String(e);
+      setError(errText);
+      if (target.source === "curseforge" && isCurseforgeBlockedDownloadUrlError(errText)) {
+        const contentView = discoverContentTypeToInstanceView(target.contentType);
+        let projectUrl = buildCurseforgeProjectUrl(target);
+        try {
+          const detail = await getCurseforgeProjectDetail({
+            projectId: target.projectId,
+          });
+          if (detail.external_url?.trim()) {
+            projectUrl = detail.external_url.trim();
+          }
+        } catch {
+          // Keep fallback URL if detail lookup is unavailable.
+        }
+        setCurseforgeBlockedRecoveryPrompt({
+          instanceId: inst.id,
+          instanceName: inst.name,
+          contentView,
+          target,
+          projectUrl,
+        });
+      } else {
+        setCurseforgeBlockedRecoveryPrompt(null);
+      }
       setInstallProgress((prev) => ({
         instance_id: inst.id,
         project_id: target.projectId,
@@ -6821,9 +6933,9 @@ export default function App() {
   }
 
   async function onDeleteInstalledMod(inst: Instance, mod: InstalledMod) {
-    if ((mod.content_type ?? "mods") !== "mods") return;
+    const contentLabel = installedContentTypeLabel(mod.content_type);
     const confirmed = window.confirm(
-      `Delete "${mod.name}" from this instance?\n\nThis removes the file from disk for this instance.`
+      `Delete "${mod.name}" from this instance?\n\nThis removes ${contentLabel} file(s) from disk for this instance.`
     );
     if (!confirmed) return;
     setToggleBusyVersion(mod.version_id);
@@ -6925,18 +7037,38 @@ export default function App() {
     }
   }
 
-  async function onAddModFromFile(inst: Instance) {
+  async function onAddContentFromFile(
+    inst: Instance,
+    contentView: "mods" | "resourcepacks" | "datapacks" | "shaders"
+  ) {
     setError(null);
     setModsErr(null);
     setInstallNotice(null);
     try {
+      const backendContentType = instanceContentTypeToBackend(contentView);
       const picked = await openDialog({
         multiple: true,
-        filters: [{ name: "Minecraft Mods", extensions: ["jar"] }],
+        filters: [
+          {
+            name: `Minecraft ${localImportTypeLabel(contentView)}`,
+            extensions: localImportExtensionsForInstanceType(contentView),
+          },
+        ],
       });
       if (!picked) return;
       const filePaths = Array.isArray(picked) ? picked : [picked];
       if (filePaths.length === 0) return;
+
+      const datapackWorlds =
+        backendContentType === "datapacks"
+          ? (await listInstanceWorlds({ instanceId: inst.id })).map((world) => world.id)
+          : [];
+      if (backendContentType === "datapacks" && datapackWorlds.length === 0) {
+        setModsErr(
+          "No worlds found in this instance. Create a world first, then add local datapacks."
+        );
+        return;
+      }
 
       setImportingInstanceId(inst.id);
       let successCount = 0;
@@ -6946,6 +7078,8 @@ export default function App() {
           await importLocalModFile({
             instanceId: inst.id,
             filePath,
+            contentType: backendContentType,
+            targetWorlds: backendContentType === "datapacks" ? datapackWorlds : undefined,
           });
           successCount += 1;
         } catch {
@@ -6954,8 +7088,9 @@ export default function App() {
       }
       await refreshInstalledMods(inst.id, { autoIdentifyAfterRefresh: successCount > 0 });
       if (successCount > 0) {
+        const typeLabel = localImportTypeLabel(contentView);
         setInstallNotice(
-          `Added ${successCount} mod file${successCount === 1 ? "" : "s"} from your computer.`
+          `Added ${successCount} local ${typeLabel} file${successCount === 1 ? "" : "s"} from your computer.`
         );
       }
       if (failedPaths.length > 0) {
@@ -7312,7 +7447,7 @@ export default function App() {
         autoIdentifyLocalJars: nextEnabled,
       });
       setLauncherSettingsState(next);
-      setInstallNotice(`Automatic identify local JARs ${nextEnabled ? "enabled" : "disabled"}.`);
+      setInstallNotice(`Automatic identify local files ${nextEnabled ? "enabled" : "disabled"}.`);
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setLauncherErr(msg);
@@ -10677,9 +10812,9 @@ export default function App() {
 
                 <div className="settingStack">
                   <div>
-                    <div className="settingTitle">Automatic identify local JARs</div>
+                    <div className="settingTitle">Automatic identify local files</div>
                     <div className="settingSub">
-                      When enabled, local JAR imports automatically run Identify local JARs in Instance and Creator Studio.
+                      When enabled, local file imports automatically run Identify local files in Instance and Creator Studio.
                     </div>
                     <div className="row">
                       <button
@@ -12211,13 +12346,13 @@ export default function App() {
                       </button>
                       <button
                         className="btn subtle"
-                        onClick={() => onAddModFromFile(inst)}
+                        onClick={() => onAddContentFromFile(inst, instanceContentType)}
                         disabled={importingInstanceId === inst.id}
                       >
                         <span className="btnIcon">
                           <Icon name="upload" size={18} />
                         </span>
-                        {importingInstanceId === inst.id ? "Adding…" : "Add from file"}
+                        {importingInstanceId === inst.id ? "Adding…" : "Add local file"}
                       </button>
                       <button
                         className="btn"
@@ -12225,12 +12360,13 @@ export default function App() {
                           void runLocalResolverBackfill(inst.id, "all", {
                             silent: false,
                             refreshListAfterResolve: true,
+                            contentTypes: [instanceContentTypeToBackend(instanceContentType)],
                           })
                         }
                         disabled={Boolean(localResolverBusyRef.current[inst.id])}
-                        title="Try to match local jar files to Modrinth/CurseForge metadata."
+                        title="Try to match local files to Modrinth/CurseForge metadata."
                       >
-                        Identify local JARs
+                        Identify local files
                       </button>
                     </>
                   ) : instanceTab === "worlds" ? (
@@ -12503,33 +12639,33 @@ export default function App() {
                             </div>
 
                             <div className="instanceModsActionCell">
-                              {(m.content_type ?? "mods") === "mods" ? (
-                                <div className="instanceModsActionRow">
-                                  <button
-                                    className={`btn subtle instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
-                                    onClick={() => onToggleInstalledMod(inst, m, !m.enabled)}
-                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
-                                    aria-label={m.enabled ? "Mod enabled, click to disable" : "Mod disabled, click to enable"}
-                                    title={m.enabled ? "Enabled · click to disable" : "Disabled · click to enable"}
-                                  >
-                                    <Icon
-                                      name={toggleBusyVersion === m.version_id ? "sparkles" : m.enabled ? "check_circle" : "slash_circle"}
-                                      size={15}
-                                    />
-                                  </button>
-                                  <button
-                                    className="btn subtle instanceActionIconBtn instanceActionDeleteBtn"
-                                    onClick={() => void onDeleteInstalledMod(inst, m)}
-                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__"}
-                                    aria-label="Delete mod"
-                                    title="Delete mod"
-                                  >
-                                    <Icon name={toggleBusyVersion === m.version_id ? "sparkles" : "trash"} size={15} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <span className="chip subtle">Managed</span>
-                              )}
+                              <div className="instanceModsActionRow">
+                                <button
+                                  className={`btn subtle instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
+                                  onClick={() => onToggleInstalledMod(inst, m, !m.enabled)}
+                                  disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
+                                  aria-label={
+                                    m.enabled
+                                      ? `${installedContentTypeLabel(m.content_type)} enabled, click to disable`
+                                      : `${installedContentTypeLabel(m.content_type)} disabled, click to enable`
+                                  }
+                                  title={m.enabled ? "Enabled · click to disable" : "Disabled · click to enable"}
+                                >
+                                  <Icon
+                                    name={toggleBusyVersion === m.version_id ? "sparkles" : m.enabled ? "check_circle" : "slash_circle"}
+                                    size={15}
+                                  />
+                                </button>
+                                <button
+                                  className="btn subtle instanceActionIconBtn instanceActionDeleteBtn"
+                                  onClick={() => void onDeleteInstalledMod(inst, m)}
+                                  disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__"}
+                                  aria-label={`Delete ${installedContentTypeLabel(m.content_type)}`}
+                                  title={`Delete ${installedContentTypeLabel(m.content_type)}`}
+                                >
+                                  <Icon name={toggleBusyVersion === m.version_id ? "sparkles" : "trash"} size={15} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         ))}
@@ -14633,6 +14769,55 @@ export default function App() {
             </div>
           </div>
         ) : null}
+        {curseforgeBlockedRecoveryPrompt ? (
+          <div className="noticeBox topStatusBanner statusBanner">
+            <div className="statusBannerMessage">
+              CurseForge blocked automated download for
+              {" "}
+              <strong>{curseforgeBlockedRecoveryPrompt.target.title}</strong>.
+              Open the project page and import the file locally.
+            </div>
+            <div className="statusBannerActions">
+              <button
+                className="btn"
+                onClick={() => void openExternalLink(curseforgeBlockedRecoveryPrompt.projectUrl)}
+              >
+                Open CurseForge page
+              </button>
+              <button
+                className="btn primary"
+                onClick={() => {
+                  const instance = instances.find(
+                    (item) => item.id === curseforgeBlockedRecoveryPrompt.instanceId
+                  );
+                  if (!instance) {
+                    setError("Could not find the target instance for local import.");
+                    return;
+                  }
+                  const contentLabel = localImportTypeLabel(
+                    curseforgeBlockedRecoveryPrompt.contentView
+                  );
+                  setCurseforgeBlockedRecoveryPrompt(null);
+                  setInstallNotice(
+                    `Select the downloaded ${contentLabel} file to import it into ${instance.name}.`
+                  );
+                  void onAddContentFromFile(
+                    instance,
+                    curseforgeBlockedRecoveryPrompt.contentView
+                  );
+                }}
+              >
+                Import local file
+              </button>
+              <button
+                className="btn subtle"
+                onClick={() => setCurseforgeBlockedRecoveryPrompt(null)}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        ) : null}
         {installNotice ? (
           <div className="noticeBox topStatusBanner statusBanner">
             <div className="statusBannerMessage">{installNotice}</div>
@@ -14915,7 +15100,7 @@ export default function App() {
                 })
               }
             >
-              Identify local JARs
+              Identify local files
             </button>
             {preflightReportModal.report.status === "blocked" ? (
               <button

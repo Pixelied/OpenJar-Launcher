@@ -15,7 +15,7 @@ Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
 - [Features](#features)
   - [Discover + Install (Multi-provider)](#discover--install-multi-provider)
   - [Updates + Update Availability (Multi-provider)](#updates--update-availability-multi-provider)
-  - [Installed Mods (Per instance)](#installed-mods-per-instance)
+  - [Installed Content (Per instance)](#installed-content-per-instance)
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
@@ -74,7 +74,7 @@ Screenshots live in `readme-assets/images/` — click any image to view full siz
 - **Multi-provider discovery**: Modrinth + CurseForge
 - **Update availability** + **Update all** + **scheduled checks** across providers/content types
 - **Dependency-aware installs** + per-instance **lockfile** tracking
-- **Per-mod enable/disable** (rename to `.disabled`)
+- **Per-content enable/disable/delete** (mods/resourcepacks/shaderpacks/datapacks)
 - **Config Editor** experience (file browser + editors + helpers)
 - **Snapshots / rollback** tooling (for installed content)
 - **Native launching** + Microsoft account login
@@ -113,6 +113,9 @@ Filters include:
 - Installs are supported through the same lockfile/update model as Modrinth.
 - In local dev, key diagnostics are available in the hidden Dev section (`MPM_DEV_MODE=1`).
 - Release builds are expected to use build-injected key configuration.
+- Some CurseForge files block automated third-party download URL access (`HTTP 403`).
+  - OpenJar now surfaces this as a clear actionable error.
+  - Recovery path: open the CurseForge project page and use **Add from file** for local import.
 
 ---
 
@@ -123,7 +126,7 @@ This feature keeps installed content up to date across **Modrinth + CurseForge**
 What “Refresh / Check” actually does:
 - Looks at tracked content entries currently installed in that instance
 - For each entry, checks for a newer compatible provider version/file
-- Shows you a clear per-mod result like:
+- Shows you a clear per-entry result like:
   - `Sodium 0.5.11 → 0.5.13`
   - `Fabric API 0.97.0 → 0.98.1`
 - Does not change anything until you choose to apply updates
@@ -136,10 +139,10 @@ Per instance (Maintenance card):
 - **Update all** applies updates for tracked entries only
 
 Global Updates page (Update availability dashboard):
-- Shows which **instances** have mod updates available, and **how many**
+- Shows which **instances** have tracked content updates available, and **how many**
 - Shows **last checked** and **next scheduled check**
 - Lets you jump into an instance (“Open instance”) or run a new check (“Recheck”)
-- Adds a sidebar badge when any instance has mod updates waiting
+- Adds a sidebar badge when any instance has updates waiting
 
 Scheduled checks (so you don’t have to remember):
 - Set a **Check cadence**:
@@ -147,7 +150,7 @@ Scheduled checks (so you don’t have to remember):
 - The Updates page shows:
   - **Last run** (last scheduled/manual check)
   - **Next run** (next scheduled check)
-- **Check now** triggers a full mod update check immediately
+- **Check now** triggers a full tracked-content update check immediately
 
 Update-all safety (so updates don’t feel risky):
 - When you hit **Update all**, OpenJar creates a **snapshot first**
@@ -155,9 +158,9 @@ Update-all safety (so updates don’t feel risky):
 - Snapshots cover installed content (mods/packs/datapacks + lockfile), not full world saves (world saves are handled by World Backups)
 
 Optional auto-apply (choose “notify me” vs “do it for me”):
-- Choose what happens when a scheduled check finds mod updates:
-  - **Check only (notify):** OpenJar will show the badge + update list, but you must click **Update all** to actually update the mods.
-  - **Auto-apply updates:** OpenJar will check **and** automatically update the mods for you.
+- Choose what happens when a scheduled check finds updates:
+  - **Check only (notify):** OpenJar shows the badge + update list, and you choose when to apply.
+  - **Auto-apply updates:** OpenJar checks **and** applies updates automatically based on your policy.
 - Choose where auto-apply is allowed:
   - **Only opt-in instances** (instances you’ve explicitly marked as OK to auto-update)
   - **All instances**
@@ -165,19 +168,23 @@ Optional auto-apply (choose “notify me” vs “do it for me”):
   - **Scheduled runs only** (recommended)
   - **Scheduled + “Check now”** (manual checks can also auto-update)
 
-In short: OpenJar tells you exactly which **mods** are outdated, lets you **update all** in one click, can **check on a schedule**, and gives you a snapshot so you can undo if something goes wrong.
+In short: OpenJar tells you exactly which tracked entries are outdated, lets you **update all** in one click, can **check on a schedule**, and gives you a snapshot so you can undo if something goes wrong.
 
 ---
 
-### Installed Mods (Per instance)
+### Installed Content (Per instance)
 
-Keep track of what’s installed, and quickly disable something that’s causing crashes.
+Keep track of what’s installed, and quickly toggle or remove entries when troubleshooting.
 
-- View installed content list (from `lock.json`)
-- Enable/disable mods:
-  - Disabling renames `SomeMod.jar` → `SomeMod.jar.disabled`
-  - Enabling renames it back to `.jar`
-  - (Currently enable/disable is supported for **mods** only.)
+- View installed content list (from `lock.json`) across:
+  - mods
+  - resourcepacks
+  - shaderpacks
+  - datapacks
+- Enable/disable supported content entries:
+  - mods: `SomeMod.jar` ↔ `SomeMod.jar.disabled`
+  - resourcepacks/shaderpacks/datapacks: `<file>` ↔ `<file>.disabled`
+- Delete supported content entries directly from the instance UI.
 - Lockfile tracking (`lock.json` stored inside the instance folder)
   - Stores provider IDs + chosen version + filename + hashes + enabled/disabled state
 
@@ -437,8 +444,13 @@ Import instances from other launchers:
   - plus `options.txt` and `servers.dat`
 
 Other import/export tools:
-- Import a local mod **`.jar`** into an instance (“Add from file”)
-  - OpenJar attempts provider detection for local `.jar` imports:
+- Import local files into an instance (“Add from file”)
+  - Supported local file types:
+    - mods: `.jar`
+    - resourcepacks: `.zip`
+    - datapacks: `.zip`
+    - shaderpacks: `.zip` or `.jar`
+  - OpenJar attempts provider detection for local imports (when hashes/fingerprints match):
     - **Modrinth** by file `sha512`
     - **CurseForge** by file fingerprint
   - When matched, the lock entry is saved with provider/source IDs so update checks and update-all work normally.
@@ -565,6 +577,8 @@ Tauri desktop build:
 ```bash
 npm run tauri:build
 ```
+
+On macOS, this build command produces the `.app` bundle and then creates a `.dmg`.
 
 ### Preview (frontend build)
 

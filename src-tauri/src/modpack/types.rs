@@ -521,6 +521,8 @@ pub struct ImportLocalJarsToLayerArgs {
     pub layer_id: String,
     #[serde(alias = "filePaths")]
     pub file_paths: Vec<String>,
+    #[serde(alias = "contentType", default)]
+    pub content_type: Option<String>,
     #[serde(alias = "autoIdentify", default)]
     pub auto_identify: Option<bool>,
 }

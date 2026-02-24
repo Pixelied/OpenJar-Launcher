@@ -163,6 +163,19 @@ export type LocalResolverResult = {
   warnings: string[];
 };
 
+export type ImportLocalModFileInput = {
+  instanceId: string;
+  filePath: string;
+  contentType?: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string;
+  targetWorlds?: string[];
+};
+
+export type ResolveLocalModSourcesInput = {
+  instanceId: string;
+  mode?: "missing_only" | "all" | string;
+  contentTypes?: Array<"mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string>;
+};
+
 export type LaunchFixAction = {
   id: string;
   kind: "toggle_mod" | "install_dependency" | "open_config" | "rerun_preflight" | string;
@@ -459,6 +472,9 @@ export type FriendLinkInvite = {
   bootstrap_peer_endpoint: string;
   bootstrap_peer_endpoints: string[];
   protocol_version: number;
+  invite_version: number;
+  invite_id?: string | null;
+  max_uses?: number | null;
 };
 
 export type FriendLinkPeer = {
@@ -966,6 +982,14 @@ export type ModpackImportLocalJarsResult = {
   remaining_local_entries: number;
   items: ModpackImportLocalJarItemResult[];
   warnings: string[];
+};
+
+export type ImportLocalJarsToModpackLayerInput = {
+  modpackId: string;
+  layerId: string;
+  filePaths: string[];
+  contentType?: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string;
+  autoIdentify?: boolean;
 };
 
 export type ModpackImportLocalJarItemResult = {

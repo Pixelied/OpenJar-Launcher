@@ -555,16 +555,23 @@ fn detect_provider_from_entry_metadata(
     None
 }
 
-fn is_local_mod_entry(entry: &ModEntry) -> bool {
-    entry.provider.trim().eq_ignore_ascii_case("local")
-        && normalize_content_type(&entry.content_type) == "mods"
+pub(crate) const DATAPACK_ALL_WORLDS_SENTINEL: &str = "__all_worlds__";
+
+fn is_local_content_entry(entry: &ModEntry) -> bool {
+    if !entry.provider.trim().eq_ignore_ascii_case("local") {
+        return false;
+    }
+    matches!(
+        normalize_content_type(&entry.content_type).as_str(),
+        "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+    )
 }
 
 fn count_remaining_local_entries(spec: &ModpackSpec) -> usize {
     spec.layers
         .iter()
         .flat_map(|layer| layer.entries_delta.add.iter())
-        .filter(|entry| is_local_mod_entry(entry))
+        .filter(|entry| is_local_content_entry(entry))
         .count()
 }
 
@@ -639,6 +646,7 @@ fn dedupe_basis_for_entry(entry: &ModEntry) -> String {
 }
 
 fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(usize, String)> {
+    let target_content_type = normalize_content_type(&entry.content_type);
     let key = entry_key_for(entry);
     if let Some(idx) = entries
         .iter()
@@ -654,11 +662,12 @@ fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(us
         .filter(|value| !value.is_empty())
     {
         if let Some(idx) = entries.iter().position(|current| {
-            current
-                .local_sha512
-                .as_ref()
-                .map(|value| value.trim().eq_ignore_ascii_case(sha512))
-                .unwrap_or(false)
+            normalize_content_type(&current.content_type) == target_content_type
+                && current
+                    .local_sha512
+                    .as_ref()
+                    .map(|value| value.trim().eq_ignore_ascii_case(sha512))
+                    .unwrap_or(false)
         }) {
             return Some((idx, "local_sha512".to_string()));
         }
@@ -671,11 +680,12 @@ fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(us
         .filter(|value| !value.is_empty())
     {
         if let Some(idx) = entries.iter().position(|current| {
-            current
-                .local_file_name
-                .as_ref()
-                .map(|value| value.trim().to_ascii_lowercase() == file_name)
-                .unwrap_or(false)
+            normalize_content_type(&current.content_type) == target_content_type
+                && current
+                    .local_file_name
+                    .as_ref()
+                    .map(|value| value.trim().to_ascii_lowercase() == file_name)
+                    .unwrap_or(false)
         }) {
             return Some((idx, "filename".to_string()));
         }
@@ -684,12 +694,32 @@ fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(us
     None
 }
 
-fn preprocess_local_jar_task(
+fn local_import_extension_allowed(content_type: &str, ext: &str) -> bool {
+    match normalize_content_type(content_type).as_str() {
+        "mods" => ext == "jar",
+        "resourcepacks" | "datapacks" => ext == "zip",
+        "shaderpacks" => ext == "zip" || ext == "jar",
+        _ => false,
+    }
+}
+
+fn local_import_extension_hint(content_type: &str) -> &'static str {
+    match normalize_content_type(content_type).as_str() {
+        "mods" => ".jar",
+        "resourcepacks" | "datapacks" => ".zip",
+        "shaderpacks" => ".zip or .jar",
+        _ => "supported archive",
+    }
+}
+
+fn preprocess_local_content_task(
     index: usize,
     path_text: String,
+    content_type: &str,
     auto_identify: bool,
     client: Option<&Client>,
 ) -> PreparedLocalImportOutcome {
+    let normalized_content_type = normalize_content_type(content_type);
     let trimmed = path_text.trim().to_string();
     if trimmed.is_empty() {
         return PreparedLocalImportOutcome::Skipped {
@@ -721,7 +751,7 @@ fn preprocess_local_jar_task(
         .and_then(|value| value.to_str())
         .map(|value| value.to_ascii_lowercase())
         .unwrap_or_default();
-    if ext != "jar" {
+    if !local_import_extension_allowed(&normalized_content_type, &ext) {
         return PreparedLocalImportOutcome::Skipped {
             index,
             path: trimmed.clone(),
@@ -731,14 +761,18 @@ fn preprocess_local_jar_task(
                 .unwrap_or("unknown")
                 .to_string(),
             status: "skipped".to_string(),
-            message: "Only .jar files are supported.".to_string(),
+            message: format!(
+                "Only {} files are supported for {} local imports.",
+                local_import_extension_hint(&normalized_content_type),
+                normalized_content_type
+            ),
         };
     }
 
     let file_name_raw = path
         .file_name()
         .and_then(|value| value.to_str())
-        .unwrap_or("local-mod.jar");
+        .unwrap_or("local-file");
     let safe_file_name = crate::sanitize_filename(file_name_raw);
     if safe_file_name.trim().is_empty() {
         return PreparedLocalImportOutcome::Skipped {
@@ -769,7 +803,12 @@ fn preprocess_local_jar_task(
     let detected = if auto_identify {
         client
             .and_then(|http| {
-                crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true)
+                crate::detect_provider_for_local_mod(
+                    http,
+                    &bytes,
+                    &safe_file_name,
+                    normalized_content_type == "mods",
+                )
             })
             .map(provider_resolution_from_import)
     } else {
@@ -785,9 +824,15 @@ fn preprocess_local_jar_task(
         project_id: detected
             .as_ref()
             .map(|value| value.project_id.clone())
-            .unwrap_or_else(|| format!("local:{}", safe_file_name.to_ascii_lowercase())),
+            .unwrap_or_else(|| {
+                format!(
+                    "local:{}:{}",
+                    normalized_content_type,
+                    safe_file_name.to_ascii_lowercase()
+                )
+            }),
         slug: Some(display_name.clone()),
-        content_type: "mods".to_string(),
+        content_type: normalized_content_type.clone(),
         required: true,
         pin: detected.as_ref().map(|value| value.version_id.clone()),
         channel_policy: "stable".to_string(),
@@ -802,8 +847,16 @@ fn preprocess_local_jar_task(
         ),
         disabled_by_default: false,
         optional: false,
-        target_scope: "instance".to_string(),
-        target_worlds: vec![],
+        target_scope: if normalized_content_type == "datapacks" {
+            "world".to_string()
+        } else {
+            "instance".to_string()
+        },
+        target_worlds: if normalized_content_type == "datapacks" {
+            vec![DATAPACK_ALL_WORLDS_SENTINEL.to_string()]
+        } else {
+            vec![]
+        },
         local_file_name: Some(safe_file_name.clone()),
         local_file_path: Some(path.display().to_string()),
         local_sha512: Some(sha512),
@@ -862,7 +915,14 @@ pub fn import_local_jars_to_modpack_layer(
     args: ImportLocalJarsToLayerArgs,
 ) -> Result<ModpackImportLocalJarsResult, String> {
     if args.file_paths.is_empty() {
-        return Err("Pick at least one .jar file.".to_string());
+        return Err("Pick at least one local file.".to_string());
+    }
+    let content_type = normalize_content_type(args.content_type.as_deref().unwrap_or("mods"));
+    if !matches!(
+        content_type.as_str(),
+        "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+    ) {
+        return Err("Unsupported content type for local import.".to_string());
     }
 
     let mut store = read_store(&app)?;
@@ -875,7 +935,7 @@ pub fn import_local_jars_to_modpack_layer(
         .ok_or_else(|| "Layer not found".to_string())?;
 
     if spec.layers[layer_idx].is_frozen {
-        return Err("Layer is frozen. Unfreeze before adding local jars.".to_string());
+        return Err("Layer is frozen. Unfreeze before adding local files.".to_string());
     }
 
     let auto_identify = args.auto_identify.unwrap_or(false);
@@ -906,6 +966,7 @@ pub fn import_local_jars_to_modpack_layer(
     for _ in 0..worker_count {
         let queue_ref = Arc::clone(&queue);
         let tx_ref = tx.clone();
+        let worker_content_type = content_type.clone();
         thread::spawn(move || {
             let client = if auto_identify {
                 crate::build_http_client().ok()
@@ -922,8 +983,13 @@ pub fn import_local_jars_to_modpack_layer(
                 let Some((index, path_text)) = next else {
                     break;
                 };
-                let outcome =
-                    preprocess_local_jar_task(index, path_text, auto_identify, client.as_ref());
+                let outcome = preprocess_local_content_task(
+                    index,
+                    path_text,
+                    &worker_content_type,
+                    auto_identify,
+                    client.as_ref(),
+                );
                 let _ = tx_ref.send(outcome);
             }
         });
@@ -1086,7 +1152,7 @@ pub fn import_local_jars_to_modpack_layer(
     }
 
     if added_entries == 0 && updated_entries == 0 {
-        return Err("No local jars were imported.".to_string());
+        return Err("No local files were imported.".to_string());
     }
 
     spec.updated_at = crate::now_iso();
@@ -1137,7 +1203,11 @@ pub fn resolve_local_modpack_entries(
         }
 
         for entry in &mut layer.entries_delta.add {
-            if normalize_content_type(&entry.content_type) != "mods" {
+            let entry_content_type = normalize_content_type(&entry.content_type);
+            if !matches!(
+                entry_content_type.as_str(),
+                "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+            ) {
                 continue;
             }
             let provider = entry.provider.trim().to_ascii_lowercase();
@@ -1167,7 +1237,7 @@ pub fn resolve_local_modpack_entries(
             }
             if provider == "local" && !has_local_metadata {
                 warnings.push(format!(
-                    "Skipped '{}': no local jar metadata. Re-add from computer first.",
+                    "Skipped '{}': no local file metadata. Re-add from computer first.",
                     entry.project_id
                 ));
                 continue;
@@ -1204,7 +1274,7 @@ pub fn resolve_local_modpack_entries(
                                 &client,
                                 &bytes,
                                 &refreshed_name,
-                                true,
+                                entry_content_type == "mods",
                             )
                             .map(provider_resolution_from_import);
                         }
@@ -1214,7 +1284,7 @@ pub fn resolve_local_modpack_entries(
                     }
                 } else {
                     warnings.push(format!(
-                        "Local jar path missing for '{}': {}",
+                        "Local file path missing for '{}': {}",
                         entry.project_id, path_text
                     ));
                 }

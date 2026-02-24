@@ -150,6 +150,8 @@ export default function InstanceModpackCard({
   const [invitePreview, setInvitePreview] = useState<string | null>(null);
   const [friendAllowLoopback, setFriendAllowLoopback] = useState(false);
   const [friendAllowInternet, setFriendAllowInternet] = useState(false);
+  const [friendAllowUpnp, setFriendAllowUpnp] = useState(false);
+  const [friendPublicEndpointOverride, setFriendPublicEndpointOverride] = useState("");
   const [friendConflicts, setFriendConflicts] = useState<FriendLinkReconcileResult | null>(null);
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -185,6 +187,8 @@ export default function InstanceModpackCard({
     setSyncDatapacksEnabled(true);
     setFriendAllowLoopback(isDevMode);
     setFriendAllowInternet(false);
+    setFriendAllowUpnp(false);
+    setFriendPublicEndpointOverride("");
     setPeerAliasDrafts({});
     setPeerAliasSavingId(null);
     lastDriftSignatureRef.current = "";
@@ -196,6 +200,12 @@ export default function InstanceModpackCard({
       setFriendAllowLoopback(false);
     }
   }, [isDevMode, friendAllowLoopback]);
+
+  useEffect(() => {
+    if (!friendAllowInternet && friendAllowUpnp) {
+      setFriendAllowUpnp(false);
+    }
+  }, [friendAllowInternet, friendAllowUpnp]);
 
   useEffect(() => {
     if (!friendStatus?.linked) {
@@ -1367,9 +1377,32 @@ export default function InstanceModpackCard({
                   onChange={(event) => setFriendAllowInternet(event.target.checked)}
                 />
                 <span className="muted" style={{ fontSize: 12 }}>
-                  Enable internet endpoints for cross-network syncing (trusted peers only).
+                  Internet mode allows cross-network peers and opens inbound listener scope. Use only with trusted invites.
                 </span>
               </label>
+              <label className="row" style={{ alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={friendAllowUpnp}
+                  disabled={!friendAllowInternet}
+                  onChange={(event) => setFriendAllowUpnp(event.target.checked)}
+                />
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Optionally enable UPnP port mapping (separate consent). Leave off for stricter safety.
+                </span>
+              </label>
+              <div>
+                <input
+                  className="input"
+                  value={friendPublicEndpointOverride}
+                  onChange={(event) => setFriendPublicEndpointOverride(event.target.value)}
+                  placeholder="Optional public endpoint override (example: 203.0.113.15:45555)"
+                  title="Optional explicit public host:port to advertise in invites when internet mode is enabled."
+                />
+                <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  Prefer an explicit public endpoint if UPnP is unavailable. Discovery is intentionally off by default.
+                </div>
+              </div>
             </div>
             <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
               <button
@@ -1383,6 +1416,8 @@ export default function InstanceModpackCard({
                       instanceId: instance.id,
                       allowLoopback: isDevMode ? friendAllowLoopback : false,
                       allowInternet: friendAllowInternet,
+                      allowUpnp: friendAllowInternet ? friendAllowUpnp : false,
+                      publicEndpointOverride: friendPublicEndpointOverride.trim() || undefined,
                     });
                     setInvitePreview(invite.invite_code);
                     setGuardrailsDirty(false);
@@ -1425,6 +1460,8 @@ export default function InstanceModpackCard({
                       inviteCode: inviteCode.trim(),
                       allowLoopback: isDevMode ? friendAllowLoopback : false,
                       allowInternet: friendAllowInternet,
+                      allowUpnp: friendAllowInternet ? friendAllowUpnp : false,
+                      publicEndpointOverride: friendPublicEndpointOverride.trim() || undefined,
                     });
                     const firstSync = await reconcileFriendLink({ instanceId: instance.id, mode: "manual" });
                     if (firstSync.status === "conflicted") {

@@ -144,7 +144,16 @@ fn apply_single_resolved(
     };
 
     let target_worlds = if content_type == "datapacks" {
-        crate::normalize_target_worlds_for_datapack(instance_dir, &item.target_worlds)?
+        let requested_worlds = if item
+            .target_worlds
+            .iter()
+            .any(|world| world == crate::modpack::DATAPACK_ALL_WORLDS_SENTINEL)
+        {
+            crate::list_instance_world_names(instance_dir)?
+        } else {
+            item.target_worlds.clone()
+        };
+        crate::normalize_target_worlds_for_datapack(instance_dir, &requested_worlds)?
     } else {
         vec![]
     };

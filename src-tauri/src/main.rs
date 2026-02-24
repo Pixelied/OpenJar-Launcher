@@ -27,7 +27,7 @@ use zip::ZipArchive;
 mod friend_link;
 mod modpack;
 
-const USER_AGENT: &str = "ModpackManager/0.1.1 (Tauri)";
+const USER_AGENT: &str = "ModpackManager/0.1.6 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
 const KEYRING_SELECTED_REFRESH_ALIAS: &str = "msa_refresh_selected";
 const LEGACY_KEYRING_SERVICES: [&str; 4] = [
@@ -520,6 +520,10 @@ struct ImportLocalModFileArgs {
     instance_id: String,
     #[serde(alias = "filePath")]
     file_path: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(alias = "targetWorlds", default)]
+    target_worlds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -558,6 +562,8 @@ struct ResolveLocalModSourcesArgs {
     instance_id: String,
     #[serde(default)]
     mode: Option<String>, // missing_only | all
+    #[serde(alias = "contentTypes", default)]
+    content_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2146,6 +2152,16 @@ fn normalize_lock_content_type(input: &str) -> String {
     }
 }
 
+fn content_type_display_name(content_type: &str) -> &'static str {
+    match normalize_lock_content_type(content_type).as_str() {
+        "resourcepacks" => "resourcepack",
+        "shaderpacks" => "shaderpack",
+        "datapacks" => "datapack",
+        "modpacks" => "modpack",
+        _ => "mod",
+    }
+}
+
 fn normalize_target_scope(input: &str) -> String {
     match input.trim().to_lowercase().as_str() {
         "world" => "world".to_string(),
@@ -3713,11 +3729,105 @@ fn mod_paths(instance_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
     (enabled, disabled)
 }
 
+fn content_paths_for_type(
+    instance_dir: &Path,
+    content_type: &str,
+    filename: &str,
+) -> (PathBuf, PathBuf) {
+    let dir = content_dir_for_type(instance_dir, content_type);
+    let enabled = dir.join(filename);
+    let disabled = dir.join(format!("{filename}.disabled"));
+    (enabled, disabled)
+}
+
+fn datapack_world_paths(instance_dir: &Path, world: &str, filename: &str) -> (PathBuf, PathBuf) {
+    let dir = instance_dir.join("saves").join(world).join("datapacks");
+    let enabled = dir.join(filename);
+    let disabled = dir.join(format!("{filename}.disabled"));
+    (enabled, disabled)
+}
+
 fn content_dir_for_type(instance_dir: &Path, content_type: &str) -> PathBuf {
     match normalize_lock_content_type(content_type).as_str() {
         "resourcepacks" => instance_dir.join("resourcepacks"),
         "shaderpacks" => instance_dir.join("shaderpacks"),
         _ => instance_dir.join("mods"),
+    }
+}
+
+fn supported_local_content_types() -> &'static [&'static str] {
+    &["mods", "resourcepacks", "shaderpacks", "datapacks"]
+}
+
+fn is_supported_local_content_type(content_type: &str) -> bool {
+    matches!(
+        normalize_lock_content_type(content_type).as_str(),
+        "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+    )
+}
+
+fn local_file_extension_allowed(content_type: &str, ext: &str) -> bool {
+    let normalized = normalize_lock_content_type(content_type);
+    let ext_lc = ext.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "mods" => ext_lc == "jar",
+        "resourcepacks" | "datapacks" => ext_lc == "zip",
+        "shaderpacks" => ext_lc == "zip" || ext_lc == "jar",
+        _ => false,
+    }
+}
+
+fn local_file_extension_hint(content_type: &str) -> &'static str {
+    match normalize_lock_content_type(content_type).as_str() {
+        "mods" => ".jar",
+        "resourcepacks" | "datapacks" => ".zip",
+        "shaderpacks" => ".zip or .jar",
+        _ => "supported archive",
+    }
+}
+
+fn local_entry_file_read_path(
+    instance_dir: &Path,
+    entry: &LockEntry,
+) -> Result<Option<PathBuf>, String> {
+    let content_type = normalize_lock_content_type(&entry.content_type);
+    match content_type.as_str() {
+        "mods" => {
+            let (enabled_path, disabled_path) = mod_paths(instance_dir, &entry.filename);
+            if enabled_path.exists() {
+                Ok(Some(enabled_path))
+            } else if disabled_path.exists() {
+                Ok(Some(disabled_path))
+            } else {
+                Ok(None)
+            }
+        }
+        "resourcepacks" | "shaderpacks" => {
+            let path = content_dir_for_type(instance_dir, &content_type).join(&entry.filename);
+            if path.exists() {
+                Ok(Some(path))
+            } else {
+                Ok(None)
+            }
+        }
+        "datapacks" => {
+            let mut worlds = entry.target_worlds.clone();
+            if worlds.is_empty() {
+                worlds = list_instance_world_names(instance_dir)?;
+            }
+            for world in worlds {
+                let path = instance_dir
+                    .join("saves")
+                    .join(world)
+                    .join("datapacks")
+                    .join(&entry.filename);
+                if path.exists() {
+                    return Ok(Some(path));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }
 
@@ -3732,20 +3842,26 @@ fn entry_file_exists(instance_dir: &Path, entry: &LockEntry) -> bool {
             }
         }
         "resourcepacks" | "shaderpacks" => {
-            let dir = content_dir_for_type(instance_dir, &entry.content_type);
-            dir.join(&entry.filename).exists()
+            let (enabled_path, disabled_path) =
+                content_paths_for_type(instance_dir, &entry.content_type, &entry.filename);
+            if entry.enabled {
+                enabled_path.exists() || disabled_path.exists()
+            } else {
+                disabled_path.exists() || enabled_path.exists()
+            }
         }
         "datapacks" => {
             if entry.target_worlds.is_empty() {
                 return false;
             }
             entry.target_worlds.iter().all(|world| {
-                let path = instance_dir
-                    .join("saves")
-                    .join(world)
-                    .join("datapacks")
-                    .join(&entry.filename);
-                path.exists()
+                let (enabled_path, disabled_path) =
+                    datapack_world_paths(instance_dir, world, &entry.filename);
+                if entry.enabled {
+                    enabled_path.exists() || disabled_path.exists()
+                } else {
+                    disabled_path.exists() || enabled_path.exists()
+                }
             })
         }
         _ => {
@@ -6403,23 +6519,40 @@ fn remove_replaced_entries_for_content(
                 }
             }
             "resourcepacks" | "shaderpacks" => {
-                let dir = content_dir_for_type(instance_dir, &normalized);
-                let file = dir.join(&old.filename);
-                if file.exists() {
-                    fs::remove_file(&file)
-                        .map_err(|e| format!("remove old file '{}' failed: {e}", file.display()))?;
+                let (enabled_path, disabled_path) =
+                    content_paths_for_type(instance_dir, &normalized, &old.filename);
+                if enabled_path.exists() {
+                    fs::remove_file(&enabled_path).map_err(|e| {
+                        format!("remove old file '{}' failed: {e}", enabled_path.display())
+                    })?;
+                }
+                if disabled_path.exists() {
+                    fs::remove_file(&disabled_path).map_err(|e| {
+                        format!(
+                            "remove old disabled file '{}' failed: {e}",
+                            disabled_path.display()
+                        )
+                    })?;
                 }
             }
             "datapacks" => {
                 for world in old.target_worlds {
-                    let file = instance_dir
-                        .join("saves")
-                        .join(world)
-                        .join("datapacks")
-                        .join(&old.filename);
-                    if file.exists() {
-                        fs::remove_file(&file).map_err(|e| {
-                            format!("remove old datapack '{}' failed: {e}", file.display())
+                    let (enabled_path, disabled_path) =
+                        datapack_world_paths(instance_dir, &world, &old.filename);
+                    if enabled_path.exists() {
+                        fs::remove_file(&enabled_path).map_err(|e| {
+                            format!(
+                                "remove old datapack '{}' failed: {e}",
+                                enabled_path.display()
+                            )
+                        })?;
+                    }
+                    if disabled_path.exists() {
+                        fs::remove_file(&disabled_path).map_err(|e| {
+                            format!(
+                                "remove old disabled datapack '{}' failed: {e}",
+                                disabled_path.display()
+                            )
                         })?;
                     }
                 }
@@ -6545,7 +6678,8 @@ fn check_single_content_update_entry(
         let mod_id = parse_curseforge_project_id(&entry.project_id)?;
         let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
         files.retain(|f| {
-            !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+            !f.file_name.trim().is_empty()
+                && file_looks_compatible_with_instance(f, instance, &content_type)
         });
         files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         let Some(latest) = files.into_iter().next() else {
@@ -7170,7 +7304,7 @@ fn try_fast_install_content_update(
         if latest_file_name.is_none() || download_url.is_none() || latest_hashes.is_empty() {
             let file = fetch_curseforge_file(client, api_key, mod_id, latest_file_id)?;
             if file.file_name.trim().is_empty()
-                || !file_looks_compatible_with_instance(&file, instance)
+                || !file_looks_compatible_with_instance(&file, instance, &normalized)
             {
                 return Ok(None);
             }
@@ -7444,7 +7578,8 @@ fn resolve_curseforge_dependency_chain(
         ordered.push(mod_id);
         let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
         files.retain(|f| {
-            !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+            !f.file_name.trim().is_empty()
+                && file_looks_compatible_with_instance(f, instance, "mods")
         });
         files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         let Some(file) = files.into_iter().next() else {
@@ -7495,7 +7630,64 @@ fn discover_content_type_from_curseforge_class_id(
     }
 }
 
-fn file_looks_compatible_with_instance(file: &CurseforgeFile, instance: &Instance) -> bool {
+fn parse_mc_version_parts_loose(input: &str) -> Option<(u32, u32, Option<u32>)> {
+    let mut numbers = Vec::new();
+    for token in input.split(|c: char| !c.is_ascii_digit()) {
+        if token.is_empty() {
+            continue;
+        }
+        if let Ok(value) = token.parse::<u32>() {
+            numbers.push(value);
+            if numbers.len() >= 3 {
+                break;
+            }
+        }
+    }
+    if numbers.len() < 2 {
+        return None;
+    }
+    let patch = if numbers.len() >= 3 {
+        Some(numbers[2])
+    } else {
+        None
+    };
+    Some((numbers[0], numbers[1], patch))
+}
+
+fn minecraft_version_matches_advertised(
+    advertised: &str,
+    target: &str,
+    allow_patch_fallback: bool,
+) -> bool {
+    let advertised_trimmed = advertised.trim().to_ascii_lowercase();
+    let target_trimmed = target.trim().to_ascii_lowercase();
+    if advertised_trimmed.is_empty() || target_trimmed.is_empty() {
+        return false;
+    }
+    if advertised_trimmed == target_trimmed {
+        return true;
+    }
+    if !allow_patch_fallback {
+        return false;
+    }
+
+    let Some((adv_major, adv_minor, _)) = parse_mc_version_parts_loose(&advertised_trimmed) else {
+        return false;
+    };
+    let Some((target_major, target_minor, _)) = parse_mc_version_parts_loose(&target_trimmed)
+    else {
+        return false;
+    };
+
+    adv_major == target_major && adv_minor == target_minor
+}
+
+fn file_looks_compatible_with_instance(
+    file: &CurseforgeFile,
+    instance: &Instance,
+    content_type: &str,
+) -> bool {
+    let normalized = normalize_lock_content_type(content_type);
     let values: Vec<String> = file
         .game_versions
         .iter()
@@ -7506,11 +7698,14 @@ fn file_looks_compatible_with_instance(file: &CurseforgeFile, instance: &Instanc
     if values.is_empty() {
         return false;
     }
-    if !values
-        .iter()
-        .any(|v| v == &instance.mc_version.to_lowercase())
-    {
+    let target_mc = instance.mc_version.to_lowercase();
+    if !values.iter().any(|v| {
+        minecraft_version_matches_advertised(v, &target_mc, normalized != "mods")
+    }) {
         return false;
+    }
+    if normalized != "mods" {
+        return true;
     }
 
     let has_loader_tokens = values.iter().any(|v| {
@@ -7534,24 +7729,19 @@ fn pick_compatible_version_for_content(
     content_type: &str,
 ) -> Option<ModrinthVersion> {
     let normalized = normalize_lock_content_type(content_type);
+    let target_mc = instance.mc_version.to_lowercase();
     let mut compatible: Vec<ModrinthVersion> = versions
         .into_iter()
-        .filter(|v| v.game_versions.iter().any(|gv| gv == &instance.mc_version))
+        .filter(|v| {
+            v.game_versions
+                .iter()
+                .any(|gv| minecraft_version_matches_advertised(gv, &target_mc, normalized != "mods"))
+        })
         .filter(|v| {
             if normalized == "mods" {
                 return v.loaders.iter().any(|l| l == &instance.loader);
             }
-            if v.loaders.is_empty() {
-                return true;
-            }
-            v.loaders.iter().any(|l| {
-                let lc = l.trim().to_lowercase();
-                lc == instance.loader
-                    || lc == "minecraft"
-                    || lc == "datapack"
-                    || lc == "resourcepack"
-                    || lc == "shader"
-            })
+            true
         })
         .collect();
     compatible.sort_by(|a, b| b.date_published.cmp(&a.date_published));
@@ -7669,10 +7859,19 @@ fn install_modrinth_content_inner(
     let versions = fetch_project_versions(client, project_id)?;
     let version =
         pick_compatible_version_for_content(versions, instance, &normalized).ok_or_else(|| {
-            format!(
-                "No compatible Modrinth version found for {} ({} + {})",
-                project_id, instance.loader, instance.mc_version
-            )
+            if normalized == "mods" {
+                format!(
+                    "No compatible Modrinth version found for {} ({} + {})",
+                    project_id, instance.loader, instance.mc_version
+                )
+            } else {
+                format!(
+                    "No compatible Modrinth {} version found for {} (Minecraft {})",
+                    content_type_display_name(&normalized),
+                    project_id,
+                    instance.mc_version
+                )
+            }
         })?;
     let file = version
         .files
@@ -7763,14 +7962,23 @@ fn install_curseforge_content_inner(
     let project = fetch_curseforge_project(client, api_key, mod_id)?;
     let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
     files.retain(|f| {
-        !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+        !f.file_name.trim().is_empty()
+            && file_looks_compatible_with_instance(f, instance, &normalized)
     });
     files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
     let file = files.into_iter().next().ok_or_else(|| {
-        format!(
-            "No compatible CurseForge file found for {} + {}",
-            instance.loader, instance.mc_version
-        )
+        if normalized == "mods" {
+            format!(
+                "No compatible CurseForge file found for {} + {}",
+                instance.loader, instance.mc_version
+            )
+        } else {
+            format!(
+                "No compatible CurseForge {} file found for Minecraft {}",
+                content_type_display_name(&normalized),
+                instance.mc_version
+            )
+        }
     })?;
 
     let safe_filename = sanitize_filename(&file.file_name);
@@ -8396,26 +8604,48 @@ fn resolve_curseforge_file_download_url(
         "{}/mods/{}/files/{}/download-url",
         CURSEFORGE_API_BASE, mod_id, file.id
     );
-    let resp = client
+    let response = client
         .get(&fallback)
         .header("Accept", "application/json")
         .header("x-api-key", api_key)
         .send()
-        .map_err(|e| format!("CurseForge download-url lookup failed: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!(
+        .map_err(|e| format!("CurseForge download-url lookup failed: {e}"));
+
+    let prior_error = match response {
+        Ok(resp) if resp.status().is_success() => {
+            let payload = resp
+                .json::<CurseforgeDownloadUrlResponse>()
+                .map_err(|e| format!("parse CurseForge download-url response failed: {e}"))?;
+            let url = payload.data.trim().to_string();
+            if !url.is_empty() {
+                return Ok(url);
+            }
+            "CurseForge file has no download url".to_string()
+        }
+        Ok(resp) if resp.status() == reqwest::StatusCode::FORBIDDEN => {
+            return Err(
+                "CurseForge blocked automated download URL access for this file (HTTP 403). \
+This file may disallow third-party downloads. Try another file/provider or import the file manually."
+                    .to_string(),
+            );
+        }
+        Ok(resp) => format!(
             "CurseForge download-url lookup failed with status {}",
             resp.status()
-        ));
+        ),
+        Err(err) => err,
+    };
+
+    if let Ok(fresh_file) = fetch_curseforge_file(client, api_key, mod_id, file.id) {
+        if let Some(url) = fresh_file.download_url.as_ref() {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
     }
-    let payload = resp
-        .json::<CurseforgeDownloadUrlResponse>()
-        .map_err(|e| format!("parse CurseForge download-url response failed: {e}"))?;
-    let url = payload.data.trim().to_string();
-    if url.is_empty() {
-        return Err("CurseForge file has no download url".to_string());
-    }
-    Ok(url)
+
+    Err(prior_error)
 }
 
 fn sort_discover_hits(hits: &mut [DiscoverSearchHit], index: &str) {
@@ -11027,10 +11257,44 @@ fn install_discover_content_inner(
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let client = build_http_client()?;
+    let content_label = content_type_display_name(&content_type);
+    let source_label = if source == "curseforge" {
+        "CurseForge"
+    } else {
+        "Modrinth"
+    };
+
+    emit_install_progress(
+        &app,
+        InstallProgressEvent {
+            instance_id: args.instance_id.clone(),
+            project_id: args.project_id.clone(),
+            stage: "resolving".to_string(),
+            downloaded: 0,
+            total: Some(1),
+            percent: Some(0.0),
+            message: Some(format!(
+                "Resolving compatible {source_label} {content_label} file…"
+            )),
+        },
+    );
 
     if let Some(reason) = snapshot_reason {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
     }
+
+    emit_install_progress(
+        &app,
+        InstallProgressEvent {
+            instance_id: args.instance_id.clone(),
+            project_id: args.project_id.clone(),
+            stage: "downloading".to_string(),
+            downloaded: 0,
+            total: Some(1),
+            percent: Some(35.0),
+            message: Some(format!("Downloading {source_label} {content_label}…")),
+        },
+    );
 
     let new_entry = if source == "curseforge" {
         let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
@@ -11061,6 +11325,21 @@ fn install_discover_content_inner(
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    emit_install_progress(
+        &app,
+        InstallProgressEvent {
+            instance_id: args.instance_id.clone(),
+            project_id: args.project_id.clone(),
+            stage: "completed".to_string(),
+            downloaded: 1,
+            total: Some(1),
+            percent: Some(100.0),
+            message: Some(format!(
+                "{} {} install complete",
+                source_label, content_label
+            )),
+        },
+    );
     Ok(lock_entry_to_installed(&instance_dir, &new_entry))
 }
 
@@ -12562,8 +12841,11 @@ fn import_local_mod_file_inner(
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
-    let mods_dir = instance_dir.join("mods");
-    fs::create_dir_all(&mods_dir).map_err(|e| format!("mkdir mods failed: {e}"))?;
+    let normalized_content_type =
+        normalize_lock_content_type(args.content_type.as_deref().unwrap_or("mods"));
+    if !is_supported_local_content_type(&normalized_content_type) {
+        return Err("Unsupported content type for local import".to_string());
+    }
 
     let source_path = PathBuf::from(&args.file_path);
     if !source_path.exists() || !source_path.is_file() {
@@ -12574,8 +12856,12 @@ fn import_local_mod_file_inner(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    if ext != "jar" {
-        return Err("Only .jar files are supported".into());
+    if !local_file_extension_allowed(&normalized_content_type, &ext) {
+        return Err(format!(
+            "Only {} files are supported for local {} import",
+            local_file_extension_hint(&normalized_content_type),
+            content_type_display_name(&normalized_content_type)
+        ));
     }
 
     let source_name = source_path
@@ -12587,16 +12873,36 @@ fn import_local_mod_file_inner(
         return Err("Invalid file name".into());
     }
 
-    let dest_path = mods_dir.join(&safe_filename);
-    let disabled_path = mods_dir.join(format!("{safe_filename}.disabled"));
-    if dest_path.exists() {
-        fs::remove_file(&dest_path).map_err(|e| format!("replace existing mod failed: {e}"))?;
+    let file_bytes = fs::read(&source_path).map_err(|e| format!("read file failed: {e}"))?;
+    if normalized_content_type == "mods" {
+        let mods_dir = instance_dir.join("mods");
+        fs::create_dir_all(&mods_dir).map_err(|e| format!("mkdir mods failed: {e}"))?;
+        let disabled_path = mods_dir.join(format!("{safe_filename}.disabled"));
+        if disabled_path.exists() {
+            fs::remove_file(&disabled_path)
+                .map_err(|e| format!("cleanup disabled mod failed: {e}"))?;
+        }
     }
-    if disabled_path.exists() {
-        fs::remove_file(&disabled_path).map_err(|e| format!("cleanup disabled mod failed: {e}"))?;
-    }
-    let file_bytes = fs::read(&source_path).map_err(|e| format!("read mod file failed: {e}"))?;
-    fs::write(&dest_path, &file_bytes).map_err(|e| format!("copy mod file failed: {e}"))?;
+
+    let worlds = if normalized_content_type == "datapacks" {
+        let requested = if let Some(target_worlds) =
+            args.target_worlds.clone().filter(|list| !list.is_empty())
+        {
+            target_worlds
+        } else {
+            list_instance_world_names(&instance_dir)?
+        };
+        normalize_target_worlds_for_datapack(&instance_dir, &requested)?
+    } else {
+        vec![]
+    };
+    write_download_to_content_targets(
+        &instance_dir,
+        &normalized_content_type,
+        &safe_filename,
+        &worlds,
+        &file_bytes,
+    )?;
 
     let detected_provider = Client::builder()
         .user_agent(USER_AGENT)
@@ -12605,14 +12911,27 @@ fn import_local_mod_file_inner(
         .build()
         .ok()
         .and_then(|client| {
-            detect_provider_for_local_mod(&client, &file_bytes, &safe_filename, false)
+            detect_provider_for_local_mod(
+                &client,
+                &file_bytes,
+                &safe_filename,
+                normalized_content_type == "mods",
+            )
         });
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
-    lock.entries.retain(|e| e.filename != safe_filename);
+    lock.entries.retain(|e| {
+        !(e.filename == safe_filename
+            && normalize_lock_content_type(&e.content_type) == normalized_content_type)
+    });
 
     if let Some(found) = detected_provider.as_ref() {
-        remove_replaced_entries_for_content(&mut lock, &instance_dir, &found.project_id, "mods")?;
+        remove_replaced_entries_for_content(
+            &mut lock,
+            &instance_dir,
+            &found.project_id,
+            &normalized_content_type,
+        )?;
     }
 
     let new_entry = if let Some(found) = detected_provider {
@@ -12623,15 +12942,23 @@ fn import_local_mod_file_inner(
             name: found.name,
             version_number: found.version_number,
             filename: safe_filename.clone(),
-            content_type: "mods".to_string(),
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
+            content_type: normalized_content_type.clone(),
+            target_scope: if normalized_content_type == "datapacks" {
+                "world".to_string()
+            } else {
+                "instance".to_string()
+            },
+            target_worlds: worlds.clone(),
             pinned_version: None,
             enabled: true,
             hashes: found.hashes,
         }
     } else {
-        let project_id = format!("local:{}", safe_filename.to_lowercase());
+        let project_id = format!(
+            "local:{}:{}",
+            normalized_content_type,
+            safe_filename.to_lowercase()
+        );
         LockEntry {
             source: "local".into(),
             project_id,
@@ -12639,9 +12966,13 @@ fn import_local_mod_file_inner(
             name: infer_local_name(&safe_filename),
             version_number: "local-file".into(),
             filename: safe_filename.clone(),
-            content_type: "mods".to_string(),
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
+            content_type: normalized_content_type.clone(),
+            target_scope: if normalized_content_type == "datapacks" {
+                "world".to_string()
+            } else {
+                "instance".to_string()
+            },
+            target_worlds: worlds,
             pinned_version: None,
             enabled: true,
             hashes: HashMap::new(),
@@ -12660,12 +12991,33 @@ fn resolve_local_mod_sources_inner(
     app: &tauri::AppHandle,
     instance_id: &str,
     mode: &str,
+    requested_content_types: Option<&[String]>,
 ) -> Result<LocalResolverResult, String> {
     let instances_dir = app_instances_dir(app)?;
     let _ = find_instance(&instances_dir, instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, instance_id)?;
     let mut lock = read_lockfile(&instances_dir, instance_id)?;
     let strict_local_only = mode.trim().to_ascii_lowercase() != "all";
+    let content_types_filter: HashSet<String> = if let Some(requested) = requested_content_types {
+        let mut allowed = requested
+            .iter()
+            .map(|value| normalize_lock_content_type(value))
+            .filter(|value| is_supported_local_content_type(value))
+            .collect::<HashSet<_>>();
+        if allowed.is_empty() {
+            supported_local_content_types()
+                .iter()
+                .map(|value| value.to_string())
+                .collect()
+        } else {
+            allowed.drain().collect()
+        }
+    } else {
+        supported_local_content_types()
+            .iter()
+            .map(|value| value.to_string())
+            .collect()
+    };
 
     let client = Client::builder()
         .user_agent(USER_AGENT)
@@ -12689,19 +13041,13 @@ fn resolve_local_mod_sources_inner(
         if !is_local {
             continue;
         }
-        if normalize_lock_content_type(&lock.entries[idx].content_type) != "mods" {
+        let entry_content_type = normalize_lock_content_type(&lock.entries[idx].content_type);
+        if !content_types_filter.contains(&entry_content_type) {
             continue;
         }
         scanned_entries += 1;
         let filename = lock.entries[idx].filename.clone();
-        let (enabled_path, disabled_path) = mod_paths(&instance_dir, &filename);
-        let existing = if enabled_path.exists() {
-            Some(enabled_path)
-        } else if disabled_path.exists() {
-            Some(disabled_path)
-        } else {
-            None
-        };
+        let existing = local_entry_file_read_path(&instance_dir, &lock.entries[idx])?;
         let Some(read_path) = existing else {
             warnings.push(format!("Skipped '{}': file missing on disk.", filename));
             continue;
@@ -12713,8 +13059,12 @@ fn resolve_local_mod_sources_inner(
                 continue;
             }
         };
-        let Some(found) = detect_provider_for_local_mod(&client, &file_bytes, &filename, true)
-        else {
+        let Some(found) = detect_provider_for_local_mod(
+            &client,
+            &file_bytes,
+            &filename,
+            entry_content_type == "mods",
+        ) else {
             continue;
         };
         let key_before = local_entry_key(&lock.entries[idx]);
@@ -12763,7 +13113,12 @@ async fn resolve_local_mod_sources(
 ) -> Result<LocalResolverResult, String> {
     run_blocking_task("resolve local mod sources", move || {
         let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
-        resolve_local_mod_sources_inner(&app, &args.instance_id, &mode)
+        resolve_local_mod_sources_inner(
+            &app,
+            &args.instance_id,
+            &mode,
+            args.content_types.as_deref(),
+        )
     })
     .await
 }
@@ -14083,36 +14438,92 @@ fn set_installed_mod_enabled(
     let mut changed = false;
     {
         let entry = &mut lock.entries[idx];
-        if normalize_lock_content_type(&entry.content_type) != "mods" {
-            return Err("Enable/disable is currently supported for mods only".to_string());
-        }
-        let (enabled_path, disabled_path) = mod_paths(&instance_dir, &entry.filename);
+        let content_type = normalize_lock_content_type(&entry.content_type);
+        let content_label = content_type_display_name(&content_type);
 
         if entry.enabled != args.enabled {
-            if args.enabled {
-                if enabled_path.exists() {
-                    // already in place
-                } else if disabled_path.exists() {
-                    if enabled_path.exists() {
-                        fs::remove_file(&enabled_path)
-                            .map_err(|e| format!("remove existing enabled file failed: {e}"))?;
+            match content_type.as_str() {
+                "mods" | "resourcepacks" | "shaderpacks" => {
+                    let (enabled_path, disabled_path) = if content_type == "mods" {
+                        mod_paths(&instance_dir, &entry.filename)
+                    } else {
+                        content_paths_for_type(&instance_dir, &content_type, &entry.filename)
+                    };
+                    if args.enabled {
+                        if enabled_path.exists() {
+                            // already in place
+                        } else if disabled_path.exists() {
+                            if enabled_path.exists() {
+                                fs::remove_file(&enabled_path).map_err(|e| {
+                                    format!("remove existing enabled file failed: {e}")
+                                })?;
+                            }
+                            fs::rename(&disabled_path, &enabled_path)
+                                .map_err(|e| format!("enable {} failed: {e}", content_label))?;
+                        } else {
+                            return Err(format!("{} file not found on disk", content_label));
+                        }
+                    } else if disabled_path.exists() {
+                        // already disabled path
+                    } else if enabled_path.exists() {
+                        if disabled_path.exists() {
+                            fs::remove_file(&disabled_path).map_err(|e| {
+                                format!("remove existing disabled file failed: {e}")
+                            })?;
+                        }
+                        fs::rename(&enabled_path, &disabled_path)
+                            .map_err(|e| format!("disable {} failed: {e}", content_label))?;
+                    } else {
+                        return Err(format!("{} file not found on disk", content_label));
                     }
-                    fs::rename(&disabled_path, &enabled_path)
-                        .map_err(|e| format!("enable mod failed: {e}"))?;
-                } else {
-                    return Err("mod file not found on disk".into());
                 }
-            } else if disabled_path.exists() {
-                // already disabled path
-            } else if enabled_path.exists() {
-                if disabled_path.exists() {
-                    fs::remove_file(&disabled_path)
-                        .map_err(|e| format!("remove existing disabled file failed: {e}"))?;
+                "datapacks" => {
+                    let target_worlds = if entry.target_worlds.is_empty() {
+                        list_instance_world_names(&instance_dir)?
+                    } else {
+                        entry.target_worlds.clone()
+                    };
+                    let mut found_any = false;
+                    for world in &target_worlds {
+                        let (enabled_path, disabled_path) =
+                            datapack_world_paths(&instance_dir, world, &entry.filename);
+                        if args.enabled {
+                            if enabled_path.exists() {
+                                found_any = true;
+                                continue;
+                            }
+                            if disabled_path.exists() {
+                                found_any = true;
+                                fs::rename(&disabled_path, &enabled_path).map_err(|e| {
+                                    format!(
+                                        "enable {} failed for world '{}': {e}",
+                                        content_label, world
+                                    )
+                                })?;
+                            }
+                        } else {
+                            if disabled_path.exists() {
+                                found_any = true;
+                                continue;
+                            }
+                            if enabled_path.exists() {
+                                found_any = true;
+                                fs::rename(&enabled_path, &disabled_path).map_err(|e| {
+                                    format!(
+                                        "disable {} failed for world '{}': {e}",
+                                        content_label, world
+                                    )
+                                })?;
+                            }
+                        }
+                    }
+                    if !found_any {
+                        return Err(format!("{} file not found on disk", content_label));
+                    }
                 }
-                fs::rename(&enabled_path, &disabled_path)
-                    .map_err(|e| format!("disable mod failed: {e}"))?;
-            } else {
-                return Err("mod file not found on disk".into());
+                _ => {
+                    return Err("Enable/disable is not supported for this content type".to_string())
+                }
             }
 
             entry.enabled = args.enabled;
@@ -14144,22 +14555,64 @@ fn remove_installed_mod(
         .position(|e| e.version_id == args.version_id)
         .ok_or_else(|| "installed mod entry not found".to_string())?;
     let entry = lock.entries.remove(idx);
-    if normalize_lock_content_type(&entry.content_type) != "mods" {
-        return Err("Delete is currently supported for mods only".to_string());
-    }
+    let content_type = normalize_lock_content_type(&entry.content_type);
 
-    let (enabled_path, disabled_path) = mod_paths(&instance_dir, &entry.filename);
-    if enabled_path.exists() {
-        fs::remove_file(&enabled_path)
-            .map_err(|e| format!("remove mod file '{}' failed: {e}", enabled_path.display()))?;
-    }
-    if disabled_path.exists() {
-        fs::remove_file(&disabled_path).map_err(|e| {
-            format!(
-                "remove disabled mod file '{}' failed: {e}",
-                disabled_path.display()
-            )
-        })?;
+    match content_type.as_str() {
+        "mods" | "resourcepacks" | "shaderpacks" => {
+            let (enabled_path, disabled_path) = if content_type == "mods" {
+                mod_paths(&instance_dir, &entry.filename)
+            } else {
+                content_paths_for_type(&instance_dir, &content_type, &entry.filename)
+            };
+            if enabled_path.exists() {
+                fs::remove_file(&enabled_path).map_err(|e| {
+                    format!(
+                        "remove {} file '{}' failed: {e}",
+                        content_type_display_name(&content_type),
+                        enabled_path.display()
+                    )
+                })?;
+            }
+            if disabled_path.exists() {
+                fs::remove_file(&disabled_path).map_err(|e| {
+                    format!(
+                        "remove disabled {} file '{}' failed: {e}",
+                        content_type_display_name(&content_type),
+                        disabled_path.display()
+                    )
+                })?;
+            }
+        }
+        "datapacks" => {
+            let target_worlds = if entry.target_worlds.is_empty() {
+                list_instance_world_names(&instance_dir)?
+            } else {
+                entry.target_worlds.clone()
+            };
+            for world in &target_worlds {
+                let (enabled_path, disabled_path) =
+                    datapack_world_paths(&instance_dir, world, &entry.filename);
+                if enabled_path.exists() {
+                    fs::remove_file(&enabled_path).map_err(|e| {
+                        format!(
+                            "remove datapack file '{}' failed: {e}",
+                            enabled_path.display()
+                        )
+                    })?;
+                }
+                if disabled_path.exists() {
+                    fs::remove_file(&disabled_path).map_err(|e| {
+                        format!(
+                            "remove disabled datapack file '{}' failed: {e}",
+                            disabled_path.display()
+                        )
+                    })?;
+                }
+            }
+        }
+        _ => {
+            return Err("Delete is not supported for this content type".to_string());
+        }
     }
 
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
@@ -14293,6 +14746,112 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod content_compatibility_tests {
+    use super::*;
+
+    fn make_instance(loader: &str, mc_version: &str) -> Instance {
+        Instance {
+            id: "inst_test".to_string(),
+            name: "Test".to_string(),
+            folder_name: None,
+            mc_version: mc_version.to_string(),
+            loader: loader.to_string(),
+            created_at: "now".to_string(),
+            icon_path: None,
+            settings: InstanceSettings::default(),
+        }
+    }
+
+    fn make_cf_file(game_versions: Vec<&str>) -> CurseforgeFile {
+        CurseforgeFile {
+            id: 1,
+            mod_id: 1,
+            display_name: "file".to_string(),
+            file_name: "file.zip".to_string(),
+            file_date: "2026-01-01T00:00:00Z".to_string(),
+            download_url: None,
+            game_versions: game_versions.into_iter().map(str::to_string).collect(),
+            hashes: vec![],
+            dependencies: vec![],
+        }
+    }
+
+    fn make_modrinth_version(game_versions: Vec<&str>, loaders: Vec<&str>) -> ModrinthVersion {
+        ModrinthVersion {
+            project_id: "project".to_string(),
+            id: "ver".to_string(),
+            version_number: "1.0.0".to_string(),
+            name: None,
+            game_versions: game_versions.into_iter().map(str::to_string).collect(),
+            loaders: loaders.into_iter().map(str::to_string).collect(),
+            date_published: "2026-01-01T00:00:00Z".to_string(),
+            dependencies: vec![],
+            files: vec![ModrinthVersionFile {
+                url: "https://example.com/file.zip".to_string(),
+                filename: "file.zip".to_string(),
+                primary: Some(true),
+                hashes: HashMap::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn non_mod_curseforge_compatibility_ignores_loader_tags() {
+        let instance = make_instance("fabric", "1.20.1");
+        let file = make_cf_file(vec!["1.20.1", "forge"]);
+        assert!(file_looks_compatible_with_instance(
+            &file,
+            &instance,
+            "resourcepacks"
+        ));
+        assert!(!file_looks_compatible_with_instance(
+            &file, &instance, "mods"
+        ));
+    }
+
+    #[test]
+    fn non_mod_curseforge_compatibility_allows_patch_level_fallback() {
+        let instance = make_instance("fabric", "1.21.11");
+        let file = make_cf_file(vec!["1.21.1", "forge"]);
+        assert!(file_looks_compatible_with_instance(
+            &file,
+            &instance,
+            "resourcepacks"
+        ));
+    }
+
+    #[test]
+    fn mod_curseforge_compatibility_keeps_patch_strict() {
+        let instance = make_instance("fabric", "1.21.11");
+        let file = make_cf_file(vec!["1.21.1", "fabric"]);
+        assert!(!file_looks_compatible_with_instance(
+            &file, &instance, "mods"
+        ));
+    }
+
+    #[test]
+    fn non_mod_modrinth_selection_ignores_loader_mismatch() {
+        let instance = make_instance("fabric", "1.20.1");
+        let versions = vec![make_modrinth_version(vec!["1.20.1"], vec!["forge"])];
+        assert!(pick_compatible_version_for_content(versions, &instance, "shaderpacks").is_some());
+    }
+
+    #[test]
+    fn non_mod_modrinth_selection_allows_patch_level_fallback() {
+        let instance = make_instance("fabric", "1.21.11");
+        let versions = vec![make_modrinth_version(vec!["1.21.1"], vec!["forge"])];
+        assert!(pick_compatible_version_for_content(versions, &instance, "shaderpacks").is_some());
+    }
+
+    #[test]
+    fn mod_modrinth_selection_still_requires_loader_match() {
+        let instance = make_instance("fabric", "1.20.1");
+        let versions = vec![make_modrinth_version(vec!["1.20.1"], vec!["forge"])];
+        assert!(pick_compatible_version_for_content(versions, &instance, "mods").is_none());
+    }
 }
 
 #[cfg(test)]

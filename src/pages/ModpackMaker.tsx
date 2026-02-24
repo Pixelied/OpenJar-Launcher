@@ -190,9 +190,34 @@ function fmtDate(value?: string | null): string {
 
 function fileLabelFromPath(path: string): string {
   const clean = String(path ?? "").trim();
-  if (!clean) return "unknown.jar";
+  if (!clean) return "unknown.file";
   const parts = clean.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? clean;
+}
+
+function normalizeLocalContentType(input?: string): "mods" | "resourcepacks" | "shaderpacks" | "datapacks" {
+  const value = String(input ?? "mods").trim().toLowerCase();
+  if (value === "resourcepack" || value === "resourcepacks") return "resourcepacks";
+  if (value === "shaderpack" || value === "shaderpacks" || value === "shaders") return "shaderpacks";
+  if (value === "datapack" || value === "datapacks") return "datapacks";
+  return "mods";
+}
+
+function localImportExtensionsForType(
+  type: "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+) {
+  if (type === "mods") return ["jar"];
+  if (type === "resourcepacks" || type === "datapacks") return ["zip"];
+  return ["zip", "jar"];
+}
+
+function localImportTypeLabel(
+  type: "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+) {
+  if (type === "mods") return "mod";
+  if (type === "resourcepacks") return "resourcepack";
+  if (type === "shaderpacks") return "shaderpack";
+  return "datapack";
 }
 
 function localJarStatusLabel(status: string): string {
@@ -233,6 +258,9 @@ export default function ModpackMaker({
   const [entryDraft, setEntryDraft] = useState<ModEntry>(emptyEntry());
   const [importLocalJarsBusy, setImportLocalJarsBusy] = useState(false);
   const [identifyLocalJarsBusy, setIdentifyLocalJarsBusy] = useState(false);
+  const [localImportContentType, setLocalImportContentType] = useState<
+    "mods" | "resourcepacks" | "shaderpacks" | "datapacks"
+  >("mods");
   const [localJarQueueItems, setLocalJarQueueItems] = useState<ModpackImportLocalJarItemResult[]>([]);
   const [localJarQueueTotal, setLocalJarQueueTotal] = useState(0);
 
@@ -765,7 +793,11 @@ export default function ModpackMaker({
     });
   }
 
-  async function runLocalJarImport(filePaths: string[], modeLabel = "import") {
+  async function runLocalJarImport(
+    filePaths: string[],
+    modeLabel = "import",
+    importContentType: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" = localImportContentType
+  ) {
     if (!editorSpec || !selectedLayer) {
       onError("Select a layer first.");
       return;
@@ -796,6 +828,7 @@ export default function ModpackMaker({
         modpackId: editorSpec.id,
         layerId: selectedLayer.id,
         filePaths,
+        contentType: importContentType,
         autoIdentify: autoIdentifyLocalJarsEnabled,
       });
       setEditorSpec(cloneSpec(out.spec));
@@ -817,23 +850,29 @@ export default function ModpackMaker({
     }
   }
 
-  async function addLocalJarsFromComputer() {
+  async function addLocalContentFromComputer() {
+    const importContentType = normalizeLocalContentType(localImportContentType);
     const picked = await openDialog({
       multiple: true,
-      filters: [{ name: "Java archives", extensions: ["jar"] }],
+      filters: [
+        {
+          name: `Minecraft ${localImportTypeLabel(importContentType)}`,
+          extensions: localImportExtensionsForType(importContentType),
+        },
+      ],
     });
     if (!picked) return;
     const filePaths = Array.isArray(picked) ? picked : [picked];
-    await runLocalJarImport(filePaths, "import");
+    await runLocalJarImport(filePaths, "import", importContentType);
   }
 
   async function retryFailedLocalJars() {
     const retryPaths = Array.from(new Set(failedLocalJarPaths));
     if (retryPaths.length === 0) {
-      onNotice("No failed local JAR imports to retry.");
+      onNotice("No failed local file imports to retry.");
       return;
     }
-    await runLocalJarImport(retryPaths, "retry");
+    await runLocalJarImport(retryPaths, "retry", normalizeLocalContentType(localImportContentType));
   }
 
   async function identifyLocalJarsInCreator(mode: "missing_only" | "all" = "all") {
@@ -855,7 +894,7 @@ export default function ModpackMaker({
       } else if (out.warnings.length > 0) {
         onError(out.warnings[0] ?? "No local entries were identified.");
       } else {
-        onNotice("No additional local JAR entries were identified.");
+        onNotice("No additional local file entries were identified.");
       }
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
@@ -1689,15 +1728,34 @@ export default function ModpackMaker({
                   </div>
                 </div>
                 <details className="mpmEntryToolsFold">
-                  <summary>Local JAR tools</summary>
+                  <summary>Local file tools</summary>
                   <div className="mpmEntryToolsRow">
+                    <label style={{ display: "grid", gap: 6, minWidth: 170 }}>
+                      <span className="muted">Type</span>
+                      <select
+                        className="input"
+                        value={localImportContentType}
+                        onChange={(e) =>
+                          setLocalImportContentType(normalizeLocalContentType(e.target.value))
+                        }
+                        disabled={importLocalJarsBusy}
+                        title="Choose which content type to import from local files."
+                      >
+                        <option value="mods">Mods</option>
+                        <option value="resourcepacks">Resourcepacks</option>
+                        <option value="shaderpacks">Shaderpacks</option>
+                        <option value="datapacks">Datapacks</option>
+                      </select>
+                    </label>
                     <button
                       className="btn"
-                      onClick={() => void addLocalJarsFromComputer()}
+                      onClick={() => void addLocalContentFromComputer()}
                       disabled={importLocalJarsBusy}
-                      title="Add one or more local .jar files into the selected layer."
+                      title="Add one or more local files into the selected layer."
                     >
-                      {importLocalJarsBusy ? "Adding..." : "Add mod(s) from computer"}
+                      {importLocalJarsBusy
+                        ? "Adding..."
+                        : `Add ${localImportTypeLabel(localImportContentType)} file(s)`}
                     </button>
                     <button
                       className="btn"
@@ -1705,7 +1763,7 @@ export default function ModpackMaker({
                       disabled={identifyLocalJarsBusy}
                       title="Try to match local entries to Modrinth/CurseForge metadata."
                     >
-                      {identifyLocalJarsBusy ? "Identifying..." : "Identify local JARs"}
+                      {identifyLocalJarsBusy ? "Identifying..." : "Identify local files"}
                     </button>
                     <button
                       className="btn"
@@ -1754,7 +1812,7 @@ export default function ModpackMaker({
                   ) : null}
                   {localJarQueueStats.skipped > 0 ? (
                     <div className="muted" style={{ marginTop: 8 }}>
-                      {localJarQueueStats.skipped} file{localJarQueueStats.skipped === 1 ? "" : "s"} were skipped (non-jar/missing/invalid).
+                      {localJarQueueStats.skipped} file{localJarQueueStats.skipped === 1 ? "" : "s"} were skipped (unsupported type/missing/invalid).
                     </div>
                   ) : null}
                   {localJarQueueStats.updated_deduped > 0 ? (

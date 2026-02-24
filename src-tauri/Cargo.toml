@@ -1,6 +1,6 @@
 [package]
 name = "modpack-manager"
-version = "0.1.1"
+version = "0.1.6"
 description = "OpenJar Launcher"
 authors = ["OpenJar Launcher Contributors"]
 edition = "2021"
@@ -29,6 +29,7 @@ chacha20poly1305 = { version = "0.10", features = ["std"] }
 hkdf = "0.12"
 rand = "0.8"
 igd = "0.12"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

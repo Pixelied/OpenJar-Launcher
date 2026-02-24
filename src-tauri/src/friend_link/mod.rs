@@ -14,13 +14,16 @@ use crate::friend_link::state::{
     WriteInstanceConfigFileResult,
 };
 use crate::friend_link::store::{
-    delete_session_shared_secret, get_session, get_session_mut, get_session_shared_secret,
-    read_store, remove_session, set_session_shared_secret, upsert_session, write_store,
-    FriendLastGoodSnapshot, FriendLinkSessionRecord, FriendManifestEntry, FriendPeerRecord,
-    FriendSyncConflictRecord,
+    delete_session_shared_secret, delete_session_signing_private_key, get_session, get_session_mut,
+    get_session_shared_secret, get_session_signing_private_key, read_store, remove_session,
+    set_session_shared_secret, set_session_signing_private_key, upsert_session, write_store,
+    FriendInvitePolicyRecord, FriendLastGoodSnapshot, FriendLinkSessionRecord, FriendManifestEntry,
+    FriendPeerRecord, FriendSyncConflictRecord,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,6 +32,8 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const PROTOCOL_VERSION: u32 = 1;
+const INVITE_VERSION_LEGACY: u32 = 1;
+const INVITE_VERSION_V2: u32 = 2;
 const MAX_PEERS: usize = 8;
 
 async fn run_friend_link_blocking<T, F>(label: &str, task: F) -> Result<T, String>
@@ -50,6 +55,12 @@ pub struct FriendLinkInvite {
     #[serde(default)]
     pub bootstrap_peer_endpoints: Vec<String>,
     pub protocol_version: u32,
+    #[serde(default)]
+    pub invite_version: u32,
+    #[serde(default)]
+    pub invite_id: Option<String>,
+    #[serde(default)]
+    pub max_uses: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +205,8 @@ pub struct ConflictResolutionPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InvitePayload {
+    #[serde(default = "default_invite_version_legacy")]
+    invite_version: u32,
     group_id: String,
     bootstrap_peer_endpoint: String,
     #[serde(default)]
@@ -202,6 +215,14 @@ struct InvitePayload {
     expires_at: String,
     protocol_version: u32,
     host_peer_id: String,
+    #[serde(default)]
+    invite_id: Option<String>,
+    #[serde(default)]
+    max_uses: Option<u32>,
+    #[serde(default)]
+    host_signing_public_key: Option<String>,
+    #[serde(default)]
+    host_signing_key_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -214,6 +235,10 @@ pub struct CreateFriendLinkSessionArgs {
     pub allow_loopback: Option<bool>,
     #[serde(alias = "allowInternet", default)]
     pub allow_internet: Option<bool>,
+    #[serde(alias = "allowUpnp", default)]
+    pub allow_upnp: Option<bool>,
+    #[serde(alias = "publicEndpointOverride", default)]
+    pub public_endpoint_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +253,10 @@ pub struct JoinFriendLinkSessionArgs {
     pub allow_loopback: Option<bool>,
     #[serde(alias = "allowInternet", default)]
     pub allow_internet: Option<bool>,
+    #[serde(alias = "allowUpnp", default)]
+    pub allow_upnp: Option<bool>,
+    #[serde(alias = "publicEndpointOverride", default)]
+    pub public_endpoint_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,6 +427,13 @@ fn random_secret_b64() -> String {
     BASE64_STANDARD.encode(bytes)
 }
 
+fn random_signing_identity_b64() -> (String, String) {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let private_key_b64 = BASE64_STANDARD.encode(signing_key.to_bytes());
+    let public_key_b64 = encode_verifying_key_b64(&signing_key.verifying_key());
+    (private_key_b64, public_key_b64)
+}
+
 fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path_resolver()
         .app_data_dir()
@@ -526,6 +562,17 @@ fn normalize_session_friend_link_settings(session: &mut FriendLinkSessionRecord)
     if !is_friend_link_dev_mode_enabled() {
         session.allow_loopback_endpoints = false;
     }
+    if !session.allow_internet_endpoints {
+        session.allow_upnp_endpoints = false;
+    }
+    session.public_endpoint_override = session.public_endpoint_override.clone().and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
     ensure_trusted_peer_ids_initialized(session);
     session.peer_aliases = normalize_peer_aliases(session, &session.peer_aliases);
     if session.max_auto_changes == 0 {
@@ -541,6 +588,30 @@ fn is_friend_link_dev_mode_enabled() -> bool {
     )
 }
 
+fn default_invite_version_legacy() -> u32 {
+    INVITE_VERSION_LEGACY
+}
+
+fn encode_verifying_key_b64(key: &VerifyingKey) -> String {
+    BASE64_STANDARD.encode(key.to_bytes())
+}
+
+fn signing_key_fingerprint(public_key_b64: &str) -> Result<String, String> {
+    let decoded = BASE64_STANDARD
+        .decode(public_key_b64.trim())
+        .map_err(|e| format!("decode signing public key failed: {e}"))?;
+    let bytes: [u8; 32] = decoded
+        .as_slice()
+        .try_into()
+        .map_err(|_| "signing public key must be 32 bytes".to_string())?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&bytes).map_err(|e| format!("invalid signing public key: {e}"))?;
+    use sha2::Digest as _;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(verifying_key.to_bytes());
+    Ok(format!("ed25519:{:x}", hasher.finalize()))
+}
+
 fn ensure_session_secret_loaded(session: &mut FriendLinkSessionRecord) -> Result<(), String> {
     if !session.shared_secret_b64.trim().is_empty() {
         if session.shared_secret_key_id.trim().is_empty() {
@@ -553,11 +624,57 @@ fn ensure_session_secret_loaded(session: &mut FriendLinkSessionRecord) -> Result
     Ok(())
 }
 
+fn ensure_session_signing_identity_loaded(
+    session: &mut FriendLinkSessionRecord,
+) -> Result<(), String> {
+    if session.local_signing_private_b64.trim().is_empty()
+        && session.local_signing_key_id.trim().is_empty()
+    {
+        let (private_b64, public_b64) = random_signing_identity_b64();
+        session.local_signing_private_b64 = private_b64;
+        session.local_signing_public_key_b64 = public_b64;
+    }
+
+    if !session.local_signing_private_b64.trim().is_empty() {
+        if session.local_signing_key_id.trim().is_empty() {
+            let private = session.local_signing_private_b64.clone();
+            set_session_signing_private_key(session, &private)?;
+        }
+    } else {
+        let _ = get_session_signing_private_key(session)?;
+    }
+
+    if session.local_signing_public_key_b64.trim().is_empty() {
+        let private = BASE64_STANDARD
+            .decode(session.local_signing_private_b64.trim())
+            .map_err(|e| format!("decode signing private key failed: {e}"))?;
+        let private_bytes: [u8; 32] = private
+            .as_slice()
+            .try_into()
+            .map_err(|_| "signing private key must be 32 bytes".to_string())?;
+        let signing_key = SigningKey::from_bytes(&private_bytes);
+        session.local_signing_public_key_b64 =
+            encode_verifying_key_b64(&signing_key.verifying_key());
+    }
+    Ok(())
+}
+
+fn ensure_session_security_material_loaded(
+    session: &mut FriendLinkSessionRecord,
+) -> Result<(), String> {
+    ensure_session_secret_loaded(session)?;
+    ensure_session_signing_identity_loaded(session)?;
+    Ok(())
+}
+
 fn session_secret_missing_or_broken(err: &str) -> bool {
     let normalized = err.to_ascii_lowercase();
     normalized.contains("shared secret not found")
         || normalized.contains("shared secret key id is missing")
         || normalized.contains("shared secret in secure storage is empty")
+        || normalized.contains("signing private key not found")
+        || normalized.contains("signing key id is missing")
+        || normalized.contains("signing private key in secure storage is empty")
 }
 
 fn reset_session_for_new_host_secret(session: &mut FriendLinkSessionRecord) {
@@ -565,6 +682,12 @@ fn reset_session_for_new_host_secret(session: &mut FriendLinkSessionRecord) {
     session.local_peer_id = format!("peer_{}", Uuid::new_v4());
     session.shared_secret_key_id.clear();
     session.shared_secret_b64 = random_secret_b64();
+    session.local_signing_key_id.clear();
+    session.local_signing_private_b64.clear();
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let private_b64 = BASE64_STANDARD.encode(signing_key.to_bytes());
+    session.local_signing_private_b64 = private_b64;
+    session.local_signing_public_key_b64 = encode_verifying_key_b64(&signing_key.verifying_key());
     session.peers.clear();
     session.last_peer_sync_at.clear();
     session.last_good_snapshot = None;
@@ -575,6 +698,9 @@ fn reset_session_for_new_host_secret(session: &mut FriendLinkSessionRecord) {
     session.trusted_peer_ids_initialized = false;
     session.guardrails_updated_at_ms = 0;
     session.peer_aliases.clear();
+    session.peer_signing_public_keys.clear();
+    session.invite_policies.clear();
+    session.invite_usage.clear();
 }
 
 fn unlink_broken_session(
@@ -587,6 +713,20 @@ fn unlink_broken_session(
         "friend-link secure credentials missing for instance '{}'; removing broken link: {}",
         instance_id, reason
     );
+    if let Some(session) = get_session(store, instance_id) {
+        if let Err(err) = delete_session_shared_secret(&session) {
+            eprintln!(
+                "friend-link shared secret cleanup failed while unlinking '{}': {}",
+                instance_id, err
+            );
+        }
+        if let Err(err) = delete_session_signing_private_key(&session) {
+            eprintln!(
+                "friend-link signing key cleanup failed while unlinking '{}': {}",
+                instance_id, err
+            );
+        }
+    }
     let removed = remove_session(store, instance_id);
     if removed {
         write_store(app, store)?;
@@ -647,33 +787,53 @@ fn validate_endpoint_value(
     allow_internet: bool,
 ) -> Result<String, String> {
     let trimmed = endpoint.trim();
-    if trimmed.eq_ignore_ascii_case("localhost") || trimmed.starts_with("localhost:") {
+    if let Ok(addr) = trimmed.parse::<std::net::SocketAddr>() {
+        if addr.ip().is_unspecified() || addr.ip().is_multicast() {
+            return Err("Endpoint uses an invalid network address".to_string());
+        }
+        if addr.ip().is_loopback() && allow_internet && !allow_loopback {
+            return Err(
+                "Loopback endpoints are blocked by default. Enable allowLoopback to use local-only peers."
+                    .to_string(),
+            );
+        }
+        if !addr.ip().is_loopback() && !allow_internet {
+            return Err(
+                "LAN/public internet endpoints are blocked by default. Enable allowInternet to connect to other devices."
+                    .to_string(),
+            );
+        }
+        return Ok(addr.to_string());
+    }
+
+    let (host_raw, port_raw) = trimmed
+        .rsplit_once(':')
+        .ok_or_else(|| "Endpoint must be host:port or IP:port".to_string())?;
+    let host = host_raw.trim();
+    if host.is_empty() {
+        return Err("Endpoint host is missing".to_string());
+    }
+    let port: u16 = port_raw
+        .trim()
+        .parse()
+        .map_err(|_| "Endpoint port is invalid".to_string())?;
+
+    if host.eq_ignore_ascii_case("localhost") {
         if !allow_loopback {
             return Err(
                 "Loopback endpoints are blocked by default. Enable allowLoopback to use localhost."
                     .to_string(),
             );
         }
+        return Ok(format!("localhost:{port}"));
     }
-    let addr: std::net::SocketAddr = trimmed
-        .parse()
-        .map_err(|_| "Endpoint must be an explicit IP:port socket address".to_string())?;
-    if addr.ip().is_unspecified() || addr.ip().is_multicast() {
-        return Err("Endpoint uses an invalid network address".to_string());
-    }
-    if addr.ip().is_loopback() && allow_internet && !allow_loopback {
-        return Err(
-            "Loopback endpoints are blocked by default. Enable allowLoopback to use local-only peers."
-                .to_string(),
-        );
-    }
-    if !addr.ip().is_loopback() && !allow_internet {
+    if !allow_internet {
         return Err(
             "LAN/public internet endpoints are blocked by default. Enable allowInternet to connect to other devices."
                 .to_string(),
         );
     }
-    Ok(addr.to_string())
+    Ok(format!("{host}:{port}"))
 }
 
 fn validate_session_endpoint(
@@ -763,7 +923,7 @@ fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> Fr
     }
 }
 
-fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, String> {
+fn build_invite(session: &mut FriendLinkSessionRecord) -> Result<FriendLinkInvite, String> {
     let endpoint_raw = session
         .listener_endpoint
         .clone()
@@ -776,7 +936,7 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         bootstrap_peer_endpoints.insert(0, endpoint.clone());
     }
     if session.allow_internet_endpoints {
-        if let Some(candidate) = configured_public_endpoint_candidate(session.listener_port) {
+        if let Some(candidate) = session.public_endpoint_override.clone() {
             if let Ok(validated) = validate_session_endpoint(session, &candidate) {
                 if !bootstrap_peer_endpoints.contains(&validated) {
                     bootstrap_peer_endpoints.push(validated);
@@ -791,8 +951,35 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
             }
         }
     }
-    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
+    let (max_uses, expiry) = if session.allow_internet_endpoints {
+        (1u32, chrono::Duration::minutes(10))
+    } else {
+        (3u32, chrono::Duration::hours(24))
+    };
+    let invite_id = format!("invite_{}", Uuid::new_v4());
+    let expires_at = (chrono::Utc::now() + expiry).to_rfc3339();
+    let host_signing_public_key = session.local_signing_public_key_b64.clone();
+    let host_signing_key_fingerprint = signing_key_fingerprint(&host_signing_public_key)?;
+    session.invite_policies.insert(
+        invite_id.clone(),
+        FriendInvitePolicyRecord {
+            invite_version: INVITE_VERSION_V2,
+            max_uses,
+            expires_at: expires_at.clone(),
+            created_at: now_iso(),
+        },
+    );
+    session.invite_policies.retain(|_, policy| {
+        chrono::DateTime::parse_from_rfc3339(&policy.expires_at)
+            .map(|value| value.with_timezone(&chrono::Utc) > chrono::Utc::now())
+            .unwrap_or(false)
+    });
+    session
+        .invite_usage
+        .retain(|invite_id, _| session.invite_policies.contains_key(invite_id));
+
     let payload = InvitePayload {
+        invite_version: INVITE_VERSION_V2,
         group_id: session.group_id.clone(),
         bootstrap_peer_endpoint: endpoint.clone(),
         bootstrap_peer_endpoints: bootstrap_peer_endpoints.clone(),
@@ -800,6 +987,10 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         expires_at: expires_at.clone(),
         protocol_version: PROTOCOL_VERSION,
         host_peer_id: session.local_peer_id.clone(),
+        invite_id: Some(invite_id.clone()),
+        max_uses: Some(max_uses),
+        host_signing_public_key: Some(host_signing_public_key),
+        host_signing_key_fingerprint: Some(host_signing_key_fingerprint),
     };
     let raw = serde_json::to_vec(&payload)
         .map_err(|e| format!("serialize invite payload failed: {e}"))?;
@@ -811,6 +1002,9 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         bootstrap_peer_endpoint: endpoint,
         bootstrap_peer_endpoints,
         protocol_version: PROTOCOL_VERSION,
+        invite_version: INVITE_VERSION_V2,
+        invite_id: Some(invite_id),
+        max_uses: Some(max_uses),
     })
 }
 
@@ -837,10 +1031,32 @@ fn parse_invite(
     if payload.shared_secret.trim().is_empty() {
         return Err("Invite is missing shared secret".to_string());
     }
+    if payload.invite_version == 0 {
+        payload.invite_version = INVITE_VERSION_LEGACY;
+    }
+    if payload.invite_version >= INVITE_VERSION_V2 {
+        if payload
+            .invite_id
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
+            return Err("Invite is missing invite id metadata".to_string());
+        }
+    }
     let expires = chrono::DateTime::parse_from_rfc3339(&payload.expires_at)
         .map_err(|e| format!("invalid invite expiration timestamp: {e}"))?;
     if expires.with_timezone(&chrono::Utc) < chrono::Utc::now() {
         return Err("Invite code has expired".to_string());
+    }
+    if let (Some(public_key_b64), Some(fingerprint)) = (
+        payload.host_signing_public_key.as_ref(),
+        payload.host_signing_key_fingerprint.as_ref(),
+    ) {
+        let derived = signing_key_fingerprint(public_key_b64)?;
+        if derived != fingerprint.trim() {
+            return Err("Invite host signing key metadata is invalid".to_string());
+        }
     }
     let mut bootstrap_peer_endpoints = Vec::<String>::new();
     for candidate in payload
@@ -875,16 +1091,30 @@ fn parse_endpoint_candidate_with_port(raw: &str, fallback_port: u16) -> Option<S
     if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
         return Some(std::net::SocketAddr::new(ip, fallback_port).to_string());
     }
+    if let Some((host_raw, port_raw)) = trimmed.rsplit_once(':') {
+        let host = host_raw.trim();
+        if host.is_empty() {
+            return None;
+        }
+        if let Ok(port) = port_raw.trim().parse::<u16>() {
+            return Some(format!("{host}:{port}"));
+        }
+    }
     None
 }
 
-fn configured_public_endpoint_candidate(listener_port: u16) -> Option<String> {
-    std::env::var("OPENJAR_FRIENDLINK_PUBLIC_ENDPOINT")
-        .ok()
-        .and_then(|raw| parse_endpoint_candidate_with_port(&raw, listener_port))
+fn is_public_ip_discovery_enabled() -> bool {
+    let raw = std::env::var("OPENJAR_FRIENDLINK_DISCOVER_PUBLIC_IP").unwrap_or_default();
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn discovered_public_endpoint_candidate(listener_port: u16) -> Option<String> {
+    if !is_public_ip_discovery_enabled() {
+        return None;
+    }
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -907,7 +1137,7 @@ fn discovered_public_endpoint_candidate(listener_port: u16) -> Option<String> {
 }
 
 fn send_hello_with_invite_endpoints(
-    session: &FriendLinkSessionRecord,
+    session: &mut FriendLinkSessionRecord,
     endpoints: &[String],
     hello: &HelloPayload,
 ) -> Result<net::HelloAckPayload, String> {
@@ -924,7 +1154,7 @@ fn send_hello_with_invite_endpoints(
         );
     }
     Err(format!(
-        "Failed to reach host endpoint(s): {}. For cross-network syncing, host must enable internet mode and expose the listener port (router/NAT).",
+        "Failed to reach host endpoint(s): {}. For cross-network syncing, host must enable internet mode and either provide a reachable public endpoint override or enable UPnP port mapping.",
         failures.join(" | ")
     ))
 }
@@ -1620,7 +1850,7 @@ fn reconcile_internal(
         let Some(session) = get_session_mut(&mut store, instance_id) else {
             return Ok(unlinked_reconcile_result(mode, None));
         };
-        match ensure_session_secret_loaded(session) {
+        match ensure_session_security_material_loaded(session) {
             Ok(()) => {
                 let _ = net::ensure_listener(app_data.clone(), session)?;
                 normalize_session_friend_link_settings(session);
@@ -1632,7 +1862,7 @@ fn reconcile_internal(
                         instance_id
                     );
                     reset_session_for_new_host_secret(session);
-                    ensure_session_secret_loaded(session)?;
+                    ensure_session_security_material_loaded(session)?;
                     let _ = net::ensure_listener(app_data.clone(), session)?;
                     normalize_session_friend_link_settings(session);
                     rotated_host_secret = true;
@@ -1960,6 +2190,7 @@ pub fn create_friend_link_session(
         existing
     } else {
         let suffix = Uuid::new_v4().to_string();
+        let (signing_private_b64, signing_public_b64) = random_signing_identity_b64();
         FriendLinkSessionRecord {
             instance_id: args.instance_id.clone(),
             group_id: format!("group_{}", Uuid::new_v4()),
@@ -1992,6 +2223,14 @@ pub fn create_friend_link_session(
             sync_resourcepacks: false,
             sync_shaderpacks: true,
             sync_datapacks: true,
+            allow_upnp_endpoints: false,
+            public_endpoint_override: None,
+            local_signing_key_id: String::new(),
+            local_signing_private_b64: signing_private_b64,
+            local_signing_public_key_b64: signing_public_b64,
+            peer_signing_public_keys: HashMap::new(),
+            invite_policies: HashMap::new(),
+            invite_usage: HashMap::new(),
         }
     };
     if let Some(value) = args.allow_loopback {
@@ -2000,7 +2239,13 @@ pub fn create_friend_link_session(
     if let Some(value) = args.allow_internet {
         session.allow_internet_endpoints = value;
     }
-    if let Err(err) = ensure_session_secret_loaded(&mut session) {
+    if let Some(value) = args.allow_upnp {
+        session.allow_upnp_endpoints = value;
+    }
+    if args.public_endpoint_override.is_some() {
+        session.public_endpoint_override = args.public_endpoint_override.clone();
+    }
+    if let Err(err) = ensure_session_security_material_loaded(&mut session) {
         if !session_secret_missing_or_broken(&err) {
             return Err(err);
         }
@@ -2009,7 +2254,7 @@ pub fn create_friend_link_session(
             args.instance_id
         );
         reset_session_for_new_host_secret(&mut session);
-        ensure_session_secret_loaded(&mut session)?;
+        ensure_session_security_material_loaded(&mut session)?;
     }
 
     let app_data = app_data_dir(&app)?;
@@ -2017,10 +2262,10 @@ pub fn create_friend_link_session(
     session.listener_endpoint = Some(endpoint);
     normalize_session_friend_link_settings(&mut session);
 
+    let invite = build_invite(&mut session)?;
     upsert_session(&mut store, session.clone());
     write_store(&app, &store)?;
-
-    build_invite(&session)
+    Ok(invite)
 }
 
 #[tauri::command]
@@ -2046,6 +2291,7 @@ pub fn join_friend_link_session(
 
     let mut store = read_store(&app)?;
     let suffix = Uuid::new_v4().to_string();
+    let (signing_private_b64, signing_public_b64) = random_signing_identity_b64();
     let mut session = FriendLinkSessionRecord {
         instance_id: args.instance_id.clone(),
         group_id: invite.group_id.clone(),
@@ -2078,8 +2324,22 @@ pub fn join_friend_link_session(
         sync_resourcepacks: false,
         sync_shaderpacks: true,
         sync_datapacks: true,
+        allow_upnp_endpoints: args.allow_upnp.unwrap_or(false),
+        public_endpoint_override: args.public_endpoint_override.clone(),
+        local_signing_key_id: String::new(),
+        local_signing_private_b64: signing_private_b64,
+        local_signing_public_key_b64: signing_public_b64,
+        peer_signing_public_keys: HashMap::new(),
+        invite_policies: HashMap::new(),
+        invite_usage: HashMap::new(),
     };
-    ensure_session_secret_loaded(&mut session)?;
+    if let Some(host_signing_public_key) = invite.host_signing_public_key.as_ref() {
+        session
+            .peer_signing_public_keys
+            .insert(invite.host_peer_id.clone(), host_signing_public_key.clone());
+    }
+    ensure_session_security_material_loaded(&mut session)?;
+    normalize_session_friend_link_settings(&mut session);
 
     let app_data = app_data_dir(&app)?;
     let endpoint = net::ensure_listener(app_data, &mut session)?;
@@ -2089,8 +2349,10 @@ pub fn join_friend_link_session(
         peer_id: session.local_peer_id.clone(),
         display_name: session.display_name.clone(),
         endpoint,
+        invite_id: invite.invite_id.clone(),
     };
-    let ack = send_hello_with_invite_endpoints(&session, &invite.bootstrap_peer_endpoints, &hello)?;
+    let ack =
+        send_hello_with_invite_endpoints(&mut session, &invite.bootstrap_peer_endpoints, &hello)?;
     let ack_endpoint = validate_session_endpoint(&session, &ack.endpoint)?;
 
     upsert_peer(
@@ -2147,6 +2409,12 @@ pub fn leave_friend_link_session(
                 args.instance_id, err
             );
         }
+        if let Err(err) = delete_session_signing_private_key(&session) {
+            eprintln!(
+                "friend-link signing key cleanup failed for instance '{}': {}",
+                args.instance_id, err
+            );
+        }
     }
     let removed = remove_session(&mut store, &args.instance_id);
     if removed {
@@ -2165,7 +2433,9 @@ pub fn get_friend_link_status(
     let mut changed = false;
     let mut broken_secret_reason: Option<String> = None;
     if let Some(session) = get_session_mut(&mut store, &args.instance_id) {
-        match ensure_session_secret_loaded(session) {
+        let signing_key_before = session.local_signing_key_id.clone();
+        let signing_public_before = session.local_signing_public_key_b64.clone();
+        match ensure_session_security_material_loaded(session) {
             Ok(()) => {
                 let app_data = app_data_dir(&app)?;
                 let endpoint = net::ensure_listener(app_data, session)?;
@@ -2182,6 +2452,8 @@ pub fn get_friend_link_status(
                     || session.trusted_peer_ids_initialized != trusted_initialized_before
                     || session.peer_aliases != peer_aliases_before
                     || session.max_auto_changes != max_auto_before
+                    || session.local_signing_key_id != signing_key_before
+                    || session.local_signing_public_key_b64 != signing_public_before
                 {
                     changed = true;
                 }
@@ -2193,7 +2465,7 @@ pub fn get_friend_link_status(
                         args.instance_id
                     );
                     reset_session_for_new_host_secret(session);
-                    ensure_session_secret_loaded(session)?;
+                    ensure_session_security_material_loaded(session)?;
                     let app_data = app_data_dir(&app)?;
                     let endpoint = net::ensure_listener(app_data, session)?;
                     session.listener_endpoint = Some(endpoint);
@@ -2327,7 +2599,7 @@ fn preview_friend_link_drift_inner(
                 has_untrusted_changes: false,
             });
         };
-        match ensure_session_secret_loaded(session) {
+        match ensure_session_security_material_loaded(session) {
             Ok(()) => {
                 let _ = net::ensure_listener(app_data.clone(), session)?;
                 normalize_session_friend_link_settings(session);
@@ -2339,7 +2611,7 @@ fn preview_friend_link_drift_inner(
                         args.instance_id
                     );
                     reset_session_for_new_host_secret(session);
-                    ensure_session_secret_loaded(session)?;
+                    ensure_session_security_material_loaded(session)?;
                     let _ = net::ensure_listener(app_data.clone(), session)?;
                     normalize_session_friend_link_settings(session);
                     rotated_host_secret = true;
@@ -2424,7 +2696,7 @@ fn sync_friend_link_selected_inner(
         let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
             return Ok(unlinked_reconcile_result(mode, None));
         };
-        match ensure_session_secret_loaded(session) {
+        match ensure_session_security_material_loaded(session) {
             Ok(()) => {
                 let _ = net::ensure_listener(app_data.clone(), session)?;
                 normalize_session_friend_link_settings(session);
@@ -2436,7 +2708,7 @@ fn sync_friend_link_selected_inner(
                         args.instance_id
                     );
                     reset_session_for_new_host_secret(session);
-                    ensure_session_secret_loaded(session)?;
+                    ensure_session_security_material_loaded(session)?;
                     let _ = net::ensure_listener(app_data.clone(), session)?;
                     normalize_session_friend_link_settings(session);
                     rotated_host_secret = true;
@@ -2856,6 +3128,14 @@ pub fn export_friend_link_debug_bundle(
         );
         obj.insert(
             "shared_secret_b64".to_string(),
+            serde_json::Value::String("<REDACTED>".to_string()),
+        );
+        obj.insert(
+            "local_signing_key_id".to_string(),
+            serde_json::Value::String("<REDACTED>".to_string()),
+        );
+        obj.insert(
+            "local_signing_private_b64".to_string(),
             serde_json::Value::String("<REDACTED>".to_string()),
         );
         obj.insert(

@@ -23,6 +23,8 @@ import type {
   LauncherSettings,
   LaunchResult,
   LocalResolverResult,
+  ResolveLocalModSourcesInput,
+  ImportLocalModFileInput,
   LaunchMethod,
   Loader,
   MicrosoftLoginState,
@@ -52,6 +54,7 @@ import type {
   FriendLinkStatus,
   ConflictResolutionPayload,
   MigrationReport,
+  ImportLocalJarsToModpackLayerInput,
   ModpackImportLocalJarsResult,
   ModpackLocalResolverResult,
   InstanceConfigFileEntry,
@@ -166,17 +169,11 @@ export function removeInstalledMod(input: {
   return invoke("remove_installed_mod", { args: input });
 }
 
-export function importLocalModFile(input: {
-  instanceId: string;
-  filePath: string;
-}): Promise<InstalledMod> {
+export function importLocalModFile(input: ImportLocalModFileInput): Promise<InstalledMod> {
   return invoke("import_local_mod_file", { args: input });
 }
 
-export function resolveLocalModSources(input: {
-  instanceId: string;
-  mode?: "missing_only" | "all" | string;
-}): Promise<LocalResolverResult> {
+export function resolveLocalModSources(input: ResolveLocalModSourcesInput): Promise<LocalResolverResult> {
   return invoke("resolve_local_mod_sources", { args: input });
 }
 
@@ -564,12 +561,7 @@ export function importModpackLayerFromSpec(input: {
   return invoke("import_modpack_layer_from_spec", { args: input });
 }
 
-export function importLocalJarsToModpackLayer(input: {
-  modpackId: string;
-  layerId: string;
-  filePaths: string[];
-  autoIdentify?: boolean;
-}): Promise<ModpackImportLocalJarsResult> {
+export function importLocalJarsToModpackLayer(input: ImportLocalJarsToModpackLayerInput): Promise<ModpackImportLocalJarsResult> {
   return invoke("import_local_jars_to_modpack_layer", { args: input });
 }
 
@@ -668,6 +660,8 @@ export function createFriendLinkSession(input: {
   displayName?: string;
   allowLoopback?: boolean;
   allowInternet?: boolean;
+  allowUpnp?: boolean;
+  publicEndpointOverride?: string;
 }): Promise<FriendLinkInvite> {
   return invoke("create_friend_link_session", { args: input });
 }
@@ -678,6 +672,8 @@ export function joinFriendLinkSession(input: {
   displayName?: string;
   allowLoopback?: boolean;
   allowInternet?: boolean;
+  allowUpnp?: boolean;
+  publicEndpointOverride?: string;
 }): Promise<FriendLinkStatus> {
   return invoke("join_friend_link_session", { args: input });
 }

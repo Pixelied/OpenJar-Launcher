@@ -1,7 +1,7 @@
 {
   "name": "modpack-manager",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "bash scripts/prebuild-dmg-cleanup.sh && tauri build",
+    "tauri:build": "bash scripts/tauri-build-release.sh",
     "verify:platform-support": "node scripts/verify-platform-support.mjs",
     "verify:desktop-asset-paths": "node scripts/verify-desktop-asset-paths.mjs"
   },

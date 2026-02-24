@@ -17,6 +17,7 @@ const FRIEND_LINK_LEGACY_SECRET_SERVICES: [&str; 3] = [
     "OpenJar Launcher",
 ];
 const FRIEND_LINK_SECRET_KEY_PREFIX: &str = "friend_link_secret_v1_";
+const FRIEND_LINK_SIGNING_KEY_PREFIX: &str = "friend_link_signing_v1_";
 
 fn runtime_secret_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -96,6 +97,23 @@ pub struct FriendSyncConflictRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendInvitePolicyRecord {
+    pub invite_version: u32,
+    pub max_uses: u32,
+    pub expires_at: String,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FriendInviteUsageRecord {
+    #[serde(default)]
+    pub used_count: u32,
+    #[serde(default)]
+    pub used_at: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FriendLinkSessionRecord {
     pub instance_id: String,
     pub group_id: String,
@@ -147,6 +165,22 @@ pub struct FriendLinkSessionRecord {
     pub sync_shaderpacks: bool,
     #[serde(default = "default_sync_datapacks")]
     pub sync_datapacks: bool,
+    #[serde(default)]
+    pub allow_upnp_endpoints: bool,
+    #[serde(default)]
+    pub public_endpoint_override: Option<String>,
+    #[serde(default)]
+    pub local_signing_key_id: String,
+    #[serde(default, skip_serializing)]
+    pub local_signing_private_b64: String,
+    #[serde(default)]
+    pub local_signing_public_key_b64: String,
+    #[serde(default)]
+    pub peer_signing_public_keys: HashMap<String, String>,
+    #[serde(default)]
+    pub invite_policies: HashMap<String, FriendInvitePolicyRecord>,
+    #[serde(default)]
+    pub invite_usage: HashMap<String, FriendInviteUsageRecord>,
 }
 
 fn default_friend_link_max_auto_changes() -> usize {
@@ -315,6 +349,13 @@ fn ensure_secret_key_id(session: &mut FriendLinkSessionRecord) {
     session.shared_secret_key_id = format!("{}{}", FRIEND_LINK_SECRET_KEY_PREFIX, Uuid::new_v4());
 }
 
+fn ensure_signing_key_id(session: &mut FriendLinkSessionRecord) {
+    if !session.local_signing_key_id.trim().is_empty() {
+        return;
+    }
+    session.local_signing_key_id = format!("{}{}", FRIEND_LINK_SIGNING_KEY_PREFIX, Uuid::new_v4());
+}
+
 #[cfg(test)]
 pub fn clear_test_friend_link_secret_store() {
     if let Ok(mut guard) = test_friend_link_secret_store().lock() {
@@ -356,6 +397,21 @@ pub fn set_session_shared_secret(
     Ok(())
 }
 
+pub fn set_session_signing_private_key(
+    session: &mut FriendLinkSessionRecord,
+    signing_private_key_b64: &str,
+) -> Result<(), String> {
+    let secret = signing_private_key_b64.trim().to_string();
+    if secret.is_empty() {
+        return Err("friend-link signing private key is empty".to_string());
+    }
+    ensure_signing_key_id(session);
+    secret_store_set(&session.local_signing_key_id, &secret)?;
+    runtime_secret_cache_set(&session.local_signing_key_id, &secret);
+    session.local_signing_private_b64 = secret;
+    Ok(())
+}
+
 pub fn get_session_shared_secret(session: &mut FriendLinkSessionRecord) -> Result<String, String> {
     if !session.shared_secret_b64.trim().is_empty() {
         return Ok(session.shared_secret_b64.clone());
@@ -381,8 +437,44 @@ pub fn get_session_shared_secret(session: &mut FriendLinkSessionRecord) -> Resul
     Ok(secret)
 }
 
+pub fn get_session_signing_private_key(
+    session: &mut FriendLinkSessionRecord,
+) -> Result<String, String> {
+    if !session.local_signing_private_b64.trim().is_empty() {
+        return Ok(session.local_signing_private_b64.clone());
+    }
+    let key_id = session.local_signing_key_id.trim();
+    if key_id.is_empty() {
+        return Err("friend-link signing key id is missing".to_string());
+    }
+    if let Some(secret) = runtime_secret_cache_get(key_id) {
+        if !secret.trim().is_empty() {
+            session.local_signing_private_b64 = secret.clone();
+            return Ok(secret);
+        }
+    }
+    let Some(secret) = secret_store_get(key_id)? else {
+        return Err("friend-link signing private key not found in secure storage".to_string());
+    };
+    if secret.trim().is_empty() {
+        return Err("friend-link signing private key in secure storage is empty".to_string());
+    }
+    runtime_secret_cache_set(key_id, &secret);
+    session.local_signing_private_b64 = secret.clone();
+    Ok(secret)
+}
+
 pub fn delete_session_shared_secret(session: &FriendLinkSessionRecord) -> Result<(), String> {
     let key_id = session.shared_secret_key_id.trim();
+    if key_id.is_empty() {
+        return Ok(());
+    }
+    runtime_secret_cache_delete(key_id);
+    secret_store_delete(key_id)
+}
+
+pub fn delete_session_signing_private_key(session: &FriendLinkSessionRecord) -> Result<(), String> {
+    let key_id = session.local_signing_key_id.trim();
     if key_id.is_empty() {
         return Ok(());
     }
@@ -394,6 +486,16 @@ fn hydrate_and_migrate_session_secret(session: &mut FriendLinkSessionRecord) -> 
     if !session.shared_secret_b64.trim().is_empty() {
         set_session_shared_secret(session, &session.shared_secret_b64.clone())?;
         session.shared_secret_b64.clear();
+    }
+    Ok(())
+}
+
+fn hydrate_and_migrate_session_signing_key(
+    session: &mut FriendLinkSessionRecord,
+) -> Result<(), String> {
+    if !session.local_signing_private_b64.trim().is_empty() {
+        set_session_signing_private_key(session, &session.local_signing_private_b64.clone())?;
+        session.local_signing_private_b64.clear();
     }
     Ok(())
 }
@@ -436,6 +538,7 @@ pub fn read_store_at_path(path: &Path) -> Result<FriendLinkStoreV1, String> {
     for session in &mut store.sessions {
         let had_legacy_secret = !session.shared_secret_b64.trim().is_empty();
         hydrate_and_migrate_session_secret(session)?;
+        hydrate_and_migrate_session_signing_key(session)?;
         if had_legacy_secret {
             migrated_legacy_secrets += 1;
         }
@@ -469,6 +572,12 @@ fn merge_session_runtime_fields(
 
     if next.shared_secret_key_id.trim().is_empty() {
         next.shared_secret_key_id = current.shared_secret_key_id.clone();
+    }
+    if next.local_signing_key_id.trim().is_empty() {
+        next.local_signing_key_id = current.local_signing_key_id.clone();
+    }
+    if next.local_signing_public_key_b64.trim().is_empty() {
+        next.local_signing_public_key_b64 = current.local_signing_public_key_b64.clone();
     }
     if next.listener_port == 0 {
         next.listener_port = current.listener_port;
@@ -518,6 +627,25 @@ fn merge_session_runtime_fields(
         next.cached_peer_state
             .entry(peer_id.clone())
             .or_insert_with(|| state.clone());
+    }
+    for (peer_id, public_key_b64) in &current.peer_signing_public_keys {
+        next.peer_signing_public_keys
+            .entry(peer_id.clone())
+            .or_insert_with(|| public_key_b64.clone());
+    }
+    for (invite_id, policy) in &current.invite_policies {
+        next.invite_policies
+            .entry(invite_id.clone())
+            .or_insert_with(|| policy.clone());
+    }
+    for (invite_id, usage) in &current.invite_usage {
+        if let Some(existing) = next.invite_usage.get_mut(invite_id) {
+            if usage.used_count > existing.used_count {
+                *existing = usage.clone();
+            }
+        } else {
+            next.invite_usage.insert(invite_id.clone(), usage.clone());
+        }
     }
 
     if next.last_good_snapshot.is_none() {
@@ -621,6 +749,10 @@ pub fn write_store_at_path(path: &Path, store: &FriendLinkStoreV1) -> Result<(),
             set_session_shared_secret(session, &session.shared_secret_b64.clone())?;
         }
         session.shared_secret_b64.clear();
+        if !session.local_signing_private_b64.trim().is_empty() {
+            set_session_signing_private_key(session, &session.local_signing_private_b64.clone())?;
+        }
+        session.local_signing_private_b64.clear();
     }
     if let Some(current_store) = current.as_ref() {
         merge_store_with_current_disk_state(&mut next, current_store, stale_snapshot);

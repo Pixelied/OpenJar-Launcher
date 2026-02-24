@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 fn sample_session() -> store::FriendLinkSessionRecord {
+    let signing_key = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng);
     store::FriendLinkSessionRecord {
         instance_id: "inst_1".to_string(),
         group_id: "group_1".to_string(),
@@ -33,25 +34,37 @@ fn sample_session() -> store::FriendLinkSessionRecord {
         sync_resourcepacks: false,
         sync_shaderpacks: true,
         sync_datapacks: true,
+        allow_upnp_endpoints: false,
+        public_endpoint_override: None,
+        local_signing_key_id: String::new(),
+        local_signing_private_b64: BASE64_STANDARD.encode(signing_key.to_bytes()),
+        local_signing_public_key_b64: BASE64_STANDARD
+            .encode(signing_key.verifying_key().to_bytes()),
+        peer_signing_public_keys: HashMap::new(),
+        invite_policies: HashMap::new(),
+        invite_usage: HashMap::new(),
     }
 }
 
 #[test]
 fn invite_roundtrip() {
-    let session = sample_session();
-    let invite = build_invite(&session).expect("build invite");
+    let mut session = sample_session();
+    let invite = build_invite(&mut session).expect("build invite");
     let payload = parse_invite(&invite.invite_code, true, false).expect("parse invite");
     assert_eq!(payload.group_id, session.group_id);
     assert_eq!(payload.bootstrap_peer_endpoint, "127.0.0.1:45001");
     assert_eq!(payload.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
     assert_eq!(invite.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
     assert_eq!(payload.protocol_version, PROTOCOL_VERSION);
+    assert_eq!(payload.invite_version, INVITE_VERSION_V2);
+    assert!(payload.invite_id.is_some());
+    assert_eq!(payload.max_uses, Some(3));
 }
 
 #[test]
 fn invite_parse_blocks_loopback_when_internet_mode_without_opt_in() {
-    let session = sample_session();
-    let invite = build_invite(&session).expect("build invite");
+    let mut session = sample_session();
+    let invite = build_invite(&mut session).expect("build invite");
     let err = parse_invite(&invite.invite_code, false, true)
         .expect_err("loopback should be blocked in internet mode");
     assert!(err.to_ascii_lowercase().contains("loopback"));
@@ -59,8 +72,8 @@ fn invite_parse_blocks_loopback_when_internet_mode_without_opt_in() {
 
 #[test]
 fn invite_parse_ignores_whitespace() {
-    let session = sample_session();
-    let invite = build_invite(&session).expect("build invite");
+    let mut session = sample_session();
+    let invite = build_invite(&mut session).expect("build invite");
     let mut spaced = String::new();
     for (idx, ch) in invite.invite_code.chars().enumerate() {
         spaced.push(ch);
@@ -89,6 +102,23 @@ fn invite_parse_accepts_legacy_payload_without_endpoints_array() {
     let parsed = parse_invite(&invite_code, true, false).expect("parse legacy invite");
     assert_eq!(parsed.bootstrap_peer_endpoint, "127.0.0.1:45001");
     assert_eq!(parsed.bootstrap_peer_endpoints, vec!["127.0.0.1:45001"]);
+    assert_eq!(parsed.invite_version, INVITE_VERSION_LEGACY);
+    assert!(parsed.invite_id.is_none());
+}
+
+#[test]
+fn internet_invite_defaults_to_short_lived_single_use() {
+    let mut session = sample_session();
+    session.allow_internet_endpoints = true;
+    let invite = build_invite(&mut session).expect("build internet invite");
+    let parsed = parse_invite(&invite.invite_code, true, true).expect("parse internet invite");
+    assert_eq!(parsed.invite_version, INVITE_VERSION_V2);
+    assert_eq!(parsed.max_uses, Some(1));
+    let expires = chrono::DateTime::parse_from_rfc3339(&parsed.expires_at)
+        .expect("parse expires")
+        .with_timezone(&chrono::Utc);
+    let minutes = (expires - chrono::Utc::now()).num_minutes();
+    assert!(minutes <= 10 && minutes >= 0);
 }
 
 #[test]
