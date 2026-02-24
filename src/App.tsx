@@ -168,6 +168,7 @@ type SchedulerCadence =
   | "weekly";
 type SchedulerAutoApplyMode = "never" | "opt_in_instances" | "all_instances";
 type SchedulerApplyScope = "scheduled_only" | "scheduled_and_manual";
+type UpdatableContentType = "mods" | "resourcepacks" | "datapacks" | "shaderpacks";
 type SettingsMode = "basic" | "advanced";
 type FriendSyncPolicy = "manual" | "ask" | "auto_metadata" | "auto_all";
 type FriendSyncPrefs = {
@@ -694,6 +695,36 @@ function localImportTypeLabel(input: "mods" | "resourcepacks" | "datapacks" | "s
   if (input === "resourcepacks") return "resourcepack";
   if (input === "datapacks") return "datapack";
   return "shaderpack";
+}
+
+function normalizeUpdatableContentType(input?: string): UpdatableContentType | null {
+  const value = String(input ?? "").trim().toLowerCase();
+  if (value === "mods" || value === "mod") return "mods";
+  if (value === "resourcepacks" || value === "resourcepack") return "resourcepacks";
+  if (value === "datapacks" || value === "datapack") return "datapacks";
+  if (value === "shaderpacks" || value === "shaderpack" || value === "shaders") return "shaderpacks";
+  return null;
+}
+
+function updateContentTypeLabel(value: UpdatableContentType): string {
+  if (value === "mods") return "mods";
+  if (value === "resourcepacks") return "resourcepacks";
+  if (value === "datapacks") return "datapacks";
+  return "shaders";
+}
+
+function summarizeUpdateContentTypeSelection(values: UpdatableContentType[]): string {
+  if (values.length === 0 || values.length === ALL_UPDATABLE_CONTENT_TYPES.length) {
+    return "all content";
+  }
+  return values.map((value) => updateContentTypeLabel(value)).join(", ");
+}
+
+function instanceContentSectionLabel(input: "mods" | "resourcepacks" | "datapacks" | "shaders") {
+  if (input === "mods") return "mods";
+  if (input === "resourcepacks") return "resource packs";
+  if (input === "datapacks") return "datapacks";
+  return "shaderpacks";
 }
 
 function discoverContentTypeToInstanceView(
@@ -1917,6 +1948,27 @@ const UPDATE_APPLY_SCOPE_OPTIONS: { value: SchedulerApplyScope; label: string }[
   { value: "scheduled_and_manual", label: "Scheduled + Check now" },
 ];
 
+const UPDATE_CONTENT_TYPE_OPTIONS: { value: UpdatableContentType; label: string }[] = [
+  { value: "mods", label: "Mods" },
+  { value: "resourcepacks", label: "Resourcepacks" },
+  { value: "datapacks", label: "Datapacks" },
+  { value: "shaderpacks", label: "Shaders" },
+];
+
+const ALL_UPDATABLE_CONTENT_TYPES: UpdatableContentType[] = UPDATE_CONTENT_TYPE_OPTIONS.map(
+  (item) => item.value
+);
+
+const UPDATE_CONTENT_TYPE_GROUPS: { group: string; items: { id: string; label: string }[] }[] = [
+  {
+    group: "Update content types",
+    items: UPDATE_CONTENT_TYPE_OPTIONS.map((item) => ({
+      id: item.value,
+      label: item.label,
+    })),
+  },
+];
+
 const WORLD_BACKUP_INTERVAL_OPTIONS: { value: string; label: string }[] = [
   { value: "5", label: "Every 5 minutes" },
   { value: "10", label: "Every 10 minutes" },
@@ -2919,12 +2971,30 @@ function MultiSelectDropdown({
   groups,
   onChange,
   placement,
+  showSearch = true,
+  searchPlaceholder = "Search categories…",
+  clearLabel = "Clear",
+  onClear,
+  disabled = false,
+  showGroupHeaders = true,
+  itemVariant = "drop",
+  panelMinWidth = 300,
+  panelEstimatedHeight = 420,
 }: {
   values: string[];
   placeholder: string;
   groups: { group: string; items: { id: string; label: string }[] }[];
   onChange: (v: string[]) => void;
   placement?: "top" | "bottom";
+  showSearch?: boolean;
+  searchPlaceholder?: string;
+  clearLabel?: string;
+  onClear?: () => void;
+  disabled?: boolean;
+  showGroupHeaders?: boolean;
+  itemVariant?: "drop" | "menu";
+  panelMinWidth?: number;
+  panelEstimatedHeight?: number;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -2934,8 +3004,8 @@ function MultiSelectDropdown({
     open,
     rootRef,
     placement,
-    estimatedHeight: 420,
-    minWidth: 300,
+    estimatedHeight: panelEstimatedHeight,
+    minWidth: panelMinWidth,
   });
 
   useEffect(() => {
@@ -3001,7 +3071,11 @@ function MultiSelectDropdown({
     <div className={`dropdown ${open ? "open" : ""}`} ref={rootRef}>
       <div
         className={`dropBtn ${values.length ? "value" : ""}`}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          if (disabled) return;
+          setOpen((o) => !o);
+        }}
+        style={disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
       >
         <div>{label}</div>
         <div style={{ opacity: 0.7 }}>▾</div>
@@ -3021,15 +3095,19 @@ function MultiSelectDropdown({
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <input
-                className="input"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search categories…"
-                autoFocus
-              />
+              {showSearch ? (
+                <>
+                  <input
+                    className="input"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder={searchPlaceholder}
+                    autoFocus
+                  />
 
-              <div style={{ height: 10 }} />
+                  <div style={{ height: 10 }} />
+                </>
+              ) : null}
 
               {filtered.length === 0 ? (
                 <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>
@@ -3038,13 +3116,15 @@ function MultiSelectDropdown({
               ) : (
                 filtered.map((g) => (
                   <div key={g.group}>
-                    <div className="groupHdr">{g.group}</div>
+                    {showGroupHeaders ? <div className="groupHdr">{g.group}</div> : null}
                     {g.items.map((it) => {
                       const checked = values.includes(it.id);
                       return (
                         <div
                           key={it.id}
-                          className={`dropItem ${checked ? "active" : ""}`}
+                          className={`${
+                            itemVariant === "menu" ? "menuItem" : "dropItem"
+                          } ${checked ? "active" : ""}`}
                           style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
                           onClick={() => toggle(it.id)}
                         >
@@ -3064,11 +3144,15 @@ function MultiSelectDropdown({
                 <button
                   className="dropMiniBtn"
                   onClick={() => {
-                    onChange([]);
+                    if (onClear) {
+                      onClear();
+                    } else {
+                      onChange([]);
+                    }
                     setQ("");
                   }}
                 >
-                  Clear
+                  {clearLabel}
                 </button>
                 <div style={{ flex: 1 }} />
                 <button
@@ -4522,6 +4606,9 @@ export default function App() {
   const [updateCheckCadence, setUpdateCheckCadence] = useState<SchedulerCadence>("daily");
   const [updateAutoApplyMode, setUpdateAutoApplyMode] = useState<SchedulerAutoApplyMode>("never");
   const [updateApplyScope, setUpdateApplyScope] = useState<SchedulerApplyScope>("scheduled_only");
+  const [updatesPageContentTypes, setUpdatesPageContentTypes] = useState<UpdatableContentType[]>(
+    ALL_UPDATABLE_CONTENT_TYPES
+  );
   const [launcherSettings, setLauncherSettingsState] = useState<LauncherSettings | null>(null);
   const [autoIdentifyLocalJarsBusy, setAutoIdentifyLocalJarsBusy] = useState(false);
   const [launcherAccounts, setLauncherAccounts] = useState<LauncherAccount[]>([]);
@@ -4785,6 +4872,51 @@ export default function App() {
   const scheduledInstancesWithUpdatesCount = useMemo(
     () => scheduledUpdateEntries.filter((row) => (row.update_count ?? 0) > 0).length,
     [scheduledUpdateEntries]
+  );
+  const updatesPageContentTypesNormalized = useMemo(() => {
+    const seen = new Set<UpdatableContentType>();
+    const ordered: UpdatableContentType[] = [];
+    for (const candidate of updatesPageContentTypes) {
+      const normalized = normalizeUpdatableContentType(candidate);
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      ordered.push(normalized);
+    }
+    if (ordered.length === 0) {
+      return [...ALL_UPDATABLE_CONTENT_TYPES];
+    }
+    return ALL_UPDATABLE_CONTENT_TYPES.filter((value) => seen.has(value));
+  }, [updatesPageContentTypes]);
+  const updatesPageUseAllContentTypes = useMemo(
+    () => updatesPageContentTypesNormalized.length === ALL_UPDATABLE_CONTENT_TYPES.length,
+    [updatesPageContentTypesNormalized]
+  );
+  const updatesPageBackendContentTypes = useMemo(
+    () => (updatesPageUseAllContentTypes ? [] : [...updatesPageContentTypesNormalized]),
+    [updatesPageUseAllContentTypes, updatesPageContentTypesNormalized]
+  );
+  const updatesPageVisibleEntries = useMemo(() => {
+    if (updatesPageUseAllContentTypes) return scheduledUpdateEntries;
+    const filterSet = new Set<UpdatableContentType>(updatesPageContentTypesNormalized);
+    return scheduledUpdateEntries.map((row) => {
+      const filteredUpdates = row.updates.filter((item) => {
+        const normalized = normalizeUpdatableContentType(item.content_type);
+        return normalized ? filterSet.has(normalized) : false;
+      });
+      return {
+        ...row,
+        update_count: filteredUpdates.length,
+        updates: filteredUpdates,
+      };
+    });
+  }, [scheduledUpdateEntries, updatesPageUseAllContentTypes, updatesPageContentTypesNormalized]);
+  const updatesPageUpdatesAvailableTotal = useMemo(
+    () => updatesPageVisibleEntries.reduce((sum, row) => sum + Math.max(0, row.update_count || 0), 0),
+    [updatesPageVisibleEntries]
+  );
+  const updatesPageInstancesWithUpdatesCount = useMemo(
+    () => updatesPageVisibleEntries.filter((row) => (row.update_count ?? 0) > 0).length,
+    [updatesPageVisibleEntries]
   );
   const perfActionMetrics = useMemo(() => {
     if (perfActions.length === 0) return null;
@@ -5844,7 +5976,10 @@ export default function App() {
     setCurseforgeDetailTab("overview");
     setCurseforgeOpenContentType(contentType ?? "mods");
     try {
-      const detail = await getCurseforgeProjectDetail({ projectId });
+      const detail = await getCurseforgeProjectDetail({
+        projectId,
+        contentType: contentType ?? "mods",
+      });
       setCurseforgeOpen(detail);
     } catch (e: any) {
       setCurseforgeErr(e?.toString?.() ?? String(e));
@@ -6651,6 +6786,7 @@ export default function App() {
         try {
           const detail = await getCurseforgeProjectDetail({
             projectId: target.projectId,
+            contentType: target.contentType,
           });
           if (detail.external_url?.trim()) {
             projectUrl = detail.external_url.trim();
@@ -7686,9 +7822,21 @@ export default function App() {
     }));
   }
 
-  async function runScheduledUpdateChecks(reason: "manual" | "scheduled" = "manual") {
+  async function runScheduledUpdateChecks(
+    reason: "manual" | "scheduled" = "manual",
+    options?: { contentTypes?: string[] }
+  ) {
     if (scheduledUpdateRunningRef.current) return;
     if (instances.length === 0) return;
+    const contentTypes = (options?.contentTypes ?? [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    const hasContentTypeFilter = contentTypes.length > 0;
+    const contentScopeLabel = summarizeUpdateContentTypeSelection(
+      contentTypes
+        .map((value) => normalizeUpdatableContentType(value))
+        .filter((value): value is UpdatableContentType => Boolean(value))
+    );
     const runStartedPerf = performance.now();
     const runStartedAt = Date.now();
     let runSucceeded = false;
@@ -7713,7 +7861,10 @@ export default function App() {
       const instanceStartedAt = performance.now();
       let instanceSuccess = false;
       try {
-        const result = await checkInstanceContentUpdates({ instanceId: inst.id });
+        const result = await checkInstanceContentUpdates({
+          instanceId: inst.id,
+          ...(hasContentTypeFilter ? { contentTypes } : {}),
+        });
         const shouldAutoApplyForInstance =
           canAutoApplyInRun &&
           result.update_count > 0 &&
@@ -7722,7 +7873,10 @@ export default function App() {
               Boolean(inst.settings?.auto_update_installed_content)));
         if (shouldAutoApplyForInstance) {
           try {
-            const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
+            const applyResult = await updateAllInstanceContent({
+              instanceId: inst.id,
+              ...(hasContentTypeFilter ? { contentTypes } : {}),
+            });
             autoAppliedInstances += 1;
             autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
             const estimatedAfterApply = estimatePostApplyUpdateCheck(
@@ -7807,7 +7961,9 @@ export default function App() {
           autoAppliedInstances > 0
             ? ` Auto-applied ${autoAppliedEntries} update${autoAppliedEntries === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
             : "";
-        setInstallNotice(`Checked ${completed} instance${completed === 1 ? "" : "s"} for updates.${autoAppliedMsg}`);
+        setInstallNotice(
+          `Checked ${completed} instance${completed === 1 ? "" : "s"} for ${contentScopeLabel} updates.${autoAppliedMsg}`
+        );
       } else if (autoAppliedInstances > 0) {
         setInstallNotice(
           `Auto-applied ${autoAppliedEntries} update${autoAppliedEntries === 1 ? "" : "s"} across ${autoAppliedInstances} instance${autoAppliedInstances === 1 ? "" : "s"}.`
@@ -7838,14 +7994,23 @@ export default function App() {
       autoApplyIfConfigured?: boolean;
       syncSelectedInstanceMods?: boolean;
       quietSuccessNotice?: boolean;
+      contentTypes?: string[];
+      persistScheduledCache?: boolean;
     }
   ) {
     const startedAt = performance.now();
     let succeeded = false;
+    const contentTypes = (options?.contentTypes ?? [])
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean);
+    const shouldPersistScheduledCache = options?.persistScheduledCache !== false;
     setUpdateBusy(true);
     setUpdateErr(null);
     try {
-      const res = await checkInstanceContentUpdates({ instanceId: inst.id });
+      const res = await checkInstanceContentUpdates({
+        instanceId: inst.id,
+        ...(contentTypes.length > 0 ? { contentTypes } : {}),
+      });
       let nextCheck = res;
       const shouldAutoApply =
         Boolean(options?.autoApplyIfConfigured) &&
@@ -7853,7 +8018,10 @@ export default function App() {
         shouldAutoApplyManualChecksForInstance(inst);
 
       if (shouldAutoApply) {
-        const applyResult = await updateAllInstanceContent({ instanceId: inst.id });
+        const applyResult = await updateAllInstanceContent({
+          instanceId: inst.id,
+          ...(contentTypes.length > 0 ? { contentTypes } : {}),
+        });
         nextCheck = estimatePostApplyUpdateCheck(res, applyResult.updated_entries ?? 0);
         if (!options?.quietSuccessNotice) {
           if ((applyResult.warnings?.length ?? 0) > 0) {
@@ -7894,12 +8062,16 @@ export default function App() {
           await refreshInstalledMods(inst.id);
         }
       }
-      storeScheduledUpdateResult(inst, nextCheck, new Date().toISOString(), null);
+      if (shouldPersistScheduledCache) {
+        storeScheduledUpdateResult(inst, nextCheck, new Date().toISOString(), null);
+      }
       succeeded = true;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setUpdateErr(msg);
-      storeScheduledUpdateResult(inst, null, new Date().toISOString(), msg);
+      if (shouldPersistScheduledCache) {
+        storeScheduledUpdateResult(inst, null, new Date().toISOString(), msg);
+      }
     } finally {
       recordPerfAction(
         "check_instance_updates_manual",
@@ -7911,38 +8083,35 @@ export default function App() {
     }
   }
 
-  async function onUpdateAll(inst: Instance) {
+  async function onUpdateAll(
+    inst: Instance,
+    contentView: "mods" | "resourcepacks" | "datapacks" | "shaders" = "mods"
+  ) {
     const startedAt = performance.now();
     let succeeded = false;
+    const contentTypes = [instanceContentTypeToBackend(contentView)];
+    const sectionLabel = instanceContentSectionLabel(contentView);
     setUpdateAllBusy(true);
     setUpdateErr(null);
     setError(null);
     try {
-      setInstallNotice("Updating all content… this can take a bit on larger packs.");
-      const res = await updateAllInstanceContent({ instanceId: inst.id });
+      setInstallNotice(`Updating all ${sectionLabel}… this can take a bit on larger packs.`);
+      const res = await updateAllInstanceContent({
+        instanceId: inst.id,
+        contentTypes,
+      });
       if (selectedId === inst.id) {
         void refreshInstalledMods(inst.id);
       }
-      const cached = scheduledUpdateEntriesByInstance[inst.id];
-      if (cached) {
-        const baseline: ContentUpdateCheckResult = {
-          checked_entries: cached.checked_entries,
-          update_count: cached.update_count,
-          updates: cached.updates ?? [],
-          warnings: [],
-        };
-        const estimated = estimatePostApplyUpdateCheck(baseline, res.updated_entries ?? 0);
-        storeScheduledUpdateResult(inst, estimated, new Date().toISOString(), null);
-        if (selectedId === inst.id) {
-          setUpdateCheck(estimated);
-        }
-      } else {
-        void onCheckUpdates(inst, { quietSuccessNotice: true });
-      }
+      void onCheckUpdates(inst, {
+        quietSuccessNotice: true,
+        contentTypes,
+        persistScheduledCache: false,
+      });
       if (res.warnings.length > 0) {
         const warningSummary = summarizeWarnings(res.warnings, 3);
         setInstallNotice(
-          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} with ${res.warnings.length} warning${res.warnings.length === 1 ? "" : "s"}: ${warningSummary}`
+          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} in ${sectionLabel} with ${res.warnings.length} warning${res.warnings.length === 1 ? "" : "s"}: ${warningSummary}`
         );
         appendInstanceActivity(
           inst.id,
@@ -7951,7 +8120,7 @@ export default function App() {
         );
       } else {
         setInstallNotice(
-          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"}.`
+          `Updated ${res.updated_entries} entr${res.updated_entries === 1 ? "y" : "ies"} in ${sectionLabel}.`
         );
       }
       succeeded = true;
@@ -7959,7 +8128,6 @@ export default function App() {
       const msg = e?.toString?.() ?? String(e);
       setUpdateErr(msg);
       setError(msg);
-      storeScheduledUpdateResult(inst, null, new Date().toISOString(), msg);
     } finally {
       recordPerfAction(
         "update_all_instance_content",
@@ -7991,6 +8159,12 @@ export default function App() {
     setUpdateErr(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, selectedId]);
+
+  useEffect(() => {
+    if (route !== "instance" || !selectedId || instanceTab !== "content") return;
+    setUpdateCheck(null);
+    setUpdateErr(null);
+  }, [route, selectedId, instanceTab, instanceContentType]);
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
@@ -10981,6 +11155,9 @@ export default function App() {
     }
 
     if (route === "updates") {
+      const updatesContentScopeSummary = summarizeUpdateContentTypeSelection(
+        updatesPageContentTypesNormalized
+      );
       return (
         <div className="page">
           <div style={{ maxWidth: 1100 }}>
@@ -11010,14 +11187,53 @@ export default function App() {
                       Last run duration: {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
                     </div>
                   ) : null}
+                  <div className="settingSub" style={{ marginTop: 6 }}>
+                    Content scope: {updatesContentScopeSummary}
+                  </div>
                 </div>
                 <div className="updatesScreenSummaryActions">
-                  <button className="btn primary" onClick={() => void runScheduledUpdateChecks("manual")} disabled={scheduledUpdateBusy}>
+                  <button
+                    className="btn primary"
+                    onClick={() =>
+                      void runScheduledUpdateChecks("manual", {
+                        contentTypes: updatesPageBackendContentTypes,
+                      })
+                    }
+                    disabled={scheduledUpdateBusy}
+                  >
                     {scheduledUpdateBusy ? "Checking…" : "Check now"}
                   </button>
                 </div>
               </div>
               <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 260, maxWidth: 360, flex: "1 1 280px" }}>
+                  <MultiSelectDropdown
+                    values={updatesPageUseAllContentTypes ? [] : updatesPageContentTypesNormalized}
+                    placeholder="Update only: All content"
+                    groups={UPDATE_CONTENT_TYPE_GROUPS}
+                    showSearch={false}
+                    showGroupHeaders={false}
+                    itemVariant="menu"
+                    panelMinWidth={260}
+                    panelEstimatedHeight={320}
+                    clearLabel="All content"
+                    disabled={scheduledUpdateBusy}
+                    onClear={() => setUpdatesPageContentTypes([])}
+                    onChange={(next) => {
+                      const normalized = next
+                        .map((item) => normalizeUpdatableContentType(item))
+                        .filter((item): item is UpdatableContentType => Boolean(item));
+                      if (normalized.length === 0) {
+                        setUpdatesPageContentTypes([]);
+                        return;
+                      }
+                      const picked = new Set<UpdatableContentType>(normalized);
+                      setUpdatesPageContentTypes(
+                        ALL_UPDATABLE_CONTENT_TYPES.filter((item) => picked.has(item))
+                      );
+                    }}
+                  />
+                </div>
                 <MenuSelect
                   value={updateCheckCadence}
                   labelPrefix="Check cadence"
@@ -11051,14 +11267,14 @@ export default function App() {
                 {updatePrefsBusy ? <span className="chip">Saving…</span> : <span className="chip subtle">Saved</span>}
               </div>
               <div className="updatesScreenStatsRow">
-                <span className="chip subtle">{scheduledInstancesWithUpdatesCount} instance{scheduledInstancesWithUpdatesCount === 1 ? "" : "s"} with updates</span>
-                <span className="chip">{scheduledUpdatesAvailableTotal} total update{scheduledUpdatesAvailableTotal === 1 ? "" : "s"}</span>
-                <span className="chip subtle">{scheduledUpdateEntries.length} checked instance{scheduledUpdateEntries.length === 1 ? "" : "s"}</span>
+                <span className="chip subtle">{updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} with updates</span>
+                <span className="chip">{updatesPageUpdatesAvailableTotal} total update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"}</span>
+                <span className="chip subtle">{updatesPageVisibleEntries.length} checked instance{updatesPageVisibleEntries.length === 1 ? "" : "s"}</span>
               </div>
               {scheduledUpdateErr ? <div className="errorBox" style={{ marginTop: 10 }}>{scheduledUpdateErr}</div> : null}
             </div>
 
-            {scheduledUpdateEntries.length === 0 ? (
+            {updatesPageVisibleEntries.length === 0 ? (
               <div className="emptyState" style={{ marginTop: 12 }}>
                 <div className="emptyTitle">No scheduled update checks yet</div>
                 <div className="emptySub">
@@ -11069,7 +11285,7 @@ export default function App() {
               </div>
             ) : (
               <div className="updatesScreenList">
-                {scheduledUpdateEntries.map((row) => (
+                {updatesPageVisibleEntries.map((row) => (
                   <div key={row.instance_id} className="card updatesScreenItemCard">
                     <div className="updatesScreenItemHead">
                       <div>
@@ -11090,6 +11306,7 @@ export default function App() {
                               void onCheckUpdates(inst, {
                                 autoApplyIfConfigured: true,
                                 syncSelectedInstanceMods: true,
+                                contentTypes: updatesPageBackendContentTypes,
                               });
                             }
                           }}
@@ -12483,22 +12700,29 @@ export default function App() {
                       <div className="instanceContentUpdateRow">
                         <button
                           className="btn"
-                          onClick={() => onCheckUpdates(inst)}
+                          onClick={() =>
+                            onCheckUpdates(inst, {
+                              contentTypes: [instanceContentTypeToBackend(instanceContentType)],
+                              persistScheduledCache: false,
+                            })
+                          }
                           disabled={updateBusy || updateAllBusy}
                         >
                           {updateBusy ? "Checking…" : "Refresh"}
                         </button>
                         <button
                           className="btn primary"
-                          onClick={() => onUpdateAll(inst)}
+                          onClick={() => onUpdateAll(inst, instanceContentType)}
                           disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
                         >
-                          {updateAllBusy ? "Updating…" : "Update all"}
+                          {updateAllBusy
+                            ? "Updating…"
+                            : `Update all ${instanceContentSectionLabel(instanceContentType)}`}
                         </button>
                         <span className="muted instanceContentControlHint">
                           {updateCheck?.update_count
-                            ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending`
-                            : "Run refresh to check updates"}
+                            ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending in ${instanceContentSectionLabel(instanceContentType)}`
+                            : `Run refresh to check ${instanceContentSectionLabel(instanceContentType)} updates`}
                         </span>
                       </div>
                       {snapshots.length > 0 ? (

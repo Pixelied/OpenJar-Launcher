@@ -530,6 +530,8 @@ struct ImportLocalModFileArgs {
 struct CheckUpdatesArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
+    #[serde(alias = "contentTypes", default)]
+    content_types: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -879,6 +881,8 @@ struct ImportProviderModpackArgs {
 struct GetCurseforgeProjectArgs {
     #[serde(alias = "projectId")]
     project_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1058,6 +1062,9 @@ struct CurseforgeFileHash {
 #[derive(Debug, Clone, Deserialize)]
 struct CurseforgeMod {
     id: i64,
+    #[serde(default)]
+    #[serde(rename = "classId")]
+    class_id: i64,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -6588,6 +6595,31 @@ fn is_updatable_content_type(content_type: &str) -> bool {
     )
 }
 
+fn parse_update_content_type_filter_value(input: &str) -> Option<String> {
+    match input.trim().to_lowercase().as_str() {
+        "mods" | "mod" => Some("mods".to_string()),
+        "resourcepacks" | "resourcepack" => Some("resourcepacks".to_string()),
+        "shaderpacks" | "shaderpack" | "shaders" | "shader" => Some("shaderpacks".to_string()),
+        "datapacks" | "datapack" => Some("datapacks".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_update_content_type_filter(requested: Option<&[String]>) -> Option<HashSet<String>> {
+    let values = requested?;
+    let mut out = HashSet::new();
+    for value in values {
+        if let Some(normalized) = parse_update_content_type_filter_value(value) {
+            out.insert(normalized);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool {
     let source = entry.source.trim().to_lowercase();
     let content_type = normalize_lock_content_type(&entry.content_type);
@@ -6598,6 +6630,20 @@ fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool 
         UpdateScope::AllContent => source == "modrinth" || source == "curseforge",
         UpdateScope::ModrinthModsOnly => source == "modrinth" && content_type == "mods",
     }
+}
+
+fn entry_allowed_in_content_type_filter(
+    entry: &LockEntry,
+    content_type_filter: Option<&HashSet<String>>,
+) -> bool {
+    let Some(filter) = content_type_filter else {
+        return true;
+    };
+    if filter.is_empty() {
+        return true;
+    }
+    let content_type = normalize_lock_content_type(&entry.content_type);
+    filter.contains(&content_type)
 }
 
 fn check_single_content_update_entry(
@@ -6758,13 +6804,17 @@ fn check_instance_content_updates_inner(
     instance: &Instance,
     lock: &Lockfile,
     scope: UpdateScope,
+    content_type_filter: Option<&HashSet<String>>,
 ) -> Result<ContentUpdateCheckResult, String> {
     let mut updates: Vec<ContentUpdateInfo> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
     let candidate_entries: Vec<LockEntry> = lock
         .entries
         .iter()
-        .filter(|e| entry_allowed_in_update_scope(e, scope))
+        .filter(|e| {
+            entry_allowed_in_update_scope(e, scope)
+                && entry_allowed_in_content_type_filter(e, content_type_filter)
+        })
         .cloned()
         .collect();
     let checked_entries = candidate_entries.len();
@@ -7630,6 +7680,61 @@ fn discover_content_type_from_curseforge_class_id(
     }
 }
 
+fn curseforge_web_category_path_for_content_type(content_type: &str) -> &'static str {
+    match normalize_discover_content_type(content_type).as_str() {
+        "resourcepacks" => "texture-packs",
+        "shaderpacks" => "shaders",
+        "datapacks" => "data-packs",
+        "modpacks" => "modpacks",
+        _ => "mc-mods",
+    }
+}
+
+fn curseforge_external_project_url(
+    project_id: &str,
+    slug: Option<&str>,
+    content_type: &str,
+) -> String {
+    let category = curseforge_web_category_path_for_content_type(content_type);
+    let project_slug = slug
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(project_id.trim());
+    format!(
+        "https://www.curseforge.com/minecraft/{}/{}",
+        category, project_slug
+    )
+}
+
+fn infer_curseforge_project_content_type(
+    project: &CurseforgeMod,
+    requested_content_type: Option<&str>,
+) -> String {
+    if let Some(requested) = requested_content_type {
+        let normalized = normalize_discover_content_type(requested);
+        if !normalized.is_empty() {
+            return normalized;
+        }
+    }
+
+    if project.class_id == 12 {
+        let has_shader_category = project.categories.iter().any(|category| {
+            category
+                .slug
+                .as_ref()
+                .map(|slug| slug.to_ascii_lowercase().contains("shader"))
+                .unwrap_or(false)
+                || category.name.to_ascii_lowercase().contains("shader")
+        });
+        if has_shader_category {
+            return "shaderpacks".to_string();
+        }
+        return "resourcepacks".to_string();
+    }
+
+    discover_content_type_from_curseforge_class_id(project.class_id, "mods")
+}
+
 fn parse_mc_version_parts_loose(input: &str) -> Option<(u32, u32, Option<u32>)> {
     let mut numbers = Vec::new();
     for token in input.split(|c: char| !c.is_ascii_digit()) {
@@ -7699,9 +7804,10 @@ fn file_looks_compatible_with_instance(
         return false;
     }
     let target_mc = instance.mc_version.to_lowercase();
-    if !values.iter().any(|v| {
-        minecraft_version_matches_advertised(v, &target_mc, normalized != "mods")
-    }) {
+    if !values
+        .iter()
+        .any(|v| minecraft_version_matches_advertised(v, &target_mc, normalized != "mods"))
+    {
         return false;
     }
     if normalized != "mods" {
@@ -7733,9 +7839,9 @@ fn pick_compatible_version_for_content(
     let mut compatible: Vec<ModrinthVersion> = versions
         .into_iter()
         .filter(|v| {
-            v.game_versions
-                .iter()
-                .any(|gv| minecraft_version_matches_advertised(gv, &target_mc, normalized != "mods"))
+            v.game_versions.iter().any(|gv| {
+                minecraft_version_matches_advertised(gv, &target_mc, normalized != "mods")
+            })
         })
         .filter(|v| {
             if normalized == "mods" {
@@ -8562,11 +8668,12 @@ fn search_curseforge_discover(
                 categories,
                 versions: Vec::new(),
                 date_modified: item.date_modified.clone(),
-                content_type: hit_content_type,
+                content_type: hit_content_type.clone(),
                 slug: item.slug.clone(),
-                external_url: Some(format!(
-                    "https://www.curseforge.com/minecraft/mc-mods/{}",
-                    item.slug.unwrap_or_else(|| project_id.clone())
+                external_url: Some(curseforge_external_project_url(
+                    &project_id,
+                    item.slug.as_deref(),
+                    &hit_content_type,
                 )),
             });
         }
@@ -11559,6 +11666,8 @@ fn get_curseforge_project_detail_inner(
         .json::<CurseforgeModResponse>()
         .map_err(|e| format!("parse CurseForge project failed: {e}"))?
         .data;
+    let detail_content_type =
+        infer_curseforge_project_content_type(&project, args.content_type.as_deref());
 
     let desc_url = format!("{}/mods/{}/description", CURSEFORGE_API_BASE, project_id);
     let description = match client
@@ -11612,12 +11721,10 @@ fn get_curseforge_project_detail_inner(
         .collect::<Vec<_>>();
 
     let project_id_text = project.id.to_string();
-    let external_url = Some(format!(
-        "https://www.curseforge.com/minecraft/mc-mods/{}",
-        project
-            .slug
-            .clone()
-            .unwrap_or_else(|| project_id_text.clone())
+    let external_url = Some(curseforge_external_project_url(
+        &project_id_text,
+        project.slug.as_deref(),
+        &detail_content_type,
     ));
     let author_names = project
         .authors
@@ -13142,7 +13249,14 @@ fn check_instance_content_updates_command_inner(
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let client = build_http_client()?;
-    check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)
+    let content_type_filter = normalize_update_content_type_filter(args.content_types.as_deref());
+    check_instance_content_updates_inner(
+        &client,
+        &instance,
+        &lock,
+        UpdateScope::AllContent,
+        content_type_filter.as_ref(),
+    )
 }
 
 fn update_all_instance_content_inner(
@@ -13153,8 +13267,14 @@ fn update_all_instance_content_inner(
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let client = build_http_client()?;
-    let check =
-        check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)?;
+    let content_type_filter = normalize_update_content_type_filter(args.content_types.as_deref());
+    let check = check_instance_content_updates_inner(
+        &client,
+        &instance,
+        &lock,
+        UpdateScope::AllContent,
+        content_type_filter.as_ref(),
+    )?;
 
     if !check.updates.is_empty() {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
@@ -13310,6 +13430,7 @@ fn check_modrinth_updates_inner(
         &instance,
         &lock,
         UpdateScope::ModrinthModsOnly,
+        None,
     )?;
     Ok(content_updates_to_modrinth_result(content))
 }
@@ -13338,6 +13459,7 @@ fn update_all_modrinth_mods_inner(
         &instance,
         &lock,
         UpdateScope::ModrinthModsOnly,
+        None,
     )?;
     if !check.updates.is_empty() {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
@@ -14798,6 +14920,25 @@ mod content_compatibility_tests {
         }
     }
 
+    fn make_cf_project(
+        class_id: i64,
+        slug: &str,
+        categories: Vec<CurseforgeCategory>,
+    ) -> CurseforgeMod {
+        CurseforgeMod {
+            id: 12345,
+            class_id,
+            name: "Project".to_string(),
+            slug: Some(slug.to_string()),
+            summary: String::new(),
+            download_count: 0.0,
+            date_modified: String::new(),
+            authors: vec![],
+            categories,
+            logo: None,
+        }
+    }
+
     #[test]
     fn non_mod_curseforge_compatibility_ignores_loader_tags() {
         let instance = make_instance("fabric", "1.20.1");
@@ -14851,6 +14992,74 @@ mod content_compatibility_tests {
         let instance = make_instance("fabric", "1.20.1");
         let versions = vec![make_modrinth_version(vec!["1.20.1"], vec!["forge"])];
         assert!(pick_compatible_version_for_content(versions, &instance, "mods").is_none());
+    }
+
+    #[test]
+    fn normalize_update_content_type_filter_accepts_supported_aliases() {
+        let requested = vec![
+            "shaders".to_string(),
+            "resourcepacks".to_string(),
+            "mods".to_string(),
+        ];
+        let filter = normalize_update_content_type_filter(Some(&requested))
+            .expect("filter should include supported content types");
+        assert!(filter.contains("shaderpacks"));
+        assert!(filter.contains("resourcepacks"));
+        assert!(filter.contains("mods"));
+    }
+
+    #[test]
+    fn normalize_update_content_type_filter_ignores_unsupported_values() {
+        let requested = vec!["modpacks".to_string(), "unknown".to_string()];
+        assert!(normalize_update_content_type_filter(Some(&requested)).is_none());
+    }
+
+    #[test]
+    fn curseforge_resourcepack_slug_uses_texture_packs_url_path() {
+        let url =
+            curseforge_external_project_url("12345", Some("fresh-animations"), "resourcepacks");
+        assert_eq!(
+            url,
+            "https://www.curseforge.com/minecraft/texture-packs/fresh-animations"
+        );
+    }
+
+    #[test]
+    fn infer_curseforge_class_12_without_shader_category_defaults_to_resourcepacks() {
+        let project = make_cf_project(
+            12,
+            "fresh-animations",
+            vec![CurseforgeCategory {
+                name: "Resource Packs".to_string(),
+                slug: Some("resource-packs".to_string()),
+            }],
+        );
+        let inferred = infer_curseforge_project_content_type(&project, None);
+        assert_eq!(inferred, "resourcepacks");
+        let url = curseforge_external_project_url("12345", project.slug.as_deref(), &inferred);
+        assert_eq!(
+            url,
+            "https://www.curseforge.com/minecraft/texture-packs/fresh-animations"
+        );
+    }
+
+    #[test]
+    fn infer_curseforge_class_12_shader_category_uses_shaders_path() {
+        let project = make_cf_project(
+            12,
+            "complementary-shaders",
+            vec![CurseforgeCategory {
+                name: "Shaders".to_string(),
+                slug: Some("shaders".to_string()),
+            }],
+        );
+        let inferred = infer_curseforge_project_content_type(&project, None);
+        assert_eq!(inferred, "shaderpacks");
+        let url = curseforge_external_project_url("12345", project.slug.as_deref(), &inferred);
+        assert_eq!(
+            url,
+            "https://www.curseforge.com/minecraft/shaders/complementary-shaders"
+        );
     }
 }
 

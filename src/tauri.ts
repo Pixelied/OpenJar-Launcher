@@ -193,6 +193,7 @@ export function checkModrinthUpdates(input: {
 
 export function checkInstanceContentUpdates(input: {
   instanceId: string;
+  contentTypes?: string[];
 }): Promise<ContentUpdateCheckResult> {
   return invoke("check_instance_content_updates", { args: input });
 }
@@ -205,6 +206,7 @@ export function updateAllModrinthMods(input: {
 
 export function updateAllInstanceContent(input: {
   instanceId: string;
+  contentTypes?: string[];
 }): Promise<UpdateAllContentResult> {
   return invoke("update_all_instance_content", { args: input });
 }
@@ -225,6 +227,7 @@ export function searchDiscoverContent(input: {
 
 export function getCurseforgeProjectDetail(input: {
   projectId: string;
+  contentType?: DiscoverContentType;
 }): Promise<CurseforgeProjectDetail> {
   return invoke("get_curseforge_project_detail", { args: input });
 }
