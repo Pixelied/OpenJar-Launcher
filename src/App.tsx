@@ -118,6 +118,7 @@ import {
   setLauncherSettings,
   setInstanceIcon,
   setInstalledModEnabled,
+  syncFriendLinkSelected,
   stopRunningInstance,
   resolveLocalModSources,
   upsertModpackSpec,
@@ -168,6 +169,11 @@ type SchedulerCadence =
 type SchedulerAutoApplyMode = "never" | "opt_in_instances" | "all_instances";
 type SchedulerApplyScope = "scheduled_only" | "scheduled_and_manual";
 type SettingsMode = "basic" | "advanced";
+type FriendSyncPolicy = "manual" | "ask" | "auto_metadata" | "auto_all";
+type FriendSyncPrefs = {
+  policy: FriendSyncPolicy;
+  snoozed_until: number;
+};
 
 type VersionItem = {
   id: string;
@@ -1227,6 +1233,37 @@ function friendLinkDriftSignature(preview?: FriendLinkDriftPreview | null): stri
     .map((item) => `${item.kind}|${item.key}|${item.change}|${item.peer_id}`)
     .sort();
   return `${preview.status}|${preview.added}|${preview.removed}|${preview.changed}|${rows.join("||")}`;
+}
+
+const FRIEND_SYNC_PREFS_KEY = "mpm.friend_link.sync_prefs.v1";
+const DEFAULT_FRIEND_SYNC_PREFS: FriendSyncPrefs = {
+  policy: "ask",
+  snoozed_until: 0,
+};
+const FRIEND_LINK_AUTOSYNC_INTERVAL_MS = 12000;
+
+function normalizeFriendSyncPolicy(raw: unknown): FriendSyncPolicy {
+  const policy = String(raw ?? "").trim();
+  if (policy === "manual" || policy === "ask" || policy === "auto_metadata" || policy === "auto_all") {
+    return policy;
+  }
+  return "ask";
+}
+
+function readFriendSyncPrefs(instanceId: string): FriendSyncPrefs {
+  if (typeof window === "undefined") return DEFAULT_FRIEND_SYNC_PREFS;
+  try {
+    const raw = localStorage.getItem(FRIEND_SYNC_PREFS_KEY);
+    if (!raw) return DEFAULT_FRIEND_SYNC_PREFS;
+    const parsed = JSON.parse(raw) as Record<string, any>;
+    const row = parsed?.[instanceId] as Record<string, any> | undefined;
+    return {
+      policy: normalizeFriendSyncPolicy(row?.policy),
+      snoozed_until: Number(row?.snoozed_until ?? 0) || 0,
+    };
+  } catch {
+    return DEFAULT_FRIEND_SYNC_PREFS;
+  }
 }
 
 const SKIN_HEAD_CACHE_MAX = 120;
@@ -4359,6 +4396,9 @@ export default function App() {
   const [friendLinkStatusByInstance, setFriendLinkStatusByInstance] = useState<Record<string, FriendLinkStatus>>({});
   const [friendLinkDriftByInstance, setFriendLinkDriftByInstance] = useState<Record<string, FriendLinkDriftPreview>>({});
   const friendLinkDriftAnnounceRef = useRef<Record<string, string>>({});
+  const friendLinkAutoSyncBusyRef = useRef(false);
+  const friendLinkAutoSyncInFlightRef = useRef<Record<string, boolean>>({});
+  const friendLinkAutoSyncLastSignatureRef = useRef<Record<string, string>>({});
   const [friendLinkSyncBusyInstanceId, setFriendLinkSyncBusyInstanceId] = useState<string | null>(null);
   const [friendConflictInstanceId, setFriendConflictInstanceId] = useState<string | null>(null);
   const [friendConflictResult, setFriendConflictResult] = useState<FriendLinkReconcileResult | null>(null);
@@ -7943,6 +7983,149 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [route, instances, selectedId, instanceLinksOpen, friendConflictResult]);
+
+  useEffect(() => {
+    if (instances.length === 0) return;
+    let cancelled = false;
+
+    const runAutoSyncSweep = async () => {
+      if (cancelled || friendLinkAutoSyncBusyRef.current) return;
+      friendLinkAutoSyncBusyRef.current = true;
+      try {
+        const activeIds = new Set(instances.map((inst) => inst.id));
+        for (const id of Object.keys(friendLinkAutoSyncLastSignatureRef.current)) {
+          if (!activeIds.has(id)) delete friendLinkAutoSyncLastSignatureRef.current[id];
+        }
+        for (const id of Object.keys(friendLinkAutoSyncInFlightRef.current)) {
+          if (!activeIds.has(id)) delete friendLinkAutoSyncInFlightRef.current[id];
+        }
+
+        for (const inst of instances) {
+          if (cancelled) break;
+
+          const prefs = readFriendSyncPrefs(inst.id);
+          if (prefs.policy !== "auto_metadata" && prefs.policy !== "auto_all") {
+            delete friendLinkAutoSyncLastSignatureRef.current[inst.id];
+            continue;
+          }
+          if (prefs.snoozed_until > Date.now()) continue;
+          if (friendLinkAutoSyncInFlightRef.current[inst.id]) continue;
+
+          const status = await getFriendLinkStatus({ instanceId: inst.id }).catch(() => null);
+          if (!status?.linked || (status.peers?.length ?? 0) === 0) {
+            delete friendLinkAutoSyncLastSignatureRef.current[inst.id];
+            continue;
+          }
+
+          const preview = await previewFriendLinkDrift({ instanceId: inst.id }).catch(() => null);
+          if (!preview || preview.status !== "unsynced" || preview.total_changes <= 0) {
+            delete friendLinkAutoSyncLastSignatureRef.current[inst.id];
+            continue;
+          }
+
+          const signature = friendLinkDriftSignature(preview);
+          if (!signature || friendLinkAutoSyncLastSignatureRef.current[inst.id] === signature) {
+            continue;
+          }
+
+          const guardMax = Math.max(1, Number(status.max_auto_changes ?? 25) || 25);
+          if (preview.total_changes > guardMax) {
+            friendLinkAutoSyncLastSignatureRef.current[inst.id] = signature;
+            appendInstanceActivity(
+              inst.id,
+              [`Friend Link auto-sync paused: ${preview.total_changes} changes exceed your guardrail (${guardMax}).`],
+              "warn"
+            );
+            continue;
+          }
+
+          friendLinkAutoSyncInFlightRef.current[inst.id] = true;
+          friendLinkAutoSyncLastSignatureRef.current[inst.id] = signature;
+          try {
+            const out =
+              prefs.policy === "auto_all"
+                ? await reconcileFriendLink({ instanceId: inst.id, mode: "manual" })
+                : await syncFriendLinkSelected({
+                    instanceId: inst.id,
+                    keys: preview.items.map((item) => item.key),
+                    metadataOnly: true,
+                  });
+
+            if (cancelled) break;
+
+            if (out.status === "conflicted") {
+              setFriendConflictInstanceId(inst.id);
+              setFriendConflictResult(out);
+            }
+
+            const tone: "info" | "success" | "warn" =
+              out.status === "synced" || out.status === "in_sync" ? "success" : out.status === "blocked_untrusted" ? "warn" : "info";
+            appendInstanceActivity(
+              inst.id,
+              [
+                `Friend Link auto-sync: ${out.status}. Applied ${out.actions_applied} change${
+                  out.actions_applied === 1 ? "" : "s"
+                }.`,
+              ],
+              tone
+            );
+
+            if (out.actions_applied > 0 && route === "instance" && selectedId === inst.id) {
+              await refreshInstalledMods(inst.id);
+            }
+
+            const [nextStatus, nextPreview] = await Promise.all([
+              getFriendLinkStatus({ instanceId: inst.id }).catch(() => null),
+              previewFriendLinkDrift({ instanceId: inst.id }).catch(() => null),
+            ]);
+
+            if (cancelled) break;
+
+            setFriendLinkStatusByInstance((prev) => {
+              const next = { ...prev };
+              if (nextStatus) next[inst.id] = nextStatus;
+              else delete next[inst.id];
+              return next;
+            });
+            if (selectedId === inst.id) {
+              setInstanceFriendLinkStatus(nextStatus);
+            }
+
+            setFriendLinkDriftByInstance((prev) => {
+              const next = { ...prev };
+              if (nextStatus?.linked && nextPreview) next[inst.id] = nextPreview;
+              else delete next[inst.id];
+              return next;
+            });
+
+            const announceSig = friendLinkDriftSignature(nextPreview);
+            if (announceSig) friendLinkDriftAnnounceRef.current[inst.id] = announceSig;
+            else delete friendLinkDriftAnnounceRef.current[inst.id];
+          } catch (err: any) {
+            delete friendLinkAutoSyncLastSignatureRef.current[inst.id];
+            appendInstanceActivity(
+              inst.id,
+              [`Friend Link auto-sync failed: ${err?.toString?.() ?? String(err)}`],
+              "warn"
+            );
+          } finally {
+            friendLinkAutoSyncInFlightRef.current[inst.id] = false;
+          }
+        }
+      } finally {
+        friendLinkAutoSyncBusyRef.current = false;
+      }
+    };
+
+    void runAutoSyncSweep();
+    const timer = window.setInterval(() => {
+      void runAutoSyncSweep();
+    }, FRIEND_LINK_AUTOSYNC_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [instances, route, selectedId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -13058,6 +13241,8 @@ export default function App() {
               <div className="modalBody">
                 <InstanceModpackCard
                   instance={inst}
+                  isDevMode={isDevMode}
+                  enableAutoSync={false}
                   onNotice={(message) => setInstallNotice(message)}
                   onError={(message) => setError(message)}
                   onFriendStatusChange={(instanceId, status) => {

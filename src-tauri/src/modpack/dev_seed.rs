@@ -15,7 +15,10 @@ pub fn seed_dev_data(
     let existing = idx
         .instances
         .iter()
-        .find(|i| i.name.eq_ignore_ascii_case(instance_name.unwrap_or("Dev Seed Instance")))
+        .find(|i| {
+            i.name
+                .eq_ignore_ascii_case(instance_name.unwrap_or("Dev Seed Instance"))
+        })
         .cloned();
 
     let instance = if let Some(found) = existing {
@@ -37,8 +40,13 @@ pub fn seed_dev_data(
             settings: Default::default(),
         };
         let mut inst_with_folder = inst.clone();
-        let folder_name =
-            crate::allocate_instance_folder_name(&instances_dir, &idx, &inst_with_folder.name, None, None);
+        let folder_name = crate::allocate_instance_folder_name(
+            &instances_dir,
+            &idx,
+            &inst_with_folder.name,
+            None,
+            None,
+        );
         inst_with_folder.folder_name = Some(folder_name.clone());
 
         let inst_dir = instances_dir.join(folder_name);
@@ -47,7 +55,11 @@ pub fn seed_dev_data(
         crate::write_instance_meta(&inst_dir, &inst_with_folder)?;
         idx.instances.push(inst_with_folder.clone());
         crate::write_index(&instances_dir, &idx)?;
-        crate::write_lockfile(&instances_dir, &inst_with_folder.id, &crate::Lockfile::default())?;
+        crate::write_lockfile(
+            &instances_dir,
+            &inst_with_folder.id,
+            &crate::Lockfile::default(),
+        )?;
         inst_with_folder
     };
 

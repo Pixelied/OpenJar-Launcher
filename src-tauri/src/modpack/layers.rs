@@ -1,6 +1,4 @@
-use crate::modpack::types::{
-    EntryKey, Layer, ModEntry, ModpackSpec, ResolutionConflict,
-};
+use crate::modpack::types::{EntryKey, Layer, ModEntry, ModpackSpec, ResolutionConflict};
 use std::collections::{HashMap, HashSet};
 
 fn normalize_content_type(input: &str) -> String {
@@ -34,7 +32,10 @@ pub fn reduce_layers(spec: &ModpackSpec) -> (Vec<ModEntry>, Vec<ResolutionConfli
 
     for layer in &spec.layers {
         if layer.is_frozen {
-            warnings.push(format!("Layer '{}' is frozen; edits are ignored until unfrozen.", layer.name));
+            warnings.push(format!(
+                "Layer '{}' is frozen; edits are ignored until unfrozen.",
+                layer.name
+            ));
         }
 
         for add in &layer.entries_delta.add {
@@ -130,7 +131,10 @@ pub fn normalize_entry_for_add(mut entry: ModEntry) -> ModEntry {
     entry
 }
 
-pub fn diff_entries(current: &[ModEntry], next: &[ModEntry]) -> (Vec<ModEntry>, Vec<EntryKey>, Vec<ModEntry>) {
+pub fn diff_entries(
+    current: &[ModEntry],
+    next: &[ModEntry],
+) -> (Vec<ModEntry>, Vec<EntryKey>, Vec<ModEntry>) {
     let current_map = current
         .iter()
         .map(|entry| (entry_key_for(entry), entry.clone()))
@@ -176,7 +180,13 @@ pub fn diff_entries(current: &[ModEntry], next: &[ModEntry]) -> (Vec<ModEntry>, 
     }
 
     added.sort_by(|a, b| entry_key_for(a).cmp(&entry_key_for(b)));
-    removed.sort_by(|a, b| entry_key(&a.provider, &a.project_id, &a.content_type).cmp(&entry_key(&b.provider, &b.project_id, &b.content_type)));
+    removed.sort_by(|a, b| {
+        entry_key(&a.provider, &a.project_id, &a.content_type).cmp(&entry_key(
+            &b.provider,
+            &b.project_id,
+            &b.content_type,
+        ))
+    });
     overridden.sort_by(|a, b| entry_key_for(a).cmp(&entry_key_for(b)));
 
     (added, removed, overridden)

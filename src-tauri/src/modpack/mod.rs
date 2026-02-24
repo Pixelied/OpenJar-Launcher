@@ -9,13 +9,14 @@ pub mod types;
 
 use crate::modpack::apply::{apply_plan_to_instance, detect_drift, normalize_link_mode};
 use crate::modpack::layers::{
-    diff_entries, ensure_default_profiles, entry_key_for, make_base_spec, normalize_entry_for_add, reduce_layers,
+    diff_entries, ensure_default_profiles, entry_key_for, make_base_spec, normalize_entry_for_add,
+    reduce_layers,
 };
 use crate::modpack::migration::migrate_legacy_payload;
 use crate::modpack::resolver::resolve_modpack;
 use crate::modpack::store::{
-    add_lock_snapshot, add_plan, get_instance_link, get_lock_snapshot, get_plan, get_spec, read_store, remove_spec,
-    set_instance_link, upsert_spec, write_store,
+    add_lock_snapshot, add_plan, get_instance_link, get_lock_snapshot, get_plan, get_spec,
+    read_store, remove_spec, set_instance_link, upsert_spec, write_store,
 };
 use crate::modpack::types::*;
 use reqwest::blocking::Client;
@@ -39,7 +40,10 @@ pub fn get_modpack_spec(app: tauri::AppHandle, args: ModpackIdArgs) -> Result<Mo
 }
 
 #[tauri::command]
-pub fn upsert_modpack_spec(app: tauri::AppHandle, args: UpsertModpackSpecArgs) -> Result<ModpackSpec, String> {
+pub fn upsert_modpack_spec(
+    app: tauri::AppHandle,
+    args: UpsertModpackSpecArgs,
+) -> Result<ModpackSpec, String> {
     let mut store = read_store(&app)?;
     let mut spec = args.spec;
     normalize_spec_for_write(&mut spec);
@@ -54,7 +58,8 @@ pub fn duplicate_modpack_spec(
     args: DuplicateModpackSpecArgs,
 ) -> Result<ModpackSpec, String> {
     let mut store = read_store(&app)?;
-    let source = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let source =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let mut clone = source;
     clone.id = format!("modpack_{}", crate::now_millis());
@@ -72,7 +77,10 @@ pub fn duplicate_modpack_spec(
 }
 
 #[tauri::command]
-pub fn delete_modpack_spec(app: tauri::AppHandle, args: DeleteModpackSpecArgs) -> Result<bool, String> {
+pub fn delete_modpack_spec(
+    app: tauri::AppHandle,
+    args: DeleteModpackSpecArgs,
+) -> Result<bool, String> {
     let mut store = read_store(&app)?;
     let before = store.specs.len();
     remove_spec(&mut store, &args.modpack_id);
@@ -92,7 +100,8 @@ pub fn import_modpack_spec_json(
     if path_text.is_empty() {
         return Err("inputPath is required".to_string());
     }
-    let raw = fs::read_to_string(path_text).map_err(|e| format!("read spec import file failed: {e}"))?;
+    let raw =
+        fs::read_to_string(path_text).map_err(|e| format!("read spec import file failed: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse spec import file failed: {e}"))?;
 
@@ -146,13 +155,15 @@ pub fn export_modpack_spec_json(
         return Err("outputPath is required".to_string());
     }
     let store = read_store(&app)?;
-    let spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let path = std::path::PathBuf::from(path_text);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir export dir failed: {e}"))?;
     }
-    let raw = serde_json::to_string_pretty(&spec).map_err(|e| format!("serialize spec failed: {e}"))?;
+    let raw =
+        serde_json::to_string_pretty(&spec).map_err(|e| format!("serialize spec failed: {e}"))?;
     fs::write(&path, raw).map_err(|e| format!("write export file failed: {e}"))?;
 
     Ok(SpecIoResult {
@@ -167,7 +178,8 @@ pub fn import_modpack_layer_from_provider(
     args: ImportLayerFromProviderArgs,
 ) -> Result<ModpackSpec, String> {
     let mut store = read_store(&app)?;
-    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mut spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let preset = crate::import_provider_modpack_template(crate::ImportProviderModpackArgs {
         source: args.source.clone(),
@@ -255,7 +267,8 @@ pub fn preview_template_layer_update(
     args: LayerRefArgs,
 ) -> Result<LayerDiffResult, String> {
     let store = read_store(&app)?;
-    let spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
     let layer = spec
         .layers
         .iter()
@@ -317,7 +330,8 @@ pub fn apply_template_layer_update(
     args: LayerRefArgs,
 ) -> Result<ModpackSpec, String> {
     let mut store = read_store(&app)?;
-    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mut spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let layer_idx = spec
         .layers
@@ -358,9 +372,15 @@ pub fn apply_template_layer_update(
         .map(creator_entry_to_mod_entry)
         .map(normalize_entry_for_add)
         .collect::<Vec<_>>();
-    spec.layers[layer_idx].entries_delta.override_entries.clear();
+    spec.layers[layer_idx]
+        .entries_delta
+        .override_entries
+        .clear();
     spec.layers[layer_idx].entries_delta.remove.clear();
-    spec.layers[layer_idx].source.as_mut().map(|s| s.imported_at = Some(crate::now_iso()));
+    spec.layers[layer_idx]
+        .source
+        .as_mut()
+        .map(|s| s.imported_at = Some(crate::now_iso()));
 
     spec.updated_at = crate::now_iso();
     normalize_spec_for_write(&mut spec);
@@ -453,9 +473,11 @@ fn detect_provider_from_entry_metadata(
 
     if let Some(api_key) = crate::curseforge_api_key() {
         if !entry.local_fingerprints.is_empty() {
-            if let Ok(Some((project, file))) =
-                crate::fetch_curseforge_match_by_fingerprints(client, &api_key, &entry.local_fingerprints)
-            {
+            if let Ok(Some((project, file))) = crate::fetch_curseforge_match_by_fingerprints(
+                client,
+                &api_key,
+                &entry.local_fingerprints,
+            ) {
                 let name = if project.name.trim().is_empty() {
                     local_entry_display_name(entry, &safe_file_name)
                 } else {
@@ -497,10 +519,10 @@ fn detect_provider_from_entry_metadata(
                             .unwrap_or(false)
                     })
                     .or_else(|| {
-                        version
-                            .files
-                            .iter()
-                            .find(|f| crate::sanitize_filename(&f.filename).eq_ignore_ascii_case(&safe_file_name))
+                        version.files.iter().find(|f| {
+                            crate::sanitize_filename(&f.filename)
+                                .eq_ignore_ascii_case(&safe_file_name)
+                        })
                     })
                     .or_else(|| version.files.first());
                 let version_number = if version.version_number.trim().is_empty() {
@@ -534,7 +556,8 @@ fn detect_provider_from_entry_metadata(
 }
 
 fn is_local_mod_entry(entry: &ModEntry) -> bool {
-    entry.provider.trim().eq_ignore_ascii_case("local") && normalize_content_type(&entry.content_type) == "mods"
+    entry.provider.trim().eq_ignore_ascii_case("local")
+        && normalize_content_type(&entry.content_type) == "mods"
 }
 
 fn count_remaining_local_entries(spec: &ModpackSpec) -> usize {
@@ -624,7 +647,12 @@ fn find_dedupe_entry_index(entries: &[ModEntry], entry: &ModEntry) -> Option<(us
         return Some((idx, "provider".to_string()));
     }
 
-    if let Some(sha512) = entry.local_sha512.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+    if let Some(sha512) = entry
+        .local_sha512
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    {
         if let Some(idx) = entries.iter().position(|current| {
             current
                 .local_sha512
@@ -740,7 +768,9 @@ fn preprocess_local_jar_task(
     let display_name = crate::infer_local_name(&safe_file_name);
     let detected = if auto_identify {
         client
-            .and_then(|http| crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true))
+            .and_then(|http| {
+                crate::detect_provider_for_local_mod(http, &bytes, &safe_file_name, true)
+            })
             .map(provider_resolution_from_import)
     } else {
         None
@@ -781,7 +811,12 @@ fn preprocess_local_jar_task(
     });
 
     if let Some(found) = detected.as_ref() {
-        if entry.notes.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        if entry
+            .notes
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
             entry.notes = Some(found.name.clone());
         }
     }
@@ -831,7 +866,8 @@ pub fn import_local_jars_to_modpack_layer(
     }
 
     let mut store = read_store(&app)?;
-    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mut spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
     let layer_idx = spec
         .layers
         .iter()
@@ -886,7 +922,8 @@ pub fn import_local_jars_to_modpack_layer(
                 let Some((index, path_text)) = next else {
                     break;
                 };
-                let outcome = preprocess_local_jar_task(index, path_text, auto_identify, client.as_ref());
+                let outcome =
+                    preprocess_local_jar_task(index, path_text, auto_identify, client.as_ref());
                 let _ = tx_ref.send(outcome);
             }
         });
@@ -918,7 +955,10 @@ pub fn import_local_jars_to_modpack_layer(
     for (idx, outcome_opt) in outcomes_by_index.into_iter().enumerate() {
         let Some(outcome) = outcome_opt else {
             let raw_path = args.file_paths.get(idx).cloned().unwrap_or_default();
-            warnings.push(format!("Skipped '{}': import worker did not return a result.", raw_path));
+            warnings.push(format!(
+                "Skipped '{}': import worker did not return a result.",
+                raw_path
+            ));
             items.push(ModpackImportLocalJarItemResult {
                 index: idx,
                 path: raw_path.clone(),
@@ -962,7 +1002,15 @@ pub fn import_local_jars_to_modpack_layer(
                     source_hint: None,
                     resolved: false,
                 });
-                emit_local_jar_import_progress(&app, &args, index, total, path, &status, Some(message));
+                emit_local_jar_import_progress(
+                    &app,
+                    &args,
+                    index,
+                    total,
+                    path,
+                    &status,
+                    Some(message),
+                );
             }
             PreparedLocalImportOutcome::Ready(item) => {
                 let index = item.index;
@@ -989,27 +1037,29 @@ pub fn import_local_jars_to_modpack_layer(
 
                 let layer = &mut spec.layers[layer_idx];
                 let (status, message, duplicate_of, dedupe_basis) =
-                    if let Some((existing_idx, matched_basis)) = find_dedupe_entry_index(&layer.entries_delta.add, &entry)
-                {
-                    let existing_project_id = layer.entries_delta.add[existing_idx].project_id.clone();
-                    layer.entries_delta.add[existing_idx] = entry.clone();
-                    updated_entries += 1;
-                    (
-                        "updated_deduped".to_string(),
-                        format!("Updated existing entry via {matched_basis} dedupe."),
-                        Some(existing_project_id),
-                        Some(matched_basis),
-                    )
-                } else {
-                    layer.entries_delta.add.push(entry.clone());
-                    added_entries += 1;
-                    (
-                        "added".to_string(),
-                        "Added local entry.".to_string(),
-                        None,
-                        Some(dedupe_basis_default),
-                    )
-                };
+                    if let Some((existing_idx, matched_basis)) =
+                        find_dedupe_entry_index(&layer.entries_delta.add, &entry)
+                    {
+                        let existing_project_id =
+                            layer.entries_delta.add[existing_idx].project_id.clone();
+                        layer.entries_delta.add[existing_idx] = entry.clone();
+                        updated_entries += 1;
+                        (
+                            "updated_deduped".to_string(),
+                            format!("Updated existing entry via {matched_basis} dedupe."),
+                            Some(existing_project_id),
+                            Some(matched_basis),
+                        )
+                    } else {
+                        layer.entries_delta.add.push(entry.clone());
+                        added_entries += 1;
+                        (
+                            "added".to_string(),
+                            "Added local entry.".to_string(),
+                            None,
+                            Some(dedupe_basis_default),
+                        )
+                    };
 
                 items.push(ModpackImportLocalJarItemResult {
                     index,
@@ -1022,7 +1072,15 @@ pub fn import_local_jars_to_modpack_layer(
                     source_hint: item.source_hint,
                     resolved: item.resolved,
                 });
-                emit_local_jar_import_progress(&app, &args, index, total, item.path, &status, Some(message));
+                emit_local_jar_import_progress(
+                    &app,
+                    &args,
+                    index,
+                    total,
+                    item.path,
+                    &status,
+                    Some(message),
+                );
             }
         }
     }
@@ -1053,7 +1111,8 @@ pub fn resolve_local_modpack_entries(
     args: ResolveLocalModpackEntriesArgs,
 ) -> Result<ModpackLocalResolverResult, String> {
     let mut store = read_store(&app)?;
-    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mut spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
     let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
     let scan_all_candidates = mode.trim().eq_ignore_ascii_case("all");
     let layer_scope = args
@@ -1138,7 +1197,8 @@ pub fn resolve_local_modpack_entries(
                                 .unwrap_or_else(|| safe_file_name.clone());
                             entry.local_file_name = Some(refreshed_name.clone());
                             entry.local_sha512 = Some(crate::sha512_hex(&bytes));
-                            entry.local_fingerprints = crate::curseforge_fingerprint_candidates(&bytes);
+                            entry.local_fingerprints =
+                                crate::curseforge_fingerprint_candidates(&bytes);
                             changed = true;
                             detected = crate::detect_provider_for_local_mod(
                                 &client,
@@ -1171,7 +1231,12 @@ pub fn resolve_local_modpack_entries(
             entry.provider = found.source.clone();
             entry.project_id = found.project_id.clone();
             entry.pin = Some(found.version_id.clone());
-            if entry.slug.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+            if entry
+                .slug
+                .as_ref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            {
                 entry.slug = Some(found.name.clone());
             }
             if from_source == "local"
@@ -1222,7 +1287,8 @@ pub fn resolve_modpack_for_instance(
     args: ResolveModpackArgs,
 ) -> Result<ResolutionPlan, String> {
     let mut store = read_store(&app)?;
-    let spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let instances_dir = crate::app_instances_dir(&app)?;
     let instance = crate::find_instance(&instances_dir, &args.instance_id)?;
@@ -1248,7 +1314,8 @@ pub fn apply_modpack_plan(
     args: ApplyModpackPlanArgs,
 ) -> Result<ModpackApplyResult, String> {
     let mut store = read_store(&app)?;
-    let plan = get_plan(&store, &args.plan_id).ok_or_else(|| "Resolution plan not found".to_string())?;
+    let plan =
+        get_plan(&store, &args.plan_id).ok_or_else(|| "Resolution plan not found".to_string())?;
 
     let allow_partial = args
         .partial_apply_unsafe
@@ -1347,11 +1414,13 @@ pub fn realign_instance_to_modpack(
     let link = get_instance_link(&store, &args.instance_id)
         .ok_or_else(|| "Instance is not linked to a modpack".to_string())?;
     if normalize_link_mode(&link.mode) != "linked" {
-        return Err("Instance is unlinked. Re-align is only available for linked instances.".to_string());
+        return Err(
+            "Instance is unlinked. Re-align is only available for linked instances.".to_string(),
+        );
     }
 
-    let spec = get_spec(&store, &link.modpack_id)
-        .ok_or_else(|| "Linked modpack not found".to_string())?;
+    let spec =
+        get_spec(&store, &link.modpack_id).ok_or_else(|| "Linked modpack not found".to_string())?;
     let instances_dir = crate::app_instances_dir(&app)?;
     let instance = crate::find_instance(&instances_dir, &args.instance_id)?;
     let client = crate::build_http_client()?;
@@ -1381,7 +1450,8 @@ pub fn preview_update_modpack_from_instance(
     args: PreviewUpdateFromInstanceArgs,
 ) -> Result<LayerDiffResult, String> {
     let store = read_store(&app)?;
-    let spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let instances_dir = crate::app_instances_dir(&app)?;
     let lock = crate::read_lockfile(&instances_dir, &args.instance_id)?;
@@ -1407,7 +1477,9 @@ pub fn preview_update_modpack_from_instance(
         removed,
         overridden,
         conflicts: vec![],
-        warnings: vec!["Preview only. Apply will create explicit overrides after confirmation.".to_string()],
+        warnings: vec![
+            "Preview only. Apply will create explicit overrides after confirmation.".to_string(),
+        ],
     })
 }
 
@@ -1417,7 +1489,8 @@ pub fn apply_update_modpack_from_instance(
     args: ApplyUpdateFromInstanceArgs,
 ) -> Result<ModpackSpec, String> {
     let mut store = read_store(&app)?;
-    let mut spec = get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
+    let mut spec =
+        get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
     let preview = preview_update_modpack_from_instance(
         app.clone(),
@@ -1456,12 +1529,17 @@ pub fn apply_update_modpack_from_instance(
         });
 
     if spec.layers[layer_idx].is_frozen {
-        return Err("Target overrides layer is frozen. Unfreeze before applying updates.".to_string());
+        return Err(
+            "Target overrides layer is frozen. Unfreeze before applying updates.".to_string(),
+        );
     }
 
     let layer = &mut spec.layers[layer_idx];
     append_unique_entries(&mut layer.entries_delta.add, &preview.added);
-    append_unique_entries(&mut layer.entries_delta.override_entries, &preview.overridden);
+    append_unique_entries(
+        &mut layer.entries_delta.override_entries,
+        &preview.overridden,
+    );
     append_unique_remove_keys(&mut layer.entries_delta.remove, &preview.removed);
 
     spec.updated_at = crate::now_iso();
@@ -1539,7 +1617,8 @@ pub fn seed_dev_modpack_data(
     app: tauri::AppHandle,
     args: SeedDevModpackDataArgs,
 ) -> Result<SeedDevResult, String> {
-    let (result, mut spec) = crate::modpack::dev_seed::seed_dev_data(&app, args.instance_name.as_deref())?;
+    let (result, mut spec) =
+        crate::modpack::dev_seed::seed_dev_data(&app, args.instance_name.as_deref())?;
     let mut store = read_store(&app)?;
     normalize_spec_for_write(&mut spec);
     upsert_spec(&mut store, spec);
@@ -1659,7 +1738,10 @@ fn creator_entry_to_mod_entry(entry: crate::CreatorPresetEntry) -> ModEntry {
 }
 
 fn append_unique_entries(target: &mut Vec<ModEntry>, source: &[ModEntry]) {
-    let mut seen = target.iter().map(entry_key_for).collect::<std::collections::HashSet<_>>();
+    let mut seen = target
+        .iter()
+        .map(entry_key_for)
+        .collect::<std::collections::HashSet<_>>();
     for item in source {
         let key = entry_key_for(item);
         if seen.insert(key) {
@@ -1675,7 +1757,10 @@ fn append_unique_remove_keys(target: &mut Vec<EntryKey>, source: &[EntryKey]) {
         .collect::<std::collections::HashSet<_>>();
 
     for item in source {
-        let key = format!("{}:{}:{}", item.provider, item.content_type, item.project_id);
+        let key = format!(
+            "{}:{}:{}",
+            item.provider, item.content_type, item.project_id
+        );
         if seen.insert(key) {
             target.push(item.clone());
         }

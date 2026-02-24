@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use chrono::{DateTime, Local, Utc};
 use base64::Engine as _;
+use chrono::{DateTime, Local, Utc};
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
 use reqwest::blocking::{multipart, Client, Response};
@@ -11,27 +11,38 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Cursor, Read, Write};
+#[cfg(all(unix, debug_assertions))]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use uuid::Uuid;
 use tauri::Manager;
 use tauri::{CustomMenuItem, Menu, MenuItem, Submenu};
+use uuid::Uuid;
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
-mod modpack;
 mod friend_link;
+mod modpack;
 
 const USER_AGENT: &str = "ModpackManager/0.1.1 (Tauri)";
 const KEYRING_SERVICE: &str = "ModpackManager";
-const LEGACY_KEYRING_SERVICES: [&str; 2] = ["com.adrien.modpackmanager", "modpack-manager"];
+const KEYRING_SELECTED_REFRESH_ALIAS: &str = "msa_refresh_selected";
+const LEGACY_KEYRING_SERVICES: [&str; 4] = [
+    "com.adrien.modpackmanager",
+    "modpack-manager",
+    "OpenJar Launcher",
+    "openjar-launcher",
+];
 const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
 const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
+#[cfg(debug_assertions)]
+const LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE: &str = "tokens_debug_fallback.json";
 const MS_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
-const MS_DEVICE_CODE_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+const MS_DEVICE_CODE_URL: &str =
+    "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const XBL_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_AUTH_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
@@ -52,6 +63,37 @@ const DEFAULT_SNAPSHOT_MAX_AGE_DAYS: u32 = 14;
 const MENU_CHECK_FOR_UPDATES_ID: &str = "menu_check_for_updates";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT: &str = "app_menu_check_for_updates";
 
+fn runtime_refresh_token_cache() -> &'static Mutex<HashMap<String, String>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn runtime_refresh_token_cache_set(account_id: &str, refresh_token: &str) {
+    if let Ok(mut guard) = runtime_refresh_token_cache().lock() {
+        guard.insert(account_id.trim().to_string(), refresh_token.to_string());
+    }
+}
+
+fn runtime_refresh_token_cache_get(account_id: &str) -> Option<String> {
+    runtime_refresh_token_cache()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(account_id.trim()).cloned())
+}
+
+fn runtime_refresh_token_cache_delete(account_id: &str) {
+    if let Ok(mut guard) = runtime_refresh_token_cache().lock() {
+        guard.remove(account_id.trim());
+    }
+}
+
+#[cfg(test)]
+fn runtime_refresh_token_cache_clear() {
+    if let Ok(mut guard) = runtime_refresh_token_cache().lock() {
+        guard.clear();
+    }
+}
+
 async fn run_blocking_task<T, F>(label: &str, task: F) -> Result<T, String>
 where
     T: Send + 'static,
@@ -63,7 +105,10 @@ where
 }
 
 fn updater_check_menu_item() -> CustomMenuItem {
-    CustomMenuItem::new(MENU_CHECK_FOR_UPDATES_ID.to_string(), "Check for Updates...")
+    CustomMenuItem::new(
+        MENU_CHECK_FOR_UPDATES_ID.to_string(),
+        "Check for Updates...",
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -99,7 +144,10 @@ fn build_main_menu(app_name: &str) -> Menu {
             .add_native_item(MenuItem::Paste)
             .add_native_item(MenuItem::SelectAll),
     );
-    let view_submenu = Submenu::new("View", Menu::new().add_native_item(MenuItem::EnterFullScreen));
+    let view_submenu = Submenu::new(
+        "View",
+        Menu::new().add_native_item(MenuItem::EnterFullScreen),
+    );
     let window_submenu = Submenu::new(
         "Window",
         Menu::new()
@@ -851,7 +899,7 @@ struct SearchDiscoverContentArgs {
     index: String, // relevance | downloads | follows | updated | newest
     limit: usize,
     offset: usize,
-    source: String,      // modrinth | curseforge | all
+    source: String, // modrinth | curseforge | all
     #[serde(alias = "contentType")]
     content_type: String, // mods | modpacks | resourcepacks | datapacks | shaders
 }
@@ -1644,7 +1692,10 @@ pub(crate) fn instance_dir_for_instance(instances_dir: &Path, inst: &Instance) -
     }
 }
 
-pub(crate) fn instance_dir_for_id(instances_dir: &Path, instance_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn instance_dir_for_id(
+    instances_dir: &Path,
+    instance_id: &str,
+) -> Result<PathBuf, String> {
     let inst = find_instance(instances_dir, instance_id)?;
     Ok(instance_dir_for_instance(instances_dir, &inst))
 }
@@ -1675,6 +1726,11 @@ fn launcher_token_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, Strin
     Ok(launcher_dir(app)?.join(LAUNCHER_TOKEN_FALLBACK_FILE))
 }
 
+#[cfg(debug_assertions)]
+fn launcher_token_debug_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(launcher_dir(app)?.join(LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE))
+}
+
 fn launcher_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join("cache"))
 }
@@ -1688,7 +1744,8 @@ fn read_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<Option<String>
     if !p.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&p).map_err(|e| format!("read dev curseforge key file failed: {e}"))?;
+    let raw =
+        fs::read_to_string(&p).map_err(|e| format!("read dev curseforge key file failed: {e}"))?;
     let trimmed = raw.trim().to_string();
     if trimmed.is_empty() {
         return Ok(None);
@@ -1716,6 +1773,37 @@ fn keyring_username_for_account(account_id: &str) -> String {
     format!("msa_refresh_{account_id}")
 }
 
+fn keyring_alias_usernames_for_key(key: &str) -> Vec<String> {
+    fn push_unique(out: &mut Vec<String>, value: String) {
+        if value.trim().is_empty() {
+            return;
+        }
+        if !out.iter().any(|item| item == &value) {
+            out.push(value);
+        }
+    }
+
+    fn add_variants(out: &mut Vec<String>, raw: &str) {
+        let key = raw.trim();
+        if key.is_empty() {
+            return;
+        }
+        push_unique(out, keyring_username_for_account(key));
+        push_unique(out, format!("msa_refresh_token_{key}"));
+        push_unique(out, key.to_string());
+    }
+
+    let mut out = Vec::new();
+    let trimmed = key.trim();
+    add_variants(&mut out, trimmed);
+    add_variants(&mut out, &trimmed.to_lowercase());
+    if let Ok(uuid) = Uuid::parse_str(trimmed) {
+        add_variants(&mut out, &uuid.simple().to_string());
+        add_variants(&mut out, &uuid.hyphenated().to_string());
+    }
+    out
+}
+
 fn read_launcher_settings(app: &tauri::AppHandle) -> Result<LauncherSettings, String> {
     let p = launcher_settings_path(app)?;
     if !p.exists() {
@@ -1725,12 +1813,16 @@ fn read_launcher_settings(app: &tauri::AppHandle) -> Result<LauncherSettings, St
     let mut settings: LauncherSettings =
         serde_json::from_str(&raw).map_err(|e| format!("parse launcher settings failed: {e}"))?;
     settings.update_check_cadence = normalize_update_check_cadence(&settings.update_check_cadence);
-    settings.update_auto_apply_mode = normalize_update_auto_apply_mode(&settings.update_auto_apply_mode);
+    settings.update_auto_apply_mode =
+        normalize_update_auto_apply_mode(&settings.update_auto_apply_mode);
     settings.update_apply_scope = normalize_update_apply_scope(&settings.update_apply_scope);
     Ok(settings)
 }
 
-fn write_launcher_settings(app: &tauri::AppHandle, settings: &LauncherSettings) -> Result<(), String> {
+fn write_launcher_settings(
+    app: &tauri::AppHandle,
+    settings: &LauncherSettings,
+) -> Result<(), String> {
     let p = launcher_settings_path(app)?;
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
@@ -1749,7 +1841,10 @@ fn read_launcher_accounts(app: &tauri::AppHandle) -> Result<Vec<LauncherAccount>
     serde_json::from_str(&raw).map_err(|e| format!("parse launcher accounts failed: {e}"))
 }
 
-fn write_launcher_accounts(app: &tauri::AppHandle, accounts: &[LauncherAccount]) -> Result<(), String> {
+fn write_launcher_accounts(
+    app: &tauri::AppHandle,
+    accounts: &[LauncherAccount],
+) -> Result<(), String> {
     let p = launcher_accounts_path(app)?;
     if let Some(parent) = p.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
@@ -1759,61 +1854,124 @@ fn write_launcher_accounts(app: &tauri::AppHandle, accounts: &[LauncherAccount])
     fs::write(&p, s).map_err(|e| format!("write launcher accounts failed: {e}"))
 }
 
-fn read_token_fallback_store(app: &tauri::AppHandle) -> Result<LauncherTokenFallbackStore, String> {
-    let p = launcher_token_fallback_path(app)?;
-    if !p.exists() {
+fn read_token_fallback_store_at_path(path: &Path) -> Result<LauncherTokenFallbackStore, String> {
+    if !path.exists() {
         return Ok(LauncherTokenFallbackStore::default());
     }
-    let raw = fs::read_to_string(&p).map_err(|e| format!("read launcher token fallback failed: {e}"))?;
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read launcher token fallback failed: {e}"))?;
     serde_json::from_str(&raw).map_err(|e| format!("parse launcher token fallback failed: {e}"))
 }
 
-fn write_token_fallback_store(
-    app: &tauri::AppHandle,
+#[cfg(debug_assertions)]
+fn write_token_fallback_store_at_path(
+    path: &Path,
     store: &LauncherTokenFallbackStore,
 ) -> Result<(), String> {
-    let p = launcher_token_fallback_path(app)?;
-    if let Some(parent) = p.parent() {
+    if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
     }
-    let s = serde_json::to_string_pretty(store)
+    let payload = serde_json::to_string_pretty(store)
         .map_err(|e| format!("serialize launcher token fallback failed: {e}"))?;
-    fs::write(&p, s).map_err(|e| format!("write launcher token fallback failed: {e}"))
+    fs::write(path, payload).map_err(|e| format!("write launcher token fallback failed: {e}"))?;
+    #[cfg(unix)]
+    {
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, permissions)
+            .map_err(|e| format!("set launcher token fallback permissions failed: {e}"))?;
+    }
+    Ok(())
 }
 
-fn token_fallback_set_refresh_token(
+#[cfg(debug_assertions)]
+fn debug_refresh_token_lookup_keys(
+    account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Vec<String> {
+    let mut keys = vec![account.id.clone(), account.username.clone()];
+    for candidate in accounts
+        .iter()
+        .filter(|x| x.username.eq_ignore_ascii_case(&account.username))
+    {
+        if !keys.iter().any(|k| k == &candidate.id) {
+            keys.push(candidate.id.clone());
+        }
+    }
+    keys
+}
+
+#[cfg(debug_assertions)]
+fn persist_refresh_token_debug_fallback(
     app: &tauri::AppHandle,
-    account_id: &str,
+    account: &LauncherAccount,
     refresh_token: &str,
 ) -> Result<(), String> {
-    let mut store = read_token_fallback_store(app)?;
+    let path = launcher_token_debug_fallback_path(app)?;
+    let mut store = read_token_fallback_store_at_path(&path)?;
+    for key in debug_refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+        store.refresh_tokens.insert(key, refresh_token.to_string());
+    }
+    write_token_fallback_store_at_path(&path, &store)
+}
+
+#[cfg(debug_assertions)]
+fn persist_refresh_token_debug_fallback_for_key(
+    app: &tauri::AppHandle,
+    account_key: &str,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let key = account_key.trim();
+    if key.is_empty() {
+        return Ok(());
+    }
+    let path = launcher_token_debug_fallback_path(app)?;
+    let mut store = read_token_fallback_store_at_path(&path)?;
     store
         .refresh_tokens
-        .insert(account_id.to_string(), refresh_token.to_string());
-    write_token_fallback_store(app, &store)
+        .insert(key.to_string(), refresh_token.to_string());
+    write_token_fallback_store_at_path(&path, &store)
 }
 
-fn token_fallback_delete_refresh_token(app: &tauri::AppHandle, account_id: &str) -> Result<(), String> {
-    let mut store = read_token_fallback_store(app)?;
-    store.refresh_tokens.remove(account_id);
-    write_token_fallback_store(app, &store)
-}
-
-fn token_fallback_get_refresh_token(
+#[cfg(debug_assertions)]
+fn read_refresh_token_debug_fallback(
     app: &tauri::AppHandle,
     account: &LauncherAccount,
     accounts: &[LauncherAccount],
 ) -> Result<Option<String>, String> {
-    let store = read_token_fallback_store(app)?;
-    let usernames = keyring_username_candidates(account, accounts);
-    if let Some(token) = usernames
-        .iter()
-        .find_map(|key| store.refresh_tokens.get(key))
-        .cloned()
-    {
-        return Ok(Some(token));
+    let path = launcher_token_debug_fallback_path(app)?;
+    let store = read_token_fallback_store_at_path(&path)?;
+    for key in debug_refresh_token_lookup_keys(account, accounts) {
+        if let Some(token) = store.refresh_tokens.get(&key) {
+            let trimmed = token.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            return Ok(Some(trimmed.to_string()));
+        }
     }
     Ok(None)
+}
+
+#[cfg(debug_assertions)]
+fn remove_refresh_token_debug_fallback(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+) -> Result<(), String> {
+    let path = launcher_token_debug_fallback_path(app)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut store = read_token_fallback_store_at_path(&path)?;
+    let mut changed = false;
+    for key in debug_refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
+        if store.refresh_tokens.remove(&key).is_some() {
+            changed = true;
+        }
+    }
+    if changed {
+        write_token_fallback_store_at_path(&path, &store)?;
+    }
+    Ok(())
 }
 
 fn read_index(instances_dir: &Path) -> Result<InstanceIndex, String> {
@@ -1934,7 +2092,8 @@ fn read_lockfile(instances_dir: &Path, instance_id: &str) -> Result<Lockfile, St
         return Ok(Lockfile::default());
     }
     let s = fs::read_to_string(&p).map_err(|e| format!("read lockfile failed: {e}"))?;
-    let mut lock: Lockfile = serde_json::from_str(&s).map_err(|e| format!("parse lockfile failed: {e}"))?;
+    let mut lock: Lockfile =
+        serde_json::from_str(&s).map_err(|e| format!("parse lockfile failed: {e}"))?;
     if lock.version < 2 {
         lock.version = 2;
     }
@@ -2004,7 +2163,8 @@ fn add_dir_recursive_to_zip(
     if !current.exists() {
         return Ok(());
     }
-    let entries = fs::read_dir(current).map_err(|e| format!("read dir '{}' failed: {e}", current.display()))?;
+    let entries = fs::read_dir(current)
+        .map_err(|e| format!("read dir '{}' failed: {e}", current.display()))?;
     for ent in entries {
         let ent = ent.map_err(|e| format!("read dir entry failed: {e}"))?;
         let path = ent.path();
@@ -2102,7 +2262,8 @@ fn restore_instance_content_zip(zip_path: &Path, instance_dir: &Path) -> Result<
     }
 
     let file = File::open(zip_path).map_err(|e| format!("open snapshot zip failed: {e}"))?;
-    let mut archive = ZipArchive::new(file).map_err(|e| format!("read snapshot zip failed: {e}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|e| format!("read snapshot zip failed: {e}"))?;
     let mut count = 0usize;
 
     for i in 0..archive.len() {
@@ -2127,7 +2288,8 @@ fn restore_instance_content_zip(zip_path: &Path, instance_dir: &Path) -> Result<
         if let Some(parent) = out_path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("mkdir restore parent failed: {e}"))?;
         }
-        let mut out = File::create(&out_path).map_err(|e| format!("restore mods file failed: {e}"))?;
+        let mut out =
+            File::create(&out_path).map_err(|e| format!("restore mods file failed: {e}"))?;
         std::io::copy(&mut entry, &mut out).map_err(|e| format!("restore copy failed: {e}"))?;
         count += 1;
     }
@@ -2229,8 +2391,8 @@ fn create_instance_snapshot(
     let snapshot_dir = snapshots_dir(&instance_dir).join(&snapshot_id);
     fs::create_dir_all(&snapshot_dir).map_err(|e| format!("mkdir snapshot failed: {e}"))?;
 
-    let lock_raw =
-        serde_json::to_string_pretty(&lock).map_err(|e| format!("serialize snapshot lock failed: {e}"))?;
+    let lock_raw = serde_json::to_string_pretty(&lock)
+        .map_err(|e| format!("serialize snapshot lock failed: {e}"))?;
     fs::write(snapshot_lock_path(&snapshot_dir), lock_raw)
         .map_err(|e| format!("write snapshot lock failed: {e}"))?;
 
@@ -2340,7 +2502,8 @@ fn add_world_dir_recursive_to_zip(
     if !current.exists() {
         return Ok(());
     }
-    let entries = fs::read_dir(current).map_err(|e| format!("read dir '{}' failed: {e}", current.display()))?;
+    let entries = fs::read_dir(current)
+        .map_err(|e| format!("read dir '{}' failed: {e}", current.display()))?;
     for ent in entries {
         let ent = ent.map_err(|e| format!("read dir entry failed: {e}"))?;
         let path = ent.path();
@@ -2393,12 +2556,20 @@ fn create_world_backup_zip(world_dir: &Path, zip_path: &Path) -> Result<(usize, 
         .parent()
         .ok_or_else(|| "invalid world backup zip path".to_string())?;
     fs::create_dir_all(parent).map_err(|e| format!("mkdir world backup dir failed: {e}"))?;
-    let file = File::create(zip_path).map_err(|e| format!("create world backup zip failed: {e}"))?;
+    let file =
+        File::create(zip_path).map_err(|e| format!("create world backup zip failed: {e}"))?;
     let mut zip = zip::ZipWriter::new(file);
     let opts = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let mut file_count = 0usize;
     let mut total_bytes = 0u64;
-    add_world_dir_recursive_to_zip(&mut zip, world_dir, world_dir, opts, &mut file_count, &mut total_bytes)?;
+    add_world_dir_recursive_to_zip(
+        &mut zip,
+        world_dir,
+        world_dir,
+        opts,
+        &mut file_count,
+        &mut total_bytes,
+    )?;
     zip.finish()
         .map_err(|e| format!("finalize world backup zip failed: {e}"))?;
     Ok((file_count, total_bytes))
@@ -2414,7 +2585,8 @@ fn restore_world_backup_zip(zip_path: &Path, world_dir: &Path) -> Result<usize, 
     fs::create_dir_all(world_dir).map_err(|e| format!("mkdir world dir failed: {e}"))?;
 
     let file = File::open(zip_path).map_err(|e| format!("open world backup zip failed: {e}"))?;
-    let mut archive = ZipArchive::new(file).map_err(|e| format!("read world backup zip failed: {e}"))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|e| format!("read world backup zip failed: {e}"))?;
     let mut count = 0usize;
 
     for i in 0..archive.len() {
@@ -2434,10 +2606,13 @@ fn restore_world_backup_zip(zip_path: &Path, world_dir: &Path) -> Result<usize, 
         }
         let out_path = world_dir.join(parts.join("/"));
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| format!("mkdir world restore parent failed: {e}"))?;
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir world restore parent failed: {e}"))?;
         }
-        let mut out = File::create(&out_path).map_err(|e| format!("restore world file failed: {e}"))?;
-        std::io::copy(&mut entry, &mut out).map_err(|e| format!("restore world copy failed: {e}"))?;
+        let mut out =
+            File::create(&out_path).map_err(|e| format!("restore world file failed: {e}"))?;
+        std::io::copy(&mut entry, &mut out)
+            .map_err(|e| format!("restore world copy failed: {e}"))?;
         count += 1;
     }
 
@@ -2468,7 +2643,8 @@ fn create_world_backup_for_world(
     let backup_id = format!("wb_{}_{}", slug, now_millis());
     let backup_dir = world_backups_dir(instance_dir).join(&backup_id);
     fs::create_dir_all(&backup_dir).map_err(|e| format!("mkdir world backup failed: {e}"))?;
-    let (files_count, total_bytes) = create_world_backup_zip(&world_dir, &world_backup_zip_path(&backup_dir))?;
+    let (files_count, total_bytes) =
+        create_world_backup_zip(&world_dir, &world_backup_zip_path(&backup_dir))?;
     let meta = WorldBackupMeta {
         id: backup_id,
         world_id: world_name.to_string(),
@@ -2529,7 +2705,10 @@ pub(crate) fn allocate_instance_folder_name(
     let base = normalize_instance_folder_name(requested_name);
     let mut used: HashSet<String> = HashSet::new();
     for inst in &idx.instances {
-        if skip_instance_id.map(|skip| skip == inst.id).unwrap_or(false) {
+        if skip_instance_id
+            .map(|skip| skip == inst.id)
+            .unwrap_or(false)
+        {
             continue;
         }
         used.insert(instance_folder_name_or_legacy(inst).to_ascii_lowercase());
@@ -2552,7 +2731,10 @@ pub(crate) fn allocate_instance_folder_name(
     }
 }
 
-fn migrate_instance_folder_names(instances_dir: &Path, idx: &mut InstanceIndex) -> Result<bool, String> {
+fn migrate_instance_folder_names(
+    instances_dir: &Path,
+    idx: &mut InstanceIndex,
+) -> Result<bool, String> {
     let mut changed = false;
     for pos in 0..idx.instances.len() {
         let current = idx.instances[pos]
@@ -2655,7 +2837,8 @@ fn image_mime_for_extension(ext: &str) -> Option<&'static str> {
 
 fn write_instance_meta(instance_dir: &Path, inst: &Instance) -> Result<(), String> {
     let meta_path = instance_dir.join("meta.json");
-    let meta = serde_json::to_string_pretty(inst).map_err(|e| format!("serialize meta failed: {e}"))?;
+    let meta =
+        serde_json::to_string_pretty(inst).map_err(|e| format!("serialize meta failed: {e}"))?;
     fs::write(meta_path, meta).map_err(|e| format!("write meta failed: {e}"))
 }
 
@@ -2663,7 +2846,8 @@ fn clear_instance_icon_files(instance_dir: &Path) -> Result<(), String> {
     if !instance_dir.exists() {
         return Ok(());
     }
-    let entries = fs::read_dir(instance_dir).map_err(|e| format!("read instance dir failed: {e}"))?;
+    let entries =
+        fs::read_dir(instance_dir).map_err(|e| format!("read instance dir failed: {e}"))?;
     for ent in entries {
         let ent = ent.map_err(|e| format!("read instance entry failed: {e}"))?;
         let path = ent.path();
@@ -2761,26 +2945,42 @@ fn normalize_relative_file_path(input: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
-fn world_root_dir(instances_dir: &Path, instance_id: &str, world_id: &str) -> Result<PathBuf, String> {
+fn world_root_dir(
+    instances_dir: &Path,
+    instance_id: &str,
+    world_id: &str,
+) -> Result<PathBuf, String> {
     let _ = find_instance(instances_dir, instance_id)?;
     let world_name = world_id.trim();
     if world_name.is_empty() {
         return Err("World ID is required".to_string());
     }
-    if world_name.contains('/') || world_name.contains('\\') || world_name == "." || world_name == ".." {
+    if world_name.contains('/')
+        || world_name.contains('\\')
+        || world_name == "."
+        || world_name == ".."
+    {
         return Err("Invalid world ID".to_string());
     }
     let saves_dir = instance_dir_for_id(instances_dir, instance_id)?.join("saves");
     let world_dir = saves_dir.join(world_name);
     if !world_dir.exists() || !world_dir.is_dir() {
-        return Err(format!("World '{}' was not found in this instance.", world_name));
+        return Err(format!(
+            "World '{}' was not found in this instance.",
+            world_name
+        ));
     }
-    let world_meta = fs::symlink_metadata(&world_dir).map_err(|e| format!("read world path metadata failed: {e}"))?;
+    let world_meta = fs::symlink_metadata(&world_dir)
+        .map_err(|e| format!("read world path metadata failed: {e}"))?;
     if world_meta.file_type().is_symlink() {
-        return Err("Symlinked world folders are not supported for live config editing.".to_string());
+        return Err(
+            "Symlinked world folders are not supported for live config editing.".to_string(),
+        );
     }
-    let resolved_world = fs::canonicalize(&world_dir).map_err(|e| format!("resolve world path failed: {e}"))?;
-    let resolved_saves = fs::canonicalize(&saves_dir).map_err(|e| format!("resolve saves path failed: {e}"))?;
+    let resolved_world =
+        fs::canonicalize(&world_dir).map_err(|e| format!("resolve world path failed: {e}"))?;
+    let resolved_saves =
+        fs::canonicalize(&saves_dir).map_err(|e| format!("resolve saves path failed: {e}"))?;
     let _ = resolved_world
         .strip_prefix(&resolved_saves)
         .map_err(|_| "World path escapes instance saves directory".to_string())?;
@@ -2798,7 +2998,8 @@ fn resolve_world_file_path(
         if !candidate.exists() || !candidate.is_file() {
             return Err("World file was not found".to_string());
         }
-        let resolved = fs::canonicalize(&candidate).map_err(|e| format!("resolve world file failed: {e}"))?;
+        let resolved =
+            fs::canonicalize(&candidate).map_err(|e| format!("resolve world file failed: {e}"))?;
         if resolved
             .strip_prefix(world_root)
             .map_err(|_| "World file path escapes selected world".to_string())?
@@ -2812,7 +3013,8 @@ fn resolve_world_file_path(
     let parent = candidate
         .parent()
         .ok_or_else(|| "Invalid world file path".to_string())?;
-    let resolved_parent = fs::canonicalize(parent).map_err(|e| format!("resolve world file parent failed: {e}"))?;
+    let resolved_parent =
+        fs::canonicalize(parent).map_err(|e| format!("resolve world file parent failed: {e}"))?;
     let _ = resolved_parent
         .strip_prefix(world_root)
         .map_err(|_| "World file path escapes selected world".to_string())?;
@@ -2853,7 +3055,18 @@ fn file_is_text_like(path: &Path, sample: &[u8]) -> bool {
             .to_ascii_lowercase();
         return matches!(
             ext.as_str(),
-            "json" | "toml" | "properties" | "txt" | "cfg" | "conf" | "ini" | "yaml" | "yml" | "mcmeta" | "lang" | "log"
+            "json"
+                | "toml"
+                | "properties"
+                | "txt"
+                | "cfg"
+                | "conf"
+                | "ini"
+                | "yaml"
+                | "yml"
+                | "mcmeta"
+                | "lang"
+                | "log"
         );
     }
     if sample.iter().any(|b| *b == 0) {
@@ -2889,7 +3102,11 @@ fn format_binary_preview(sample: &[u8], total_bytes: u64, kind: &str) -> String 
             };
             ascii.push(ch);
         }
-        out.push_str(&format!("{offset:08x}  {:<48} |{}|\n", hex.trim_end(), ascii));
+        out.push_str(&format!(
+            "{offset:08x}  {:<48} |{}|\n",
+            hex.trim_end(),
+            ascii
+        ));
     }
     if (sample.len() as u64) < total_bytes {
         out.push_str("\n... truncated ...");
@@ -3130,7 +3347,11 @@ fn parse_toml_assignment(text: &str, key: &str) -> Option<String> {
             continue;
         }
         let idx = line.find('=')?;
-        let value = line[idx + 1..].trim().trim_matches('"').trim_matches('\'').trim();
+        let value = line[idx + 1..]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
         if !value.is_empty() {
             return Some(value.to_string());
         }
@@ -3343,10 +3564,9 @@ fn detect_provider_for_local_mod(
                         .unwrap_or(false)
                 })
                 .or_else(|| {
-                    version
-                        .files
-                        .iter()
-                        .find(|f| sanitize_filename(&f.filename).eq_ignore_ascii_case(safe_filename))
+                    version.files.iter().find(|f| {
+                        sanitize_filename(&f.filename).eq_ignore_ascii_case(safe_filename)
+                    })
                 })
                 .or_else(|| version.files.first());
             let mut hashes = matched_file.map(|f| f.hashes.clone()).unwrap_or_default();
@@ -3445,7 +3665,11 @@ fn entry_file_exists(instance_dir: &Path, entry: &LockEntry) -> bool {
                 return false;
             }
             entry.target_worlds.iter().all(|world| {
-                let path = instance_dir.join("saves").join(world).join("datapacks").join(&entry.filename);
+                let path = instance_dir
+                    .join("saves")
+                    .join(world)
+                    .join("datapacks")
+                    .join(&entry.filename);
                 path.exists()
             })
         }
@@ -3595,7 +3819,10 @@ where
 fn resolve_oauth_client_id_with_source(app: &tauri::AppHandle) -> Result<(String, String), String> {
     let settings = read_launcher_settings(app)?;
     if !settings.oauth_client_id.trim().is_empty() {
-        return Ok((settings.oauth_client_id.trim().to_string(), "settings".to_string()));
+        return Ok((
+            settings.oauth_client_id.trim().to_string(),
+            "settings".to_string(),
+        ));
     }
 
     if let Some(v) = std::env::var("MPM_MS_CLIENT_ID_DEFAULT")
@@ -3779,6 +4006,38 @@ fn post_json_with_retry(
     }
 }
 
+fn retry_after_delay(resp: &Response, attempt: usize) -> Duration {
+    let retry_after_secs = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or((attempt as u64).saturating_mul(2));
+    Duration::from_secs(retry_after_secs.min(20))
+}
+
+fn post_json_with_status_retry(
+    client: &Client,
+    url: &str,
+    body: &serde_json::Value,
+    stage: &str,
+    headers: &[(&str, &str)],
+) -> Result<Response, String> {
+    let max_attempts = 3usize;
+    let mut attempt = 0usize;
+    loop {
+        attempt += 1;
+        let resp = post_json_with_retry(client, url, body, stage, headers)?;
+        if attempt < max_attempts && should_retry_http_status(resp.status()) {
+            let delay = retry_after_delay(&resp, attempt);
+            thread::sleep(delay);
+            continue;
+        }
+        return Ok(resp);
+    }
+}
+
 fn parse_xerr_code(body: &str) -> Option<i64> {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -3788,19 +4047,31 @@ fn parse_xerr_code(body: &str) -> Option<i64> {
 
 fn explain_xerr_code(xerr: i64) -> Option<&'static str> {
     match xerr {
-        2148916233 => Some("This Microsoft account does not have an Xbox profile or Minecraft entitlement."),
+        2148916233 => {
+            Some("This Microsoft account does not have an Xbox profile or Minecraft entitlement.")
+        }
         2148916235 => Some("Xbox Live is unavailable in your current country/region."),
-        2148916238 => Some("This Microsoft account is underaged and not linked to a family account."),
-        2148916236 => Some("This Microsoft account requires proof of age before it can sign into Xbox."),
+        2148916238 => {
+            Some("This Microsoft account is underaged and not linked to a family account.")
+        }
+        2148916236 => {
+            Some("This Microsoft account requires proof of age before it can sign into Xbox.")
+        }
         2148916237 => Some("This Microsoft account has reached its allowed playtime limit."),
         2148916227 => Some("This Microsoft account is banned from Xbox services."),
-        2148916229 => Some("Guardian/parental controls currently block online play for this account."),
+        2148916229 => {
+            Some("Guardian/parental controls currently block online play for this account.")
+        }
         2148916234 => Some("This Microsoft account must accept Xbox terms first."),
         _ => None,
     }
 }
 
-fn normalize_microsoft_login_error(error_code: &str, error_desc: &str, client_id_source: &str) -> String {
+fn normalize_microsoft_login_error(
+    error_code: &str,
+    error_desc: &str,
+    client_id_source: &str,
+) -> String {
     let code = error_code.to_ascii_lowercase();
     let desc = error_desc.to_ascii_lowercase();
     let client_hint = if client_id_source == "settings" {
@@ -3828,7 +4099,8 @@ fn normalize_microsoft_login_error(error_code: &str, error_desc: &str, client_id
     }
 
     if code.contains("access_denied") || desc.contains("access denied") {
-        return "Microsoft sign-in was denied. Please complete consent in browser, then try again.".to_string();
+        return "Microsoft sign-in was denied. Please complete consent in browser, then try again."
+            .to_string();
     }
 
     format!("Microsoft device token polling failed: {error_desc}")
@@ -4166,7 +4438,10 @@ fn open_path_in_shell(path: &Path, create_if_missing: bool) -> Result<(), String
     }
 }
 
-fn reveal_path_in_shell(path: &Path, allow_parent_fallback: bool) -> Result<(PathBuf, bool), String> {
+fn reveal_path_in_shell(
+    path: &Path,
+    allow_parent_fallback: bool,
+) -> Result<(PathBuf, bool), String> {
     let mut target = path.to_path_buf();
     if !target.exists() {
         if allow_parent_fallback {
@@ -4275,13 +4550,179 @@ fn set_login_session_state(
     }
 }
 
-fn keyring_set_refresh_token(account_id: &str, refresh_token: &str) -> Result<(), String> {
-    let username = keyring_username_for_account(account_id);
-    let entry =
-        KeyringEntry::new(KEYRING_SERVICE, &username).map_err(|e| format!("keyring init failed: {e}"))?;
+fn keyring_unavailable_hint() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "No OS keyring provider is available. Install and unlock Secret Service (for example gnome-keyring or KWallet), then restart OpenJar Launcher."
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "OS secure credential storage is unavailable. Ensure your keychain/credential manager is enabled and unlocked, then restart OpenJar Launcher."
+    }
+}
+
+#[cfg(not(test))]
+fn keyring_error_with_action(operation: &str, error: &KeyringError) -> String {
+    match error {
+        KeyringError::NoStorageAccess(_) | KeyringError::PlatformFailure(_) => {
+            format!(
+                "{operation} failed: {} ({error})",
+                keyring_unavailable_hint()
+            )
+        }
+        _ => format!("{operation} failed: {error}"),
+    }
+}
+
+#[cfg(test)]
+fn test_token_keyring_store() -> &'static Mutex<HashMap<(String, String), String>> {
+    use std::sync::OnceLock;
+    static STORE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn test_token_keyring_available_flag() -> &'static std::sync::atomic::AtomicBool {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::OnceLock;
+    static AVAILABLE: OnceLock<AtomicBool> = OnceLock::new();
+    AVAILABLE.get_or_init(|| AtomicBool::new(true))
+}
+
+#[cfg(test)]
+fn test_token_keyring_available() -> bool {
+    use std::sync::atomic::Ordering;
+    test_token_keyring_available_flag().load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+fn set_test_token_keyring_available(value: bool) {
+    use std::sync::atomic::Ordering;
+    test_token_keyring_available_flag().store(value, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn clear_test_token_keyring_store() {
+    if let Ok(mut guard) = test_token_keyring_store().lock() {
+        guard.clear();
+    }
+    runtime_refresh_token_cache_clear();
+}
+
+#[cfg(test)]
+fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
+    if !test_token_keyring_available() {
+        return Err(format!(
+            "keyring write failed: {}",
+            keyring_unavailable_hint()
+        ));
+    }
+    let mut guard = test_token_keyring_store()
+        .lock()
+        .map_err(|_| "test keyring lock failed".to_string())?;
+    guard.insert(
+        (service.to_string(), username.to_string()),
+        secret.to_string(),
+    );
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
+    let entry = KeyringEntry::new(service, username)
+        .map_err(|e| keyring_error_with_action("keyring init", &e))?;
     entry
-        .set_password(refresh_token)
-        .map_err(|e| format!("keyring write failed: {e}"))
+        .set_password(secret)
+        .map_err(|e| keyring_error_with_action("keyring write", &e))
+}
+
+#[cfg(test)]
+fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
+    if !test_token_keyring_available() {
+        return Err(format!(
+            "keyring read failed: {}",
+            keyring_unavailable_hint()
+        ));
+    }
+    let guard = test_token_keyring_store()
+        .lock()
+        .map_err(|_| "test keyring lock failed".to_string())?;
+    Ok(guard
+        .get(&(service.to_string(), username.to_string()))
+        .cloned())
+}
+
+#[cfg(not(test))]
+fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
+    let entry = KeyringEntry::new(service, username)
+        .map_err(|e| keyring_error_with_action("keyring init", &e))?;
+    match entry.get_password() {
+        Ok(token) => Ok(Some(token)),
+        Err(KeyringError::NoEntry) => Ok(None),
+        Err(e) => Err(keyring_error_with_action("keyring read", &e)),
+    }
+}
+
+#[cfg(test)]
+fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), String> {
+    if !test_token_keyring_available() {
+        return Err(format!(
+            "keyring delete failed: {}",
+            keyring_unavailable_hint()
+        ));
+    }
+    let mut guard = test_token_keyring_store()
+        .lock()
+        .map_err(|_| "test keyring lock failed".to_string())?;
+    guard.remove(&(service.to_string(), username.to_string()));
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), String> {
+    let entry = KeyringEntry::new(service, username)
+        .map_err(|e| keyring_error_with_action("keyring init", &e))?;
+    match entry.delete_credential() {
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
+        Err(e) => Err(keyring_error_with_action("keyring delete", &e)),
+    }
+}
+
+fn keyring_set_refresh_token(account_id: &str, refresh_token: &str) -> Result<(), String> {
+    let keys = vec![account_id.to_string()];
+    for key in keys {
+        for username in keyring_alias_usernames_for_key(&key) {
+            token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
+        }
+        runtime_refresh_token_cache_set(&key, refresh_token);
+    }
+    Ok(())
+}
+
+fn keyring_set_refresh_token_for_account(
+    account: &LauncherAccount,
+    refresh_token: &str,
+) -> Result<(), String> {
+    let keys = vec![account.id.clone(), account.username.clone()];
+    for key in keys {
+        for username in keyring_alias_usernames_for_key(&key) {
+            token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
+        }
+        runtime_refresh_token_cache_set(&key, refresh_token);
+    }
+    Ok(())
+}
+
+fn keyring_set_selected_refresh_token(refresh_token: &str) -> Result<(), String> {
+    token_keyring_set_secret(
+        KEYRING_SERVICE,
+        KEYRING_SELECTED_REFRESH_ALIAS,
+        refresh_token,
+    )
+}
+
+fn keyring_get_selected_refresh_token() -> Result<Option<String>, String> {
+    token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
 }
 
 fn keyring_get_dev_curseforge_key() -> Result<Option<String>, String> {
@@ -4318,33 +4759,67 @@ fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
     }
 }
 
+fn persist_refresh_token_for_account(account_id: &str, refresh_token: &str) -> Result<(), String> {
+    keyring_set_refresh_token(account_id, refresh_token)
+}
+
+fn persist_refresh_token_for_account_with_app(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    refresh_token: &str,
+) -> Result<(), String> {
+    persist_refresh_token_for_account(account_id, refresh_token)?;
+    #[cfg(debug_assertions)]
+    {
+        if let Err(err) =
+            persist_refresh_token_debug_fallback_for_key(app, account_id, refresh_token)
+        {
+            eprintln!(
+                "debug refresh-token fallback write failed for account '{account_id}': {err}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn persist_refresh_token_for_launcher_account(
+    account: &LauncherAccount,
+    refresh_token: &str,
+) -> Result<(), String> {
+    keyring_set_refresh_token_for_account(account, refresh_token)?;
+    keyring_set_selected_refresh_token(refresh_token)
+}
+
+fn persist_refresh_token_for_launcher_account_with_app(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+    refresh_token: &str,
+) -> Result<(), String> {
+    persist_refresh_token_for_launcher_account(account, refresh_token)?;
+    #[cfg(debug_assertions)]
+    {
+        if let Err(err) = persist_refresh_token_debug_fallback(app, account, refresh_token) {
+            eprintln!(
+                "debug refresh-token fallback write failed for selected account '{}': {}",
+                account.id, err
+            );
+        }
+    }
+    Ok(())
+}
+
 fn persist_refresh_token(
     app: &tauri::AppHandle,
     account_id: &str,
     refresh_token: &str,
 ) -> Result<(), String> {
-    let keyring_result = keyring_set_refresh_token(account_id, refresh_token);
-    let fallback_result = token_fallback_set_refresh_token(app, account_id, refresh_token);
-    if keyring_result.is_ok() {
-        return fallback_result;
-    }
-    if fallback_result.is_ok() {
-        if let Err(e) = keyring_result {
-            eprintln!(
-                "keyring write failed for account {}; using fallback token store: {}",
-                account_id, e
-            );
-        }
-        return Ok(());
-    }
-    Err(format!(
-        "{} | {}",
-        keyring_result.unwrap_err(),
-        fallback_result.unwrap_err()
-    ))
+    persist_refresh_token_for_account_with_app(app, account_id, refresh_token)
 }
 
-fn keyring_username_candidates(account: &LauncherAccount, accounts: &[LauncherAccount]) -> Vec<String> {
+fn keyring_username_candidates(
+    account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Vec<String> {
     fn push_unique(out: &mut Vec<String>, value: String) {
         if value.trim().is_empty() {
             return;
@@ -4355,13 +4830,9 @@ fn keyring_username_candidates(account: &LauncherAccount, accounts: &[LauncherAc
     }
 
     fn add_aliases(out: &mut Vec<String>, key: &str) {
-        let key = key.trim();
-        if key.is_empty() {
-            return;
+        for alias in keyring_alias_usernames_for_key(key) {
+            push_unique(out, alias);
         }
-        push_unique(out, keyring_username_for_account(key));
-        push_unique(out, format!("msa_refresh_token_{key}"));
-        push_unique(out, key.to_string());
     }
 
     let mut out = Vec::new();
@@ -4378,13 +4849,177 @@ fn keyring_username_candidates(account: &LauncherAccount, accounts: &[LauncherAc
 }
 
 fn keyring_try_read(service: &str, username: &str) -> Result<Option<String>, String> {
-    let entry =
-        KeyringEntry::new(service, username).map_err(|e| format!("keyring init failed: {e}"))?;
-    match entry.get_password() {
-        Ok(token) => Ok(Some(token)),
-        Err(KeyringError::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring read failed: {e}")),
+    token_keyring_get_secret(service, username)
+}
+
+fn keyring_service_candidates() -> Vec<&'static str> {
+    let mut candidates = Vec::with_capacity(1 + LEGACY_KEYRING_SERVICES.len());
+    candidates.push(KEYRING_SERVICE);
+    for legacy in LEGACY_KEYRING_SERVICES {
+        if legacy != KEYRING_SERVICE {
+            candidates.push(legacy);
+        }
     }
+    candidates
+}
+
+fn recover_refresh_token_from_known_accounts(
+    selected_account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+    services: &[&str],
+) -> Result<Option<String>, String> {
+    fn push_unique(out: &mut Vec<String>, value: String) {
+        if value.trim().is_empty() {
+            return;
+        }
+        if !out.iter().any(|item| item == &value) {
+            out.push(value);
+        }
+    }
+
+    let mut usernames = Vec::new();
+    for candidate in accounts {
+        for username in keyring_username_candidates(candidate, accounts) {
+            push_unique(&mut usernames, username);
+        }
+    }
+    if usernames.is_empty() {
+        return Ok(None);
+    }
+
+    let mut unique_tokens = Vec::<String>::new();
+    for service in services {
+        for username in &usernames {
+            let Some(token) = keyring_try_read(service, username)? else {
+                continue;
+            };
+            if token.trim().is_empty() {
+                continue;
+            }
+            if !unique_tokens.iter().any(|item| item == &token) {
+                unique_tokens.push(token);
+            }
+        }
+    }
+
+    match unique_tokens.len() {
+        0 => Ok(None),
+        1 => {
+            let token = unique_tokens.pop().expect("token list length checked");
+            persist_refresh_token_for_launcher_account(selected_account, &token)?;
+            eprintln!(
+                "recovered refresh token in secure storage for selected account {} from legacy alias",
+                selected_account.id
+            );
+            Ok(Some(token))
+        }
+        _ => Err(
+            "Multiple secure refresh tokens were found but none matched the selected account. Select the correct account or reconnect to repair credentials."
+                .to_string(),
+        ),
+    }
+}
+
+fn read_refresh_token_from_keyring_aliases_only(
+    account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Result<Option<String>, String> {
+    let canonical_username = keyring_username_for_account(&account.id);
+    let usernames = keyring_username_candidates(account, accounts);
+    let services = keyring_service_candidates();
+
+    for service in &services {
+        for username in &usernames {
+            let Some(token) = keyring_try_read(service, username)? else {
+                continue;
+            };
+
+            let is_canonical = *service == KEYRING_SERVICE && username == &canonical_username;
+            if !is_canonical {
+                if let Err(e) = persist_refresh_token_for_launcher_account(account, &token) {
+                    eprintln!(
+                        "refresh token migration to canonical key failed for account {}: {}",
+                        account.id, e
+                    );
+                }
+            } else if let Err(e) = keyring_set_selected_refresh_token(&token) {
+                eprintln!(
+                    "refresh token selected-alias write failed for account {}: {}",
+                    account.id, e
+                );
+            }
+            runtime_refresh_token_cache_set(&account.id, &token);
+            runtime_refresh_token_cache_set(&account.username, &token);
+            return Ok(Some(token));
+        }
+    }
+
+    if let Some(token) = runtime_refresh_token_cache_get(&account.id) {
+        if !token.trim().is_empty() {
+            return Ok(Some(token));
+        }
+    }
+
+    Ok(None)
+}
+
+fn maybe_repair_selected_account_with_available_token(
+    app: &tauri::AppHandle,
+    selected_account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Result<Option<LauncherAccount>, String> {
+    if read_refresh_token_from_keyring_aliases_only(selected_account, accounts)?.is_some() {
+        return Ok(Some(selected_account.clone()));
+    }
+
+    let mut candidates = Vec::<LauncherAccount>::new();
+    for candidate in accounts {
+        if read_refresh_token_from_keyring_aliases_only(candidate, accounts)?.is_some()
+            && !candidates.iter().any(|item| item.id == candidate.id)
+        {
+            candidates.push(candidate.clone());
+        }
+    }
+
+    if candidates.len() != 1 {
+        return Ok(None);
+    }
+
+    let repaired = candidates.pop().expect("candidate count checked");
+    if repaired.id != selected_account.id {
+        let mut settings = read_launcher_settings(app)?;
+        settings.selected_account_id = Some(repaired.id.clone());
+        write_launcher_settings(app, &settings)?;
+        eprintln!(
+            "repaired selected Microsoft account to '{}' because the previous selection had no secure refresh token",
+            repaired.id
+        );
+    }
+    Ok(Some(repaired))
+}
+
+fn read_refresh_token_from_keyring(
+    account: &LauncherAccount,
+    accounts: &[LauncherAccount],
+) -> Result<String, String> {
+    if let Some(token) = read_refresh_token_from_keyring_aliases_only(account, accounts)? {
+        return Ok(token);
+    }
+
+    let services = keyring_service_candidates();
+    if let Some(token) = recover_refresh_token_from_known_accounts(account, accounts, &services)? {
+        return Ok(token);
+    }
+    if let Some(token) = keyring_get_selected_refresh_token()? {
+        if !token.trim().is_empty() {
+            let _ = keyring_set_refresh_token_for_account(account, &token);
+            runtime_refresh_token_cache_set(&account.id, &token);
+            runtime_refresh_token_cache_set(&account.username, &token);
+            return Ok(token);
+        }
+    }
+
+    Err("No refresh token found in secure storage for the selected account. Click Connect / Reconnect to repair account credentials.".to_string())
 }
 
 fn keyring_get_refresh_token_for_account(
@@ -4392,64 +5027,219 @@ fn keyring_get_refresh_token_for_account(
     account: &LauncherAccount,
     accounts: &[LauncherAccount],
 ) -> Result<String, String> {
-    let canonical_username = keyring_username_for_account(&account.id);
-    let usernames = keyring_username_candidates(account, accounts);
-
-    let mut candidates = Vec::with_capacity(1 + LEGACY_KEYRING_SERVICES.len());
-    candidates.push(KEYRING_SERVICE);
-    for legacy in LEGACY_KEYRING_SERVICES {
-        candidates.push(legacy);
-    }
-
-    for service in candidates {
-        for username in &usernames {
-            let Some(token) = keyring_try_read(service, username)? else {
-                continue;
-            };
-
-            let is_canonical = service == KEYRING_SERVICE && username == &canonical_username;
-            if !is_canonical {
-                if let Err(e) = persist_refresh_token(app, &account.id, &token) {
-                    eprintln!(
-                        "refresh token migration to canonical key failed for account {}: {}",
-                        account.id, e
-                    );
+    match read_refresh_token_from_keyring(account, accounts) {
+        Ok(token) => Ok(token),
+        Err(err) => {
+            #[cfg(debug_assertions)]
+            {
+                if err.starts_with("No refresh token found in secure storage")
+                    || err.starts_with("Multiple secure refresh tokens were found")
+                {
+                    if let Some(token) = read_refresh_token_debug_fallback(app, account, accounts)?
+                    {
+                        if let Err(write_err) = persist_refresh_token_for_launcher_account_with_app(
+                            app, account, &token,
+                        ) {
+                            eprintln!(
+                                "debug refresh-token recovery write-back failed for account '{}': {}",
+                                account.id, write_err
+                            );
+                        }
+                        return Ok(token);
+                    }
                 }
             }
-            return Ok(token);
+            Err(err)
         }
     }
-
-    if let Some(token) = token_fallback_get_refresh_token(app, account, accounts)? {
-        if let Err(e) = keyring_set_refresh_token(&account.id, &token) {
-            eprintln!(
-                "could not migrate fallback token into keyring for account {}: {}",
-                account.id, e
-            );
-        }
-        return Ok(token);
-    }
-
-    Err("No refresh token found in secure storage for the selected account. Click Connect / Reconnect to repair account credentials.".to_string())
 }
 
 fn keyring_delete_refresh_token(account_id: &str) -> Result<(), String> {
-    let username = keyring_username_for_account(account_id);
-    let entry =
-        KeyringEntry::new(KEYRING_SERVICE, &username).map_err(|e| format!("keyring init failed: {e}"))?;
-    match entry.delete_credential() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("keyring delete failed: {e}")),
+    for username in keyring_alias_usernames_for_key(account_id) {
+        token_keyring_delete_secret(KEYRING_SERVICE, &username)?;
     }
+    runtime_refresh_token_cache_delete(account_id);
+    Ok(())
 }
 
-fn delete_refresh_token_everywhere(app: &tauri::AppHandle, account_id: &str) {
+fn keyring_delete_refresh_token_for_account(account: &LauncherAccount) -> Result<(), String> {
+    for key in [&account.id, &account.username] {
+        for username in keyring_alias_usernames_for_key(key) {
+            token_keyring_delete_secret(KEYRING_SERVICE, &username)?;
+        }
+        runtime_refresh_token_cache_delete(key);
+    }
+    Ok(())
+}
+
+fn keyring_delete_selected_refresh_token() -> Result<(), String> {
+    token_keyring_delete_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
+}
+
+fn delete_refresh_token_everywhere(_app: &tauri::AppHandle, account_id: &str) {
     if let Err(e) = keyring_delete_refresh_token(account_id) {
         eprintln!("keyring delete failed for account {}: {}", account_id, e);
     }
-    if let Err(e) = token_fallback_delete_refresh_token(app, account_id) {
-        eprintln!("fallback token delete failed for account {}: {}", account_id, e);
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LegacyTokenMigrationSummary {
+    migrated: usize,
+    skipped: usize,
+    failed: usize,
+    fallback_files_removed: usize,
+}
+
+fn migrate_legacy_refresh_tokens_from_path(
+    path: &Path,
+) -> Result<LegacyTokenMigrationSummary, String> {
+    if !path.exists() {
+        return Ok(LegacyTokenMigrationSummary::default());
     }
+    let legacy_store = read_token_fallback_store_at_path(path)?;
+    let mut summary = LegacyTokenMigrationSummary::default();
+
+    for (raw_account_id, raw_token) in legacy_store.refresh_tokens {
+        let account_id = raw_account_id.trim();
+        let refresh_token = raw_token.trim();
+        if account_id.is_empty() || refresh_token.is_empty() {
+            summary.skipped += 1;
+            continue;
+        }
+        match keyring_set_refresh_token(account_id, refresh_token) {
+            Ok(()) => summary.migrated += 1,
+            Err(e) => {
+                summary.failed += 1;
+                eprintln!(
+                    "legacy refresh-token migration failed for account '{}': {}",
+                    account_id, e
+                );
+            }
+        }
+    }
+
+    fs::remove_file(path).map_err(|e| format!("remove launcher token fallback failed: {e}"))?;
+    summary.fallback_files_removed = 1;
+    Ok(summary)
+}
+
+fn legacy_token_fallback_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
+        if !out.iter().any(|existing| existing == &path) {
+            out.push(path);
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Ok(current) = launcher_token_fallback_path(app) {
+        push_unique(&mut out, current);
+    }
+    if let Some(data_dir) = tauri::api::path::data_dir() {
+        for legacy_app_id in [
+            "com.adrien.modpackmanager",
+            "io.github.pixelied.openjarlauncher",
+            "openjar-launcher",
+            "modpack-manager",
+        ] {
+            push_unique(
+                &mut out,
+                data_dir
+                    .join(legacy_app_id)
+                    .join("launcher")
+                    .join(LAUNCHER_TOKEN_FALLBACK_FILE),
+            );
+        }
+    }
+    out
+}
+
+fn migrate_legacy_refresh_tokens_to_keyring(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut summary = LegacyTokenMigrationSummary::default();
+    for path in legacy_token_fallback_paths(app) {
+        let path_summary = migrate_legacy_refresh_tokens_from_path(&path)?;
+        summary.migrated += path_summary.migrated;
+        summary.skipped += path_summary.skipped;
+        summary.failed += path_summary.failed;
+        summary.fallback_files_removed += path_summary.fallback_files_removed;
+    }
+    if summary.migrated == 0
+        && summary.skipped == 0
+        && summary.failed == 0
+        && summary.fallback_files_removed == 0
+    {
+        return Ok(());
+    }
+    eprintln!(
+        "legacy refresh-token fallback migration complete: migrated={}, skipped={}, failed={}, fallback_files_removed={}",
+        summary.migrated, summary.skipped, summary.failed, summary.fallback_files_removed
+    );
+    if summary.failed > 0 {
+        return Err(format!(
+            "Failed to migrate {} legacy refresh token(s) to OS secure storage. {}",
+            summary.failed,
+            keyring_unavailable_hint()
+        ));
+    }
+    Ok(())
+}
+
+fn migrate_selected_refresh_alias(app: &tauri::AppHandle) -> Result<(), String> {
+    let settings = read_launcher_settings(app)?;
+    let accounts = read_launcher_accounts(app)?;
+    if let Some(existing) = keyring_get_selected_refresh_token()? {
+        if !existing.trim().is_empty() {
+            return Ok(());
+        }
+    }
+
+    if let Some(selected_account) = settings
+        .selected_account_id
+        .as_deref()
+        .and_then(|id| accounts.iter().find(|account| account.id == id))
+        .cloned()
+    {
+        if let Some(token) =
+            read_refresh_token_from_keyring_aliases_only(&selected_account, &accounts)?
+        {
+            keyring_set_selected_refresh_token(&token)?;
+            runtime_refresh_token_cache_set(&selected_account.id, &token);
+            runtime_refresh_token_cache_set(&selected_account.username, &token);
+            return Ok(());
+        }
+    }
+
+    let mut found_owner: Option<LauncherAccount> = None;
+    let mut found_token: Option<String> = None;
+    for account in &accounts {
+        let Some(token) = read_refresh_token_from_keyring_aliases_only(account, &accounts)? else {
+            continue;
+        };
+        if token.trim().is_empty() {
+            continue;
+        }
+        match found_token.as_ref() {
+            None => {
+                found_owner = Some(account.clone());
+                found_token = Some(token);
+            }
+            Some(existing) if existing == &token => {}
+            Some(_) => {
+                return Ok(());
+            }
+        }
+    }
+
+    if let (Some(owner), Some(token)) = (found_owner, found_token) {
+        keyring_set_selected_refresh_token(&token)?;
+        runtime_refresh_token_cache_set(&owner.id, &token);
+        runtime_refresh_token_cache_set(&owner.username, &token);
+        if settings.selected_account_id.as_deref() != Some(owner.id.as_str()) {
+            let mut updated = settings.clone();
+            updated.selected_account_id = Some(owner.id);
+            write_launcher_settings(app, &updated)?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -4543,13 +5333,19 @@ fn microsoft_refresh_access_token(
         .send()
         .map_err(|e| format!("Microsoft refresh failed: {e}"))?;
     if !res.status().is_success() {
-        return Err(format!("Microsoft refresh failed with status {}", res.status()));
+        return Err(format!(
+            "Microsoft refresh failed with status {}",
+            res.status()
+        ));
     }
     res.json::<MsoTokenResponse>()
         .map_err(|e| format!("parse Microsoft refresh failed: {e}"))
 }
 
-fn microsoft_begin_device_code(client: &Client, client_id: &str) -> Result<MsoDeviceCodeResponse, String> {
+fn microsoft_begin_device_code(
+    client: &Client,
+    client_id: &str,
+) -> Result<MsoDeviceCodeResponse, String> {
     let params = [
         ("client_id", client_id),
         ("scope", "XboxLive.signin XboxLive.offline_access"),
@@ -4580,7 +5376,7 @@ fn microsoft_access_to_mc_token(client: &Client, msa_access_token: &str) -> Resu
         "RelyingParty": "http://auth.xboxlive.com",
         "TokenType": "JWT"
     });
-    let mut xbl = post_json_with_retry(
+    let mut xbl = post_json_with_status_retry(
         client,
         XBL_AUTH_URL,
         &xbl_req_with_prefix,
@@ -4600,7 +5396,7 @@ fn microsoft_access_to_mc_token(client: &Client, msa_access_token: &str) -> Resu
                 "RelyingParty": "http://auth.xboxlive.com",
                 "TokenType": "JWT"
             });
-            xbl = post_json_with_retry(
+            xbl = post_json_with_status_retry(
                 client,
                 XBL_AUTH_URL,
                 &xbl_req_plain,
@@ -4641,7 +5437,7 @@ fn microsoft_access_to_mc_token(client: &Client, msa_access_token: &str) -> Resu
         "RelyingParty": "rp://api.minecraftservices.com/",
         "TokenType": "JWT"
     });
-    let xsts = post_json_with_retry(
+    let xsts = post_json_with_status_retry(
         client,
         XSTS_AUTH_URL,
         &xsts_req,
@@ -4677,7 +5473,7 @@ fn microsoft_access_to_mc_token(client: &Client, msa_access_token: &str) -> Resu
         "xtoken": identity_token,
         "platform": "PC_LAUNCHER",
     });
-    let launcher_resp = post_json_with_retry(
+    let launcher_resp = post_json_with_status_retry(
         client,
         MC_LAUNCHER_AUTH_URL,
         &launcher_req,
@@ -4695,7 +5491,7 @@ fn microsoft_access_to_mc_token(client: &Client, msa_access_token: &str) -> Resu
     let mc_req = serde_json::json!({
         "identityToken": format!("XBL3.0 x={};{}", uhs, xsts_data.token),
     });
-    let mc = post_json_with_retry(client, MC_AUTH_URL, &mc_req, "Minecraft login", &[])?;
+    let mc = post_json_with_status_retry(client, MC_AUTH_URL, &mc_req, "Minecraft login", &[])?;
     if !mc.status().is_success() {
         let status = mc.status();
         let body = mc.text().unwrap_or_default();
@@ -4736,7 +5532,10 @@ fn ensure_minecraft_entitlement(client: &Client, mc_access_token: &str) -> Resul
     Ok(())
 }
 
-fn fetch_minecraft_profile(client: &Client, mc_access_token: &str) -> Result<McProfileResponse, String> {
+fn fetch_minecraft_profile(
+    client: &Client,
+    mc_access_token: &str,
+) -> Result<McProfileResponse, String> {
     let resp = client
         .get(MC_PROFILE_URL)
         .header("Accept", "application/json")
@@ -4832,7 +5631,9 @@ fn apply_minecraft_skin(
             .get(source)
             .header("Accept", "image/png,image/*;q=0.9,*/*;q=0.2")
             .send()
-            .map_err(|e| format!("download skin URL failed after URL apply failed ({by_url_err}): {e}"))?;
+            .map_err(|e| {
+                format!("download skin URL failed after URL apply failed ({by_url_err}): {e}")
+            })?;
         if !downloaded.status().is_success() {
             return Err(format!(
                 "Skin URL apply failed ({by_url_err}) and fallback download failed ({})",
@@ -4844,7 +5645,9 @@ fn apply_minecraft_skin(
             .map_err(|e| format!("read downloaded skin bytes failed: {e}"))?
             .to_vec();
         if bytes.is_empty() {
-            return Err(format!("Skin URL apply failed ({by_url_err}) and downloaded image was empty."));
+            return Err(format!(
+                "Skin URL apply failed ({by_url_err}) and downloaded image was empty."
+            ));
         }
         let file_name = source
             .split('/')
@@ -4853,8 +5656,9 @@ fn apply_minecraft_skin(
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("skin.png")
             .to_string();
-        upload_minecraft_skin_png_bytes(client, mc_access_token, variant, bytes, file_name)
-            .map_err(|e| format!("Skin URL apply failed ({by_url_err}); fallback upload failed: {e}"))
+        upload_minecraft_skin_png_bytes(client, mc_access_token, variant, bytes, file_name).map_err(
+            |e| format!("Skin URL apply failed ({by_url_err}); fallback upload failed: {e}"),
+        )
     } else {
         let path = PathBuf::from(source);
         if !path.exists() || !path.is_file() {
@@ -4874,7 +5678,11 @@ fn apply_minecraft_skin(
     }
 }
 
-fn apply_minecraft_cape(client: &Client, mc_access_token: &str, cape_id: Option<&str>) -> Result<(), String> {
+fn apply_minecraft_cape(
+    client: &Client,
+    mc_access_token: &str,
+    cape_id: Option<&str>,
+) -> Result<(), String> {
     let url = format!("{MC_PROFILE_URL}/capes/active");
     let trimmed = cape_id.unwrap_or("").trim();
 
@@ -4972,9 +5780,12 @@ fn resolve_forge_loader_version(client: &Client, mc_version: &str) -> Result<Str
         })
         .collect();
     candidates.sort();
-    candidates
-        .pop()
-        .ok_or_else(|| format!("No compatible Forge version found for Minecraft {}", mc_version))
+    candidates.pop().ok_or_else(|| {
+        format!(
+            "No compatible Forge version found for Minecraft {}",
+            mc_version
+        )
+    })
 }
 
 fn safe_mod_filename(project_id: &str, version_id: &str, source_filename: &str) -> String {
@@ -5001,7 +5812,10 @@ fn pick_compatible_version(
     compatible.into_iter().next()
 }
 
-fn fetch_project_versions(client: &Client, project_id: &str) -> Result<Vec<ModrinthVersion>, String> {
+fn fetch_project_versions(
+    client: &Client,
+    project_id: &str,
+) -> Result<Vec<ModrinthVersion>, String> {
     let versions_url = format!("{}/project/{project_id}/version", modrinth_api_base());
     let versions_resp = client
         .get(&versions_url)
@@ -5123,19 +5937,34 @@ fn resolve_modrinth_install_plan(
     Ok(resolved)
 }
 
-fn is_plan_entry_up_to_date(instance_dir: &Path, lock: &Lockfile, item: &ResolvedInstallMod) -> bool {
+fn is_plan_entry_up_to_date(
+    instance_dir: &Path,
+    lock: &Lockfile,
+    item: &ResolvedInstallMod,
+) -> bool {
     let safe_filename = safe_mod_filename(&item.project_id, &item.version.id, &item.file.filename);
-    let Some(existing) = lock.entries.iter().find(|e| e.project_id == item.project_id) else {
+    let Some(existing) = lock
+        .entries
+        .iter()
+        .find(|e| e.project_id == item.project_id)
+    else {
         return false;
     };
-    if existing.version_id != item.version.id || existing.filename != safe_filename || !existing.enabled {
+    if existing.version_id != item.version.id
+        || existing.filename != safe_filename
+        || !existing.enabled
+    {
         return false;
     }
     let (enabled_path, _) = mod_paths(instance_dir, &existing.filename);
     enabled_path.exists()
 }
 
-fn count_plan_install_actions(instance_dir: &Path, lock: &Lockfile, plan: &[ResolvedInstallMod]) -> usize {
+fn count_plan_install_actions(
+    instance_dir: &Path,
+    lock: &Lockfile,
+    plan: &[ResolvedInstallMod],
+) -> usize {
     plan.iter()
         .filter(|item| !is_plan_entry_up_to_date(instance_dir, lock, item))
         .count()
@@ -5163,8 +5992,12 @@ fn remove_replaced_entries_for_project(
                 .map_err(|e| format!("remove old mod file '{}' failed: {e}", old.filename))?;
         }
         if old_disabled.exists() {
-            fs::remove_file(&old_disabled)
-                .map_err(|e| format!("remove old disabled mod file '{}' failed: {e}", old.filename))?;
+            fs::remove_file(&old_disabled).map_err(|e| {
+                format!(
+                    "remove old disabled mod file '{}' failed: {e}",
+                    old.filename
+                )
+            })?;
         }
     }
     Ok(())
@@ -5181,14 +6014,12 @@ fn remove_replaced_entries_for_content(
         .entries
         .iter()
         .filter(|e| {
-            e.project_id == project_id
-                && normalize_lock_content_type(&e.content_type) == normalized
+            e.project_id == project_id && normalize_lock_content_type(&e.content_type) == normalized
         })
         .cloned()
         .collect();
     lock.entries.retain(|e| {
-        !(e.project_id == project_id
-            && normalize_lock_content_type(&e.content_type) == normalized)
+        !(e.project_id == project_id && normalize_lock_content_type(&e.content_type) == normalized)
     });
 
     for old in replaced {
@@ -5196,12 +6027,16 @@ fn remove_replaced_entries_for_content(
             "mods" => {
                 let (old_enabled, old_disabled) = mod_paths(instance_dir, &old.filename);
                 if old_enabled.exists() {
-                    fs::remove_file(&old_enabled)
-                        .map_err(|e| format!("remove old mod file '{}' failed: {e}", old.filename))?;
+                    fs::remove_file(&old_enabled).map_err(|e| {
+                        format!("remove old mod file '{}' failed: {e}", old.filename)
+                    })?;
                 }
                 if old_disabled.exists() {
                     fs::remove_file(&old_disabled).map_err(|e| {
-                        format!("remove old disabled mod file '{}' failed: {e}", old.filename)
+                        format!(
+                            "remove old disabled mod file '{}' failed: {e}",
+                            old.filename
+                        )
                     })?;
                 }
             }
@@ -5296,7 +6131,8 @@ fn check_single_content_update_entry(
 
     if source == "modrinth" {
         let versions = fetch_project_versions(client, &entry.project_id)?;
-        let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type) else {
+        let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type)
+        else {
             warnings.push(format!(
                 "No compatible Modrinth update found for '{}' ({})",
                 entry.name, entry.project_id
@@ -5346,7 +6182,9 @@ fn check_single_content_update_entry(
         };
         let mod_id = parse_curseforge_project_id(&entry.project_id)?;
         let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-        files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+        files.retain(|f| {
+            !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+        });
         files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         let Some(latest) = files.into_iter().next() else {
             warnings.push(format!(
@@ -5405,7 +6243,9 @@ fn check_single_content_update_entry(
                 required_dependencies: latest
                     .dependencies
                     .iter()
-                    .filter(|dep| dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type))
+                    .filter(|dep| {
+                        dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type)
+                    })
                     .map(|dep| format!("cf:{}", dep.mod_id))
                     .filter(|project_id| project_id != &entry.project_id)
                     .collect(),
@@ -5482,24 +6322,26 @@ fn check_instance_content_updates_inner(
                 let client_local = client.clone();
                 let instance_local = instance_snapshot.clone();
                 let cf_key_local = cf_key_snapshot.clone();
-                handles.push(scope_ctx.spawn(move || -> Result<(Vec<ContentUpdateInfo>, Vec<String>), String> {
-                    let mut local_updates = Vec::new();
-                    let mut local_warnings = Vec::new();
-                    for entry in &chunk {
-                        let (maybe_update, mut warnings_for_entry) =
-                            check_single_content_update_entry(
-                                &client_local,
-                                &instance_local,
-                                entry,
-                                cf_key_local.as_deref(),
-                            )?;
-                        if let Some(update) = maybe_update {
-                            local_updates.push(update);
+                handles.push(scope_ctx.spawn(
+                    move || -> Result<(Vec<ContentUpdateInfo>, Vec<String>), String> {
+                        let mut local_updates = Vec::new();
+                        let mut local_warnings = Vec::new();
+                        for entry in &chunk {
+                            let (maybe_update, mut warnings_for_entry) =
+                                check_single_content_update_entry(
+                                    &client_local,
+                                    &instance_local,
+                                    entry,
+                                    cf_key_local.as_deref(),
+                                )?;
+                            if let Some(update) = maybe_update {
+                                local_updates.push(update);
+                            }
+                            local_warnings.append(&mut warnings_for_entry);
                         }
-                        local_warnings.append(&mut warnings_for_entry);
-                    }
-                    Ok((local_updates, local_warnings))
-                }));
+                        Ok((local_updates, local_warnings))
+                    },
+                ));
             }
 
             for handle in handles {
@@ -5592,9 +6434,16 @@ fn modrinth_required_dependency_list_satisfied(lock: &Lockfile, dependencies: &[
     true
 }
 
-fn curseforge_required_dependencies_satisfied(lock: &Lockfile, file: &CurseforgeFile, root_mod_id: i64) -> bool {
+fn curseforge_required_dependencies_satisfied(
+    lock: &Lockfile,
+    file: &CurseforgeFile,
+    root_mod_id: i64,
+) -> bool {
     for dep in &file.dependencies {
-        if dep.mod_id <= 0 || !curseforge_relation_is_required(dep.relation_type) || dep.mod_id == root_mod_id {
+        if dep.mod_id <= 0
+            || !curseforge_relation_is_required(dep.relation_type)
+            || dep.mod_id == root_mod_id
+        {
             continue;
         }
         if !lock_has_enabled_curseforge_mod(lock, dep.mod_id) {
@@ -5691,7 +6540,10 @@ fn adaptive_update_prefetch_worker_cap(updates: &[ContentUpdateInfo]) -> usize {
     } else {
         6
     };
-    let mut cap = target_by_workload.min(cpu.saturating_mul(2)).min(eligible).max(1);
+    let mut cap = target_by_workload
+        .min(cpu.saturating_mul(2))
+        .min(eligible)
+        .max(1);
     if curseforge_jobs > 0 {
         // CF can throttle aggressively; keep mixed-source prefetch stable.
         cap = if curseforge_jobs * 2 >= eligible {
@@ -5718,7 +6570,12 @@ fn prefetch_update_downloads(
         if source != "modrinth" && source != "curseforge" {
             continue;
         }
-        let Some(download_url) = update.latest_download_url.as_ref().map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+        let Some(download_url) = update
+            .latest_download_url
+            .as_ref()
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+        else {
             continue;
         };
         let mut prepared = update.clone();
@@ -5767,9 +6624,10 @@ fn prefetch_update_downloads(
             let Some(download_url) = download_url else {
                 continue;
             };
-            let result = download_bytes_with_retry(&client_ref, &download_url, &job.update.project_id)
-                .map(PrefetchedDownload::Ready)
-                .unwrap_or_else(PrefetchedDownload::Failed);
+            let result =
+                download_bytes_with_retry(&client_ref, &download_url, &job.update.project_id)
+                    .map(PrefetchedDownload::Ready)
+                    .unwrap_or_else(PrefetchedDownload::Failed);
             if let Ok(mut guard) = out_ref.lock() {
                 guard.insert(job.index, result);
             }
@@ -5848,8 +6706,10 @@ fn try_fast_install_content_update(
             latest_version_number = version.version_number.clone();
         }
 
-        let download_url = download_url.ok_or_else(|| "Missing Modrinth download URL".to_string())?;
-        let latest_file_name = latest_file_name.ok_or_else(|| "Missing Modrinth filename".to_string())?;
+        let download_url =
+            download_url.ok_or_else(|| "Missing Modrinth download URL".to_string())?;
+        let latest_file_name =
+            latest_file_name.ok_or_else(|| "Missing Modrinth filename".to_string())?;
         let safe_filename = sanitize_filename(&latest_file_name);
         if safe_filename.is_empty() {
             return Err("Resolved filename is invalid".to_string());
@@ -5871,8 +6731,19 @@ fn try_fast_install_content_update(
         } else {
             vec![]
         };
-        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
-        remove_replaced_entries_for_content(&mut lock, &instance_dir, &update.project_id, &normalized)?;
+        write_download_to_content_targets(
+            &instance_dir,
+            &normalized,
+            &safe_filename,
+            &worlds,
+            &bytes,
+        )?;
+        remove_replaced_entries_for_content(
+            &mut lock,
+            &instance_dir,
+            &update.project_id,
+            &normalized,
+        )?;
 
         let new_entry = LockEntry {
             source: "modrinth".to_string(),
@@ -5936,14 +6807,20 @@ fn try_fast_install_content_update(
 
         if latest_file_name.is_none() || download_url.is_none() || latest_hashes.is_empty() {
             let file = fetch_curseforge_file(client, api_key, mod_id, latest_file_id)?;
-            if file.file_name.trim().is_empty() || !file_looks_compatible_with_instance(&file, instance) {
+            if file.file_name.trim().is_empty()
+                || !file_looks_compatible_with_instance(&file, instance)
+            {
                 return Ok(None);
             }
-            if normalized == "mods" && !curseforge_required_dependencies_satisfied(&lock, &file, mod_id) {
+            if normalized == "mods"
+                && !curseforge_required_dependencies_satisfied(&lock, &file, mod_id)
+            {
                 return Ok(None);
             }
             latest_file_name = Some(file.file_name.clone());
-            download_url = Some(resolve_curseforge_file_download_url(client, api_key, mod_id, &file)?);
+            download_url = Some(resolve_curseforge_file_download_url(
+                client, api_key, mod_id, &file,
+            )?);
             latest_hashes = parse_cf_hashes(&file);
             latest_version_number = if file.display_name.trim().is_empty() {
                 file.file_name.clone()
@@ -5968,7 +6845,11 @@ fn try_fast_install_content_update(
                 }
             }
         } else {
-            download_bytes_with_retry(client, &download_url, &format!("cf:{mod_id}:{latest_file_id}"))?
+            download_bytes_with_retry(
+                client,
+                &download_url,
+                &format!("cf:{mod_id}:{latest_file_id}"),
+            )?
         };
 
         let worlds = if normalized == "datapacks" {
@@ -5976,7 +6857,13 @@ fn try_fast_install_content_update(
         } else {
             vec![]
         };
-        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
+        write_download_to_content_targets(
+            &instance_dir,
+            &normalized,
+            &safe_filename,
+            &worlds,
+            &bytes,
+        )?;
         let project_key = format!("cf:{mod_id}");
         remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
 
@@ -6097,7 +6984,11 @@ fn parse_cf_hashes(file: &CurseforgeFile) -> HashMap<String, String> {
     out
 }
 
-fn fetch_curseforge_project(client: &Client, api_key: &str, mod_id: i64) -> Result<CurseforgeMod, String> {
+fn fetch_curseforge_project(
+    client: &Client,
+    api_key: &str,
+    mod_id: i64,
+) -> Result<CurseforgeMod, String> {
     let mod_resp = client
         .get(format!("{}/mods/{}", CURSEFORGE_API_BASE, mod_id))
         .header("Accept", "application/json")
@@ -6116,7 +7007,11 @@ fn fetch_curseforge_project(client: &Client, api_key: &str, mod_id: i64) -> Resu
         .data)
 }
 
-fn fetch_curseforge_files(client: &Client, api_key: &str, mod_id: i64) -> Result<Vec<CurseforgeFile>, String> {
+fn fetch_curseforge_files(
+    client: &Client,
+    api_key: &str,
+    mod_id: i64,
+) -> Result<Vec<CurseforgeFile>, String> {
     let files_resp = client
         .get(format!(
             "{}/mods/{}/files?pageSize=80&index=0",
@@ -6186,7 +7081,9 @@ fn resolve_curseforge_dependency_chain(
         }
         ordered.push(mod_id);
         let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-        files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+        files.retain(|f| {
+            !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+        });
         files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         let Some(file) = files.into_iter().next() else {
             return Err(format!(
@@ -6218,7 +7115,10 @@ fn discover_content_type_from_modrinth_project_type(project_type: &str) -> Strin
     }
 }
 
-fn discover_content_type_from_curseforge_class_id(class_id: i64, requested_content_type: &str) -> String {
+fn discover_content_type_from_curseforge_class_id(
+    class_id: i64,
+    requested_content_type: &str,
+) -> String {
     match class_id {
         4471 => "modpacks".to_string(),
         6945 => "datapacks".to_string(),
@@ -6244,7 +7144,10 @@ fn file_looks_compatible_with_instance(file: &CurseforgeFile, instance: &Instanc
     if values.is_empty() {
         return false;
     }
-    if !values.iter().any(|v| v == &instance.mc_version.to_lowercase()) {
+    if !values
+        .iter()
+        .any(|v| v == &instance.mc_version.to_lowercase())
+    {
         return false;
     }
 
@@ -6319,9 +7222,14 @@ fn normalize_target_worlds_for_datapack(
     instance_dir: &Path,
     target_worlds: &[String],
 ) -> Result<Vec<String>, String> {
-    let world_set: HashSet<String> = list_instance_world_names(instance_dir)?.into_iter().collect();
+    let world_set: HashSet<String> = list_instance_world_names(instance_dir)?
+        .into_iter()
+        .collect();
     if world_set.is_empty() {
-        return Err("This instance has no worlds yet. Create a world first to install datapacks.".to_string());
+        return Err(
+            "This instance has no worlds yet. Create a world first to install datapacks."
+                .to_string(),
+        );
     }
 
     let mut out = Vec::new();
@@ -6355,7 +7263,8 @@ fn write_download_to_content_targets(
     match normalized.as_str() {
         "mods" | "resourcepacks" | "shaderpacks" => {
             let dir = content_dir_for_type(instance_dir, &normalized);
-            fs::create_dir_all(&dir).map_err(|e| format!("mkdir '{}' failed: {e}", dir.display()))?;
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("mkdir '{}' failed: {e}", dir.display()))?;
             let out_path = dir.join(filename);
             fs::write(&out_path, bytes)
                 .map_err(|e| format!("write '{}' failed: {e}", out_path.display()))?;
@@ -6389,16 +7298,20 @@ fn install_modrinth_content_inner(
 ) -> Result<LockEntry, String> {
     let normalized = normalize_lock_content_type(content_type);
     if normalized == "modpacks" {
-        return Err("Modpack entries are template-only. Import as template in Modpacks & Presets.".to_string());
+        return Err(
+            "Modpack entries are template-only. Import as template in Modpacks & Presets."
+                .to_string(),
+        );
     }
 
     let versions = fetch_project_versions(client, project_id)?;
-    let version = pick_compatible_version_for_content(versions, instance, &normalized).ok_or_else(|| {
-        format!(
-            "No compatible Modrinth version found for {} ({} + {})",
-            project_id, instance.loader, instance.mc_version
-        )
-    })?;
+    let version =
+        pick_compatible_version_for_content(versions, instance, &normalized).ok_or_else(|| {
+            format!(
+                "No compatible Modrinth version found for {} ({} + {})",
+                project_id, instance.loader, instance.mc_version
+            )
+        })?;
     let file = version
         .files
         .iter()
@@ -6478,13 +7391,18 @@ fn install_curseforge_content_inner(
 ) -> Result<LockEntry, String> {
     let normalized = normalize_lock_content_type(content_type);
     if normalized == "modpacks" {
-        return Err("Modpack entries are template-only. Import as template in Modpacks & Presets.".to_string());
+        return Err(
+            "Modpack entries are template-only. Import as template in Modpacks & Presets."
+                .to_string(),
+        );
     }
     let mod_id = parse_curseforge_project_id(project_id)?;
     let project_key = format!("cf:{mod_id}");
     let project = fetch_curseforge_project(client, api_key, mod_id)?;
     let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-    files.retain(|f| !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance));
+    files.retain(|f| {
+        !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance)
+    });
     files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
     let file = files.into_iter().next().ok_or_else(|| {
         format!(
@@ -6644,7 +7562,9 @@ fn import_modrinth_modpack_template_inner(
                         if let Ok(index) = serde_json::from_str::<ModrinthModpackIndex>(&raw) {
                             if entries.is_empty() {
                                 for file in index.files {
-                                    let Some(content_type) = classify_pack_path_content_type(&file.path) else {
+                                    let Some(content_type) =
+                                        classify_pack_path_content_type(&file.path)
+                                    else {
                                         continue;
                                     };
                                     entries.push(CreatorPresetEntry {
@@ -6771,7 +7691,9 @@ fn import_curseforge_modpack_template_inner(
         });
     }
     if entries.is_empty() {
-        return Err("This CurseForge modpack manifest does not contain installable files.".to_string());
+        return Err(
+            "This CurseForge modpack manifest does not contain installable files.".to_string(),
+        );
     }
 
     let preset_name = manifest
@@ -6827,12 +7749,19 @@ fn search_modrinth_discover(
                 .collect(),
         );
     }
-    let facets = serde_json::to_string(&groups).map_err(|e| format!("serialize facets failed: {e}"))?;
+    let facets =
+        serde_json::to_string(&groups).map_err(|e| format!("serialize facets failed: {e}"))?;
     params.push(("facets".to_string(), facets));
 
     let query = params
         .iter()
-        .map(|(k, v)| format!("{}={}", url::form_urlencoded::byte_serialize(k.as_bytes()).collect::<String>(), url::form_urlencoded::byte_serialize(v.as_bytes()).collect::<String>()))
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                url::form_urlencoded::byte_serialize(k.as_bytes()).collect::<String>(),
+                url::form_urlencoded::byte_serialize(v.as_bytes()).collect::<String>()
+            )
+        })
         .collect::<Vec<_>>()
         .join("&");
     let url = format!("{}/search?{}", modrinth_api_base(), query);
@@ -6842,7 +7771,10 @@ fn search_modrinth_discover(
         .send()
         .map_err(|e| format!("Modrinth discover search failed: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("Modrinth discover search failed with status {}", resp.status()));
+        return Err(format!(
+            "Modrinth discover search failed with status {}",
+            resp.status()
+        ));
     }
     let payload = resp
         .json::<serde_json::Value>()
@@ -6886,14 +7818,8 @@ fn search_modrinth_discover(
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown")
                 .to_string();
-            let downloads = it
-                .get("downloads")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let follows = it
-                .get("follows")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+            let downloads = it.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0);
+            let follows = it.get("follows").and_then(|v| v.as_u64()).unwrap_or(0);
             let icon_url = it
                 .get("icon_url")
                 .and_then(|v| v.as_str())
@@ -6962,8 +7888,7 @@ fn search_curseforge_discover(
     client: &Client,
     args: &SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
-    let api_key = curseforge_api_key()
-        .ok_or_else(discover_missing_curseforge_key_message)?;
+    let api_key = curseforge_api_key().ok_or_else(discover_missing_curseforge_key_message)?;
     let content_type = normalize_discover_content_type(&args.content_type);
     let class_ids = curseforge_class_ids_for_content_type(&content_type);
     let sort_field = discover_index_sort_field(&args.index);
@@ -6972,11 +7897,17 @@ fn search_curseforge_discover(
 
     for class_id in class_ids {
         let mut query_pairs: Vec<(String, String)> = vec![
-            ("gameId".to_string(), CURSEFORGE_GAME_ID_MINECRAFT.to_string()),
+            (
+                "gameId".to_string(),
+                CURSEFORGE_GAME_ID_MINECRAFT.to_string(),
+            ),
             ("classId".to_string(), class_id.to_string()),
             ("sortField".to_string(), sort_field.to_string()),
             ("sortOrder".to_string(), "desc".to_string()),
-            ("pageSize".to_string(), (args.limit + args.offset).max(20).to_string()),
+            (
+                "pageSize".to_string(),
+                (args.limit + args.offset).max(20).to_string(),
+            ),
             ("index".to_string(), "0".to_string()),
         ];
 
@@ -6996,7 +7927,13 @@ fn search_curseforge_discover(
 
         let query = query_pairs
             .iter()
-            .map(|(k, v)| format!("{}={}", url::form_urlencoded::byte_serialize(k.as_bytes()).collect::<String>(), url::form_urlencoded::byte_serialize(v.as_bytes()).collect::<String>()))
+            .map(|(k, v)| {
+                format!(
+                    "{}={}",
+                    url::form_urlencoded::byte_serialize(k.as_bytes()).collect::<String>(),
+                    url::form_urlencoded::byte_serialize(v.as_bytes()).collect::<String>()
+                )
+            })
             .collect::<Vec<_>>()
             .join("&");
         let url = format!("{}/mods/search?{}", CURSEFORGE_API_BASE, query);
@@ -7057,7 +7994,10 @@ fn search_curseforge_discover(
                 date_modified: item.date_modified.clone(),
                 content_type: hit_content_type,
                 slug: item.slug.clone(),
-                external_url: Some(format!("https://www.curseforge.com/minecraft/mc-mods/{}", item.slug.unwrap_or_else(|| project_id.clone()))),
+                external_url: Some(format!(
+                    "https://www.curseforge.com/minecraft/mc-mods/{}",
+                    item.slug.unwrap_or_else(|| project_id.clone())
+                )),
             });
         }
     }
@@ -7159,7 +8099,11 @@ fn prism_root_dir() -> Result<PathBuf, String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if cfg!(target_os = "macos") {
         if let Some(home) = home_dir() {
-            candidates.push(home.join("Library").join("Application Support").join("PrismLauncher"));
+            candidates.push(
+                home.join("Library")
+                    .join("Application Support")
+                    .join("PrismLauncher"),
+            );
         }
     } else if cfg!(target_os = "windows") {
         if let Some(appdata) = std::env::var_os("APPDATA") {
@@ -7465,16 +8409,27 @@ fn copy_file_if_exists(src: &Path, dst: &Path) -> Result<usize, String> {
         return Ok(0);
     }
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir '{}' failed: {e}", parent.display()))?;
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("mkdir '{}' failed: {e}", parent.display()))?;
     }
-    fs::copy(src, dst).map_err(|e| format!("copy '{}' -> '{}' failed: {e}", src.display(), dst.display()))?;
+    fs::copy(src, dst).map_err(|e| {
+        format!(
+            "copy '{}' -> '{}' failed: {e}",
+            src.display(),
+            dst.display()
+        )
+    })?;
     Ok(1)
 }
 
-fn copy_launcher_source_into_instance(source_mc_dir: &Path, instance_dir: &Path) -> Result<usize, String> {
+fn copy_launcher_source_into_instance(
+    source_mc_dir: &Path,
+    instance_dir: &Path,
+) -> Result<usize, String> {
     let mut copied = 0usize;
     copied += copy_dir_recursive_count(&source_mc_dir.join("mods"), &instance_dir.join("mods"))?;
-    copied += copy_dir_recursive_count(&source_mc_dir.join("config"), &instance_dir.join("config"))?;
+    copied +=
+        copy_dir_recursive_count(&source_mc_dir.join("config"), &instance_dir.join("config"))?;
     copied += copy_dir_recursive_count(
         &source_mc_dir.join("resourcepacks"),
         &instance_dir.join("resourcepacks"),
@@ -7484,16 +8439,21 @@ fn copy_launcher_source_into_instance(source_mc_dir: &Path, instance_dir: &Path)
         &instance_dir.join("shaderpacks"),
     )?;
     copied += copy_dir_recursive_count(&source_mc_dir.join("saves"), &instance_dir.join("saves"))?;
-    copied += copy_file_if_exists(&source_mc_dir.join("options.txt"), &instance_dir.join("options.txt"))?;
-    copied += copy_file_if_exists(&source_mc_dir.join("servers.dat"), &instance_dir.join("servers.dat"))?;
+    copied += copy_file_if_exists(
+        &source_mc_dir.join("options.txt"),
+        &instance_dir.join("options.txt"),
+    )?;
+    copied += copy_file_if_exists(
+        &source_mc_dir.join("servers.dat"),
+        &instance_dir.join("servers.dat"),
+    )?;
     Ok(copied)
 }
 
 fn parse_modpack_file_info(
     file_path: &Path,
 ) -> Result<(String, String, String, Vec<String>, Vec<String>), String> {
-    let file =
-        File::open(file_path).map_err(|e| format!("open modpack archive failed: {e}"))?;
+    let file = File::open(file_path).map_err(|e| format!("open modpack archive failed: {e}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| format!("read modpack archive failed: {e}"))?;
 
@@ -7599,8 +8559,7 @@ fn extract_overrides_from_modpack(
     if override_roots.is_empty() {
         return Ok(0);
     }
-    let file =
-        File::open(file_path).map_err(|e| format!("open modpack archive failed: {e}"))?;
+    let file = File::open(file_path).map_err(|e| format!("open modpack archive failed: {e}"))?;
     let mut archive =
         ZipArchive::new(file).map_err(|e| format!("read modpack archive failed: {e}"))?;
 
@@ -7647,8 +8606,7 @@ fn extract_overrides_from_modpack(
         }
         let mut out =
             File::create(&out_path).map_err(|e| format!("write override file failed: {e}"))?;
-        std::io::copy(&mut entry, &mut out)
-            .map_err(|e| format!("extract override failed: {e}"))?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| format!("extract override failed: {e}"))?;
         extracted += 1;
     }
     Ok(extracted)
@@ -7704,13 +8662,23 @@ fn create_dir_symlink(src: &Path, dst: &Path) -> Result<(), String> {
     remove_path_if_exists(dst)?;
     #[cfg(target_os = "windows")]
     {
-        std::os::windows::fs::symlink_dir(src, dst)
-            .map_err(|e| format!("symlink '{}' -> '{}' failed: {e}", dst.display(), src.display()))
+        std::os::windows::fs::symlink_dir(src, dst).map_err(|e| {
+            format!(
+                "symlink '{}' -> '{}' failed: {e}",
+                dst.display(),
+                src.display()
+            )
+        })
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::os::unix::fs::symlink(src, dst)
-            .map_err(|e| format!("symlink '{}' -> '{}' failed: {e}", dst.display(), src.display()))
+        std::os::unix::fs::symlink(src, dst).map_err(|e| {
+            format!(
+                "symlink '{}' -> '{}' failed: {e}",
+                dst.display(),
+                src.display()
+            )
+        })
     }
 }
 
@@ -7730,7 +8698,10 @@ fn sync_dir_link_first(src: &Path, dst: &Path, label: &str) -> Result<(), String
     }
 }
 
-fn sync_instance_runtime_content(app_instance_dir: &Path, runtime_dir: &Path) -> Result<(), String> {
+fn sync_instance_runtime_content(
+    app_instance_dir: &Path,
+    runtime_dir: &Path,
+) -> Result<(), String> {
     let source_mods = app_instance_dir.join("mods");
     let source_config = app_instance_dir.join("config");
     let source_resourcepacks = app_instance_dir.join("resourcepacks");
@@ -7748,12 +8719,19 @@ fn sync_instance_runtime_content(app_instance_dir: &Path, runtime_dir: &Path) ->
         &runtime_resourcepacks,
         "runtime resourcepacks",
     )?;
-    sync_dir_link_first(&source_shaderpacks, &runtime_shaderpacks, "runtime shaderpacks")?;
+    sync_dir_link_first(
+        &source_shaderpacks,
+        &runtime_shaderpacks,
+        "runtime shaderpacks",
+    )?;
     sync_dir_link_first(&source_saves, &runtime_saves, "runtime saves")?;
     Ok(())
 }
 
-fn sync_instance_runtime_content_isolated(app_instance_dir: &Path, runtime_dir: &Path) -> Result<(), String> {
+fn sync_instance_runtime_content_isolated(
+    app_instance_dir: &Path,
+    runtime_dir: &Path,
+) -> Result<(), String> {
     let source_mods = app_instance_dir.join("mods");
     let source_config = app_instance_dir.join("config");
     let source_resourcepacks = app_instance_dir.join("resourcepacks");
@@ -7782,8 +8760,14 @@ fn sync_instance_runtime_content_isolated(app_instance_dir: &Path, runtime_dir: 
     copy_dir_recursive(&source_config, &runtime_config)?;
     remove_path_if_exists(&runtime_saves)?;
     copy_dir_recursive(&source_saves, &runtime_saves)?;
-    let _ = copy_file_if_exists(&app_instance_dir.join("options.txt"), &runtime_dir.join("options.txt"))?;
-    let _ = copy_file_if_exists(&app_instance_dir.join("servers.dat"), &runtime_dir.join("servers.dat"))?;
+    let _ = copy_file_if_exists(
+        &app_instance_dir.join("options.txt"),
+        &runtime_dir.join("options.txt"),
+    )?;
+    let _ = copy_file_if_exists(
+        &app_instance_dir.join("servers.dat"),
+        &runtime_dir.join("servers.dat"),
+    )?;
     Ok(())
 }
 
@@ -7806,7 +8790,11 @@ fn sync_prism_instance_content(app_instance_dir: &Path, prism_mc_dir: &Path) -> 
         &target_resourcepacks,
         "prism resourcepacks",
     )?;
-    sync_dir_link_first(&source_shaderpacks, &target_shaderpacks, "prism shaderpacks")?;
+    sync_dir_link_first(
+        &source_shaderpacks,
+        &target_shaderpacks,
+        "prism shaderpacks",
+    )?;
     sync_dir_link_first(&source_saves, &target_saves, "prism saves")?;
     Ok(())
 }
@@ -7911,7 +8899,12 @@ fn detect_java_major(java_executable: &str) -> Result<(u32, String), String> {
             "`{java_executable} -version` returned no output. Set a valid Java path in Settings."
         ));
     }
-    let first_line = combined.lines().next().unwrap_or(&combined).trim().to_string();
+    let first_line = combined
+        .lines()
+        .next()
+        .unwrap_or(&combined)
+        .trim()
+        .to_string();
     let major = parse_java_major(&first_line)
         .ok_or_else(|| format!("could not parse Java version from: {first_line}"))?;
     Ok((major, first_line))
@@ -8004,16 +8997,26 @@ fn detect_java_runtimes_inner() -> Vec<JavaRuntimeCandidate> {
         let vm_root = PathBuf::from("/Library/Java/JavaVirtualMachines");
         if let Ok(entries) = fs::read_dir(vm_root) {
             for ent in entries.flatten() {
-                let p = ent.path().join("Contents").join("Home").join("bin").join("java");
+                let p = ent
+                    .path()
+                    .join("Contents")
+                    .join("Home")
+                    .join("bin")
+                    .join("java");
                 maybe_add_java_candidate(p, &mut map);
             }
         }
-        let user_vm_root = home_dir()
-            .map(|h| h.join("Library").join("Java").join("JavaVirtualMachines"));
+        let user_vm_root =
+            home_dir().map(|h| h.join("Library").join("Java").join("JavaVirtualMachines"));
         if let Some(vm_root) = user_vm_root {
             if let Ok(entries) = fs::read_dir(vm_root) {
                 for ent in entries.flatten() {
-                    let p = ent.path().join("Contents").join("Home").join("bin").join("java");
+                    let p = ent
+                        .path()
+                        .join("Contents")
+                        .join("Home")
+                        .join("bin")
+                        .join("java");
                     maybe_add_java_candidate(p, &mut map);
                 }
             }
@@ -8044,7 +9047,10 @@ fn detect_java_runtimes_inner() -> Vec<JavaRuntimeCandidate> {
             {
                 let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !text.is_empty() {
-                    maybe_add_java_candidate(PathBuf::from(text).join("bin").join("java"), &mut map);
+                    maybe_add_java_candidate(
+                        PathBuf::from(text).join("bin").join("java"),
+                        &mut map,
+                    );
                 }
             }
         }
@@ -8079,7 +9085,10 @@ fn parse_mc_release_triplet(version: &str) -> Option<(u32, u32, u32)> {
     let mut parts = trimmed.split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
-    let patch = parts.next().and_then(|p| p.parse::<u32>().ok()).unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|p| p.parse::<u32>().ok())
+        .unwrap_or(0);
     Some((major, minor, patch))
 }
 
@@ -8120,7 +9129,10 @@ fn tail_lines_from_file(path: &Path, max_lines: usize) -> Option<String> {
     }
 }
 
-fn resolve_native_loader(client: &Client, instance: &Instance) -> Result<(Option<String>, Option<String>), String> {
+fn resolve_native_loader(
+    client: &Client,
+    instance: &Instance,
+) -> Result<(Option<String>, Option<String>), String> {
     let loader = instance.loader.to_lowercase();
     match loader.as_str() {
         "vanilla" => Ok((None, None)),
@@ -8139,7 +9151,10 @@ fn resolve_native_loader(client: &Client, instance: &Instance) -> Result<(Option
     }
 }
 
-fn upsert_launcher_account(app: &tauri::AppHandle, account: &LauncherAccount) -> Result<(), String> {
+fn upsert_launcher_account(
+    app: &tauri::AppHandle,
+    account: &LauncherAccount,
+) -> Result<(), String> {
     let mut accounts = read_launcher_accounts(app)?;
     accounts.retain(|a| a.id != account.id);
     accounts.push(account.clone());
@@ -8231,7 +9246,10 @@ fn launch_prism_instance(prism_root: &Path, prism_instance_id: &str) -> Result<(
                 let base = PathBuf::from(base);
                 for exe in ["prismlauncher.exe", "PrismLauncher.exe"] {
                     attempts.push((
-                        base.join("Programs").join("PrismLauncher").join(exe).into_os_string(),
+                        base.join("Programs")
+                            .join("PrismLauncher")
+                            .join(exe)
+                            .into_os_string(),
                         vec![
                             OsString::from("--dir"),
                             root.clone(),
@@ -8302,7 +9320,11 @@ fn launch_prism_instance(prism_root: &Path, prism_instance_id: &str) -> Result<(
 fn default_export_filename(instance_name: &str) -> String {
     let date = Local::now().format("%Y-%m-%d").to_string();
     let base = sanitize_filename(&instance_name.replace(' ', "-"));
-    let clean = if base.is_empty() { "instance".to_string() } else { base };
+    let clean = if base.is_empty() {
+        "instance".to_string()
+    } else {
+        base
+    };
     format!("{clean}-mods-{date}.zip")
 }
 
@@ -8311,21 +9333,36 @@ fn build_selected_microsoft_auth(
     client: &Client,
     settings: &LauncherSettings,
 ) -> Result<(LauncherAccount, String), String> {
-    let selected_id = settings
-        .selected_account_id
-        .clone()
-        .ok_or_else(|| "No Microsoft account selected. Connect one in Settings > Launcher.".to_string())?;
+    let selected_id = settings.selected_account_id.clone().ok_or_else(|| {
+        "No Microsoft account selected. Connect one in Settings > Launcher.".to_string()
+    })?;
     let mut accounts = read_launcher_accounts(app)?;
     let mut account = accounts
         .iter()
         .find(|a| a.id == selected_id)
         .cloned()
-        .ok_or_else(|| "Selected Microsoft account no longer exists. Reconnect account.".to_string())?;
+        .ok_or_else(|| {
+            "Selected Microsoft account no longer exists. Reconnect account.".to_string()
+        })?;
     let client_id = resolve_oauth_client_id(app)?;
+    let mut refresh = keyring_get_refresh_token_for_account(app, &account, &accounts);
+    if let Err(err) = &refresh {
+        if err.starts_with("No refresh token found in secure storage")
+            || err.starts_with("Multiple secure refresh tokens were found")
+        {
+            if let Some(repaired) =
+                maybe_repair_selected_account_with_available_token(app, &account, &accounts)?
+            {
+                account = repaired;
+                refresh = keyring_get_refresh_token_for_account(app, &account, &accounts);
+            }
+        }
+    }
+    let refresh = refresh?;
     let old_account_id = account.id.clone();
-    let refresh = keyring_get_refresh_token_for_account(app, &account, &accounts)?;
     let refreshed = microsoft_refresh_access_token(client, &client_id, &refresh)?;
     if let Some(new_refresh) = refreshed.refresh_token.as_ref() {
+        persist_refresh_token_for_launcher_account_with_app(app, &account, new_refresh)?;
         persist_refresh_token(app, &old_account_id, new_refresh)?;
     }
     let mc_access = microsoft_access_to_mc_token(client, &refreshed.access_token)?;
@@ -8340,8 +9377,12 @@ fn build_selected_microsoft_auth(
                 old_account_id, account.id, e
             );
         }
+        let mut settings = read_launcher_settings(app)?;
+        settings.selected_account_id = Some(account.id.clone());
+        write_launcher_settings(app, &settings)?;
     }
     account.username = profile.name;
+    persist_refresh_token_for_launcher_account_with_app(app, &account, token_for_new_id)?;
     upsert_launcher_account(app, &account)?;
     accounts.retain(|a| a.id != old_account_id && a.id != account.id);
     accounts.push(account.clone());
@@ -8371,7 +9412,10 @@ fn get_dev_mode_state() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn set_dev_curseforge_api_key(app: tauri::AppHandle, args: SetDevCurseforgeApiKeyArgs) -> Result<String, String> {
+fn set_dev_curseforge_api_key(
+    app: tauri::AppHandle,
+    args: SetDevCurseforgeApiKeyArgs,
+) -> Result<String, String> {
     if !is_dev_mode_enabled() {
         return Err("Dev mode is disabled. Set MPM_DEV_MODE=1 and restart.".to_string());
     }
@@ -8386,7 +9430,10 @@ fn set_dev_curseforge_api_key(app: tauri::AppHandle, args: SetDevCurseforgeApiKe
     }
     write_dev_curseforge_key_file(&app, &trimmed)?;
     if notes.is_empty() {
-        Ok("Saved dev CurseForge API key. It is active immediately for this app session.".to_string())
+        Ok(
+            "Saved dev CurseForge API key. It is active immediately for this app session."
+                .to_string(),
+        )
     } else {
         Ok(format!(
             "Saved dev CurseForge API key to local fallback file and activated it. {}",
@@ -8432,10 +9479,7 @@ fn get_curseforge_api_status() -> Result<CurseforgeApiStatus, String> {
         "{}/games/{}",
         CURSEFORGE_API_BASE, CURSEFORGE_GAME_ID_MINECRAFT
     );
-    let resp = client
-        .get(&url)
-        .header("x-api-key", api_key.clone())
-        .send();
+    let resp = client.get(&url).header("x-api-key", api_key.clone()).send();
 
     match resp {
         Ok(response) => {
@@ -8539,13 +9583,40 @@ fn logout_microsoft_account(
     args: LogoutMicrosoftAccountArgs,
 ) -> Result<Vec<LauncherAccount>, String> {
     let mut accounts = read_launcher_accounts(&app)?;
+    let removed_account = accounts
+        .iter()
+        .find(|account| account.id == args.account_id)
+        .cloned();
     accounts.retain(|a| a.id != args.account_id);
     write_launcher_accounts(&app, &accounts)?;
-    delete_refresh_token_everywhere(&app, &args.account_id);
     let mut settings = read_launcher_settings(&app)?;
-    if settings.selected_account_id.as_deref() == Some(args.account_id.as_str()) {
+    let removed_selected =
+        settings.selected_account_id.as_deref() == Some(args.account_id.as_str());
+    if removed_selected {
         settings.selected_account_id = None;
         write_launcher_settings(&app, &settings)?;
+    }
+    if let Some(account) = removed_account.as_ref() {
+        if let Err(e) = keyring_delete_refresh_token_for_account(account) {
+            eprintln!(
+                "keyring delete failed for account {}: {}",
+                args.account_id, e
+            );
+        }
+        #[cfg(debug_assertions)]
+        if let Err(e) = remove_refresh_token_debug_fallback(&app, account) {
+            eprintln!(
+                "debug refresh-token fallback cleanup failed for account {}: {}",
+                args.account_id, e
+            );
+        }
+    } else {
+        delete_refresh_token_everywhere(&app, &args.account_id);
+    }
+    if removed_selected {
+        if let Err(e) = keyring_delete_selected_refresh_token() {
+            eprintln!("keyring delete failed for selected refresh alias: {}", e);
+        }
     }
     Ok(accounts)
 }
@@ -8566,7 +9637,11 @@ async fn begin_microsoft_login(
     let verification_uri = flow.verification_uri.clone();
     let user_code = flow.user_code.clone();
     let interval = if flow.interval == 0 { 5 } else { flow.interval };
-    let expires_in = if flow.expires_in == 0 { 900 } else { flow.expires_in };
+    let expires_in = if flow.expires_in == 0 {
+        900
+    } else {
+        flow.expires_in
+    };
     let pending_message = flow
         .message
         .clone()
@@ -8655,9 +9730,9 @@ async fn begin_microsoft_login(
                 };
 
                 let result = (|| -> Result<LauncherAccount, String> {
-                    let refresh = token
-                        .refresh_token
-                        .ok_or_else(|| "Microsoft login did not return refresh token.".to_string())?;
+                    let refresh = token.refresh_token.ok_or_else(|| {
+                        "Microsoft login did not return refresh token.".to_string()
+                    })?;
                     let mc_access = microsoft_access_to_mc_token(&client, &token.access_token)?;
                     ensure_minecraft_entitlement(&client, &mc_access)?;
                     let profile = fetch_minecraft_profile(&client, &mc_access)?;
@@ -8666,7 +9741,11 @@ async fn begin_microsoft_login(
                         username: profile.name,
                         added_at: now_iso(),
                     };
-                    persist_refresh_token(&app_for_thread, &account.id, &refresh)?;
+                    persist_refresh_token_for_launcher_account_with_app(
+                        &app_for_thread,
+                        &account,
+                        &refresh,
+                    )?;
                     upsert_launcher_account(&app_for_thread, &account)?;
 
                     let mut settings = read_launcher_settings(&app_for_thread)?;
@@ -8962,8 +10041,9 @@ fn reveal_config_editor_file(
             opened_path: opened.display().to_string(),
             revealed_file: false,
             virtual_file: true,
-            message: "Instance config files are localStorage-backed. Opened the instance folder instead."
-                .to_string(),
+            message:
+                "Instance config files are localStorage-backed. Opened the instance folder instead."
+                    .to_string(),
         });
     }
 
@@ -9108,7 +10188,17 @@ fn read_instance_logs(
 }
 
 #[tauri::command]
-fn list_instance_snapshots(
+async fn list_instance_snapshots(
+    app: tauri::AppHandle,
+    args: ListInstanceSnapshotsArgs,
+) -> Result<Vec<SnapshotMeta>, String> {
+    run_blocking_task("list instance snapshots", move || {
+        list_instance_snapshots_inner(app, args)
+    })
+    .await
+}
+
+fn list_instance_snapshots_inner(
     app: tauri::AppHandle,
     args: ListInstanceSnapshotsArgs,
 ) -> Result<Vec<SnapshotMeta>, String> {
@@ -9131,8 +10221,13 @@ fn rollback_instance(
             .running
             .lock()
             .map_err(|_| "lock running instances failed".to_string())?;
-        if guard.values().any(|entry| entry.meta.instance_id == args.instance_id) {
-            return Err("Stop the running Minecraft session before rolling back this instance.".to_string());
+        if guard
+            .values()
+            .any(|entry| entry.meta.instance_id == args.instance_id)
+        {
+            return Err(
+                "Stop the running Minecraft session before rolling back this instance.".to_string(),
+            );
         }
     }
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
@@ -9158,7 +10253,8 @@ fn rollback_instance(
     let lock: Lockfile =
         serde_json::from_str(&lock_raw).map_err(|e| format!("parse snapshot lock failed: {e}"))?;
 
-    let restored_files = restore_instance_content_zip(&snapshot_content_zip_path(&snapshot_dir), &instance_dir)?;
+    let restored_files =
+        restore_instance_content_zip(&snapshot_content_zip_path(&snapshot_dir), &instance_dir)?;
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
 
     Ok(RollbackResult {
@@ -9170,7 +10266,17 @@ fn rollback_instance(
 }
 
 #[tauri::command]
-fn list_instance_worlds(
+async fn list_instance_worlds(
+    app: tauri::AppHandle,
+    args: ListInstanceWorldsArgs,
+) -> Result<Vec<InstanceWorld>, String> {
+    run_blocking_task("list instance worlds", move || {
+        list_instance_worlds_inner(app, args)
+    })
+    .await
+}
+
+fn list_instance_worlds_inner(
     app: tauri::AppHandle,
     args: ListInstanceWorldsArgs,
 ) -> Result<Vec<InstanceWorld>, String> {
@@ -9184,7 +10290,9 @@ fn list_instance_worlds(
     let mut backup_count_by_world: HashMap<String, usize> = HashMap::new();
     let mut latest_backup_by_world: HashMap<String, WorldBackupMeta> = HashMap::new();
     for meta in world_backups {
-        *backup_count_by_world.entry(meta.world_id.clone()).or_insert(0) += 1;
+        *backup_count_by_world
+            .entry(meta.world_id.clone())
+            .or_insert(0) += 1;
         latest_backup_by_world
             .entry(meta.world_id.clone())
             .or_insert(meta);
@@ -9236,7 +10344,8 @@ fn collect_world_config_files_recursive(
     for ent in entries {
         let ent = ent.map_err(|e| format!("read world entry failed: {e}"))?;
         let path = ent.path();
-        let meta = fs::symlink_metadata(&path).map_err(|e| format!("read world metadata failed: {e}"))?;
+        let meta =
+            fs::symlink_metadata(&path).map_err(|e| format!("read world metadata failed: {e}"))?;
         let file_type = meta.file_type();
         if file_type.is_symlink() {
             continue;
@@ -9251,7 +10360,11 @@ fn collect_world_config_files_recursive(
         let rel = path
             .strip_prefix(world_root)
             .map_err(|_| "failed to compute relative world file path".to_string())?;
-        let rel_text = rel.to_string_lossy().replace('\\', "/").trim_start_matches('/').to_string();
+        let rel_text = rel
+            .to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_string();
         if rel_text.is_empty() {
             continue;
         }
@@ -9299,12 +10412,14 @@ fn read_world_config_file(
     let instances_dir = app_instances_dir(&app)?;
     let world_root = world_root_dir(&instances_dir, &args.instance_id, &args.world_id)?;
     let (resolved_path, normalized_path) = resolve_world_file_path(&world_root, &args.path, true)?;
-    let meta = fs::metadata(&resolved_path).map_err(|e| format!("read world file metadata failed: {e}"))?;
+    let meta = fs::metadata(&resolved_path)
+        .map_err(|e| format!("read world file metadata failed: {e}"))?;
     if !meta.is_file() {
         return Err("Requested world file is not a file".to_string());
     }
 
-    let mut file = File::open(&resolved_path).map_err(|e| format!("open world file failed: {e}"))?;
+    let mut file =
+        File::open(&resolved_path).map_err(|e| format!("open world file failed: {e}"))?;
     let mut sample_buf = vec![0u8; 4096];
     let read_len = file
         .read(&mut sample_buf)
@@ -9314,7 +10429,8 @@ fn read_world_config_file(
     let kind = infer_world_file_kind(&resolved_path, text_like);
     let readonly_reason = describe_non_editable_reason(&kind, text_like);
     if readonly_reason.is_some() {
-        let preview = format_binary_preview(&sample_buf[..sample_buf.len().min(512)], meta.len(), &kind);
+        let preview =
+            format_binary_preview(&sample_buf[..sample_buf.len().min(512)], meta.len(), &kind);
         return Ok(ReadWorldConfigFileResult {
             path: normalized_path,
             editable: false,
@@ -9330,7 +10446,8 @@ fn read_world_config_file(
     let mut bytes = sample_buf;
     file.read_to_end(&mut bytes)
         .map_err(|e| format!("read world file failed: {e}"))?;
-    let content = String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
     Ok(ReadWorldConfigFileResult {
         path: normalized_path,
         editable: true,
@@ -9357,8 +10474,8 @@ fn write_world_config_file(
 
     let world_root = world_root_dir(&instances_dir, &args.instance_id, &args.world_id)?;
     let (resolved_path, normalized_path) = resolve_world_file_path(&world_root, &args.path, true)?;
-    let before_meta =
-        fs::metadata(&resolved_path).map_err(|e| format!("read world file metadata failed: {e}"))?;
+    let before_meta = fs::metadata(&resolved_path)
+        .map_err(|e| format!("read world file metadata failed: {e}"))?;
     if !before_meta.is_file() {
         return Err("Requested world file is not a file".to_string());
     }
@@ -9390,8 +10507,8 @@ fn write_world_config_file(
         let _ = fs::remove_file(&tmp_path);
         return Err(format!("replace world file failed: {err}"));
     }
-    let after_meta =
-        fs::metadata(&resolved_path).map_err(|e| format!("read world file metadata failed: {e}"))?;
+    let after_meta = fs::metadata(&resolved_path)
+        .map_err(|e| format!("read world file metadata failed: {e}"))?;
     Ok(WriteWorldConfigFileResult {
         path: normalized_path,
         size_bytes: after_meta.len(),
@@ -9413,8 +10530,13 @@ fn rollback_instance_world_backup(
             .running
             .lock()
             .map_err(|_| "lock running instances failed".to_string())?;
-        if guard.values().any(|entry| entry.meta.instance_id == args.instance_id) {
-            return Err("Stop the running Minecraft session before rolling back this world.".to_string());
+        if guard
+            .values()
+            .any(|entry| entry.meta.instance_id == args.instance_id)
+        {
+            return Err(
+                "Stop the running Minecraft session before rolling back this world.".to_string(),
+            );
         }
     }
     let world_id = args.world_id.trim();
@@ -9455,7 +10577,10 @@ fn install_discover_content_inner(
     let source = args.source.trim().to_lowercase();
     let content_type = normalize_lock_content_type(&args.content_type);
     if content_type == "modpacks" {
-        return Err("Modpacks are template-only here. Use Import as Template in Modpacks & Presets.".to_string());
+        return Err(
+            "Modpacks are template-only here. Use Import as Template in Modpacks & Presets."
+                .to_string(),
+        );
     }
 
     if content_type == "mods" {
@@ -9493,8 +10618,7 @@ fn install_discover_content_inner(
     }
 
     let new_entry = if source == "curseforge" {
-        let api_key = curseforge_api_key()
-            .ok_or_else(missing_curseforge_key_message)?;
+        let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
         install_curseforge_content_inner(
             &instance,
             &instance_dir,
@@ -9589,7 +10713,17 @@ fn preview_preset_apply(
 }
 
 #[tauri::command]
-fn apply_preset_to_instance(
+async fn apply_preset_to_instance(
+    app: tauri::AppHandle,
+    args: ApplyPresetToInstanceArgs,
+) -> Result<PresetApplyResult, String> {
+    run_blocking_task("apply preset to instance", move || {
+        apply_preset_to_instance_inner(app, args)
+    })
+    .await
+}
+
+fn apply_preset_to_instance_inner(
     app: tauri::AppHandle,
     args: ApplyPresetToInstanceArgs,
 ) -> Result<PresetApplyResult, String> {
@@ -9606,12 +10740,8 @@ fn apply_preset_to_instance(
     )?;
 
     let legacy_skipped = args.preset.entries.iter().filter(|e| !e.enabled).count();
-    let (result, _lock_snapshot, _link) = modpack::apply::apply_plan_to_instance(
-        &app,
-        &plan,
-        "unlinked",
-        false,
-    )?;
+    let (result, _lock_snapshot, _link) =
+        modpack::apply::apply_plan_to_instance(&app, &plan, "unlinked", false)?;
 
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
     for item in &plan.resolved_mods {
@@ -9631,12 +10761,19 @@ fn apply_preset_to_instance(
 }
 
 #[tauri::command]
-fn search_discover_content(args: SearchDiscoverContentArgs) -> Result<DiscoverSearchResult, String> {
-    std::panic::catch_unwind(|| search_discover_content_inner(args))
-        .map_err(|_| "Discover search encountered an unexpected error".to_string())?
+async fn search_discover_content(
+    args: SearchDiscoverContentArgs,
+) -> Result<DiscoverSearchResult, String> {
+    run_blocking_task("search discover content", move || {
+        std::panic::catch_unwind(|| search_discover_content_inner(args))
+            .map_err(|_| "Discover search encountered an unexpected error".to_string())?
+    })
+    .await
 }
 
-fn search_discover_content_inner(args: SearchDiscoverContentArgs) -> Result<DiscoverSearchResult, String> {
+fn search_discover_content_inner(
+    args: SearchDiscoverContentArgs,
+) -> Result<DiscoverSearchResult, String> {
     let source = args.source.trim().to_lowercase();
     let client = build_http_client()?;
     if source == "modrinth" {
@@ -9676,9 +10813,7 @@ fn search_discover_content_inner(args: SearchDiscoverContentArgs) -> Result<Disc
     let mut merged = modrinth.hits;
     merged.extend(curseforge.hits);
     sort_discover_hits(&mut merged, &args.index);
-    let total_hits = modrinth
-        .total_hits
-        .saturating_add(curseforge.total_hits);
+    let total_hits = modrinth.total_hits.saturating_add(curseforge.total_hits);
     let hits = merged
         .into_iter()
         .skip(args.offset)
@@ -9694,11 +10829,19 @@ fn search_discover_content_inner(args: SearchDiscoverContentArgs) -> Result<Disc
 }
 
 #[tauri::command]
-fn get_curseforge_project_detail(
+async fn get_curseforge_project_detail(
     args: GetCurseforgeProjectArgs,
 ) -> Result<CurseforgeProjectDetail, String> {
-    let api_key = curseforge_api_key()
-        .ok_or_else(missing_curseforge_key_message)?;
+    run_blocking_task("curseforge project detail", move || {
+        get_curseforge_project_detail_inner(args)
+    })
+    .await
+}
+
+fn get_curseforge_project_detail_inner(
+    args: GetCurseforgeProjectArgs,
+) -> Result<CurseforgeProjectDetail, String> {
+    let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
     let project_id = parse_curseforge_project_id(&args.project_id)?;
     let client = build_http_client()?;
 
@@ -9773,9 +10916,16 @@ fn get_curseforge_project_detail(
     let project_id_text = project.id.to_string();
     let external_url = Some(format!(
         "https://www.curseforge.com/minecraft/mc-mods/{}",
-        project.slug.clone().unwrap_or_else(|| project_id_text.clone())
+        project
+            .slug
+            .clone()
+            .unwrap_or_else(|| project_id_text.clone())
     ));
-    let author_names = project.authors.into_iter().map(|a| a.name).collect::<Vec<_>>();
+    let author_names = project
+        .authors
+        .into_iter()
+        .map(|a| a.name)
+        .collect::<Vec<_>>();
     let categories = project
         .categories
         .into_iter()
@@ -9807,8 +10957,7 @@ fn import_provider_modpack_template(
     let source = args.source.trim().to_lowercase();
     let client = build_http_client()?;
     if source == "curseforge" {
-        let api_key = curseforge_api_key()
-            .ok_or_else(missing_curseforge_key_message)?;
+        let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
         return import_curseforge_modpack_template_inner(
             &client,
             &api_key,
@@ -9828,11 +10977,7 @@ fn export_presets_json(args: ExportPresetsJsonArgs) -> Result<PresetsJsonIoResul
 
     let items = if let Some(arr) = args.payload.as_array() {
         arr.len()
-    } else if let Some(arr) = args
-        .payload
-        .get("presets")
-        .and_then(|v| v.as_array())
-    {
+    } else if let Some(arr) = args.payload.get("presets").and_then(|v| v.as_array()) {
         arr.len()
     } else {
         return Err("Preset payload must be an array or { presets: [] }".to_string());
@@ -9866,12 +11011,7 @@ fn import_presets_json(args: ImportPresetsJsonArgs) -> Result<serde_json::Value,
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse presets file failed: {e}"))?;
 
-    if parsed.is_array()
-        || parsed
-            .get("presets")
-            .and_then(|v| v.as_array())
-            .is_some()
-    {
+    if parsed.is_array() || parsed.get("presets").and_then(|v| v.as_array()).is_some() {
         Ok(parsed)
     } else {
         Err("Preset file must contain an array or { presets: [] }".to_string())
@@ -9879,11 +11019,18 @@ fn import_presets_json(args: ImportPresetsJsonArgs) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-async fn get_selected_account_diagnostics(app: tauri::AppHandle) -> Result<AccountDiagnostics, String> {
-    run_blocking_task("account diagnostics", move || get_selected_account_diagnostics_inner(app)).await
+async fn get_selected_account_diagnostics(
+    app: tauri::AppHandle,
+) -> Result<AccountDiagnostics, String> {
+    run_blocking_task("account diagnostics", move || {
+        get_selected_account_diagnostics_inner(app)
+    })
+    .await
 }
 
-fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<AccountDiagnostics, String> {
+fn get_selected_account_diagnostics_inner(
+    app: tauri::AppHandle,
+) -> Result<AccountDiagnostics, String> {
     let total_started = Instant::now();
     let settings = read_launcher_settings(&app)?;
     let mut diag = make_account_diagnostics_base(&settings);
@@ -9891,8 +11038,8 @@ fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<Accou
         return Ok(diag);
     };
 
-    let accounts = read_launcher_accounts(&app)?;
-    let Some(account) = accounts.iter().find(|a| a.id == selected_id).cloned() else {
+    let mut accounts = read_launcher_accounts(&app)?;
+    let Some(mut account) = accounts.iter().find(|a| a.id == selected_id).cloned() else {
         return Ok(fail_account_diag(
             diag,
             "account-not-found",
@@ -9909,6 +11056,22 @@ fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<Accou
 
     let refresh = match keyring_get_refresh_token_for_account(&app, &account, &accounts) {
         Ok(v) => v,
+        Err(e)
+            if e.starts_with("No refresh token found in secure storage")
+                || e.starts_with("Multiple secure refresh tokens were found") =>
+        {
+            let Some(repaired) =
+                maybe_repair_selected_account_with_available_token(&app, &account, &accounts)?
+            else {
+                return Ok(fail_account_diag(diag, "refresh-token-read-failed", e));
+            };
+            account = repaired;
+            diag.account = Some(account.clone());
+            match keyring_get_refresh_token_for_account(&app, &account, &accounts) {
+                Ok(v) => v,
+                Err(err) => return Ok(fail_account_diag(diag, "refresh-token-read-failed", err)),
+            }
+        }
         Err(e) => return Ok(fail_account_diag(diag, "refresh-token-read-failed", e)),
     };
 
@@ -9939,7 +11102,9 @@ fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<Accou
         eprintln!("[account_diag] microsoft_refresh_access_token: {refresh_ms}ms");
     }
     if let Some(new_refresh) = refreshed.refresh_token.as_ref() {
-        if let Err(e) = persist_refresh_token(&app, &account.id, new_refresh) {
+        if let Err(e) =
+            persist_refresh_token_for_launcher_account_with_app(&app, &account, new_refresh)
+        {
             return Ok(fail_account_diag(diag, "refresh-token-write-failed", e));
         }
     }
@@ -10003,13 +11168,38 @@ fn get_selected_account_diagnostics_inner(app: tauri::AppHandle) -> Result<Accou
         .map(|s| s.url.clone())
         .or_else(|| diag.skins.first().map(|s| s.url.clone()));
 
-    if account.username != profile.name {
-        let mut updated = account.clone();
-        updated.username = profile.name.clone();
-        if let Err(e) = upsert_launcher_account(&app, &updated) {
+    let mut synced_account = account.clone();
+    let token_for_new_id = refreshed.refresh_token.as_ref().unwrap_or(&refresh);
+    let mut account_changed = false;
+    if synced_account.id != profile.id {
+        let old_account_id = synced_account.id.clone();
+        synced_account.id = profile.id.clone();
+        if let Err(e) = persist_refresh_token_for_launcher_account_with_app(
+            &app,
+            &synced_account,
+            token_for_new_id,
+        ) {
+            return Ok(fail_account_diag(diag, "refresh-token-write-failed", e));
+        }
+        accounts.retain(|a| a.id != old_account_id && a.id != synced_account.id);
+        account_changed = true;
+    }
+    if synced_account.username != profile.name {
+        synced_account.username = profile.name.clone();
+        account_changed = true;
+    }
+    if account_changed {
+        accounts.push(synced_account.clone());
+        accounts.sort_by(|a, b| a.username.to_lowercase().cmp(&b.username.to_lowercase()));
+        if let Err(e) = write_launcher_accounts(&app, &accounts) {
             return Ok(fail_account_diag(diag, "account-sync-failed", e));
         }
-        diag.account = Some(updated);
+        let mut settings_to_write = settings.clone();
+        settings_to_write.selected_account_id = Some(synced_account.id.clone());
+        if let Err(e) = write_launcher_settings(&app, &settings_to_write) {
+            return Ok(fail_account_diag(diag, "account-sync-failed", e));
+        }
+        diag.account = Some(synced_account);
     }
 
     diag.status = "connected".to_string();
@@ -10043,7 +11233,7 @@ fn apply_selected_account_appearance_inner(
 
     let settings = read_launcher_settings(&app)?;
     let client = build_http_client()?;
-    let (_, mc_access_token) = build_selected_microsoft_auth(&app, &client, &settings)?;
+    let (account, mc_access_token) = build_selected_microsoft_auth(&app, &client, &settings)?;
 
     if args.apply_skin {
         let source = args
@@ -10052,18 +11242,57 @@ fn apply_selected_account_appearance_inner(
             .map(|v| v.trim())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| "No skin selected to apply.".to_string())?;
-        apply_minecraft_skin(&client, &mc_access_token, source, args.skin_variant.as_deref())?;
+        apply_minecraft_skin(
+            &client,
+            &mc_access_token,
+            source,
+            args.skin_variant.as_deref(),
+        )?;
     }
 
     if args.apply_cape {
         apply_minecraft_cape(&client, &mc_access_token, args.cape_id.as_deref())?;
     }
 
-    get_selected_account_diagnostics_inner(app)
+    let mut diag = make_account_diagnostics_base(&settings);
+    diag.account = Some(account);
+    if let Ok((_, source)) = resolve_oauth_client_id_with_source(&app) {
+        diag.client_id_source = source;
+    }
+    diag.status = "connected".to_string();
+    diag.token_exchange_status = "ok".to_string();
+    diag.entitlements_ok = true;
+    diag.last_error = None;
+
+    let profile = fetch_minecraft_profile(&client, &mc_access_token)
+        .map_err(|e| format!("post-apply profile refresh failed: {e}"))?;
+    diag.minecraft_uuid = Some(profile.id.clone());
+    diag.minecraft_username = Some(profile.name.clone());
+    diag.skins = summarize_cosmetics(&profile.skins);
+    diag.capes = summarize_cosmetics(&profile.capes);
+    diag.cape_count = diag.capes.len();
+    diag.skin_url = diag
+        .skins
+        .iter()
+        .find(|s| s.state.eq_ignore_ascii_case("active"))
+        .map(|s| s.url.clone())
+        .or_else(|| diag.skins.first().map(|s| s.url.clone()));
+
+    Ok(diag)
 }
 
 #[tauri::command]
-fn export_instance_mods_zip(
+async fn export_instance_mods_zip(
+    app: tauri::AppHandle,
+    args: ExportInstanceModsZipArgs,
+) -> Result<ExportModsResult, String> {
+    run_blocking_task("export instance mods zip", move || {
+        export_instance_mods_zip_inner(app, args)
+    })
+    .await
+}
+
+fn export_instance_mods_zip_inner(
     app: tauri::AppHandle,
     args: ExportInstanceModsZipArgs,
 ) -> Result<ExportModsResult, String> {
@@ -10111,11 +11340,13 @@ fn export_instance_mods_zip(
         let mut src = File::open(&path).map_err(|e| format!("open '{}' failed: {e}", name))?;
         zip.start_file(name, options)
             .map_err(|e| format!("zip write header failed: {e}"))?;
-        std::io::copy(&mut src, &mut zip).map_err(|e| format!("zip write '{}' failed: {e}", name))?;
+        std::io::copy(&mut src, &mut zip)
+            .map_err(|e| format!("zip write '{}' failed: {e}", name))?;
         files_count += 1;
     }
 
-    zip.finish().map_err(|e| format!("finalize zip failed: {e}"))?;
+    zip.finish()
+        .map_err(|e| format!("finalize zip failed: {e}"))?;
 
     Ok(ExportModsResult {
         output_path: output.display().to_string(),
@@ -10175,8 +11406,7 @@ fn create_instance_internal(
         .map_err(|e| format!("mkdir resourcepacks failed: {e}"))?;
     fs::create_dir_all(inst_dir.join("shaderpacks"))
         .map_err(|e| format!("mkdir shaderpacks failed: {e}"))?;
-    fs::create_dir_all(inst_dir.join("saves"))
-        .map_err(|e| format!("mkdir saves failed: {e}"))?;
+    fs::create_dir_all(inst_dir.join("saves")).map_err(|e| format!("mkdir saves failed: {e}"))?;
 
     let picked_icon_path = icon_path
         .as_deref()
@@ -10226,16 +11456,12 @@ fn create_instance_from_modpack_file(
     if final_name.trim().is_empty() {
         return Err("Imported modpack name is empty.".to_string());
     }
-    let instance = create_instance_internal(
-        &app,
-        final_name,
-        mc_version,
-        loader,
-        args.icon_path.clone(),
-    )?;
+    let instance =
+        create_instance_internal(&app, final_name, mc_version, loader, args.icon_path.clone())?;
     let instances_dir = app_instances_dir(&app)?;
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
-    let imported_files = extract_overrides_from_modpack(&file_path, &instance_dir, &override_roots)?;
+    let imported_files =
+        extract_overrides_from_modpack(&file_path, &instance_dir, &override_roots)?;
     if imported_files == 0 {
         warnings.push("No override files were found in the archive.".to_string());
     }
@@ -10325,8 +11551,9 @@ fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<In
         inst.mc_version = clean_mc;
     }
     if let Some(loader) = args.loader.as_ref() {
-        let parsed = parse_loader_for_instance(loader)
-            .ok_or_else(|| "loader must be one of vanilla/fabric/forge/neoforge/quilt".to_string())?;
+        let parsed = parse_loader_for_instance(loader).ok_or_else(|| {
+            "loader must be one of vanilla/fabric/forge/neoforge/quilt".to_string()
+        })?;
         inst.loader = parsed;
     }
     if let Some(settings) = args.settings {
@@ -10337,7 +11564,12 @@ fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<In
 
     if let Some(next_folder) = folder_name_override {
         inst.folder_name = Some(next_folder);
-    } else if inst.folder_name.as_ref().map(|v| v.trim().is_empty()).unwrap_or(true) {
+    } else if inst
+        .folder_name
+        .as_ref()
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+    {
         inst.folder_name = Some(inst.id.clone());
     }
 
@@ -10421,7 +11653,8 @@ fn read_local_image_data_url(args: ReadLocalImageDataUrlArgs) -> Result<String, 
         return Err("image file is too large (max 8MB)".to_string());
     }
 
-    let mime = image_mime_for_extension(&ext).ok_or_else(|| "unsupported image type".to_string())?;
+    let mime =
+        image_mime_for_extension(&ext).ok_or_else(|| "unsupported image type".to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Ok(format!("data:{mime};base64,{encoded}"))
 }
@@ -10525,7 +11758,11 @@ fn install_modrinth_mod_inner(
 
         if is_plan_entry_up_to_date(&instance_dir, &lock, &item) {
             if item.project_id == args.project_id {
-                if let Some(existing) = lock.entries.iter().find(|e| e.project_id == args.project_id) {
+                if let Some(existing) = lock
+                    .entries
+                    .iter()
+                    .find(|e| e.project_id == args.project_id)
+                {
                     root_installed = Some(lock_entry_to_installed(&instance_dir, existing));
                 }
             }
@@ -10622,8 +11859,7 @@ fn install_modrinth_mod_inner(
             .map_err(|e| format!("flush mod file failed: {e}"))?;
 
         if final_path.exists() {
-            fs::remove_file(&final_path)
-                .map_err(|e| format!("remove old mod file failed: {e}"))?;
+            fs::remove_file(&final_path).map_err(|e| format!("remove old mod file failed: {e}"))?;
         }
         fs::rename(&tmp_path, &final_path).map_err(|e| format!("move mod file failed: {e}"))?;
 
@@ -10686,7 +11922,11 @@ fn install_modrinth_mod_inner(
     }
 
     if root_installed.is_none() {
-        if let Some(root_entry) = lock.entries.iter().find(|e| e.project_id == args.project_id) {
+        if let Some(root_entry) = lock
+            .entries
+            .iter()
+            .find(|e| e.project_id == args.project_id)
+        {
             root_installed = Some(lock_entry_to_installed(&instance_dir, root_entry));
         }
     }
@@ -10745,11 +11985,11 @@ fn install_curseforge_mod_inner(
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
-    let api_key = curseforge_api_key()
-        .ok_or_else(missing_curseforge_key_message)?;
+    let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
     let root_mod_id = parse_curseforge_project_id(&args.project_id)?;
-    let install_order = resolve_curseforge_dependency_chain(&client, &api_key, &instance, root_mod_id)?;
+    let install_order =
+        resolve_curseforge_dependency_chain(&client, &api_key, &instance, root_mod_id)?;
     let total_actions = install_order.len().max(1);
 
     emit_install_progress(
@@ -10788,7 +12028,11 @@ fn install_curseforge_mod_inner(
                 message: Some(if is_root {
                     "Installing selected CurseForge mod…".to_string()
                 } else {
-                    format!("Installing required dependency {}/{}…", idx + 1, total_actions)
+                    format!(
+                        "Installing required dependency {}/{}…",
+                        idx + 1,
+                        total_actions
+                    )
                 }),
             },
         );
@@ -10817,7 +12061,8 @@ fn install_curseforge_mod_inner(
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
 
-    let entry = root_entry.ok_or_else(|| "Failed to resolve selected CurseForge project".to_string())?;
+    let entry =
+        root_entry.ok_or_else(|| "Failed to resolve selected CurseForge project".to_string())?;
 
     emit_install_progress(
         &app,
@@ -10843,7 +12088,17 @@ fn install_curseforge_mod_inner(
 }
 
 #[tauri::command]
-fn preview_modrinth_install(
+async fn preview_modrinth_install(
+    app: tauri::AppHandle,
+    args: InstallModrinthModArgs,
+) -> Result<InstallPlanPreview, String> {
+    run_blocking_task("preview modrinth install", move || {
+        preview_modrinth_install_inner(app, args)
+    })
+    .await
+}
+
+fn preview_modrinth_install_inner(
     app: tauri::AppHandle,
     args: InstallModrinthModArgs,
 ) -> Result<InstallPlanPreview, String> {
@@ -10875,7 +12130,10 @@ async fn import_local_mod_file(
     app: tauri::AppHandle,
     args: ImportLocalModFileArgs,
 ) -> Result<InstalledMod, String> {
-    run_blocking_task("import local mod file", move || import_local_mod_file_inner(app, args)).await
+    run_blocking_task("import local mod file", move || {
+        import_local_mod_file_inner(app, args)
+    })
+    .await
 }
 
 fn import_local_mod_file_inner(
@@ -10927,18 +12185,15 @@ fn import_local_mod_file_inner(
         .timeout(Duration::from_secs(4))
         .build()
         .ok()
-        .and_then(|client| detect_provider_for_local_mod(&client, &file_bytes, &safe_filename, false));
+        .and_then(|client| {
+            detect_provider_for_local_mod(&client, &file_bytes, &safe_filename, false)
+        });
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| e.filename != safe_filename);
 
     if let Some(found) = detected_provider.as_ref() {
-        remove_replaced_entries_for_content(
-            &mut lock,
-            &instance_dir,
-            &found.project_id,
-            "mods",
-        )?;
+        remove_replaced_entries_for_content(&mut lock, &instance_dir, &found.project_id, "mods")?;
     }
 
     let new_entry = if let Some(found) = detected_provider {
@@ -11039,7 +12294,8 @@ fn resolve_local_mod_sources_inner(
                 continue;
             }
         };
-        let Some(found) = detect_provider_for_local_mod(&client, &file_bytes, &filename, true) else {
+        let Some(found) = detect_provider_for_local_mod(&client, &file_bytes, &filename, true)
+        else {
             continue;
         };
         let key_before = local_entry_key(&lock.entries[idx]);
@@ -11082,12 +12338,15 @@ fn resolve_local_mod_sources_inner(
 }
 
 #[tauri::command]
-fn resolve_local_mod_sources(
+async fn resolve_local_mod_sources(
     app: tauri::AppHandle,
     args: ResolveLocalModSourcesArgs,
 ) -> Result<LocalResolverResult, String> {
-    let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
-    resolve_local_mod_sources_inner(&app, &args.instance_id, &mode)
+    run_blocking_task("resolve local mod sources", move || {
+        let mode = args.mode.unwrap_or_else(|| "missing_only".to_string());
+        resolve_local_mod_sources_inner(&app, &args.instance_id, &mode)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -11120,7 +12379,8 @@ fn update_all_instance_content_inner(
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let client = build_http_client()?;
-    let check = check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)?;
+    let check =
+        check_instance_content_updates_inner(&client, &instance, &lock, UpdateScope::AllContent)?;
 
     if !check.updates.is_empty() {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
@@ -11131,7 +12391,8 @@ fn update_all_instance_content_inner(
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
     let cf_key = curseforge_api_key();
     let prefetch_worker_cap = adaptive_update_prefetch_worker_cap(&check.updates);
-    let prefetched_downloads = prefetch_update_downloads(&client, &check.updates, prefetch_worker_cap);
+    let prefetched_downloads =
+        prefetch_update_downloads(&client, &check.updates, prefetch_worker_cap);
 
     for (idx, update) in check.updates.iter().enumerate() {
         let mut used_fast_path = false;
@@ -11245,7 +12506,10 @@ async fn update_all_instance_content(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<UpdateAllContentResult, String> {
-    run_blocking_task("update all instance content", move || update_all_instance_content_inner(app, args)).await
+    run_blocking_task("update all instance content", move || {
+        update_all_instance_content_inner(app, args)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -11253,7 +12517,10 @@ async fn check_modrinth_updates(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<ModUpdateCheckResult, String> {
-    run_blocking_task("check modrinth updates", move || check_modrinth_updates_inner(app, args)).await
+    run_blocking_task("check modrinth updates", move || {
+        check_modrinth_updates_inner(app, args)
+    })
+    .await
 }
 
 fn check_modrinth_updates_inner(
@@ -11278,7 +12545,10 @@ async fn update_all_modrinth_mods(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
 ) -> Result<UpdateAllResult, String> {
-    run_blocking_task("update all modrinth mods", move || update_all_modrinth_mods_inner(app, args)).await
+    run_blocking_task("update all modrinth mods", move || {
+        update_all_modrinth_mods_inner(app, args)
+    })
+    .await
 }
 
 fn update_all_modrinth_mods_inner(
@@ -11486,26 +12756,27 @@ async fn launch_instance(
             let app_for_auth = app.clone();
             let settings_for_auth = settings.clone();
             let instance_for_auth = instance.clone();
-            let (account, mc_access_token, loader, loader_version) = await_launch_stage_with_cancel(
-                &app,
-                &state,
-                &instance.id,
-                LaunchMethod::Native.as_str(),
-                "Authentication",
-                150,
-                async move {
-                    tauri::async_runtime::spawn_blocking(move || {
-                        resolve_native_auth_and_loader(
-                            &app_for_auth,
-                            &settings_for_auth,
-                            &instance_for_auth,
-                        )
-                    })
-                    .await
-                    .map_err(|e| format!("native auth task join failed: {e}"))?
-                },
-            )
-            .await?;
+            let (account, mc_access_token, loader, loader_version) =
+                await_launch_stage_with_cancel(
+                    &app,
+                    &state,
+                    &instance.id,
+                    LaunchMethod::Native.as_str(),
+                    "Authentication",
+                    150,
+                    async move {
+                        tauri::async_runtime::spawn_blocking(move || {
+                            resolve_native_auth_and_loader(
+                                &app_for_auth,
+                                &settings_for_auth,
+                                &instance_for_auth,
+                            )
+                        })
+                        .await
+                        .map_err(|e| format!("native auth task join failed: {e}"))?
+                    },
+                )
+                .await?;
 
             let launch_id = format!("native_{}", Uuid::new_v4());
             let use_isolated_runtime_session = existing_native_runs_for_instance > 0;
@@ -11558,7 +12829,10 @@ async fn launch_instance(
                                 &runtime_dir_for_sync,
                             )?;
                         } else {
-                            sync_instance_runtime_content(&app_instance_dir_for_sync, &runtime_dir_for_sync)?;
+                            sync_instance_runtime_content(
+                                &app_instance_dir_for_sync,
+                                &runtime_dir_for_sync,
+                            )?;
                         }
                         let cache_dir = launcher_cache_dir(&app_for_sync)?;
                         fs::create_dir_all(&cache_dir)
@@ -11731,7 +13005,8 @@ async fn launch_instance(
             let world_backup_interval_secs =
                 u64::from(instance_settings.world_backup_interval_minutes.clamp(5, 15)) * 60;
             let world_backup_retention_count =
-                usize::try_from(instance_settings.world_backup_retention_count.clamp(1, 2)).unwrap_or(1);
+                usize::try_from(instance_settings.world_backup_retention_count.clamp(1, 2))
+                    .unwrap_or(1);
             let log_path_text = launch_log_path.display().to_string();
             let running_meta = RunningInstance {
                 launch_id: launch_id.clone(),
@@ -11798,12 +13073,14 @@ async fn launch_instance(
                             "auto-world-backup",
                             world_backup_retention_count_for_thread,
                         );
-                        next_world_backup_at =
-                            Instant::now() + Duration::from_secs(world_backup_interval_secs_for_thread);
+                        next_world_backup_at = Instant::now()
+                            + Duration::from_secs(world_backup_interval_secs_for_thread);
                     }
                     let waited = if let Ok(mut c) = child.lock() {
                         match c.try_wait() {
-                            Ok(Some(status)) => Some(format!("Game exited with status {:?}", status.code())),
+                            Ok(Some(status)) => {
+                                Some(format!("Game exited with status {:?}", status.code()))
+                            }
                             Ok(None) => None,
                             Err(e) => Some(format!("Failed to wait for game process: {e}")),
                         }
@@ -11874,7 +13151,12 @@ fn count_occurrences(text: &str, needle: &str) -> usize {
     text.match_indices(needle).count()
 }
 
-fn replace_with_count(text: String, needle: &str, replacement: &str, applied: &mut usize) -> String {
+fn replace_with_count(
+    text: String,
+    needle: &str,
+    replacement: &str,
+    applied: &mut usize,
+) -> String {
     if needle.is_empty() || !text.contains(needle) {
         return text;
     }
@@ -11992,7 +13274,10 @@ fn write_zip_text(
     Ok(())
 }
 
-fn detect_duplicate_enabled_mod_filenames(lock: &Lockfile, instance_dir: &Path) -> Vec<(String, usize)> {
+fn detect_duplicate_enabled_mod_filenames(
+    lock: &Lockfile,
+    instance_dir: &Path,
+) -> Vec<(String, usize)> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for entry in &lock.entries {
         if !entry.enabled || normalize_lock_content_type(&entry.content_type) != "mods" {
@@ -12008,10 +13293,8 @@ fn detect_duplicate_enabled_mod_filenames(lock: &Lockfile, instance_dir: &Path) 
         }
         *counts.entry(key).or_insert(0) += 1;
     }
-    let mut out: Vec<(String, usize)> = counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
-        .collect();
+    let mut out: Vec<(String, usize)> =
+        counts.into_iter().filter(|(_, count)| *count > 1).collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
 }
@@ -12186,7 +13469,17 @@ fn preflight_launch_compatibility(
 }
 
 #[tauri::command]
-fn export_instance_support_bundle(
+async fn export_instance_support_bundle(
+    app: tauri::AppHandle,
+    args: ExportInstanceSupportBundleArgs,
+) -> Result<SupportBundleResult, String> {
+    run_blocking_task("export instance support bundle", move || {
+        export_instance_support_bundle_inner(app, args)
+    })
+    .await
+}
+
+fn export_instance_support_bundle_inner(
     app: tauri::AppHandle,
     args: ExportInstanceSupportBundleArgs,
 ) -> Result<SupportBundleResult, String> {
@@ -12204,7 +13497,11 @@ fn export_instance_support_bundle(
         let name = sanitize_filename(&instance.name.replace(' ', "-"));
         base.join(format!(
             "{}-support-bundle-{}.zip",
-            if name.is_empty() { "instance" } else { name.as_str() },
+            if name.is_empty() {
+                "instance"
+            } else {
+                name.as_str()
+            },
             Local::now().format("%Y%m%d-%H%M%S")
         ))
     };
@@ -12224,8 +13521,8 @@ fn export_instance_support_bundle(
         .iter()
         .map(|entry| lock_entry_to_installed(&instance_dir, entry))
         .collect::<Vec<_>>();
-    let installed_raw =
-        serde_json::to_string_pretty(&installed).map_err(|e| format!("serialize installed mods failed: {e}"))?;
+    let installed_raw = serde_json::to_string_pretty(&installed)
+        .map_err(|e| format!("serialize installed mods failed: {e}"))?;
     write_zip_text(
         &mut zip,
         "mods/installed_mods.json",
@@ -12312,7 +13609,8 @@ fn export_instance_support_bundle(
     write_zip_text(
         &mut zip,
         "manifest.json",
-        &serde_json::to_string_pretty(&manifest).map_err(|e| format!("serialize manifest failed: {e}"))?,
+        &serde_json::to_string_pretty(&manifest)
+            .map_err(|e| format!("serialize manifest failed: {e}"))?,
         opts,
         &mut files_count,
     )?;
@@ -12437,8 +13735,12 @@ fn remove_installed_mod(
             .map_err(|e| format!("remove mod file '{}' failed: {e}", enabled_path.display()))?;
     }
     if disabled_path.exists() {
-        fs::remove_file(&disabled_path)
-            .map_err(|e| format!("remove disabled mod file '{}' failed: {e}", disabled_path.display()))?;
+        fs::remove_file(&disabled_path).map_err(|e| {
+            format!(
+                "remove disabled mod file '{}' failed: {e}",
+                disabled_path.display()
+            )
+        })?;
     }
 
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
@@ -12462,6 +13764,12 @@ fn main() {
         .manage(AppState::default())
         .setup(|app| {
             load_dev_curseforge_key_into_runtime_env(&app.handle());
+            if let Err(err) = migrate_legacy_refresh_tokens_to_keyring(&app.handle()) {
+                eprintln!("legacy refresh-token migration warning: {err}");
+            }
+            if let Err(err) = migrate_selected_refresh_alias(&app.handle()) {
+                eprintln!("selected refresh-token alias migration warning: {err}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -12566,4 +13874,222 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod token_storage_tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn token_test_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("token test mutex lock")
+    }
+
+    fn make_temp_dir(name: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("openjar-token-tests-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[test]
+    fn persist_refresh_token_does_not_create_plaintext_fallback_file() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        let dir = make_temp_dir("persist-no-fallback");
+        let fallback_path = dir.join(LAUNCHER_TOKEN_FALLBACK_FILE);
+        assert!(!fallback_path.exists());
+
+        persist_refresh_token_for_account("acct_test_a", "refresh_token_a")
+            .expect("persist refresh token");
+
+        assert!(!fallback_path.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_refresh_token_retrieves_from_keyring_store() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        persist_refresh_token_for_account("acct_test_b", "refresh_token_b")
+            .expect("persist refresh token");
+        let account = LauncherAccount {
+            id: "acct_test_b".to_string(),
+            username: "user_b".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("read refresh token");
+        assert_eq!(token, "refresh_token_b");
+    }
+
+    #[test]
+    fn legacy_fallback_migration_moves_to_keyring_and_deletes_file() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        let dir = make_temp_dir("legacy-migration");
+        let fallback_path = dir.join(LAUNCHER_TOKEN_FALLBACK_FILE);
+
+        let legacy_payload = serde_json::json!({
+            "refresh_tokens": {
+                "acct_test_c": "refresh_token_c"
+            }
+        });
+        fs::write(
+            &fallback_path,
+            serde_json::to_string_pretty(&legacy_payload).expect("serialize legacy payload"),
+        )
+        .expect("write legacy fallback");
+        assert!(fallback_path.exists());
+
+        let summary = migrate_legacy_refresh_tokens_from_path(&fallback_path)
+            .expect("migrate fallback tokens");
+        assert_eq!(summary.migrated, 1);
+        assert_eq!(summary.fallback_files_removed, 1);
+        assert!(!fallback_path.exists());
+
+        let account = LauncherAccount {
+            id: "acct_test_c".to_string(),
+            username: "user_c".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("read migrated refresh token");
+        assert_eq!(token, "refresh_token_c");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn keyring_unavailable_returns_actionable_error() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(false);
+        let err = persist_refresh_token_for_account("acct_test_d", "refresh_token_d")
+            .expect_err("persist should fail when secure storage is unavailable");
+        assert!(err.contains("keyring write failed"));
+        assert!(err.contains("keyring"));
+        set_test_token_keyring_available(true);
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_single_known_token_for_selected_account() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        persist_refresh_token_for_account("acct_real", "refresh_token_real")
+            .expect("persist known refresh token");
+        let selected = LauncherAccount {
+            id: "acct_selected_missing".to_string(),
+            username: "player".to_string(),
+            added_at: "now".to_string(),
+        };
+        let known = LauncherAccount {
+            id: "acct_real".to_string(),
+            username: "player".to_string(),
+            added_at: "now".to_string(),
+        };
+        let accounts = vec![selected.clone(), known];
+
+        let token = read_refresh_token_from_keyring(&selected, &accounts)
+            .expect("recover refresh token for selected account");
+        assert_eq!(token, "refresh_token_real");
+
+        let canonical_username = keyring_username_for_account(&selected.id);
+        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
+            .expect("read canonical refreshed token");
+        assert_eq!(canonical.as_deref(), Some("refresh_token_real"));
+    }
+
+    #[test]
+    fn read_refresh_token_recovery_fails_when_multiple_distinct_tokens_exist() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        persist_refresh_token_for_account("acct_a", "refresh_token_a")
+            .expect("persist first refresh token");
+        persist_refresh_token_for_account("acct_b", "refresh_token_b")
+            .expect("persist second refresh token");
+
+        let selected = LauncherAccount {
+            id: "acct_selected_missing_2".to_string(),
+            username: "player".to_string(),
+            added_at: "now".to_string(),
+        };
+        let accounts = vec![
+            selected.clone(),
+            LauncherAccount {
+                id: "acct_a".to_string(),
+                username: "player-a".to_string(),
+                added_at: "now".to_string(),
+            },
+            LauncherAccount {
+                id: "acct_b".to_string(),
+                username: "player-b".to_string(),
+                added_at: "now".to_string(),
+            },
+        ];
+
+        let err = read_refresh_token_from_keyring(&selected, &accounts)
+            .expect_err("recovery should fail for ambiguous secure tokens");
+        assert!(err.contains("Multiple secure refresh tokens were found"));
+    }
+
+    #[test]
+    fn read_refresh_token_matches_uuid_hyphen_and_simple_aliases() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        let hyphenated = "123e4567-e89b-12d3-a456-426614174000";
+        let simple = "123e4567e89b12d3a456426614174000";
+        persist_refresh_token_for_account(hyphenated, "refresh_token_uuid")
+            .expect("persist uuid refresh token");
+
+        let account = LauncherAccount {
+            id: simple.to_string(),
+            username: "uuid-user".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("read uuid alias refresh token");
+        assert_eq!(token, "refresh_token_uuid");
+    }
+
+    #[test]
+    fn read_refresh_token_recovers_from_selected_alias() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        token_keyring_set_secret(
+            KEYRING_SERVICE,
+            KEYRING_SELECTED_REFRESH_ALIAS,
+            "refresh_token_selected_alias",
+        )
+        .expect("seed selected refresh alias");
+
+        let account = LauncherAccount {
+            id: "acct_selected_alias".to_string(),
+            username: "player_selected".to_string(),
+            added_at: "now".to_string(),
+        };
+        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+            .expect("recover token from selected alias");
+        assert_eq!(token, "refresh_token_selected_alias");
+
+        let canonical_username = keyring_username_for_account(&account.id);
+        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
+            .expect("read canonical token");
+        assert_eq!(canonical.as_deref(), Some("refresh_token_selected_alias"));
+    }
 }

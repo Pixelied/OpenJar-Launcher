@@ -96,7 +96,17 @@ mod modpack_tests {
         let (report, specs) = migrate_legacy_payload(&payload);
         assert_eq!(report.migrated_count, 1);
         assert_eq!(specs.len(), 1);
-        assert_eq!(specs[0].layers.iter().find(|l| l.id == "layer_user").unwrap().entries_delta.add.len(), 1);
+        assert_eq!(
+            specs[0]
+                .layers
+                .iter()
+                .find(|l| l.id == "layer_user")
+                .unwrap()
+                .entries_delta
+                .add
+                .len(),
+            1
+        );
     }
 
     #[test]

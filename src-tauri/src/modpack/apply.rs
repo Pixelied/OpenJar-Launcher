@@ -1,7 +1,7 @@
 use crate::modpack::layers::entry_key;
 use crate::modpack::types::{
-    DriftItem, DriftReport, InstanceModpackLinkState, LockSnapshot, LockSnapshotEntry, ModpackApplyResult,
-    ResolutionPlan,
+    DriftItem, DriftReport, InstanceModpackLinkState, LockSnapshot, LockSnapshotEntry,
+    ModpackApplyResult, ResolutionPlan,
 };
 use reqwest::blocking::Client;
 use std::collections::{HashMap, HashSet};
@@ -36,8 +36,12 @@ pub fn apply_plan_to_instance(
 
     let snapshot_id = if !plan.resolved_mods.is_empty() {
         Some(
-            crate::create_instance_snapshot(&instances_dir, &instance.id, "before-apply-modpack-plan")?
-                .id,
+            crate::create_instance_snapshot(
+                &instances_dir,
+                &instance.id,
+                "before-apply-modpack-plan",
+            )?
+            .id,
         )
     } else {
         None
@@ -120,7 +124,8 @@ fn apply_single_resolved(
             .ok_or_else(|| "missing download url in resolution plan".to_string())?;
         download_bytes(client, download_url)?
     } else if item.source == "curseforge" {
-        let api_key = crate::curseforge_api_key().ok_or_else(crate::missing_curseforge_key_message)?;
+        let api_key =
+            crate::curseforge_api_key().ok_or_else(crate::missing_curseforge_key_message)?;
         let mod_id = crate::parse_curseforge_project_id(&item.project_id)?;
         let files = crate::fetch_curseforge_files(client, &api_key, mod_id)?;
         let wanted = item
@@ -131,7 +136,8 @@ fn apply_single_resolved(
             .into_iter()
             .find(|f| f.id == wanted)
             .ok_or_else(|| format!("CurseForge file {} no longer available", wanted))?;
-        let download_url = crate::resolve_curseforge_file_download_url(client, &api_key, mod_id, &file)?;
+        let download_url =
+            crate::resolve_curseforge_file_download_url(client, &api_key, mod_id, &file)?;
         download_bytes(client, &download_url)?
     } else {
         return Err("unsupported provider".to_string());
@@ -204,10 +210,7 @@ fn download_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
         .send()
         .map_err(|e| format!("download failed: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "download failed with status {}",
-            response.status()
-        ));
+        return Err(format!("download failed with status {}", response.status()));
     }
     let mut bytes = Vec::new();
     response
@@ -226,7 +229,8 @@ pub fn build_lock_snapshot(
         .entries
         .iter()
         .filter(|e| {
-            (e.source.eq_ignore_ascii_case("modrinth") || e.source.eq_ignore_ascii_case("curseforge"))
+            (e.source.eq_ignore_ascii_case("modrinth")
+                || e.source.eq_ignore_ascii_case("curseforge"))
                 && is_supported_content_type(&e.content_type)
         })
         .map(|e| LockSnapshotEntry {
@@ -251,12 +255,17 @@ pub fn build_lock_snapshot(
     }
 }
 
-pub fn detect_drift(instance_id: &str, lock: &crate::Lockfile, snapshot: &LockSnapshot) -> DriftReport {
+pub fn detect_drift(
+    instance_id: &str,
+    lock: &crate::Lockfile,
+    snapshot: &LockSnapshot,
+) -> DriftReport {
     let current_map = lock
         .entries
         .iter()
         .filter(|e| {
-            (e.source.eq_ignore_ascii_case("modrinth") || e.source.eq_ignore_ascii_case("curseforge"))
+            (e.source.eq_ignore_ascii_case("modrinth")
+                || e.source.eq_ignore_ascii_case("curseforge"))
                 && is_supported_content_type(&e.content_type)
         })
         .map(|e| {
@@ -298,7 +307,9 @@ pub fn detect_drift(instance_id: &str, lock: &crate::Lockfile, snapshot: &LockSn
     let mut version_changed = Vec::new();
 
     for key in current_keys.difference(&expected_keys) {
-        if let Some((name, version_number, _version_id, content_type, source)) = current_map.get(key) {
+        if let Some((name, version_number, _version_id, content_type, source)) =
+            current_map.get(key)
+        {
             added.push(DriftItem {
                 source: source.clone(),
                 content_type: content_type.clone(),
@@ -311,7 +322,9 @@ pub fn detect_drift(instance_id: &str, lock: &crate::Lockfile, snapshot: &LockSn
     }
 
     for key in expected_keys.difference(&current_keys) {
-        if let Some((name, version_number, _version_id, content_type, source)) = expected_map.get(key) {
+        if let Some((name, version_number, _version_id, content_type, source)) =
+            expected_map.get(key)
+        {
             removed.push(DriftItem {
                 source: source.clone(),
                 content_type: content_type.clone(),
@@ -324,7 +337,8 @@ pub fn detect_drift(instance_id: &str, lock: &crate::Lockfile, snapshot: &LockSn
     }
 
     for key in expected_keys.intersection(&current_keys) {
-        let Some((name, expected_version, expected_id, content_type, source)) = expected_map.get(key)
+        let Some((name, expected_version, expected_id, content_type, source)) =
+            expected_map.get(key)
         else {
             continue;
         };

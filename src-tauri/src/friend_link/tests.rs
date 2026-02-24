@@ -1,5 +1,8 @@
 use super::*;
 use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use uuid::Uuid;
 
 fn sample_session() -> store::FriendLinkSessionRecord {
     store::FriendLinkSessionRecord {
@@ -7,6 +10,7 @@ fn sample_session() -> store::FriendLinkSessionRecord {
         group_id: "group_1".to_string(),
         local_peer_id: "peer_1".to_string(),
         display_name: "Host".to_string(),
+        shared_secret_key_id: String::new(),
         shared_secret_b64: random_secret_b64(),
         protocol_version: PROTOCOL_VERSION,
         listener_port: 45001,
@@ -20,7 +24,10 @@ fn sample_session() -> store::FriendLinkSessionRecord {
         bootstrap_host_peer_id: None,
         trusted_peer_ids: vec![],
         trusted_peer_ids_initialized: false,
+        guardrails_updated_at_ms: 0,
         peer_aliases: HashMap::new(),
+        allow_loopback_endpoints: true,
+        allow_internet_endpoints: false,
         max_auto_changes: 25,
         sync_mods: true,
         sync_resourcepacks: false,
@@ -33,10 +40,35 @@ fn sample_session() -> store::FriendLinkSessionRecord {
 fn invite_roundtrip() {
     let session = sample_session();
     let invite = build_invite(&session).expect("build invite");
-    let payload = parse_invite(&invite.invite_code).expect("parse invite");
+    let payload = parse_invite(&invite.invite_code, true, false).expect("parse invite");
     assert_eq!(payload.group_id, session.group_id);
     assert_eq!(payload.bootstrap_peer_endpoint, "127.0.0.1:45001");
     assert_eq!(payload.protocol_version, PROTOCOL_VERSION);
+}
+
+#[test]
+fn invite_parse_blocks_loopback_without_opt_in() {
+    let session = sample_session();
+    let invite = build_invite(&session).expect("build invite");
+    let err =
+        parse_invite(&invite.invite_code, false, false).expect_err("loopback should be blocked");
+    assert!(err.to_ascii_lowercase().contains("loopback"));
+}
+
+#[test]
+fn invite_parse_ignores_whitespace() {
+    let session = sample_session();
+    let invite = build_invite(&session).expect("build invite");
+    let mut spaced = String::new();
+    for (idx, ch) in invite.invite_code.chars().enumerate() {
+        spaced.push(ch);
+        if idx > 0 && idx % 12 == 0 {
+            spaced.push('\n');
+            spaced.push(' ');
+        }
+    }
+    let payload = parse_invite(&spaced, true, false).expect("parse invite with whitespace");
+    assert_eq!(payload.group_id, session.group_id);
 }
 
 #[test]
@@ -107,7 +139,10 @@ fn lock_entry_hash_is_stable_across_hashmap_order() {
         ..base.clone()
     };
 
-    assert_eq!(state::lock_entry_hash(&base), state::lock_entry_hash(&other));
+    assert_eq!(
+        state::lock_entry_hash(&base),
+        state::lock_entry_hash(&other)
+    );
 }
 
 #[test]
@@ -202,7 +237,7 @@ fn trusted_peers_do_not_auto_fill_without_init_flag() {
 }
 
 #[test]
-fn trusted_peers_initialize_to_all_once_for_legacy_sessions() {
+fn trusted_peers_initialize_to_empty_for_legacy_sessions_without_bootstrap_host() {
     let mut session = sample_session();
     session.peers = vec![
         store::FriendPeerRecord {
@@ -225,8 +260,341 @@ fn trusted_peers_initialize_to_all_once_for_legacy_sessions() {
         },
     ];
     ensure_trusted_peer_ids_initialized(&mut session);
-    assert_eq!(session.trusted_peer_ids.len(), 2);
-    assert!(session.trusted_peer_ids.contains(&"peer_a".to_string()));
-    assert!(session.trusted_peer_ids.contains(&"peer_b".to_string()));
+    assert!(session.trusted_peer_ids.is_empty());
     assert!(session.trusted_peer_ids_initialized);
+}
+
+#[test]
+fn trusted_peers_default_to_bootstrap_host_when_present() {
+    let mut session = sample_session();
+    session.bootstrap_host_peer_id = Some("peer_host".to_string());
+    session.peers = vec![
+        store::FriendPeerRecord {
+            peer_id: "peer_host".to_string(),
+            display_name: "Host".to_string(),
+            endpoint: "192.168.1.20:25565".to_string(),
+            added_at: "now".to_string(),
+            last_seen_at: None,
+            online: true,
+            last_state_hash: None,
+        },
+        store::FriendPeerRecord {
+            peer_id: "peer_other".to_string(),
+            display_name: "Other".to_string(),
+            endpoint: "192.168.1.21:25565".to_string(),
+            added_at: "now".to_string(),
+            last_seen_at: None,
+            online: true,
+            last_state_hash: None,
+        },
+    ];
+    ensure_trusted_peer_ids_initialized(&mut session);
+    assert_eq!(session.trusted_peer_ids, vec!["peer_host".to_string()]);
+}
+
+#[test]
+fn upsert_peer_transfers_trust_when_peer_id_rotates_on_same_host() {
+    let mut session = sample_session();
+    session.peers.push(store::FriendPeerRecord {
+        peer_id: "peer_old".to_string(),
+        display_name: "Buddy".to_string(),
+        endpoint: "192.168.1.50:41000".to_string(),
+        added_at: "now".to_string(),
+        last_seen_at: Some("now".to_string()),
+        online: true,
+        last_state_hash: Some("old".to_string()),
+    });
+    session.trusted_peer_ids = vec!["peer_old".to_string()];
+    session.trusted_peer_ids_initialized = true;
+    session
+        .peer_aliases
+        .insert("peer_old".to_string(), "Bestie".to_string());
+
+    upsert_peer(
+        &mut session,
+        store::FriendPeerRecord {
+            peer_id: "peer_new".to_string(),
+            display_name: "Buddy".to_string(),
+            endpoint: "192.168.1.50:42000".to_string(),
+            added_at: "now".to_string(),
+            last_seen_at: Some("now".to_string()),
+            online: true,
+            last_state_hash: Some("new".to_string()),
+        },
+    );
+
+    assert_eq!(session.peers.len(), 1);
+    assert_eq!(session.peers[0].peer_id, "peer_new");
+    assert!(session
+        .trusted_peer_ids
+        .iter()
+        .any(|peer_id| peer_id == "peer_new"));
+    assert!(!session
+        .trusted_peer_ids
+        .iter()
+        .any(|peer_id| peer_id == "peer_old"));
+    assert_eq!(
+        session.peer_aliases.get("peer_new").map(String::as_str),
+        Some("Bestie")
+    );
+}
+
+#[test]
+fn sanitize_filename_and_world_name_reject_traversal() {
+    assert!(state::sanitize_lock_entry_filename("../bad.jar").is_err());
+    assert!(state::sanitize_lock_entry_filename("mods/bad.jar").is_err());
+    assert!(state::sanitize_world_name("world/../../escape").is_err());
+    assert!(state::sanitize_world_name("..").is_err());
+}
+
+#[test]
+fn safe_join_under_refuses_escape_attempts() {
+    let root = std::env::temp_dir().join(format!("openjar-safe-join-{}", uuid::Uuid::new_v4()));
+    assert!(state::safe_join_under(&root, "../escape.txt").is_err());
+    assert!(state::safe_join_under(&root, "/absolute/path").is_err());
+    assert!(state::safe_join_under(&root, "config/ok.toml").is_ok());
+}
+
+#[test]
+fn lock_entry_paths_never_escape_instance_dir() {
+    let instances_dir =
+        std::env::temp_dir().join(format!("openjar-lock-paths-{}", uuid::Uuid::new_v4()));
+    let instance_path = PathBuf::from(&instances_dir).join("inst_a");
+    let entry = state::CanonicalLockEntry {
+        source: "modrinth".to_string(),
+        project_id: "project".to_string(),
+        version_id: "ver".to_string(),
+        name: "Valid".to_string(),
+        version_number: "1.0.0".to_string(),
+        filename: "valid.jar".to_string(),
+        content_type: "mods".to_string(),
+        target_scope: "instance".to_string(),
+        target_worlds: vec![],
+        enabled: true,
+        hashes: HashMap::new(),
+    };
+    let paths = state::lock_entry_paths(&instances_dir, "inst_a", &entry).expect("valid paths");
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].starts_with(&instance_path));
+
+    let bad = state::CanonicalLockEntry {
+        filename: "../evil.jar".to_string(),
+        ..entry
+    };
+    assert!(state::lock_entry_paths(&instances_dir, "inst_a", &bad).is_err());
+}
+
+#[test]
+fn write_store_moves_secret_to_keyring_and_omits_plaintext_secret_field() {
+    store::clear_test_friend_link_secret_store();
+    let path = std::env::temp_dir().join(format!(
+        "openjar-friend-store-write-{}.json",
+        Uuid::new_v4()
+    ));
+    let mut store = store::FriendLinkStoreV1::default();
+    store.sessions.push(sample_session());
+
+    store::write_store_at_path(&path, &store).expect("write friend-link store");
+    let raw = fs::read_to_string(&path).expect("read written store");
+    assert!(
+        !raw.contains("\"shared_secret_b64\""),
+        "friend-link store must not contain plaintext shared secret"
+    );
+    assert!(
+        raw.contains("\"shared_secret_key_id\""),
+        "friend-link store must include key-id reference"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn read_store_migrates_legacy_plaintext_secret_and_rewrites_store_file() {
+    store::clear_test_friend_link_secret_store();
+    let path = std::env::temp_dir().join(format!(
+        "openjar-friend-store-migrate-{}.json",
+        Uuid::new_v4()
+    ));
+    let legacy_raw = serde_json::json!({
+      "version": 1,
+      "sessions": [{
+        "instance_id": "inst_legacy",
+        "group_id": "group_legacy",
+        "local_peer_id": "peer_legacy",
+        "display_name": "Legacy",
+        "shared_secret_b64": "aGVsbG8=",
+        "protocol_version": 1,
+        "listener_port": 0,
+        "listener_endpoint": null,
+        "peers": [],
+        "allowlist": state::default_allowlist(),
+        "last_peer_sync_at": {},
+        "last_good_snapshot": null,
+        "pending_conflicts": [],
+        "cached_peer_state": {},
+        "bootstrap_host_peer_id": null,
+        "trusted_peer_ids": [],
+        "trusted_peer_ids_initialized": false,
+        "guardrails_updated_at_ms": 0,
+        "peer_aliases": {},
+        "allow_loopback_endpoints": false,
+        "allow_internet_endpoints": false,
+        "max_auto_changes": 25,
+        "sync_mods": true,
+        "sync_resourcepacks": false,
+        "sync_shaderpacks": true,
+        "sync_datapacks": true
+      }]
+    });
+    fs::write(
+        &path,
+        serde_json::to_string_pretty(&legacy_raw).expect("serialize legacy store"),
+    )
+    .expect("write legacy store");
+
+    let loaded = store::read_store_at_path(&path).expect("read and migrate legacy store");
+    assert_eq!(loaded.sessions.len(), 1);
+    assert!(loaded.sessions[0].shared_secret_b64.is_empty());
+    assert!(!loaded.sessions[0].shared_secret_key_id.trim().is_empty());
+
+    let rewritten = fs::read_to_string(&path).expect("read rewritten store");
+    assert!(!rewritten.contains("\"shared_secret_b64\""));
+    assert!(rewritten.contains("\"shared_secret_key_id\""));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn missing_secure_secret_can_be_recovered_for_host_session() {
+    store::clear_test_friend_link_secret_store();
+    let mut session = sample_session();
+    session.shared_secret_b64.clear();
+    session.shared_secret_key_id = "friend_link_secret_missing_test".to_string();
+
+    let err =
+        ensure_session_secret_loaded(&mut session).expect_err("missing keyring secret must error");
+    assert!(session_secret_missing_or_broken(&err));
+
+    reset_session_for_new_host_secret(&mut session);
+    ensure_session_secret_loaded(&mut session).expect("recovered host session secret should load");
+    assert!(!session.group_id.trim().is_empty());
+    assert!(!session.local_peer_id.trim().is_empty());
+    assert!(!session.shared_secret_key_id.trim().is_empty());
+}
+
+#[test]
+fn get_session_secret_migrates_from_legacy_keyring_service_alias() {
+    store::clear_test_friend_link_secret_store();
+    let mut session = sample_session();
+    session.shared_secret_b64.clear();
+    session.shared_secret_key_id = format!("friend_link_secret_v1_{}", Uuid::new_v4());
+
+    store::set_test_friend_link_secret_for_service(
+        "modpack-manager",
+        &session.shared_secret_key_id,
+        "legacy_secret_b64",
+    )
+    .expect("seed legacy keyring service secret");
+
+    let loaded =
+        store::get_session_shared_secret(&mut session).expect("load migrated legacy secret");
+    assert_eq!(loaded, "legacy_secret_b64");
+    assert_eq!(session.shared_secret_b64, "legacy_secret_b64");
+
+    let canonical = store::get_test_friend_link_secret_for_service(
+        "ModpackManager",
+        &session.shared_secret_key_id,
+    );
+    assert_eq!(canonical.as_deref(), Some("legacy_secret_b64"));
+}
+
+#[test]
+fn write_store_preserves_peers_from_newer_snapshot_on_disk() {
+    store::clear_test_friend_link_secret_store();
+    let path = std::env::temp_dir().join(format!(
+        "openjar-friend-store-merge-{}.json",
+        Uuid::new_v4()
+    ));
+
+    let mut base = store::FriendLinkStoreV1::default();
+    base.sessions.push(sample_session());
+    store::write_store_at_path(&path, &base).expect("write base store");
+
+    let mut stale = base.clone();
+    stale.sessions[0].display_name = "Host (stale writer)".to_string();
+
+    let mut fresh = base.clone();
+    fresh.sessions[0].peers.push(store::FriendPeerRecord {
+        peer_id: "peer_2".to_string(),
+        display_name: "Peer Two".to_string(),
+        endpoint: "127.0.0.1:45100".to_string(),
+        added_at: "now".to_string(),
+        last_seen_at: Some("now".to_string()),
+        online: true,
+        last_state_hash: Some("hash-1".to_string()),
+    });
+    store::write_store_at_path(&path, &fresh).expect("write fresh peer update");
+    store::write_store_at_path(&path, &stale).expect("stale write should not drop peers");
+
+    let loaded = store::read_store_at_path(&path).expect("read merged store");
+    let session = loaded
+        .sessions
+        .iter()
+        .find(|v| v.instance_id == "inst_1")
+        .expect("session exists");
+    assert!(
+        session.peers.iter().any(|peer| peer.peer_id == "peer_2"),
+        "stale writer must not remove newly added peers"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn write_store_preserves_newer_guardrails_against_stale_snapshot() {
+    store::clear_test_friend_link_secret_store();
+    let path = std::env::temp_dir().join(format!(
+        "openjar-friend-store-guardrails-{}.json",
+        Uuid::new_v4()
+    ));
+
+    let mut base = store::FriendLinkStoreV1::default();
+    let mut session = sample_session();
+    session.peers.push(store::FriendPeerRecord {
+        peer_id: "peer_2".to_string(),
+        display_name: "Peer Two".to_string(),
+        endpoint: "127.0.0.1:45100".to_string(),
+        added_at: "now".to_string(),
+        last_seen_at: Some("now".to_string()),
+        online: true,
+        last_state_hash: None,
+    });
+    session.trusted_peer_ids_initialized = true;
+    session.guardrails_updated_at_ms = 100;
+    base.sessions.push(session);
+    store::write_store_at_path(&path, &base).expect("write base store");
+
+    let mut fresh = base.clone();
+    fresh.sessions[0].trusted_peer_ids = vec!["peer_2".to_string()];
+    fresh.sessions[0].max_auto_changes = 42;
+    fresh.sessions[0].guardrails_updated_at_ms = 200;
+    store::write_store_at_path(&path, &fresh).expect("write fresh guardrails");
+
+    let mut stale = base.clone();
+    stale.sessions[0].trusted_peer_ids = vec![];
+    stale.sessions[0].max_auto_changes = 5;
+    stale.sessions[0].guardrails_updated_at_ms = 150;
+    store::write_store_at_path(&path, &stale).expect("write stale guardrails");
+
+    let loaded = store::read_store_at_path(&path).expect("read merged guardrails");
+    let session = loaded
+        .sessions
+        .iter()
+        .find(|v| v.instance_id == "inst_1")
+        .expect("session exists");
+    assert_eq!(session.trusted_peer_ids, vec!["peer_2".to_string()]);
+    assert_eq!(session.max_auto_changes, 42);
+    assert_eq!(session.guardrails_updated_at_ms, 200);
+
+    let _ = fs::remove_file(path);
 }

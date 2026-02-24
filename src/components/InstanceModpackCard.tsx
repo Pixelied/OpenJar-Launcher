@@ -118,6 +118,8 @@ function driftLegendTooltip(preview?: FriendLinkDriftPreview | null): string {
 
 type Props = {
   instance: Instance;
+  isDevMode: boolean;
+  enableAutoSync?: boolean;
   onNotice: (message: string) => void;
   onError: (message: string) => void;
   onFriendConflict?: (instanceId: string, result: FriendLinkReconcileResult) => void;
@@ -129,6 +131,8 @@ type Props = {
 
 export default function InstanceModpackCard({
   instance,
+  isDevMode,
+  enableAutoSync = true,
   onNotice,
   onError,
   onFriendConflict,
@@ -144,6 +148,8 @@ export default function InstanceModpackCard({
   const [friendDrift, setFriendDrift] = useState<FriendLinkDriftPreview | null>(null);
   const [inviteCode, setInviteCode] = useState("");
   const [invitePreview, setInvitePreview] = useState<string | null>(null);
+  const [friendAllowLoopback, setFriendAllowLoopback] = useState(false);
+  const [friendAllowInternet, setFriendAllowInternet] = useState(false);
   const [friendConflicts, setFriendConflicts] = useState<FriendLinkReconcileResult | null>(null);
   const [resolvingConflicts, setResolvingConflicts] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -177,11 +183,19 @@ export default function InstanceModpackCard({
     setSyncResourcepacksEnabled(false);
     setSyncShaderpacksEnabled(true);
     setSyncDatapacksEnabled(true);
+    setFriendAllowLoopback(isDevMode);
+    setFriendAllowInternet(false);
     setPeerAliasDrafts({});
     setPeerAliasSavingId(null);
     lastDriftSignatureRef.current = "";
     lastAutoAttemptSignatureRef.current = "";
-  }, [instance.id]);
+  }, [instance.id, isDevMode]);
+
+  useEffect(() => {
+    if (!isDevMode && friendAllowLoopback) {
+      setFriendAllowLoopback(false);
+    }
+  }, [isDevMode, friendAllowLoopback]);
 
   useEffect(() => {
     if (!friendStatus?.linked) {
@@ -238,6 +252,10 @@ export default function InstanceModpackCard({
     friendDrift?.status === "unsynced" && friendDriftBreakdown.mods.total === 0 && friendDriftBreakdown.config.total > 0;
   const peerCount = friendStatus?.peers?.length ?? 0;
   const onlinePeerCount = (friendStatus?.peers ?? []).filter((peer) => peer.online).length;
+  const hasConnectedPeers = peerCount > 0;
+  const hostWaitingForPeer = Boolean(friendStatus?.linked) && !hasConnectedPeers;
+  const effectiveFriendUnsynced = friendUnsynced && hasConnectedPeers;
+  const effectiveFriendConfigOnlyUnsynced = friendConfigOnlyUnsynced && hasConnectedPeers;
   const selectedDriftKeySet = useMemo(() => new Set(selectedDriftKeys), [selectedDriftKeys]);
 
   const syncPolicyLabel =
@@ -319,6 +337,34 @@ export default function InstanceModpackCard({
       }
     } catch (err: any) {
       onError(err?.toString?.() ?? String(err));
+    }
+  }
+
+  async function copyInviteToClipboard(rawCode: string): Promise<boolean> {
+    const code = rawCode.replace(/\s+/g, "").trim();
+    if (!code) {
+      onError("Invite code is empty.");
+      return false;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      return true;
+    } catch {
+      try {
+        const el = document.createElement("textarea");
+        el.value = code;
+        el.setAttribute("readonly", "true");
+        el.style.position = "fixed";
+        el.style.left = "-9999px";
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+        return true;
+      } catch {
+        onError("Could not copy invite automatically. Copy it from the invite field.");
+        return false;
+      }
     }
   }
 
@@ -420,7 +466,12 @@ export default function InstanceModpackCard({
   }, [instance.id]);
 
   useEffect(() => {
+    if (!enableAutoSync) return;
     if (!friendDrift || !friendStatus?.linked) {
+      lastAutoAttemptSignatureRef.current = "";
+      return;
+    }
+    if ((friendStatus?.peers?.length ?? 0) === 0) {
       lastAutoAttemptSignatureRef.current = "";
       return;
     }
@@ -455,7 +506,7 @@ export default function InstanceModpackCard({
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [friendDrift, friendStatus?.linked, syncPolicy, isSnoozed, syncBusy, guardMaxAutoChanges]);
+  }, [enableAutoSync, friendDrift, friendStatus?.linked, syncPolicy, isSnoozed, syncBusy, guardMaxAutoChanges]);
 
   useEffect(() => {
     if (!friendDrift) {
@@ -629,10 +680,10 @@ export default function InstanceModpackCard({
               {friendStatus?.linked ? friendStatus.status || "linked" : "unlinked"}
             </span>
             {friendStatus?.linked && friendDrift ? (
-              <span className={`chip ${friendUnsynced ? "danger" : "subtle"}`} title={friendDriftLegend}>
-                {friendUnsynced
+              <span className={`chip ${effectiveFriendUnsynced ? "danger" : "subtle"}`} title={friendDriftLegend}>
+                {effectiveFriendUnsynced
                   ? `Unsynced mods ${friendModDriftSummary}`
-                  : friendConfigOnlyUnsynced
+                  : effectiveFriendConfigOnlyUnsynced
                     ? `Config drift ${friendDriftBreakdown.config.total}`
                     : "Synced"}
               </span>
@@ -657,17 +708,17 @@ export default function InstanceModpackCard({
                   <div className="muted" title="Compared to your instance: + friends have it and you do not, - you have it and friends do not, ~ same item changed version/settings.">
                     Compared to your instance: + they have it, - you have it, ~ changed version/settings.
                   </div>
-                  {friendConfigOnlyUnsynced ? (
+                  {effectiveFriendConfigOnlyUnsynced ? (
                     <div className="muted" title={friendDriftLegend}>
                       Mods are aligned. Config drift: {friendDriftBreakdown.config.total} item{friendDriftBreakdown.config.total === 1 ? "" : "s"}.
                     </div>
                   ) : null}
                 </div>
                 <div className="friendLinkOverviewBadges">
-                  <span className={`chip ${friendUnsynced ? "danger" : ""}`} title={friendDriftLegend}>
-                    {friendUnsynced
+                  <span className={`chip ${effectiveFriendUnsynced ? "danger" : ""}`} title={friendDriftLegend}>
+                    {effectiveFriendUnsynced
                       ? `Unsynced mods ${friendModDriftSummary}`
-                      : friendConfigOnlyUnsynced
+                      : effectiveFriendConfigOnlyUnsynced
                         ? "Config drift only"
                         : "Synced"}
                   </span>
@@ -678,6 +729,17 @@ export default function InstanceModpackCard({
               </div>
             </div>
 
+            {hostWaitingForPeer ? (
+              <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
+                <div className="friendLinkSectionTitle">Waiting for first peer</div>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  Share the invite code below. Sync and peer controls will activate after someone joins.
+                </div>
+              </div>
+            ) : null}
+
+            {!hostWaitingForPeer ? (
+              <>
             {friendStatus.peers?.length ? (
               <div className="card friendLinkPanelCard friendLinkPeersCard" style={{ marginTop: 10 }}>
                 <div className="friendLinkSectionTitle">Peers and safety overrides</div>
@@ -775,12 +837,33 @@ export default function InstanceModpackCard({
                           </span>
                           <button
                             className={`btn ${trusted ? "" : "primary"}`}
+                            disabled={guardrailsBusy}
                             title={trusted ? "Block syncing from this peer." : "Allow syncing from this peer again."}
-                            onClick={() => {
-                              setGuardrailsDirty(true);
-                              setGuardTrustedPeerIds((prev) =>
-                                trusted ? prev.filter((id) => id !== peer.peer_id) : [...prev, peer.peer_id]
-                              );
+                            onClick={async () => {
+                              const nextTrusted = trusted
+                                ? guardTrustedPeerIds.filter((id) => id !== peer.peer_id)
+                                : [...guardTrustedPeerIds, peer.peer_id];
+                              setGuardrailsBusy(true);
+                              try {
+                                const updated = await setFriendLinkGuardrails({
+                                  instanceId: instance.id,
+                                  trustedPeerIds: nextTrusted,
+                                  maxAutoChanges: guardMaxAutoChanges,
+                                  syncMods: syncModsEnabled,
+                                  syncResourcepacks: syncResourcepacksEnabled,
+                                  syncShaderpacks: syncShaderpacksEnabled,
+                                  syncDatapacks: syncDatapacksEnabled,
+                                });
+                                updateFriendStatus(updated, { forceGuardrailSync: true });
+                                setGuardTrustedPeerIds(updated.trusted_peer_ids ?? []);
+                                setGuardrailsDirty(false);
+                                onNotice(trusted ? "Peer untrusted." : "Peer trusted.");
+                                await refresh({ quiet: true });
+                              } catch (err: any) {
+                                onError(err?.toString?.() ?? String(err));
+                              } finally {
+                                setGuardrailsBusy(false);
+                              }
                             }}
                           >
                             {trusted ? "Untrust peer" : "Trust peer"}
@@ -956,7 +1039,7 @@ export default function InstanceModpackCard({
               </div>
             </div>
 
-            {friendUnsynced && !isSnoozed ? (
+            {effectiveFriendUnsynced && !isSnoozed ? (
               <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
                 <div style={{ fontWeight: 850 }} title={friendDriftLegend}>Unsynced changes detected</div>
                 <div className="muted" style={{ marginTop: 4 }} title={friendDriftLegend}>
@@ -999,8 +1082,10 @@ export default function InstanceModpackCard({
                 </div>
               </div>
             ) : null}
+              </>
+            ) : null}
 
-            {friendUnsynced && isSnoozed ? (
+            {effectiveFriendUnsynced && isSnoozed ? (
               <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
                 <div className="rowBetween" style={{ gap: 8 }}>
                   <div className="muted">
@@ -1139,6 +1224,35 @@ export default function InstanceModpackCard({
               <button
                 className="btn"
                 disabled={busy || syncBusy}
+                title="Copy current invite code. If none is cached, generate one and copy it."
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    let code = invitePreview?.trim() ?? "";
+                    let generated = false;
+                    if (!code) {
+                      const invite = await createFriendLinkSession({ instanceId: instance.id });
+                      code = invite.invite_code;
+                      generated = true;
+                      setInvitePreview(code);
+                    }
+                    const copied = await copyInviteToClipboard(code);
+                    if (copied) {
+                      onNotice(generated ? "Generated and copied invite code." : "Invite code copied.");
+                    }
+                    await refresh({ quiet: true });
+                  } catch (err: any) {
+                    onError(err?.toString?.() ?? String(err));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Copy invite
+              </button>
+              <button
+                className="btn"
+                disabled={busy || syncBusy}
                 title="Regenerate and copy a fresh invite code for this session."
                 onClick={async () => {
                   setBusy(true);
@@ -1208,6 +1322,15 @@ export default function InstanceModpackCard({
                 Leave link
               </button>
               </div>
+              <div style={{ marginTop: 8 }}>
+                <input
+                  className="input"
+                  readOnly
+                  value={invitePreview ?? ""}
+                  placeholder="No invite cached yet. Click Copy invite."
+                  title="Current invite code for this host session."
+                />
+              </div>
             </div>
             {friendStatus.pending_conflicts_count > 0 ? (
               <div className="muted" style={{ marginTop: 6 }}>
@@ -1220,6 +1343,34 @@ export default function InstanceModpackCard({
             <div className="muted" style={{ marginTop: 8 }}>
               Create a link as host or join a friend with an invite code.
             </div>
+            <div style={{ marginTop: 8, display: "grid", gap: 6 }}>
+              {isDevMode ? (
+                <label className="row" style={{ alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={friendAllowLoopback}
+                    onChange={(event) => setFriendAllowLoopback(event.target.checked)}
+                  />
+                  <span className="muted" style={{ fontSize: 12 }}>
+                    Allow loopback endpoints (`localhost` / `127.0.0.1`) for local testing only.
+                  </span>
+                </label>
+              ) : (
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Loopback endpoints are available only in Dev mode (`MPM_DEV_MODE=1`).
+                </div>
+              )}
+              <label className="row" style={{ alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={friendAllowInternet}
+                  onChange={(event) => setFriendAllowInternet(event.target.checked)}
+                />
+                <span className="muted" style={{ fontSize: 12 }}>
+                  Enable internet endpoints for cross-network syncing (trusted peers only).
+                </span>
+              </label>
+            </div>
             <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
               <button
                 className="btn"
@@ -1228,10 +1379,19 @@ export default function InstanceModpackCard({
                 onClick={async () => {
                   setBusy(true);
                   try {
-                    const invite = await createFriendLinkSession({ instanceId: instance.id });
+                    const invite = await createFriendLinkSession({
+                      instanceId: instance.id,
+                      allowLoopback: isDevMode ? friendAllowLoopback : false,
+                      allowInternet: friendAllowInternet,
+                    });
                     setInvitePreview(invite.invite_code);
                     setGuardrailsDirty(false);
-                    onNotice("Friend link created. Share the invite code.");
+                    const copied = await copyInviteToClipboard(invite.invite_code);
+                    onNotice(
+                      copied
+                        ? "Friend link created. Invite code copied."
+                        : "Friend link created. Share the invite code."
+                    );
                     await refresh({ quiet: true });
                   } catch (err: any) {
                     onError(err?.toString?.() ?? String(err));
@@ -1263,6 +1423,8 @@ export default function InstanceModpackCard({
                     await joinFriendLinkSession({
                       instanceId: instance.id,
                       inviteCode: inviteCode.trim(),
+                      allowLoopback: isDevMode ? friendAllowLoopback : false,
+                      allowInternet: friendAllowInternet,
                     });
                     const firstSync = await reconcileFriendLink({ instanceId: instance.id, mode: "manual" });
                     if (firstSync.status === "conflicted") {

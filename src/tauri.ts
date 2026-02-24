@@ -666,6 +666,8 @@ export function seedDevModpackData(input?: {
 export function createFriendLinkSession(input: {
   instanceId: string;
   displayName?: string;
+  allowLoopback?: boolean;
+  allowInternet?: boolean;
 }): Promise<FriendLinkInvite> {
   return invoke("create_friend_link_session", { args: input });
 }
@@ -674,6 +676,8 @@ export function joinFriendLinkSession(input: {
   instanceId: string;
   inviteCode: string;
   displayName?: string;
+  allowLoopback?: boolean;
+  allowInternet?: boolean;
 }): Promise<FriendLinkStatus> {
   return invoke("join_friend_link_session", { args: input });
 }

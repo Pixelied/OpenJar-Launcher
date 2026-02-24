@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CanonicalLockEntry {
@@ -113,7 +113,9 @@ fn default_lock_version() -> u32 {
 fn normalized_content_type(input: &str) -> String {
     match input.trim().to_lowercase().as_str() {
         "mods" | "mod" => "mods".to_string(),
-        "resourcepacks" | "resourcepack" | "texturepacks" | "texturepack" => "resourcepacks".to_string(),
+        "resourcepacks" | "resourcepack" | "texturepacks" | "texturepack" => {
+            "resourcepacks".to_string()
+        }
         "shaderpacks" | "shaderpack" | "shader" | "shaders" => "shaderpacks".to_string(),
         "datapacks" | "datapack" => "datapacks".to_string(),
         _ => "mods".to_string(),
@@ -153,32 +155,120 @@ pub fn app_instances_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .path_resolver()
         .app_data_dir()
         .ok_or_else(|| "Failed to resolve app data dir".to_string())?;
-    Ok(base.join("instances"))
+    safe_join_under(&base, "instances")
 }
 
 pub fn instance_dir(instances_dir: &Path, instance_id: &str) -> PathBuf {
-    crate::instance_dir_for_id(instances_dir, instance_id)
-        .unwrap_or_else(|_| instances_dir.join(instance_id))
+    crate::instance_dir_for_id(instances_dir, instance_id).unwrap_or_else(|_| {
+        let safe_instance_id =
+            sanitize_single_component(instance_id, "instance id", MAX_WORLD_NAME_LEN)
+                .unwrap_or_else(|_| "invalid_instance_id".to_string());
+        safe_join_under(instances_dir, &safe_instance_id)
+            .expect("sanitized instance id must always resolve under instances dir")
+    })
 }
 
 pub fn lock_file_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
-    instance_dir(instances_dir, instance_id).join("lock.json")
+    let root = instance_dir(instances_dir, instance_id);
+    safe_join_under(&root, "lock.json")
+        .expect("fixed lockfile path must resolve under instance dir")
+}
+
+const MAX_COMPONENT_LEN: usize = 255;
+const MAX_FILENAME_LEN: usize = 180;
+const MAX_WORLD_NAME_LEN: usize = 120;
+
+fn normalize_relative_path(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim().replace('\\', "/");
+    let path = Path::new(trimmed.as_str());
+    if path.is_absolute() {
+        return Err("absolute paths are not allowed".to_string());
+    }
+
+    let mut parts = Vec::<String>::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(segment) => {
+                let text = segment.to_string_lossy().to_string();
+                if text.trim().is_empty() {
+                    return Err("path contains empty segment".to_string());
+                }
+                if text.len() > MAX_COMPONENT_LEN {
+                    return Err("path segment is too long".to_string());
+                }
+                if text == "." || text == ".." {
+                    return Err("path traversal is not allowed".to_string());
+                }
+                parts.push(text);
+            }
+            Component::CurDir => {}
+            Component::ParentDir => return Err("path traversal is not allowed".to_string()),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err("path root/prefix is not allowed".to_string())
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err("path is required".to_string());
+    }
+    Ok(parts.join("/"))
 }
 
 pub fn safe_rel_path(raw: &str) -> Result<String, String> {
-    let normalized = raw.replace('\\', "/").trim().trim_start_matches('/').to_string();
-    if normalized.is_empty() {
-        return Err("path is required".to_string());
+    normalize_relative_path(raw)
+}
+
+pub fn safe_join_under(root: &Path, rel_path: &str) -> Result<PathBuf, String> {
+    let normalized = normalize_relative_path(rel_path)?;
+    let joined = root.join(&normalized);
+    if !joined.starts_with(root) {
+        return Err("path escapes the expected root".to_string());
     }
-    if normalized.contains("..") {
-        return Err("path traversal is not allowed".to_string());
+    Ok(joined)
+}
+
+fn sanitize_single_component(raw: &str, label: &str, max_len: usize) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} is required"));
     }
-    Ok(normalized)
+    if trimmed.len() > max_len {
+        return Err(format!("{label} is too long"));
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err(format!("{label} cannot be '.' or '..'"));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err(format!("{label} cannot contain path separators"));
+    }
+    for component in Path::new(trimmed).components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => return Err(format!("{label} contains invalid path components")),
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+pub fn sanitize_lock_entry_filename(raw: &str) -> Result<String, String> {
+    sanitize_single_component(raw, "lock entry filename", MAX_FILENAME_LEN)
+}
+
+pub fn sanitize_world_name(raw: &str) -> Result<String, String> {
+    sanitize_single_component(raw, "world name", MAX_WORLD_NAME_LEN)
 }
 
 fn resolve_instance_file_path(instance_dir: &Path, rel_path: &str) -> Result<PathBuf, String> {
-    let rel = safe_rel_path(rel_path)?;
-    Ok(instance_dir.join(rel))
+    safe_join_under(instance_dir, rel_path)
+}
+
+pub fn resolve_instance_file_path_from_instances_dir(
+    instances_dir: &Path,
+    instance_id: &str,
+    rel_path: &str,
+) -> Result<PathBuf, String> {
+    let dir = instance_dir(instances_dir, instance_id);
+    resolve_instance_file_path(&dir, rel_path)
 }
 
 fn modified_millis(meta: &fs::Metadata) -> i64 {
@@ -269,7 +359,11 @@ pub fn config_file_hash(file: &ConfigFileState) -> String {
 pub fn state_manifest(state: &SyncState) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for entry in &state.lock_entries {
-        out.push((lock_key_for(entry), lock_entry_hash(entry), "lock_entry".to_string()));
+        out.push((
+            lock_key_for(entry),
+            lock_entry_hash(entry),
+            "lock_entry".to_string(),
+        ));
     }
     for file in &state.config_files {
         out.push((
@@ -289,7 +383,8 @@ fn build_allowlist_globset(patterns: &[String]) -> Result<GlobSet, String> {
         if trimmed.is_empty() {
             continue;
         }
-        let glob = Glob::new(trimmed).map_err(|e| format!("invalid allowlist glob '{trimmed}': {e}"))?;
+        let glob =
+            Glob::new(trimmed).map_err(|e| format!("invalid allowlist glob '{trimmed}': {e}"))?;
         builder.add(glob);
     }
     builder
@@ -317,12 +412,18 @@ fn path_matches_allowlist(rel_path: &str, allowlist: &[String], allowset: &GlobS
     allowset.is_match(rel_path)
 }
 
-fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = fs::read_dir(current).map_err(|e| format!("read config directory failed: {e}"))?;
+fn collect_files_recursive(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let entries =
+        fs::read_dir(current).map_err(|e| format!("read config directory failed: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read config directory entry failed: {e}"))?;
         let path = entry.path();
-        let meta = fs::symlink_metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+        let meta =
+            fs::symlink_metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
         let ty = meta.file_type();
         if ty.is_symlink() {
             continue;
@@ -386,12 +487,12 @@ pub fn collect_allowlisted_config_files(
     let allowset = build_allowlist_globset(allowlist)?;
 
     let mut candidate_paths: Vec<PathBuf> = Vec::new();
-    let options_path = dir.join("options.txt");
+    let options_path = safe_join_under(&dir, "options.txt")?;
     if options_path.exists() {
         candidate_paths.push(options_path);
     }
 
-    let config_dir = dir.join("config");
+    let config_dir = safe_join_under(&dir, "config")?;
     if config_dir.exists() && config_dir.is_dir() {
         collect_files_recursive(&dir, &config_dir, &mut candidate_paths)?;
     }
@@ -425,13 +526,17 @@ pub fn collect_allowlisted_config_files(
     Ok(out)
 }
 
-pub fn read_lock_entries(instances_dir: &Path, instance_id: &str) -> Result<Vec<CanonicalLockEntry>, String> {
+pub fn read_lock_entries(
+    instances_dir: &Path,
+    instance_id: &str,
+) -> Result<Vec<CanonicalLockEntry>, String> {
     let path = lock_file_path(instances_dir, instance_id);
     if !path.exists() {
         return Ok(vec![]);
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("read lockfile failed: {e}"))?;
-    let lock: LockFileRaw = serde_json::from_str(&raw).map_err(|e| format!("parse lockfile failed: {e}"))?;
+    let lock: LockFileRaw =
+        serde_json::from_str(&raw).map_err(|e| format!("parse lockfile failed: {e}"))?;
 
     let mut out = Vec::new();
     for entry in lock.entries {
@@ -516,7 +621,10 @@ pub fn lock_entry_map(entries: &[CanonicalLockEntry]) -> HashMap<String, Canonic
 pub fn config_file_map(files: &[ConfigFileState]) -> HashMap<String, ConfigFileState> {
     let mut map = HashMap::new();
     for file in files {
-        map.insert(format!("config::{}", file.path.to_lowercase()), file.clone());
+        map.insert(
+            format!("config::{}", file.path.to_lowercase()),
+            file.clone(),
+        );
     }
     map
 }
@@ -541,7 +649,10 @@ fn describe_non_editable_reason(path: &Path, sample: &[u8]) -> Option<String> {
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    if matches!(ext.as_str(), "json" | "toml" | "properties" | "txt" | "cfg" | "conf" | "ini") {
+    if matches!(
+        ext.as_str(),
+        "json" | "toml" | "properties" | "txt" | "cfg" | "conf" | "ini"
+    ) {
         return None;
     }
     if sample.iter().any(|b| *b == 0u8) {
@@ -557,9 +668,10 @@ pub fn list_instance_config_files(
     let dir = instance_dir(instances_dir, instance_id);
     let mut files = Vec::new();
 
-    let options = dir.join("options.txt");
+    let options = safe_join_under(&dir, "options.txt")?;
     if options.exists() && options.is_file() {
-        let meta = fs::metadata(&options).map_err(|e| format!("read options metadata failed: {e}"))?;
+        let meta =
+            fs::metadata(&options).map_err(|e| format!("read options metadata failed: {e}"))?;
         files.push(InstanceConfigFileEntry {
             path: "options.txt".to_string(),
             size_bytes: meta.len(),
@@ -570,7 +682,7 @@ pub fn list_instance_config_files(
         });
     }
 
-    let config_dir = dir.join("config");
+    let config_dir = safe_join_under(&dir, "config")?;
     if config_dir.exists() && config_dir.is_dir() {
         let mut raw = Vec::new();
         collect_files_recursive(&dir, &config_dir, &mut raw)?;
@@ -578,9 +690,11 @@ pub fn list_instance_config_files(
             let Some(rel_path) = normalize_rel_path(&path, &dir) else {
                 continue;
             };
-            let meta = fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+            let meta =
+                fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
             let mut sample = vec![0u8; 512];
-            let mut file = fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
+            let mut file =
+                fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
             let read_len = file
                 .read(&mut sample)
                 .map_err(|e| format!("read config sample failed: {e}"))?;
@@ -635,7 +749,8 @@ pub fn read_instance_config_file(
     }
 
     let bytes = fs::read(&path).map_err(|e| format!("read config file failed: {e}"))?;
-    let content = String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8 text.".to_string())?;
 
     Ok(ReadInstanceConfigFileResult {
         path: normalized,
@@ -689,7 +804,8 @@ pub fn write_instance_config_file(
             .map(|v| v.to_string_lossy().to_string())
             .unwrap_or_else(|| "write".to_string())
     ));
-    fs::write(&tmp, content.as_bytes()).map_err(|e| format!("write temp config file failed: {e}"))?;
+    fs::write(&tmp, content.as_bytes())
+        .map_err(|e| format!("write temp config file failed: {e}"))?;
     if let Err(err) = fs::rename(&tmp, &path) {
         let _ = fs::remove_file(&tmp);
         return Err(format!("replace config file failed: {err}"));
@@ -715,12 +831,15 @@ pub fn preview_for_config_file(file: &ConfigFileState) -> String {
     format!("{} ({})", file.path, file.hash)
 }
 
-fn content_dir_for_type(instance_dir: &Path, content_type: &str) -> Option<PathBuf> {
+fn content_dir_for_type(
+    instance_dir: &Path,
+    content_type: &str,
+) -> Result<Option<PathBuf>, String> {
     match normalized_content_type(content_type).as_str() {
-        "mods" => Some(instance_dir.join("mods")),
-        "resourcepacks" => Some(instance_dir.join("resourcepacks")),
-        "shaderpacks" => Some(instance_dir.join("shaderpacks")),
-        _ => None,
+        "mods" => Ok(Some(safe_join_under(instance_dir, "mods")?)),
+        "resourcepacks" => Ok(Some(safe_join_under(instance_dir, "resourcepacks")?)),
+        "shaderpacks" => Ok(Some(safe_join_under(instance_dir, "shaderpacks")?)),
+        _ => Ok(None),
     }
 }
 
@@ -728,37 +847,33 @@ pub fn lock_entry_paths(
     instances_dir: &Path,
     instance_id: &str,
     entry: &CanonicalLockEntry,
-) -> Vec<PathBuf> {
+) -> Result<Vec<PathBuf>, String> {
     let instance_dir = instance_dir(instances_dir, instance_id);
     let content_type = normalized_content_type(&entry.content_type);
+    let filename = sanitize_lock_entry_filename(&entry.filename)?;
     if content_type == "datapacks" {
         let mut out = Vec::new();
         for world in &entry.target_worlds {
-            let world_name = world.trim();
-            if world_name.is_empty() {
-                continue;
-            }
-            out.push(
-                instance_dir
-                    .join("saves")
-                    .join(world_name)
-                    .join("datapacks")
-                    .join(&entry.filename),
-            );
+            let world_name = sanitize_world_name(world)?;
+            let rel = format!("saves/{world_name}/datapacks/{filename}");
+            out.push(safe_join_under(&instance_dir, &rel)?);
         }
-        return out;
+        return Ok(out);
     }
 
-    let Some(root) = content_dir_for_type(&instance_dir, &content_type) else {
-        return vec![];
+    let Some(root) = content_dir_for_type(&instance_dir, &content_type)? else {
+        return Ok(vec![]);
     };
     if content_type == "mods" {
         if entry.enabled {
-            return vec![root.join(&entry.filename)];
+            return Ok(vec![safe_join_under(&root, &filename)?]);
         }
-        return vec![root.join(format!("{}.disabled", entry.filename))];
+        return Ok(vec![safe_join_under(
+            &root,
+            &format!("{filename}.disabled"),
+        )?]);
     }
-    vec![root.join(&entry.filename)]
+    Ok(vec![safe_join_under(&root, &filename)?])
 }
 
 pub fn read_lock_entry_bytes(
@@ -766,14 +881,15 @@ pub fn read_lock_entry_bytes(
     instance_id: &str,
     entry: &CanonicalLockEntry,
 ) -> Result<Option<Vec<u8>>, String> {
-    let mut paths = lock_entry_paths(instances_dir, instance_id, entry);
+    let mut paths = lock_entry_paths(instances_dir, instance_id, entry)?;
     if normalized_content_type(&entry.content_type) == "mods" {
         let instance_dir = instance_dir(instances_dir, instance_id);
-        let mods_dir = instance_dir.join("mods");
+        let mods_dir = safe_join_under(&instance_dir, "mods")?;
+        let filename = sanitize_lock_entry_filename(&entry.filename)?;
         if entry.enabled {
-            paths.push(mods_dir.join(format!("{}.disabled", entry.filename)));
+            paths.push(safe_join_under(&mods_dir, &format!("{filename}.disabled"))?);
         } else {
-            paths.push(mods_dir.join(&entry.filename));
+            paths.push(safe_join_under(&mods_dir, &filename)?);
         }
     }
     for path in paths {
@@ -791,7 +907,9 @@ pub fn lock_entry_file_missing(
     instance_id: &str,
     entry: &CanonicalLockEntry,
 ) -> bool {
-    let paths = lock_entry_paths(instances_dir, instance_id, entry);
+    let Ok(paths) = lock_entry_paths(instances_dir, instance_id, entry) else {
+        return true;
+    };
     if paths.is_empty() {
         return true;
     }
@@ -804,7 +922,7 @@ pub fn write_lock_entry_bytes(
     entry: &CanonicalLockEntry,
     bytes: &[u8],
 ) -> Result<usize, String> {
-    let paths = lock_entry_paths(instances_dir, instance_id, entry);
+    let paths = lock_entry_paths(instances_dir, instance_id, entry)?;
     if paths.is_empty() {
         return Err("no writable target paths for entry".to_string());
     }
@@ -829,9 +947,10 @@ pub fn write_lock_entry_bytes(
 
     if normalized_content_type(&entry.content_type) == "mods" {
         let instance_dir = instance_dir(instances_dir, instance_id);
-        let mods_dir = instance_dir.join("mods");
-        let enabled_path = mods_dir.join(&entry.filename);
-        let disabled_path = mods_dir.join(format!("{}.disabled", entry.filename));
+        let mods_dir = safe_join_under(&instance_dir, "mods")?;
+        let filename = sanitize_lock_entry_filename(&entry.filename)?;
+        let enabled_path = safe_join_under(&mods_dir, &filename)?;
+        let disabled_path = safe_join_under(&mods_dir, &format!("{filename}.disabled"))?;
         if entry.enabled {
             if disabled_path.exists() {
                 let _ = fs::remove_file(&disabled_path);

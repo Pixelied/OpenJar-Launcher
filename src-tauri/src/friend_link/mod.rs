@@ -4,21 +4,27 @@ pub mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::friend_link::net::{endpoint_for_port, request_lock_entry_file, request_state, HelloPayload};
+use crate::friend_link::net::{
+    endpoint_for_port, request_lock_entry_file, request_state, HelloPayload,
+};
 use crate::friend_link::state::{
-    app_instances_dir, collect_sync_state, config_file_map, lock_entry_hash, lock_entry_map, preview_for_config_file,
-    preview_for_lock_entry, state_manifest, CanonicalLockEntry, ConfigFileState, InstanceConfigFileEntry,
-    ReadInstanceConfigFileResult, SyncState, WriteInstanceConfigFileResult,
+    app_instances_dir, collect_sync_state, config_file_map, lock_entry_hash, lock_entry_map,
+    preview_for_config_file, preview_for_lock_entry, state_manifest, CanonicalLockEntry,
+    ConfigFileState, InstanceConfigFileEntry, ReadInstanceConfigFileResult, SyncState,
+    WriteInstanceConfigFileResult,
 };
 use crate::friend_link::store::{
-    get_session, get_session_mut, read_store, remove_session, upsert_session, write_store, FriendLastGoodSnapshot,
-    FriendLinkSessionRecord, FriendManifestEntry, FriendPeerRecord, FriendSyncConflictRecord,
+    delete_session_shared_secret, get_session, get_session_mut, get_session_shared_secret,
+    read_store, remove_session, set_session_shared_secret, upsert_session, write_store,
+    FriendLastGoodSnapshot, FriendLinkSessionRecord, FriendManifestEntry, FriendPeerRecord,
+    FriendSyncConflictRecord,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
@@ -201,6 +207,10 @@ pub struct CreateFriendLinkSessionArgs {
     pub instance_id: String,
     #[serde(alias = "displayName", default)]
     pub display_name: Option<String>,
+    #[serde(alias = "allowLoopback", default)]
+    pub allow_loopback: Option<bool>,
+    #[serde(alias = "allowInternet", default)]
+    pub allow_internet: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,6 +221,10 @@ pub struct JoinFriendLinkSessionArgs {
     pub invite_code: String,
     #[serde(alias = "displayName", default)]
     pub display_name: Option<String>,
+    #[serde(alias = "allowLoopback", default)]
+    pub allow_loopback: Option<bool>,
+    #[serde(alias = "allowInternet", default)]
+    pub allow_internet: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -354,6 +368,26 @@ fn sanitize_peer_alias(input: Option<String>) -> Option<String> {
     }
 }
 
+fn sanitize_debug_file_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().min(48));
+    for ch in input.chars() {
+        if out.len() >= 48 {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    let trimmed = out.trim_matches('_').to_string();
+    if trimmed.is_empty() {
+        "instance".to_string()
+    } else {
+        trimmed
+    }
+}
+
 fn random_secret_b64() -> String {
     let mut bytes = Vec::with_capacity(32);
     bytes.extend_from_slice(Uuid::new_v4().as_bytes());
@@ -420,17 +454,25 @@ fn normalize_trusted_peer_ids(session: &FriendLinkSessionRecord, input: &[String
 }
 
 fn default_trusted_peer_ids(session: &FriendLinkSessionRecord) -> Vec<String> {
-    session
-        .peers
-        .iter()
-        .map(|peer| peer.peer_id.clone())
-        .collect::<Vec<_>>()
+    if let Some(host_peer_id) = session.bootstrap_host_peer_id.as_ref() {
+        if session
+            .peers
+            .iter()
+            .any(|peer| &peer.peer_id == host_peer_id)
+        {
+            return vec![host_peer_id.clone()];
+        }
+    }
+    Vec::new()
 }
 
 fn ensure_trusted_peer_ids_initialized(session: &mut FriendLinkSessionRecord) {
     let normalized = normalize_trusted_peer_ids(session, &session.trusted_peer_ids);
     if session.trusted_peer_ids_initialized {
         session.trusted_peer_ids = normalized;
+        if session.guardrails_updated_at_ms <= 0 {
+            session.guardrails_updated_at_ms = now_millis();
+        }
         return;
     }
     if normalized.is_empty() {
@@ -443,9 +485,15 @@ fn ensure_trusted_peer_ids_initialized(session: &mut FriendLinkSessionRecord) {
         session.trusted_peer_ids = normalized;
     }
     session.trusted_peer_ids_initialized = true;
+    if session.guardrails_updated_at_ms <= 0 {
+        session.guardrails_updated_at_ms = now_millis();
+    }
 }
 
-fn normalize_peer_aliases(session: &FriendLinkSessionRecord, input: &HashMap<String, String>) -> HashMap<String, String> {
+fn normalize_peer_aliases(
+    session: &FriendLinkSessionRecord,
+    input: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let peer_ids = session
         .peers
         .iter()
@@ -472,10 +520,91 @@ fn peer_display_name(session: &FriendLinkSessionRecord, peer_id: &str, fallback:
 }
 
 fn normalize_session_friend_link_settings(session: &mut FriendLinkSessionRecord) {
+    if !is_friend_link_dev_mode_enabled() {
+        session.allow_loopback_endpoints = false;
+    }
     ensure_trusted_peer_ids_initialized(session);
     session.peer_aliases = normalize_peer_aliases(session, &session.peer_aliases);
     if session.max_auto_changes == 0 {
         session.max_auto_changes = 25;
+    }
+}
+
+fn is_friend_link_dev_mode_enabled() -> bool {
+    let raw = std::env::var("MPM_DEV_MODE").unwrap_or_default();
+    matches!(
+        raw.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn ensure_session_secret_loaded(session: &mut FriendLinkSessionRecord) -> Result<(), String> {
+    if !session.shared_secret_b64.trim().is_empty() {
+        if session.shared_secret_key_id.trim().is_empty() {
+            let secret = session.shared_secret_b64.clone();
+            set_session_shared_secret(session, &secret)?;
+        }
+        return Ok(());
+    }
+    let _ = get_session_shared_secret(session)?;
+    Ok(())
+}
+
+fn session_secret_missing_or_broken(err: &str) -> bool {
+    let normalized = err.to_ascii_lowercase();
+    normalized.contains("shared secret not found")
+        || normalized.contains("shared secret key id is missing")
+        || normalized.contains("shared secret in secure storage is empty")
+}
+
+fn reset_session_for_new_host_secret(session: &mut FriendLinkSessionRecord) {
+    session.group_id = format!("group_{}", Uuid::new_v4());
+    session.local_peer_id = format!("peer_{}", Uuid::new_v4());
+    session.shared_secret_key_id.clear();
+    session.shared_secret_b64 = random_secret_b64();
+    session.peers.clear();
+    session.last_peer_sync_at.clear();
+    session.last_good_snapshot = None;
+    session.pending_conflicts.clear();
+    session.cached_peer_state.clear();
+    session.bootstrap_host_peer_id = None;
+    session.trusted_peer_ids.clear();
+    session.trusted_peer_ids_initialized = false;
+    session.guardrails_updated_at_ms = 0;
+    session.peer_aliases.clear();
+}
+
+fn unlink_broken_session(
+    app: &tauri::AppHandle,
+    store: &mut store::FriendLinkStoreV1,
+    instance_id: &str,
+    reason: &str,
+) -> Result<(), String> {
+    eprintln!(
+        "friend-link secure credentials missing for instance '{}'; removing broken link: {}",
+        instance_id, reason
+    );
+    let removed = remove_session(store, instance_id);
+    if removed {
+        write_store(app, store)?;
+    }
+    net::stop_listener(instance_id);
+    Ok(())
+}
+
+fn unlinked_reconcile_result(mode: &str, warning: Option<String>) -> FriendLinkReconcileResult {
+    FriendLinkReconcileResult {
+        status: "unlinked".to_string(),
+        mode: mode.to_string(),
+        actions_applied: 0,
+        actions_pending: 0,
+        actions: vec![],
+        conflicts: vec![],
+        warnings: warning.into_iter().collect(),
+        blocked_reason: None,
+        local_state_hash: String::new(),
+        last_good_hash: None,
+        offline_peers: 0,
     }
 }
 
@@ -507,6 +636,61 @@ fn normalized_content_type_for_sync(input: &str) -> &'static str {
         "datapack" | "datapacks" => "datapacks",
         _ => "mods",
     }
+}
+
+fn is_private_or_local_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_private() || v4.is_link_local() || v4.is_broadcast() || v4.is_documentation()
+        }
+        IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
+    }
+}
+
+fn validate_endpoint_value(
+    endpoint: &str,
+    allow_loopback: bool,
+    allow_internet: bool,
+) -> Result<String, String> {
+    let trimmed = endpoint.trim();
+    if trimmed.eq_ignore_ascii_case("localhost") || trimmed.starts_with("localhost:") {
+        if !allow_loopback {
+            return Err(
+                "Loopback endpoints are blocked by default. Enable allowLoopback to use localhost."
+                    .to_string(),
+            );
+        }
+    }
+    let addr: std::net::SocketAddr = trimmed
+        .parse()
+        .map_err(|_| "Endpoint must be an explicit IP:port socket address".to_string())?;
+    if addr.ip().is_unspecified() || addr.ip().is_multicast() {
+        return Err("Endpoint uses an invalid network address".to_string());
+    }
+    if addr.ip().is_loopback() && !allow_loopback {
+        return Err(
+            "Loopback endpoints are blocked by default. Enable allowLoopback to use local-only peers."
+                .to_string(),
+        );
+    }
+    if !addr.ip().is_loopback() && !is_private_or_local_ip(&addr.ip()) && !allow_internet {
+        return Err(
+            "Public internet endpoints are blocked by default. Enable allowInternet to join over the internet."
+                .to_string(),
+        );
+    }
+    Ok(addr.to_string())
+}
+
+fn validate_session_endpoint(
+    session: &FriendLinkSessionRecord,
+    endpoint: &str,
+) -> Result<String, String> {
+    validate_endpoint_value(
+        endpoint,
+        session.allow_loopback_endpoints,
+        session.allow_internet_endpoints,
+    )
 }
 
 fn lock_entry_sync_enabled(session: &FriendLinkSessionRecord, entry: &CanonicalLockEntry) -> bool {
@@ -586,10 +770,11 @@ fn to_status(session: Option<&FriendLinkSessionRecord>, instance_id: &str) -> Fr
 }
 
 fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, String> {
-    let endpoint = session
+    let endpoint_raw = session
         .listener_endpoint
         .clone()
         .unwrap_or_else(|| endpoint_for_port(session.listener_port));
+    let endpoint = validate_session_endpoint(session, &endpoint_raw)?;
     let expires_at = (chrono::Utc::now() + chrono::Duration::hours(24)).to_rfc3339();
     let payload = InvitePayload {
         group_id: session.group_id.clone(),
@@ -599,7 +784,8 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
         protocol_version: PROTOCOL_VERSION,
         host_peer_id: session.local_peer_id.clone(),
     };
-    let raw = serde_json::to_vec(&payload).map_err(|e| format!("serialize invite payload failed: {e}"))?;
+    let raw = serde_json::to_vec(&payload)
+        .map_err(|e| format!("serialize invite payload failed: {e}"))?;
     let invite_code = URL_SAFE_NO_PAD.encode(raw);
     Ok(FriendLinkInvite {
         invite_code,
@@ -610,11 +796,19 @@ fn build_invite(session: &FriendLinkSessionRecord) -> Result<FriendLinkInvite, S
     })
 }
 
-fn parse_invite(code: &str) -> Result<InvitePayload, String> {
+fn parse_invite(
+    code: &str,
+    allow_loopback: bool,
+    allow_internet: bool,
+) -> Result<InvitePayload, String> {
+    let normalized_code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if normalized_code.trim().is_empty() {
+        return Err("Invite code is empty".to_string());
+    }
     let raw = URL_SAFE_NO_PAD
-        .decode(code.trim())
-        .map_err(|e| format!("decode invite code failed: {e}"))?;
-    let payload: InvitePayload =
+        .decode(normalized_code.as_bytes())
+        .map_err(|e| format!("decode invite code failed: {e}. Make sure you pasted the full code with no missing characters."))?;
+    let mut payload: InvitePayload =
         serde_json::from_slice(&raw).map_err(|e| format!("parse invite payload failed: {e}"))?;
     if payload.group_id.trim().is_empty() {
         return Err("Invite is missing group id".to_string());
@@ -630,6 +824,11 @@ fn parse_invite(code: &str) -> Result<InvitePayload, String> {
     if expires.with_timezone(&chrono::Utc) < chrono::Utc::now() {
         return Err("Invite code has expired".to_string());
     }
+    payload.bootstrap_peer_endpoint = validate_endpoint_value(
+        &payload.bootstrap_peer_endpoint,
+        allow_loopback,
+        allow_internet,
+    )?;
     Ok(payload)
 }
 
@@ -639,6 +838,73 @@ fn upsert_peer(session: &mut FriendLinkSessionRecord, peer: FriendPeerRecord) {
     }
     if let Some(found) = session.peers.iter_mut().find(|p| p.peer_id == peer.peer_id) {
         *found = peer;
+        return;
+    }
+
+    let new_endpoint = peer.endpoint.clone();
+    let new_name = peer.display_name.clone();
+    let replacement_idx = session.peers.iter().position(|existing| {
+        if existing.peer_id == peer.peer_id {
+            return false;
+        }
+        if existing.endpoint == new_endpoint {
+            return true;
+        }
+        let existing_addr = existing.endpoint.parse::<std::net::SocketAddr>().ok();
+        let new_addr = new_endpoint.parse::<std::net::SocketAddr>().ok();
+        existing_addr
+            .zip(new_addr)
+            .map(|(a, b)| {
+                a.ip() == b.ip()
+                    && existing
+                        .display_name
+                        .eq_ignore_ascii_case(new_name.as_str())
+            })
+            .unwrap_or(false)
+    });
+
+    if let Some(idx) = replacement_idx {
+        let replaced_peer_id = session.peers[idx].peer_id.clone();
+        let was_trusted = session
+            .trusted_peer_ids
+            .iter()
+            .any(|id| id == &replaced_peer_id);
+        let carried_alias = session.peer_aliases.get(&replaced_peer_id).cloned();
+        let carried_last_sync = session.last_peer_sync_at.remove(&replaced_peer_id);
+        let carried_state = session.cached_peer_state.remove(&replaced_peer_id);
+
+        session.peers[idx] = peer.clone();
+        if was_trusted {
+            session
+                .trusted_peer_ids
+                .retain(|id| id != &replaced_peer_id);
+            if !session
+                .trusted_peer_ids
+                .iter()
+                .any(|id| id == &peer.peer_id)
+            {
+                session.trusted_peer_ids.push(peer.peer_id.clone());
+            }
+        }
+        if let Some(alias) = carried_alias {
+            session.peer_aliases.remove(&replaced_peer_id);
+            session
+                .peer_aliases
+                .entry(peer.peer_id.clone())
+                .or_insert(alias);
+        }
+        if let Some(last_sync) = carried_last_sync {
+            session
+                .last_peer_sync_at
+                .entry(peer.peer_id.clone())
+                .or_insert(last_sync);
+        }
+        if let Some(state) = carried_state {
+            session
+                .cached_peer_state
+                .entry(peer.peer_id.clone())
+                .or_insert(state);
+        }
     } else {
         session.peers.push(peer);
     }
@@ -663,13 +929,13 @@ fn conflict_from_lock(
         kind: "lock_entry".to_string(),
         key: key.to_string(),
         peer_id: peer_id.to_string(),
-        mine_hash: mine.map(lock_entry_hash).unwrap_or_else(|| "absent".to_string()),
+        mine_hash: mine
+            .map(lock_entry_hash)
+            .unwrap_or_else(|| "absent".to_string()),
         theirs_hash: lock_entry_hash(theirs),
         mine_preview: mine.map(preview_for_lock_entry),
         theirs_preview: Some(preview_for_lock_entry(theirs)),
-        mine_value: mine
-            .cloned()
-            .and_then(|v| serde_json::to_value(v).ok()),
+        mine_value: mine.cloned().and_then(|v| serde_json::to_value(v).ok()),
         theirs_value: serde_json::to_value(theirs).ok(),
         created_at: now_iso(),
     }
@@ -686,13 +952,13 @@ fn conflict_from_config(
         kind: "config_file".to_string(),
         key: key.to_string(),
         peer_id: peer_id.to_string(),
-        mine_hash: mine.map(|v| v.hash.clone()).unwrap_or_else(|| "absent".to_string()),
+        mine_hash: mine
+            .map(|v| v.hash.clone())
+            .unwrap_or_else(|| "absent".to_string()),
         theirs_hash: theirs.hash.clone(),
         mine_preview: mine.map(preview_for_config_file),
         theirs_preview: Some(preview_for_config_file(theirs)),
-        mine_value: mine
-            .cloned()
-            .and_then(|v| serde_json::to_value(v).ok()),
+        mine_value: mine.cloned().and_then(|v| serde_json::to_value(v).ok()),
         theirs_value: serde_json::to_value(theirs).ok(),
         created_at: now_iso(),
     }
@@ -721,7 +987,9 @@ struct PeerStateSnapshot {
     state: SyncState,
 }
 
-fn collect_remote_peer_states(session: &mut FriendLinkSessionRecord) -> (Vec<PeerStateSnapshot>, usize) {
+fn collect_remote_peer_states(
+    session: &mut FriendLinkSessionRecord,
+) -> (Vec<PeerStateSnapshot>, usize) {
     let mut snapshots = Vec::<PeerStateSnapshot>::new();
     let mut online = 0usize;
     for peer in session.peers.clone() {
@@ -779,7 +1047,9 @@ fn build_friend_link_drift_preview(
             let local = local_lock.get(key);
             let change = if local.is_none() {
                 Some("added")
-            } else if local.map(lock_entry_hash).as_deref() != Some(lock_entry_hash(remote_entry).as_str()) {
+            } else if local.map(lock_entry_hash).as_deref()
+                != Some(lock_entry_hash(remote_entry).as_str())
+            {
                 Some("changed")
             } else {
                 None
@@ -924,7 +1194,11 @@ fn store_last_good(session: &mut FriendLinkSessionRecord, local_state: &SyncStat
     });
 }
 
-fn apply_lock_map(instances_dir: &PathBuf, instance_id: &str, map: &HashMap<String, CanonicalLockEntry>) -> Result<(), String> {
+fn apply_lock_map(
+    instances_dir: &PathBuf,
+    instance_id: &str,
+    map: &HashMap<String, CanonicalLockEntry>,
+) -> Result<(), String> {
     let mut entries = map.values().cloned().collect::<Vec<_>>();
     entries.sort_by(|a, b| {
         format!("{}:{}:{}", a.source, a.content_type, a.project_id)
@@ -954,7 +1228,7 @@ fn remove_lock_entry_binaries(
     entry: &CanonicalLockEntry,
 ) -> Result<usize, String> {
     let mut removed = 0usize;
-    for path in state::lock_entry_paths(instances_dir, instance_id, entry) {
+    for path in state::lock_entry_paths(instances_dir, instance_id, entry)? {
         if path.exists() {
             fs::remove_file(&path).map_err(|e| format!("remove content file failed: {e}"))?;
             removed += 1;
@@ -971,10 +1245,13 @@ fn remove_config_file_by_key(
     let Some(rel) = key.strip_prefix("config::") else {
         return Ok(false);
     };
-    let instance_dir = state::instance_dir(instances_dir, instance_id);
-    let path = instance_dir.join(rel);
+    let path =
+        state::resolve_instance_file_path_from_instances_dir(instances_dir, instance_id, rel)?;
     if !path.exists() {
         return Ok(false);
+    }
+    if !path.is_file() {
+        return Err("resolved config path is not a file".to_string());
     }
     fs::remove_file(&path).map_err(|e| format!("remove config file failed: {e}"))?;
     Ok(true)
@@ -996,17 +1273,23 @@ fn normalize_hash_hex(input: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn verify_bytes_against_entry_hashes(bytes: &[u8], entry: &CanonicalLockEntry) -> Result<(), String> {
+fn verify_bytes_against_entry_hashes(
+    bytes: &[u8],
+    entry: &CanonicalLockEntry,
+) -> Result<(), String> {
     let mut expected_sha512 = None::<String>;
     let mut expected_sha256 = None::<String>;
     for (key, value) in &entry.hashes {
         let normalized_key = key.trim().to_ascii_lowercase();
-        if expected_sha512.is_none() && (normalized_key == "sha512" || normalized_key == "sha-512") {
+        if expected_sha512.is_none() && (normalized_key == "sha512" || normalized_key == "sha-512")
+        {
             let cleaned = normalize_hash_hex(value);
             if !cleaned.is_empty() {
                 expected_sha512 = Some(cleaned);
             }
-        } else if expected_sha256.is_none() && (normalized_key == "sha256" || normalized_key == "sha-256") {
+        } else if expected_sha256.is_none()
+            && (normalized_key == "sha256" || normalized_key == "sha-256")
+        {
             let cleaned = normalize_hash_hex(value);
             if !cleaned.is_empty() {
                 expected_sha256 = Some(cleaned);
@@ -1055,7 +1338,11 @@ fn download_lock_entry_bytes_from_provider(
         let file = version
             .files
             .iter()
-            .find(|f| f.filename.trim().eq_ignore_ascii_case(entry.filename.trim()))
+            .find(|f| {
+                f.filename
+                    .trim()
+                    .eq_ignore_ascii_case(entry.filename.trim())
+            })
             .or_else(|| version.files.iter().find(|f| f.primary.unwrap_or(false)))
             .or_else(|| version.files.first())
             .ok_or_else(|| format!("Modrinth version {} has no files", version.id))?;
@@ -1074,7 +1361,8 @@ fn download_lock_entry_bytes_from_provider(
         };
         let file = crate::fetch_curseforge_file(client, &api_key, mod_id, file_id)?;
         let url = crate::resolve_curseforge_file_download_url(client, &api_key, mod_id, &file)?;
-        let bytes = crate::download_bytes_with_retry(client, &url, &format!("cf:{mod_id}:{file_id}"))?;
+        let bytes =
+            crate::download_bytes_with_retry(client, &url, &format!("cf:{mod_id}:{file_id}"))?;
         verify_bytes_against_entry_hashes(&bytes, entry)?;
         return Ok(Some(bytes));
     }
@@ -1158,7 +1446,8 @@ fn sync_lock_entry_binaries(
                             continue;
                         }
                     }
-                    let wrote = state::write_lock_entry_bytes(instances_dir, instance_id, entry, &bytes)?;
+                    let wrote =
+                        state::write_lock_entry_bytes(instances_dir, instance_id, entry, &bytes)?;
                     actions.push(FriendLinkReconcileAction {
                         kind: "lock_entry".to_string(),
                         key: key.clone(),
@@ -1182,7 +1471,12 @@ fn sync_lock_entry_binaries(
             if let Some(client) = provider_client.as_ref() {
                 match download_lock_entry_bytes_from_provider(client, entry) {
                     Ok(Some(bytes)) => {
-                        let wrote = state::write_lock_entry_bytes(instances_dir, instance_id, entry, &bytes)?;
+                        let wrote = state::write_lock_entry_bytes(
+                            instances_dir,
+                            instance_id,
+                            entry,
+                            &bytes,
+                        )?;
                         actions.push(FriendLinkReconcileAction {
                             kind: "lock_entry".to_string(),
                             key: key.clone(),
@@ -1222,25 +1516,52 @@ fn reconcile_internal(
     mode: &str,
 ) -> Result<FriendLinkReconcileResult, String> {
     let mut store = read_store(app)?;
-    let Some(session) = get_session_mut(&mut store, instance_id) else {
-        return Ok(FriendLinkReconcileResult {
-            status: "unlinked".to_string(),
-            mode: mode.to_string(),
-            actions_applied: 0,
-            actions_pending: 0,
-            actions: vec![],
-            conflicts: vec![],
-            warnings: vec![],
-            blocked_reason: None,
-            local_state_hash: String::new(),
-            last_good_hash: None,
-            offline_peers: 0,
-        });
-    };
-
     let app_data = app_data_dir(app)?;
-    let _ = net::ensure_listener(app_data, session)?;
-    normalize_session_friend_link_settings(session);
+    let mut broken_secret_reason: Option<String> = None;
+    let mut rotated_host_secret = false;
+    {
+        let Some(session) = get_session_mut(&mut store, instance_id) else {
+            return Ok(unlinked_reconcile_result(mode, None));
+        };
+        match ensure_session_secret_loaded(session) {
+            Ok(()) => {
+                let _ = net::ensure_listener(app_data.clone(), session)?;
+                normalize_session_friend_link_settings(session);
+            }
+            Err(err) if session_secret_missing_or_broken(&err) => {
+                if session.bootstrap_host_peer_id.is_none() {
+                    eprintln!(
+                        "friend-link session secret was missing for instance '{}'; rotating host credentials",
+                        instance_id
+                    );
+                    reset_session_for_new_host_secret(session);
+                    ensure_session_secret_loaded(session)?;
+                    let _ = net::ensure_listener(app_data.clone(), session)?;
+                    normalize_session_friend_link_settings(session);
+                    rotated_host_secret = true;
+                } else {
+                    broken_secret_reason = Some(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if rotated_host_secret {
+        write_store(app, &store)?;
+    }
+    if let Some(reason) = broken_secret_reason {
+        unlink_broken_session(app, &mut store, instance_id, &reason)?;
+        return Ok(unlinked_reconcile_result(
+            mode,
+            Some(
+                "Friend Link credentials were unavailable in secure storage. The broken link was removed; create or join again."
+                    .to_string(),
+            ),
+        ));
+    }
+    let Some(session) = get_session_mut(&mut store, instance_id) else {
+        return Ok(unlinked_reconcile_result(mode, None));
+    };
 
     let instances_dir = app_instances_dir(app)?;
     let local_state = collect_sync_state(&instances_dir, instance_id, &session.allowlist)?;
@@ -1263,8 +1584,10 @@ fn reconcile_internal(
     let mut skipped_review_only_peers = 0usize;
     let mut binary_preferred_peer_by_key = HashMap::<String, String>::new();
     let bootstrap_host_peer_id = session.bootstrap_host_peer_id.clone();
-    let seed_from_host_snapshot = session.last_good_snapshot.is_none() && bootstrap_host_peer_id.is_some();
-    let seed_from_single_peer_without_baseline = session.last_good_snapshot.is_none() && session.peers.len() == 1;
+    let seed_from_host_snapshot =
+        session.last_good_snapshot.is_none() && bootstrap_host_peer_id.is_some();
+    let seed_from_single_peer_without_baseline =
+        session.last_good_snapshot.is_none() && session.peers.len() == 1;
 
     for peer in session.peers.clone() {
         let peer_name = peer_display_name(session, &peer.peer_id, &peer.display_name);
@@ -1339,12 +1662,7 @@ fn reconcile_internal(
                             ),
                         });
                     } else if remote_changed {
-                        conflicts.push(conflict_from_lock(
-                            key,
-                            &peer.peer_id,
-                            local,
-                            remote_entry,
-                        ));
+                        conflicts.push(conflict_from_lock(key, &peer.peer_id, local, remote_entry));
                     }
                 }
 
@@ -1489,7 +1807,7 @@ fn reconcile_internal(
             blocked_reason = Some(
                 "Friend Link found changes from untrusted peers. Trust those peers before launch."
                     .to_string(),
-                );
+            );
         }
         warnings.push(format!(
             "Skipped sync from {skipped_review_only_peers} untrusted peer(s)."
@@ -1503,9 +1821,7 @@ fn reconcile_internal(
         let now = now_millis();
         for peer in &session.peers {
             if peer.online {
-                session
-                    .last_peer_sync_at
-                    .insert(peer.peer_id.clone(), now);
+                session.last_peer_sync_at.insert(peer.peer_id.clone(), now);
             }
         }
     }
@@ -1536,6 +1852,12 @@ pub fn create_friend_link_session(
     app: tauri::AppHandle,
     args: CreateFriendLinkSessionArgs,
 ) -> Result<FriendLinkInvite, String> {
+    let dev_mode = is_friend_link_dev_mode_enabled();
+    if args.allow_loopback.unwrap_or(false) && !dev_mode {
+        return Err(
+            "Loopback endpoints are available only in Dev mode (MPM_DEV_MODE=1).".to_string(),
+        );
+    }
     let mut store = read_store(&app)?;
     let mut session = if let Some(existing) = get_session(&store, &args.instance_id) {
         existing
@@ -1546,6 +1868,7 @@ pub fn create_friend_link_session(
             group_id: format!("group_{}", Uuid::new_v4()),
             local_peer_id: format!("peer_{}", Uuid::new_v4()),
             display_name: sanitize_display_name(args.display_name.clone(), &suffix[..8]),
+            shared_secret_key_id: String::new(),
             shared_secret_b64: random_secret_b64(),
             protocol_version: PROTOCOL_VERSION,
             listener_port: 0,
@@ -1559,7 +1882,14 @@ pub fn create_friend_link_session(
             bootstrap_host_peer_id: None,
             trusted_peer_ids: vec![],
             trusted_peer_ids_initialized: false,
+            guardrails_updated_at_ms: 0,
             peer_aliases: HashMap::new(),
+            allow_loopback_endpoints: if dev_mode {
+                args.allow_loopback.unwrap_or(false)
+            } else {
+                false
+            },
+            allow_internet_endpoints: args.allow_internet.unwrap_or(false),
             max_auto_changes: 25,
             sync_mods: true,
             sync_resourcepacks: false,
@@ -1567,6 +1897,23 @@ pub fn create_friend_link_session(
             sync_datapacks: true,
         }
     };
+    if let Some(value) = args.allow_loopback {
+        session.allow_loopback_endpoints = if dev_mode { value } else { false };
+    }
+    if let Some(value) = args.allow_internet {
+        session.allow_internet_endpoints = value;
+    }
+    if let Err(err) = ensure_session_secret_loaded(&mut session) {
+        if !session_secret_missing_or_broken(&err) {
+            return Err(err);
+        }
+        eprintln!(
+            "friend-link session secret was missing for instance '{}'; rotating host credentials",
+            args.instance_id
+        );
+        reset_session_for_new_host_secret(&mut session);
+        ensure_session_secret_loaded(&mut session)?;
+    }
 
     let app_data = app_data_dir(&app)?;
     let endpoint = net::ensure_listener(app_data, &mut session)?;
@@ -1584,7 +1931,21 @@ pub fn join_friend_link_session(
     app: tauri::AppHandle,
     args: JoinFriendLinkSessionArgs,
 ) -> Result<FriendLinkStatus, String> {
-    let invite = parse_invite(&args.invite_code)?;
+    let dev_mode = is_friend_link_dev_mode_enabled();
+    if args.allow_loopback.unwrap_or(false) && !dev_mode {
+        return Err(
+            "Loopback endpoints are available only in Dev mode (MPM_DEV_MODE=1).".to_string(),
+        );
+    }
+    let invite = parse_invite(
+        &args.invite_code,
+        if dev_mode {
+            args.allow_loopback.unwrap_or(false)
+        } else {
+            false
+        },
+        args.allow_internet.unwrap_or(false),
+    )?;
 
     let mut store = read_store(&app)?;
     let suffix = Uuid::new_v4().to_string();
@@ -1593,6 +1954,7 @@ pub fn join_friend_link_session(
         group_id: invite.group_id.clone(),
         local_peer_id: format!("peer_{}", Uuid::new_v4()),
         display_name: sanitize_display_name(args.display_name.clone(), &suffix[..8]),
+        shared_secret_key_id: String::new(),
         shared_secret_b64: invite.shared_secret.clone(),
         protocol_version: invite.protocol_version,
         listener_port: 0,
@@ -1606,13 +1968,21 @@ pub fn join_friend_link_session(
         bootstrap_host_peer_id: Some(invite.host_peer_id.clone()),
         trusted_peer_ids: vec![],
         trusted_peer_ids_initialized: false,
+        guardrails_updated_at_ms: 0,
         peer_aliases: HashMap::new(),
+        allow_loopback_endpoints: if dev_mode {
+            args.allow_loopback.unwrap_or(false)
+        } else {
+            false
+        },
+        allow_internet_endpoints: args.allow_internet.unwrap_or(false),
         max_auto_changes: 25,
         sync_mods: true,
         sync_resourcepacks: false,
         sync_shaderpacks: true,
         sync_datapacks: true,
     };
+    ensure_session_secret_loaded(&mut session)?;
 
     let app_data = app_data_dir(&app)?;
     let endpoint = net::ensure_listener(app_data, &mut session)?;
@@ -1624,13 +1994,14 @@ pub fn join_friend_link_session(
         endpoint,
     };
     let ack = net::send_hello(&session, &invite.bootstrap_peer_endpoint, hello)?;
+    let ack_endpoint = validate_session_endpoint(&session, &ack.endpoint)?;
 
     upsert_peer(
         &mut session,
         FriendPeerRecord {
             peer_id: ack.peer_id.clone(),
             display_name: ack.display_name.clone(),
-            endpoint: ack.endpoint.clone(),
+            endpoint: ack_endpoint,
             added_at: now_iso(),
             last_seen_at: Some(now_iso()),
             online: true,
@@ -1639,12 +2010,15 @@ pub fn join_friend_link_session(
     );
 
     for peer in ack.peers {
+        let Ok(endpoint) = validate_session_endpoint(&session, &peer.endpoint) else {
+            continue;
+        };
         upsert_peer(
             &mut session,
             FriendPeerRecord {
                 peer_id: peer.peer_id,
                 display_name: peer.display_name,
-                endpoint: peer.endpoint,
+                endpoint,
                 added_at: now_iso(),
                 last_seen_at: Some(now_iso()),
                 online: peer.online,
@@ -1669,6 +2043,14 @@ pub fn leave_friend_link_session(
     args: LeaveFriendLinkSessionArgs,
 ) -> Result<FriendLinkStatus, String> {
     let mut store = read_store(&app)?;
+    if let Some(session) = get_session(&store, &args.instance_id) {
+        if let Err(err) = delete_session_shared_secret(&session) {
+            eprintln!(
+                "friend-link shared secret cleanup failed for instance '{}': {}",
+                args.instance_id, err
+            );
+        }
+    }
     let removed = remove_session(&mut store, &args.instance_id);
     if removed {
         write_store(&app, &store)?;
@@ -1684,25 +2066,52 @@ pub fn get_friend_link_status(
 ) -> Result<FriendLinkStatus, String> {
     let mut store = read_store(&app)?;
     let mut changed = false;
+    let mut broken_secret_reason: Option<String> = None;
     if let Some(session) = get_session_mut(&mut store, &args.instance_id) {
-        let app_data = app_data_dir(&app)?;
-        let endpoint = net::ensure_listener(app_data, session)?;
-        let trusted_before = session.trusted_peer_ids.clone();
-        let trusted_initialized_before = session.trusted_peer_ids_initialized;
-        let peer_aliases_before = session.peer_aliases.clone();
-        let max_auto_before = session.max_auto_changes;
-        normalize_session_friend_link_settings(session);
-        if session.listener_endpoint.as_deref() != Some(endpoint.as_str()) {
-            session.listener_endpoint = Some(endpoint);
-            changed = true;
+        match ensure_session_secret_loaded(session) {
+            Ok(()) => {
+                let app_data = app_data_dir(&app)?;
+                let endpoint = net::ensure_listener(app_data, session)?;
+                let trusted_before = session.trusted_peer_ids.clone();
+                let trusted_initialized_before = session.trusted_peer_ids_initialized;
+                let peer_aliases_before = session.peer_aliases.clone();
+                let max_auto_before = session.max_auto_changes;
+                normalize_session_friend_link_settings(session);
+                if session.listener_endpoint.as_deref() != Some(endpoint.as_str()) {
+                    session.listener_endpoint = Some(endpoint);
+                    changed = true;
+                }
+                if session.trusted_peer_ids != trusted_before
+                    || session.trusted_peer_ids_initialized != trusted_initialized_before
+                    || session.peer_aliases != peer_aliases_before
+                    || session.max_auto_changes != max_auto_before
+                {
+                    changed = true;
+                }
+            }
+            Err(err) if session_secret_missing_or_broken(&err) => {
+                if session.bootstrap_host_peer_id.is_none() {
+                    eprintln!(
+                        "friend-link session secret was missing for instance '{}'; rotating host credentials",
+                        args.instance_id
+                    );
+                    reset_session_for_new_host_secret(session);
+                    ensure_session_secret_loaded(session)?;
+                    let app_data = app_data_dir(&app)?;
+                    let endpoint = net::ensure_listener(app_data, session)?;
+                    session.listener_endpoint = Some(endpoint);
+                    normalize_session_friend_link_settings(session);
+                    changed = true;
+                } else {
+                    broken_secret_reason = Some(err);
+                }
+            }
+            Err(err) => return Err(err),
         }
-        if session.trusted_peer_ids != trusted_before
-            || session.trusted_peer_ids_initialized != trusted_initialized_before
-            || session.peer_aliases != peer_aliases_before
-            || session.max_auto_changes != max_auto_before
-        {
-            changed = true;
-        }
+    }
+    if let Some(reason) = broken_secret_reason {
+        unlink_broken_session(&app, &mut store, &args.instance_id, &reason)?;
+        return Ok(to_status(None, &args.instance_id));
     }
     if changed {
         write_store(&app, &store)?;
@@ -1737,6 +2146,7 @@ pub fn set_friend_link_guardrails(
     normalize_session_friend_link_settings(session);
     session.trusted_peer_ids = normalize_trusted_peer_ids(session, &args.trusted_peer_ids);
     session.trusted_peer_ids_initialized = true;
+    session.guardrails_updated_at_ms = now_millis();
     if let Some(limit) = args.max_auto_changes {
         session.max_auto_changes = normalize_max_auto_changes(Some(limit));
     } else if session.max_auto_changes == 0 {
@@ -1802,6 +2212,65 @@ fn preview_friend_link_drift_inner(
     args: PreviewFriendLinkDriftArgs,
 ) -> Result<FriendLinkDriftPreview, String> {
     let mut store = read_store(&app)?;
+    let app_data = app_data_dir(&app)?;
+    let mut broken_secret_reason: Option<String> = None;
+    let mut rotated_host_secret = false;
+    {
+        let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
+            return Ok(FriendLinkDriftPreview {
+                instance_id: args.instance_id,
+                status: "unlinked".to_string(),
+                added: 0,
+                removed: 0,
+                changed: 0,
+                total_changes: 0,
+                items: vec![],
+                online_peers: 0,
+                peer_count: 0,
+                has_untrusted_changes: false,
+            });
+        };
+        match ensure_session_secret_loaded(session) {
+            Ok(()) => {
+                let _ = net::ensure_listener(app_data.clone(), session)?;
+                normalize_session_friend_link_settings(session);
+            }
+            Err(err) if session_secret_missing_or_broken(&err) => {
+                if session.bootstrap_host_peer_id.is_none() {
+                    eprintln!(
+                        "friend-link session secret was missing for instance '{}'; rotating host credentials",
+                        args.instance_id
+                    );
+                    reset_session_for_new_host_secret(session);
+                    ensure_session_secret_loaded(session)?;
+                    let _ = net::ensure_listener(app_data.clone(), session)?;
+                    normalize_session_friend_link_settings(session);
+                    rotated_host_secret = true;
+                } else {
+                    broken_secret_reason = Some(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if rotated_host_secret {
+        write_store(&app, &store)?;
+    }
+    if let Some(reason) = broken_secret_reason {
+        unlink_broken_session(&app, &mut store, &args.instance_id, &reason)?;
+        return Ok(FriendLinkDriftPreview {
+            instance_id: args.instance_id,
+            status: "unlinked".to_string(),
+            added: 0,
+            removed: 0,
+            changed: 0,
+            total_changes: 0,
+            items: vec![],
+            online_peers: 0,
+            peer_count: 0,
+            has_untrusted_changes: false,
+        });
+    }
     let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
         return Ok(FriendLinkDriftPreview {
             instance_id: args.instance_id,
@@ -1816,9 +2285,6 @@ fn preview_friend_link_drift_inner(
             has_untrusted_changes: false,
         });
     };
-    let app_data = app_data_dir(&app)?;
-    let _ = net::ensure_listener(app_data, session)?;
-    normalize_session_friend_link_settings(session);
     let instances_dir = app_instances_dir(&app)?;
     let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
     let (peer_states, online_peers) = collect_remote_peer_states(session);
@@ -1849,28 +2315,57 @@ fn sync_friend_link_selected_inner(
     args: SyncFriendLinkSelectedArgs,
 ) -> Result<FriendLinkReconcileResult, String> {
     let mut store = read_store(&app)?;
-    let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
-        return Ok(FriendLinkReconcileResult {
-            status: "unlinked".to_string(),
-            mode: if args.metadata_only {
-                "selected_metadata".to_string()
-            } else {
-                "selected_all".to_string()
-            },
-            actions_applied: 0,
-            actions_pending: 0,
-            actions: vec![],
-            conflicts: vec![],
-            warnings: vec![],
-            blocked_reason: None,
-            local_state_hash: String::new(),
-            last_good_hash: None,
-            offline_peers: 0,
-        });
+    let mode = if args.metadata_only {
+        "selected_metadata"
+    } else {
+        "selected_all"
     };
     let app_data = app_data_dir(&app)?;
-    let _ = net::ensure_listener(app_data, session)?;
-    normalize_session_friend_link_settings(session);
+    let mut broken_secret_reason: Option<String> = None;
+    let mut rotated_host_secret = false;
+    {
+        let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
+            return Ok(unlinked_reconcile_result(mode, None));
+        };
+        match ensure_session_secret_loaded(session) {
+            Ok(()) => {
+                let _ = net::ensure_listener(app_data.clone(), session)?;
+                normalize_session_friend_link_settings(session);
+            }
+            Err(err) if session_secret_missing_or_broken(&err) => {
+                if session.bootstrap_host_peer_id.is_none() {
+                    eprintln!(
+                        "friend-link session secret was missing for instance '{}'; rotating host credentials",
+                        args.instance_id
+                    );
+                    reset_session_for_new_host_secret(session);
+                    ensure_session_secret_loaded(session)?;
+                    let _ = net::ensure_listener(app_data.clone(), session)?;
+                    normalize_session_friend_link_settings(session);
+                    rotated_host_secret = true;
+                } else {
+                    broken_secret_reason = Some(err);
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if rotated_host_secret {
+        write_store(&app, &store)?;
+    }
+    if let Some(reason) = broken_secret_reason {
+        unlink_broken_session(&app, &mut store, &args.instance_id, &reason)?;
+        return Ok(unlinked_reconcile_result(
+            mode,
+            Some(
+                "Friend Link credentials were unavailable in secure storage. The broken link was removed; create or join again."
+                    .to_string(),
+            ),
+        ));
+    }
+    let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
+        return Ok(unlinked_reconcile_result(mode, None));
+    };
     let instances_dir = app_instances_dir(&app)?;
     let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
     let (peer_states, online_peers) = collect_remote_peer_states(session);
@@ -1911,7 +2406,8 @@ fn sync_friend_link_selected_inner(
     let mut actions = Vec::<FriendLinkReconcileAction>::new();
     let mut warnings = Vec::<String>::new();
     if selected_items.is_empty() {
-        let local_after = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
+        let local_after =
+            collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
         if skipped_review_only_items > 0 {
             warnings.push(format!(
                 "Selected changes are from untrusted peers ({skipped_review_only_items} item(s))."
@@ -1935,7 +2431,10 @@ fn sync_friend_link_selected_inner(
             warnings,
             blocked_reason: None,
             local_state_hash: local_after.state_hash,
-            last_good_hash: session.last_good_snapshot.as_ref().map(|v| v.state_hash.clone()),
+            last_good_hash: session
+                .last_good_snapshot
+                .as_ref()
+                .map(|v| v.state_hash.clone()),
             offline_peers: session.peers.iter().filter(|peer| !peer.online).count(),
         };
         write_store(&app, &store)?;
@@ -1947,11 +2446,21 @@ fn sync_friend_link_selected_inner(
 
     let peer_lock_maps = peer_states
         .iter()
-        .map(|peer| (peer.peer_id.clone(), lock_entry_map(&peer.state.lock_entries)))
+        .map(|peer| {
+            (
+                peer.peer_id.clone(),
+                lock_entry_map(&peer.state.lock_entries),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let peer_config_maps = peer_states
         .iter()
-        .map(|peer| (peer.peer_id.clone(), config_file_map(&peer.state.config_files)))
+        .map(|peer| {
+            (
+                peer.peer_id.clone(),
+                config_file_map(&peer.state.config_files),
+            )
+        })
         .collect::<HashMap<_, _>>();
     let mut preferred_peer_by_key = HashMap::<String, String>::new();
     let mut selected_lock_entries = HashMap::<String, CanonicalLockEntry>::new();
@@ -1962,14 +2471,18 @@ fn sync_friend_link_selected_inner(
         if item.kind == "lock_entry" {
             if item.change == "removed" {
                 if let Some(existing) = lock_map.remove(&item.key) {
-                    let removed_files = remove_lock_entry_binaries(&instances_dir, &args.instance_id, &existing)?;
+                    let removed_files =
+                        remove_lock_entry_binaries(&instances_dir, &args.instance_id, &existing)?;
                     touched_lock = true;
                     actions.push(FriendLinkReconcileAction {
                         kind: "lock_entry".to_string(),
                         key: item.key.clone(),
                         peer_id: item.peer_id.clone(),
                         applied: true,
-                        message: format!("Removed '{}' from local state ({removed_files} file(s) removed).", existing.name),
+                        message: format!(
+                            "Removed '{}' from local state ({removed_files} file(s) removed).",
+                            existing.name
+                        ),
                     });
                 }
                 continue;
@@ -1985,14 +2498,18 @@ fn sync_friend_link_selected_inner(
                         key: item.key.clone(),
                         peer_id: item.peer_id.clone(),
                         applied: true,
-                        message: format!("Applied '{}' from {}.", entry.name, item.peer_display_name),
+                        message: format!(
+                            "Applied '{}' from {}.",
+                            entry.name, item.peer_display_name
+                        ),
                     });
                 }
             }
         } else if item.kind == "config_file" {
             if item.change == "removed" {
                 config_map.remove(&item.key);
-                let removed = remove_config_file_by_key(&instances_dir, &args.instance_id, &item.key)?;
+                let removed =
+                    remove_config_file_by_key(&instances_dir, &args.instance_id, &item.key)?;
                 touched_config = true;
                 actions.push(FriendLinkReconcileAction {
                     kind: "config_file".to_string(),
@@ -2016,7 +2533,10 @@ fn sync_friend_link_selected_inner(
                         key: item.key.clone(),
                         peer_id: item.peer_id.clone(),
                         applied: true,
-                        message: format!("Applied config '{}' from {}.", file.path, item.peer_display_name),
+                        message: format!(
+                            "Applied config '{}' from {}.",
+                            file.path, item.peer_display_name
+                        ),
                     });
                 }
             }
@@ -2098,7 +2618,10 @@ fn sync_friend_link_selected_inner(
         warnings,
         blocked_reason: None,
         local_state_hash: local_after.state_hash,
-        last_good_hash: session.last_good_snapshot.as_ref().map(|v| v.state_hash.clone()),
+        last_good_hash: session
+            .last_good_snapshot
+            .as_ref()
+            .map(|v| v.state_hash.clone()),
         offline_peers: session.peers.iter().filter(|peer| !peer.online).count(),
     };
 
@@ -2216,16 +2739,36 @@ pub fn export_friend_link_debug_bundle(
     let output_dir = app
         .path_resolver()
         .app_data_dir()
-        .ok_or_else(|| "Failed to resolve app data dir".to_string())?
-        .join("friend_link")
-        .join("debug");
+        .ok_or_else(|| "Failed to resolve app data dir".to_string())?;
+    let friend_link_dir = state::safe_join_under(&output_dir, "friend_link")?;
+    let output_dir = state::safe_join_under(&friend_link_dir, "debug")?;
     std::fs::create_dir_all(&output_dir)
         .map_err(|e| format!("mkdir friend link debug dir failed: {e}"))?;
 
-    let path = output_dir.join(format!("{}_{}.json", args.instance_id, Uuid::new_v4()));
+    let safe_instance = sanitize_debug_file_component(&args.instance_id);
+    let path = state::safe_join_under(
+        &output_dir,
+        &format!("{}_{}.json", safe_instance, Uuid::new_v4()),
+    )?;
+    let mut session_json = serde_json::to_value(&session)
+        .map_err(|e| format!("serialize friend link session failed: {e}"))?;
+    if let Some(obj) = session_json.as_object_mut() {
+        obj.insert(
+            "shared_secret_key_id".to_string(),
+            serde_json::Value::String("<REDACTED>".to_string()),
+        );
+        obj.insert(
+            "shared_secret_b64".to_string(),
+            serde_json::Value::String("<REDACTED>".to_string()),
+        );
+        obj.insert(
+            "bootstrap_host_peer_id".to_string(),
+            serde_json::Value::String("<REDACTED>".to_string()),
+        );
+    }
     let payload = serde_json::json!({
         "instance_id": args.instance_id,
-        "session": session,
+        "session": session_json,
         "state": state,
         "exported_at": now_iso(),
     });

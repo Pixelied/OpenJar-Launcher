@@ -1,4 +1,6 @@
-use crate::modpack::types::{InstanceModpackLinkState, LockSnapshot, ModpackSpec, ModpackStoreV1, ResolutionPlan};
+use crate::modpack::types::{
+    InstanceModpackLinkState, LockSnapshot, ModpackSpec, ModpackStoreV1, ResolutionPlan,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -71,9 +73,7 @@ pub fn upsert_spec(store: &mut ModpackStoreV1, spec: ModpackSpec) {
 pub fn remove_spec(store: &mut ModpackStoreV1, spec_id: &str) {
     store.specs.retain(|s| s.id != spec_id);
     store.plans.retain(|p| p.modpack_id != spec_id);
-    store
-        .instance_links
-        .retain(|l| l.modpack_id != spec_id);
+    store.instance_links.retain(|l| l.modpack_id != spec_id);
 }
 
 pub fn get_spec(store: &ModpackStoreV1, spec_id: &str) -> Option<ModpackSpec> {
@@ -100,7 +100,10 @@ pub fn set_instance_link(store: &mut ModpackStoreV1, link: InstanceModpackLinkSt
     }
 }
 
-pub fn get_instance_link(store: &ModpackStoreV1, instance_id: &str) -> Option<InstanceModpackLinkState> {
+pub fn get_instance_link(
+    store: &ModpackStoreV1,
+    instance_id: &str,
+) -> Option<InstanceModpackLinkState> {
     store
         .instance_links
         .iter()

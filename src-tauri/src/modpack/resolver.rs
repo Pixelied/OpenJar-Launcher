@@ -121,7 +121,11 @@ fn apply_profile(entries: &mut [ModEntry], spec: &ModpackSpec, profile_id: Optio
             continue;
         }
         let key = entry_key_for(entry);
-        let enabled = profile.optional_entry_states.get(&key).copied().unwrap_or(true);
+        let enabled = profile
+            .optional_entry_states
+            .get(&key)
+            .copied()
+            .unwrap_or(true);
         entry.disabled_by_default = !enabled;
     }
 }
@@ -357,17 +361,18 @@ fn resolve_single_entry(
     let enabled = !entry.disabled_by_default;
 
     if provider == "modrinth" {
-        let versions = crate::fetch_project_versions(client, &entry.project_id).map_err(|e| FailedMod {
-            source: provider.clone(),
-            content_type: content_type.clone(),
-            project_id: entry.project_id.clone(),
-            name: resolved_name.clone(),
-            reason_code: "ProviderError".to_string(),
-            reason_text: format!("Failed to query Modrinth versions: {}", e),
-            actionable_hint: "Retry or verify project ID/slug.".to_string(),
-            constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
-            required: entry.required,
-        })?;
+        let versions =
+            crate::fetch_project_versions(client, &entry.project_id).map_err(|e| FailedMod {
+                source: provider.clone(),
+                content_type: content_type.clone(),
+                project_id: entry.project_id.clone(),
+                name: resolved_name.clone(),
+                reason_code: "ProviderError".to_string(),
+                reason_text: format!("Failed to query Modrinth versions: {}", e),
+                actionable_hint: "Retry or verify project ID/slug.".to_string(),
+                constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
+                required: entry.required,
+            })?;
 
         let selected = select_modrinth_version(versions, instance, entry, settings).ok_or_else(|| {
             FailedMod {
@@ -426,46 +431,50 @@ fn resolve_single_entry(
             name: resolved_name.clone(),
             reason_code: "ProviderError".to_string(),
             reason_text: crate::missing_curseforge_key_message(),
-            actionable_hint: "Configure CurseForge key for dev or use release-injected key.".to_string(),
+            actionable_hint: "Configure CurseForge key for dev or use release-injected key."
+                .to_string(),
             constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
             required: entry.required,
         })?;
 
-        let mod_id = crate::parse_curseforge_project_id(&entry.project_id).map_err(|e| FailedMod {
-            source: provider.clone(),
-            content_type: content_type.clone(),
-            project_id: entry.project_id.clone(),
-            name: resolved_name.clone(),
-            reason_code: "ProjectNotFound".to_string(),
-            reason_text: e,
-            actionable_hint: "Use a numeric CurseForge project id or cf:<id>.".to_string(),
-            constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
-            required: entry.required,
-        })?;
+        let mod_id =
+            crate::parse_curseforge_project_id(&entry.project_id).map_err(|e| FailedMod {
+                source: provider.clone(),
+                content_type: content_type.clone(),
+                project_id: entry.project_id.clone(),
+                name: resolved_name.clone(),
+                reason_code: "ProjectNotFound".to_string(),
+                reason_text: e,
+                actionable_hint: "Use a numeric CurseForge project id or cf:<id>.".to_string(),
+                constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
+                required: entry.required,
+            })?;
 
-        let project = crate::fetch_curseforge_project(client, &api_key, mod_id).map_err(|e| FailedMod {
-            source: provider.clone(),
-            content_type: content_type.clone(),
-            project_id: entry.project_id.clone(),
-            name: resolved_name.clone(),
-            reason_code: "ProjectNotFound".to_string(),
-            reason_text: e,
-            actionable_hint: "Verify project id and provider.".to_string(),
-            constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
-            required: entry.required,
-        })?;
+        let project =
+            crate::fetch_curseforge_project(client, &api_key, mod_id).map_err(|e| FailedMod {
+                source: provider.clone(),
+                content_type: content_type.clone(),
+                project_id: entry.project_id.clone(),
+                name: resolved_name.clone(),
+                reason_code: "ProjectNotFound".to_string(),
+                reason_text: e,
+                actionable_hint: "Verify project id and provider.".to_string(),
+                constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
+                required: entry.required,
+            })?;
 
-        let files = crate::fetch_curseforge_files(client, &api_key, mod_id).map_err(|e| FailedMod {
-            source: provider.clone(),
-            content_type: content_type.clone(),
-            project_id: entry.project_id.clone(),
-            name: project.name.clone(),
-            reason_code: "ProviderError".to_string(),
-            reason_text: e,
-            actionable_hint: "Retry after a short delay.".to_string(),
-            constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
-            required: entry.required,
-        })?;
+        let files =
+            crate::fetch_curseforge_files(client, &api_key, mod_id).map_err(|e| FailedMod {
+                source: provider.clone(),
+                content_type: content_type.clone(),
+                project_id: entry.project_id.clone(),
+                name: project.name.clone(),
+                reason_code: "ProviderError".to_string(),
+                reason_text: e,
+                actionable_hint: "Retry after a short delay.".to_string(),
+                constraints_snapshot: format!("{} + {}", instance.loader, instance.mc_version),
+                required: entry.required,
+            })?;
 
         let selected = select_curseforge_file(files, instance, entry, settings, mod_id).ok_or_else(|| {
             FailedMod {
@@ -516,8 +525,7 @@ fn resolve_single_entry(
         reason_code: "ProviderError".to_string(),
         reason_text: "Unsupported provider. Expected modrinth or curseforge.".to_string(),
         actionable_hint: if entry.provider.trim().eq_ignore_ascii_case("local") {
-            "Run Identify local JARs in Creator Studio or set provider manually."
-                .to_string()
+            "Run Identify local JARs in Creator Studio or set provider manually.".to_string()
         } else {
             "Update entry provider.".to_string()
         },
@@ -613,7 +621,12 @@ fn select_modrinth_version(
                 hashes: file.hashes.clone(),
                 enabled: !entry.disabled_by_default,
                 target_worlds: vec![],
-                rationale_text: rationale_text("Modrinth", distance.tier, distance.distance, channel),
+                rationale_text: rationale_text(
+                    "Modrinth",
+                    distance.tier,
+                    distance.distance,
+                    channel,
+                ),
                 added_by_dependency: false,
                 required: entry.required,
             },
@@ -646,10 +659,7 @@ fn select_curseforge_file(
     let target_parts = parse_release_parts(&instance.mc_version);
     let target_loader = instance.loader.to_lowercase();
 
-    let pin_file_id = entry
-        .pin
-        .as_ref()
-        .and_then(|v| parse_curseforge_file_id(v));
+    let pin_file_id = entry.pin.as_ref().and_then(|v| parse_curseforge_file_id(v));
 
     let mut candidates = Vec::new();
     for file in files {
@@ -706,7 +716,12 @@ fn select_curseforge_file(
                 hashes: crate::parse_cf_hashes(&file),
                 enabled: !entry.disabled_by_default,
                 target_worlds: vec![],
-                rationale_text: rationale_text("CurseForge", distance.tier, distance.distance, channel),
+                rationale_text: rationale_text(
+                    "CurseForge",
+                    distance.tier,
+                    distance.distance,
+                    channel,
+                ),
                 added_by_dependency: false,
                 required: entry.required,
             },
@@ -753,7 +768,11 @@ fn pick_modrinth_file(version: &crate::ModrinthVersion) -> Option<crate::Modrint
         .cloned()
 }
 
-fn modrinth_loader_matches(version: &crate::ModrinthVersion, target_loader: &str, content_type: &str) -> bool {
+fn modrinth_loader_matches(
+    version: &crate::ModrinthVersion,
+    target_loader: &str,
+    content_type: &str,
+) -> bool {
     if content_type != "mods" {
         return true;
     }
@@ -805,13 +824,14 @@ fn infer_channel_rank(text: &str, entry: &ModEntry, settings: &ResolutionSetting
         0
     };
 
-    let channel_policy = if entry.channel_policy.trim().is_empty() || entry.channel_policy == "inherit" {
-        settings.channel_allowance.clone()
-    } else {
-        entry.channel_policy.clone()
-    }
-    .trim()
-    .to_lowercase();
+    let channel_policy =
+        if entry.channel_policy.trim().is_empty() || entry.channel_policy == "inherit" {
+            settings.channel_allowance.clone()
+        } else {
+            entry.channel_policy.clone()
+        }
+        .trim()
+        .to_lowercase();
 
     let max_rank = if channel_policy.contains("alpha") {
         2
@@ -835,7 +855,10 @@ fn pick_best_mc_distance(
     settings: &ResolutionSettings,
 ) -> Option<McDistance> {
     if advertised_versions.iter().any(|v| v.trim() == target_mc) {
-        return Some(McDistance { tier: 0, distance: 0 });
+        return Some(McDistance {
+            tier: 0,
+            distance: 0,
+        });
     }
 
     let target = target_parts?;
