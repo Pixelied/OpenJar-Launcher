@@ -139,6 +139,9 @@ jobs:
           set -euxo pipefail
           npm run tauri:build -- --target ${{ matrix.target }}
 
+      - name: Verify desktop asset paths (relative for packaged app)
+        run: npm run verify:desktop-asset-paths
+
       - name: Ad-hoc sign macOS app
         if: runner.os == 'macOS'
         shell: bash
