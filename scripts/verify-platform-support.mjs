@@ -17,7 +17,10 @@ const TARGET_TO_PLATFORM = new Map([
 ]);
 
 function readRepoFile(relativePath) {
-  return fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
+  // Normalize line endings so parsing is stable across Windows/macOS/Linux runners.
+  return fs
+    .readFileSync(path.join(repoRoot, relativePath), "utf8")
+    .replace(/\r\n?/g, "\n");
 }
 
 function extractTargetsFromWorkflow(workflowBody) {
@@ -31,18 +34,42 @@ function extractTargetsFromWorkflow(workflowBody) {
 
 function extractReadmeTargets(readmeBody) {
   const sectionMatch = readmeBody.match(
-    /## Platform support & testing[\s\S]*?Current build targets:\n([\s\S]*?)\n\nCI runs/s,
+    /##\s+Platform support & testing\s*\n([\s\S]*?)(?:\n##\s+|\s*$)/,
   );
   if (!sectionMatch) {
     throw new Error("Could not parse README platform support section.");
   }
 
-  const targets = new Set();
-  const block = sectionMatch[1];
-  const regex = /`([^`]+)`/g;
-  for (const match of block.matchAll(regex)) {
-    targets.add(match[1]);
+  const section = sectionMatch[1];
+  const marker = "Current build targets:";
+  const markerIndex = section.indexOf(marker);
+  if (markerIndex < 0) {
+    throw new Error("README platform section is missing 'Current build targets:'.");
   }
+
+  const lines = section.slice(markerIndex + marker.length).split("\n");
+  const targets = new Set();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (targets.size > 0) break;
+      continue;
+    }
+    if (!trimmed.startsWith("-")) {
+      if (targets.size > 0) break;
+      continue;
+    }
+
+    for (const match of trimmed.matchAll(/`([^`]+)`/g)) {
+      targets.add(match[1]);
+    }
+  }
+
+  if (targets.size === 0) {
+    throw new Error("No Rust targets found in README 'Current build targets' list.");
+  }
+
   return targets;
 }
 
