@@ -8065,6 +8065,47 @@ fn sort_discover_hits(hits: &mut [DiscoverSearchHit], index: &str) {
     }
 }
 
+fn blend_discover_hits_prefer_modrinth(hits: Vec<DiscoverSearchHit>) -> Vec<DiscoverSearchHit> {
+    let mut modrinth_hits = VecDeque::<DiscoverSearchHit>::new();
+    let mut other_hits = VecDeque::<DiscoverSearchHit>::new();
+    for hit in hits {
+        if hit.source.eq_ignore_ascii_case("modrinth") {
+            modrinth_hits.push_back(hit);
+        } else {
+            other_hits.push_back(hit);
+        }
+    }
+
+    if modrinth_hits.is_empty() || other_hits.is_empty() {
+        let mut passthrough = Vec::with_capacity(modrinth_hits.len() + other_hits.len());
+        passthrough.extend(modrinth_hits);
+        passthrough.extend(other_hits);
+        return passthrough;
+    }
+
+    // Favor Modrinth while keeping mixed-provider visibility (2:1 cadence).
+    let mut blended = Vec::with_capacity(modrinth_hits.len() + other_hits.len());
+    while !modrinth_hits.is_empty() || !other_hits.is_empty() {
+        for _ in 0..2 {
+            if let Some(hit) = modrinth_hits.pop_front() {
+                blended.push(hit);
+            }
+        }
+        if let Some(hit) = other_hits.pop_front() {
+            blended.push(hit);
+        }
+        if modrinth_hits.is_empty() {
+            blended.extend(other_hits.drain(..));
+            break;
+        }
+        if other_hits.is_empty() {
+            blended.extend(modrinth_hits.drain(..));
+            break;
+        }
+    }
+    blended
+}
+
 fn home_dir() -> Option<PathBuf> {
     if cfg!(target_os = "windows") {
         if let Some(profile) = std::env::var_os("USERPROFILE") {
@@ -10775,6 +10816,7 @@ fn search_discover_content_inner(
     args: SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
     let source = args.source.trim().to_lowercase();
+    let normalized_content_type = normalize_discover_content_type(&args.content_type);
     let client = build_http_client()?;
     if source == "modrinth" {
         return search_modrinth_discover(&client, &args);
@@ -10813,6 +10855,9 @@ fn search_discover_content_inner(
     let mut merged = modrinth.hits;
     merged.extend(curseforge.hits);
     sort_discover_hits(&mut merged, &args.index);
+    if source == "all" && normalized_content_type == "mods" {
+        merged = blend_discover_hits_prefer_modrinth(merged);
+    }
     let total_hits = modrinth.total_hits.saturating_add(curseforge.total_hits);
     let hits = merged
         .into_iter()
@@ -13874,6 +13919,58 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod discover_ranking_tests {
+    use super::*;
+
+    fn make_hit(source: &str, project_id: &str) -> DiscoverSearchHit {
+        DiscoverSearchHit {
+            source: source.to_string(),
+            project_id: project_id.to_string(),
+            title: project_id.to_string(),
+            description: "".to_string(),
+            author: "".to_string(),
+            downloads: 0,
+            follows: 0,
+            icon_url: None,
+            categories: vec![],
+            versions: vec![],
+            date_modified: "".to_string(),
+            content_type: "mods".to_string(),
+            slug: None,
+            external_url: None,
+        }
+    }
+
+    #[test]
+    fn blend_discover_hits_prefers_modrinth_but_keeps_other_provider_visible() {
+        let input = vec![
+            make_hit("curseforge", "cf_1"),
+            make_hit("modrinth", "mr_1"),
+            make_hit("curseforge", "cf_2"),
+            make_hit("modrinth", "mr_2"),
+            make_hit("modrinth", "mr_3"),
+        ];
+        let blended = blend_discover_hits_prefer_modrinth(input);
+        let order = blended
+            .iter()
+            .map(|hit| hit.project_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, vec!["mr_1", "mr_2", "cf_1", "mr_3", "cf_2"]);
+    }
+
+    #[test]
+    fn blend_discover_hits_passthrough_when_single_provider_present() {
+        let input = vec![make_hit("modrinth", "mr_1"), make_hit("modrinth", "mr_2")];
+        let blended = blend_discover_hits_prefer_modrinth(input);
+        let order = blended
+            .iter()
+            .map(|hit| hit.project_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, vec!["mr_1", "mr_2"]);
+    }
 }
 
 #[cfg(test)]
