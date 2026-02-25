@@ -29,14 +29,15 @@ mod modpack;
 mod commands;
 pub(crate) use commands::import_provider_modpack_template;
 
-const USER_AGENT: &str = "ModpackManager/0.1.6 (Tauri)";
-const KEYRING_SERVICE: &str = "ModpackManager";
+const USER_AGENT: &str = "OpenJarLauncher/0.1.6 (Tauri)";
+const KEYRING_SERVICE: &str = "OpenJar Launcher";
 const KEYRING_SELECTED_REFRESH_ALIAS: &str = "msa_refresh_selected";
-const LEGACY_KEYRING_SERVICES: [&str; 4] = [
+const LEGACY_KEYRING_SERVICES: [&str; 5] = [
+    "ModpackManager",
     "com.adrien.modpackmanager",
     "modpack-manager",
-    "OpenJar Launcher",
     "openjar-launcher",
+    "OpenJar",
 ];
 const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
 const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
@@ -65,6 +66,10 @@ const DEFAULT_SNAPSHOT_RETENTION_COUNT: u32 = 5;
 const DEFAULT_SNAPSHOT_MAX_AGE_DAYS: u32 = 14;
 const MENU_CHECK_FOR_UPDATES_ID: &str = "menu_check_for_updates";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT: &str = "app_menu_check_for_updates";
+const UPDATE_ENTRY_WORKERS_MAX_ENV: &str = "MPM_UPDATE_ENTRY_WORKERS_MAX";
+const UPDATE_PREFETCH_WORKERS_MAX_ENV: &str = "MPM_UPDATE_PREFETCH_WORKERS_MAX";
+const CURSEFORGE_RESOLVE_WORKERS_MAX_ENV: &str = "MPM_CURSEFORGE_RESOLVE_WORKERS_MAX";
+pub(crate) const LOCAL_JAR_IMPORT_WORKERS_MAX_ENV: &str = "MPM_LOCAL_JAR_IMPORT_WORKERS_MAX";
 
 fn runtime_refresh_token_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -3323,6 +3328,196 @@ struct LocalMetadataHint {
     display_name_hint: Option<String>,
 }
 
+fn normalize_loader_hint_token(raw: &str) -> Option<String> {
+    let lower = raw.trim().to_ascii_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let compact = lower.replace(['-', '_', ' '], "");
+    if compact == "vanilla" || compact == "minecraft" {
+        return Some("vanilla".to_string());
+    }
+    if compact.contains("neoforge") || compact.contains("neoforged") {
+        return Some("neoforge".to_string());
+    }
+    if compact.contains("fabric") {
+        return Some("fabric".to_string());
+    }
+    if compact.contains("quilt") {
+        return Some("quilt".to_string());
+    }
+    if compact.contains("forge") {
+        return Some("forge".to_string());
+    }
+    None
+}
+
+fn loader_label_for_user(raw: &str) -> &'static str {
+    let raw_lower = raw.trim().to_ascii_lowercase();
+    let normalized = if raw_lower == "forge_family" {
+        raw_lower
+    } else {
+        normalize_loader_hint_token(raw).unwrap_or(raw_lower)
+    };
+    match normalized.as_str() {
+        "fabric" => "Fabric",
+        "forge" => "Forge",
+        "neoforge" => "NeoForge",
+        "forge_family" => "Forge/NeoForge",
+        "quilt" => "Quilt",
+        "vanilla" => "Vanilla",
+        _ => "unknown loader",
+    }
+}
+
+fn detect_mod_loader_hints_from_filename(safe_filename: &str) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    let lower = safe_filename.to_ascii_lowercase();
+    if let Some(token) = normalize_loader_hint_token(&lower) {
+        hints.insert(token);
+    } else {
+        let has_neoforge = lower.contains("neoforge")
+            || lower.contains("neo-forge")
+            || lower.contains("neo_forge")
+            || lower.contains("neo forge");
+        if has_neoforge {
+            hints.insert("neoforge".to_string());
+        }
+        if lower.contains("fabric") {
+            hints.insert("fabric".to_string());
+        }
+        if lower.contains("quilt") {
+            hints.insert("quilt".to_string());
+        }
+        if lower.contains("forge") && !has_neoforge {
+            hints.insert("forge".to_string());
+        }
+    }
+    hints
+}
+
+fn detect_mod_loader_hints_from_jar(file_bytes: &[u8]) -> HashSet<String> {
+    let mut hints = HashSet::new();
+    let mut archive = match ZipArchive::new(Cursor::new(file_bytes)) {
+        Ok(value) => value,
+        Err(_) => return hints,
+    };
+
+    if archive.by_name("fabric.mod.json").is_ok() {
+        hints.insert("fabric".to_string());
+    }
+    if archive.by_name("quilt.mod.json").is_ok() {
+        hints.insert("quilt".to_string());
+    }
+    if archive.by_name("META-INF/neoforge.mods.toml").is_ok() {
+        hints.insert("neoforge".to_string());
+    }
+    if archive.by_name("mcmod.info").is_ok() {
+        hints.insert("forge".to_string());
+    }
+
+    if let Ok(mut mods_toml) = archive.by_name("META-INF/mods.toml") {
+        let mut raw = String::new();
+        if mods_toml.read_to_string(&mut raw).is_ok() {
+            let lower = raw.to_ascii_lowercase();
+            let has_neoforge_markers =
+                lower.contains("neoforge") || lower.contains("net.neoforged");
+            let has_forge_markers = lower.contains("javafml") || lower.contains("forge");
+            if has_neoforge_markers {
+                hints.insert("neoforge".to_string());
+            }
+            if has_forge_markers {
+                // mods.toml/javafml is used by Forge and can also appear in NeoForge ecosystems.
+                hints.insert("forge_family".to_string());
+            }
+            if !has_neoforge_markers && !has_forge_markers {
+                // Conservative fallback for unknown mods.toml variants.
+                hints.insert("forge_family".to_string());
+            }
+        } else {
+            hints.insert("forge_family".to_string());
+        }
+    }
+
+    hints
+}
+
+fn instance_loader_accepts_mod_loader(instance_loader: &str, mod_loader_hint: &str) -> bool {
+    let instance_loader = parse_loader_for_instance(instance_loader)
+        .unwrap_or_else(|| instance_loader.trim().to_ascii_lowercase());
+    let mod_loader_raw = mod_loader_hint.trim().to_ascii_lowercase();
+    let mod_loader = if mod_loader_raw == "forge_family" {
+        mod_loader_raw
+    } else {
+        normalize_loader_hint_token(mod_loader_hint).unwrap_or(mod_loader_raw)
+    };
+    if instance_loader == mod_loader {
+        return true;
+    }
+    matches!(
+        (instance_loader.as_str(), mod_loader.as_str()),
+        ("quilt", "fabric")
+            | ("forge", "forge_family")
+            | ("neoforge", "forge_family")
+    )
+}
+
+fn supported_mod_loader_labels_for_instance(instance_loader: &str) -> Vec<&'static str> {
+    let normalized = parse_loader_for_instance(instance_loader)
+        .unwrap_or_else(|| instance_loader.trim().to_ascii_lowercase());
+    match normalized.as_str() {
+        "quilt" => vec!["Quilt", "Fabric"],
+        "fabric" => vec!["Fabric"],
+        "forge" => vec!["Forge"],
+        "neoforge" => vec!["NeoForge"],
+        "vanilla" => vec!["Vanilla"],
+        _ => vec![loader_label_for_user(&normalized)],
+    }
+}
+
+fn ensure_local_mod_loader_compatible(
+    instance: &Instance,
+    safe_filename: &str,
+    file_bytes: &[u8],
+) -> Result<(), String> {
+    let mut hints = detect_mod_loader_hints_from_jar(file_bytes);
+    let source_label = if hints.is_empty() {
+        hints = detect_mod_loader_hints_from_filename(safe_filename);
+        "filename"
+    } else {
+        "mod metadata"
+    };
+    if hints.is_empty() {
+        return Ok(());
+    }
+
+    let instance_loader =
+        parse_loader_for_instance(&instance.loader).unwrap_or_else(|| instance.loader.clone());
+    let instance_loader = instance_loader.trim().to_ascii_lowercase();
+    if hints
+        .iter()
+        .any(|hint| instance_loader_accepts_mod_loader(&instance_loader, hint))
+    {
+        return Ok(());
+    }
+
+    let mut hinted = hints
+        .into_iter()
+        .map(|value| loader_label_for_user(&value).to_string())
+        .collect::<Vec<_>>();
+    hinted.sort();
+    hinted.dedup();
+    let hinted_label = hinted.join(", ");
+    let accepted_label = supported_mod_loader_labels_for_instance(&instance_loader).join(", ");
+
+    Err(format!(
+        "This local mod appears to target {} ({source_label}), but this instance uses {}. Supported local mod loader(s) for this instance: {}.",
+        hinted_label,
+        loader_label_for_user(&instance_loader),
+        accepted_label
+    ))
+}
+
 fn sha512_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha512::new();
     hasher.update(bytes);
@@ -4249,15 +4444,42 @@ fn resolve_oauth_client_id(app: &tauri::AppHandle) -> Result<String, String> {
     resolve_oauth_client_id_with_source(app).map(|v| v.0)
 }
 
-fn build_http_client() -> Result<Client, String> {
+fn env_usize_override(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+pub(crate) fn env_worker_cap_or_default(key: &str, default: usize, min: usize, max: usize) -> usize {
+    env_usize_override(key).unwrap_or(default).clamp(min, max)
+}
+
+fn retry_backoff_ms(attempt: usize) -> u64 {
+    let attempt = attempt.max(1).min(6) as u32;
+    let exp = 1_u64 << (attempt - 1);
+    let base = 200_u64.saturating_mul(exp);
+    let jitter = 35_u64 + ((attempt as u64 * 97) % 140);
+    base.saturating_add(jitter).min(6_000)
+}
+
+fn build_http_client_once() -> Result<Client, String> {
     Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(12))
         .timeout(Duration::from_secs(150))
-        .pool_max_idle_per_host(8)
+        .pool_max_idle_per_host(24)
+        .pool_idle_timeout(Duration::from_secs(90))
         .tcp_nodelay(true)
         .build()
         .map_err(|e| format!("build http client failed: {e}"))
+}
+
+fn build_http_client() -> Result<Client, String> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    match CLIENT.get_or_init(build_http_client_once) {
+        Ok(client) => Ok(client.clone()),
+        Err(err) => Err(err.clone()),
+    }
 }
 
 fn is_transient_network_error(err: &reqwest::Error) -> bool {
@@ -4290,24 +4512,17 @@ pub(crate) fn download_bytes_with_retry(
     label: &str,
 ) -> Result<Vec<u8>, String> {
     let max_attempts = 3usize;
-    let slow_ttfb_retry_ms: u128 = 8_000;
     let mut attempt = 0usize;
     loop {
         attempt += 1;
-        let request_started = Instant::now();
         match client
             .get(url)
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .send()
         {
             Ok(mut response) => {
-                let connect_tls_ms = request_started.elapsed().as_millis();
                 let status = response.status();
                 if status.is_success() {
-                    if connect_tls_ms >= slow_ttfb_retry_ms && attempt < max_attempts {
-                        thread::sleep(Duration::from_millis(180 * attempt as u64));
-                        continue;
-                    }
                     let mut bytes = Vec::new();
                     response
                         .copy_to(&mut bytes)
@@ -4315,14 +4530,14 @@ pub(crate) fn download_bytes_with_retry(
                     return Ok(bytes);
                 }
                 if attempt < max_attempts && should_retry_http_status(status) {
-                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    thread::sleep(Duration::from_millis(retry_backoff_ms(attempt)));
                     continue;
                 }
                 return Err(format!("download failed for {label} with status {status}"));
             }
             Err(err) => {
                 if attempt < max_attempts && is_transient_network_error(&err) {
-                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    thread::sleep(Duration::from_millis(retry_backoff_ms(attempt)));
                     continue;
                 }
                 return Err(format!("download failed for {label}: {err}"));
@@ -4408,7 +4623,6 @@ where
     F: FnMut(u64, Option<u64>),
 {
     let max_attempts = 3usize;
-    let slow_ttfb_retry_ms: u128 = 8_000;
     let mut attempt = 0usize;
     'attempt_loop: loop {
         attempt += 1;
@@ -4424,7 +4638,7 @@ where
             Ok(response) => response,
             Err(err) => {
                 if attempt < max_attempts && is_transient_network_error(&err) {
-                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    thread::sleep(Duration::from_millis(retry_backoff_ms(attempt)));
                     continue;
                 }
                 return Err(format!("download failed for {label}: {err}"));
@@ -4434,15 +4648,10 @@ where
         let status = response.status();
         if !status.is_success() {
             if attempt < max_attempts && should_retry_http_status(status) {
-                thread::sleep(Duration::from_millis(220 * attempt as u64));
+                thread::sleep(Duration::from_millis(retry_backoff_ms(attempt)));
                 continue;
             }
             return Err(format!("download failed for {label} with status {status}"));
-        }
-        if connect_tls_ms >= slow_ttfb_retry_ms && attempt < max_attempts {
-            // Retry once or twice when the edge path looks stale/slow before payload starts.
-            thread::sleep(Duration::from_millis(260 * attempt as u64));
-            continue;
         }
 
         let total_bytes = response.content_length();
@@ -4451,7 +4660,7 @@ where
             File::create(temp_path).map_err(|e| format!("create temp file failed for {label}: {e}"))?;
         let mut hasher = Sha512::new();
         let mut downloaded_bytes: u64 = 0;
-        let mut buf = vec![0_u8; 256 * 1024];
+        let mut buf = vec![0_u8; 1024 * 1024];
         let mut first_byte_at: Option<Instant> = None;
         loop {
             let n = match response.read(&mut buf) {
@@ -4459,7 +4668,7 @@ where
                 Err(err) => {
                     if attempt < max_attempts && is_transient_io_error(&err) {
                         let _ = fs::remove_file(temp_path);
-                        thread::sleep(Duration::from_millis(220 * attempt as u64));
+                        thread::sleep(Duration::from_millis(retry_backoff_ms(attempt)));
                         continue 'attempt_loop;
                     }
                     let _ = fs::remove_file(temp_path);
@@ -4481,8 +4690,6 @@ where
         let disk_commit_started = Instant::now();
         out.flush()
             .map_err(|e| format!("flush download stream failed for {label}: {e}"))?;
-        out.sync_data()
-            .map_err(|e| format!("sync download stream failed for {label}: {e}"))?;
         let disk_commit_ms = disk_commit_started.elapsed().as_millis();
 
         let time_to_first_byte_ms = first_byte_at
@@ -5449,37 +5656,83 @@ fn keyring_get_selected_refresh_token() -> Result<Option<String>, String> {
 }
 
 fn keyring_get_dev_curseforge_key() -> Result<Option<String>, String> {
-    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
-        .map_err(|e| format!("keyring init failed: {e}"))?;
-    match entry.get_password() {
-        Ok(value) => {
-            let trimmed = value.trim().to_string();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed))
+    let services = keyring_service_candidates();
+    let mut canonical_read_err: Option<String> = None;
+    for service in services {
+        let value = match token_keyring_get_secret(service, DEV_CURSEFORGE_KEY_KEYRING_USER) {
+            Ok(value) => value,
+            Err(err) => {
+                if service == KEYRING_SERVICE {
+                    if canonical_read_err.is_none() {
+                        canonical_read_err = Some(err);
+                    }
+                } else {
+                    eprintln!(
+                        "legacy dev curseforge key read failed in service '{}': {}",
+                        service, err
+                    );
+                }
+                continue;
+            }
+        };
+        let Some(value) = value else { continue };
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if service != KEYRING_SERVICE {
+            if let Err(err) =
+                token_keyring_set_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER, &trimmed)
+            {
+                eprintln!(
+                    "dev curseforge key canonical mirror write failed from service '{}': {}",
+                    service, err
+                );
             }
         }
-        Err(KeyringError::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keyring read failed: {e}")),
+        return Ok(Some(trimmed));
     }
+    if let Some(err) = canonical_read_err {
+        return Err(err);
+    }
+    Ok(None)
 }
 
 fn keyring_set_dev_curseforge_key(value: &str) -> Result<(), String> {
-    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
-        .map_err(|e| format!("keyring init failed: {e}"))?;
-    entry
-        .set_password(value)
-        .map_err(|e| format!("keyring write failed: {e}"))
+    token_keyring_set_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER, value)?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) = token_keyring_set_secret(
+            legacy_service,
+            DEV_CURSEFORGE_KEY_KEYRING_USER,
+            value,
+        ) {
+            eprintln!(
+                "legacy dev curseforge key mirror write failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
+    }
+    Ok(())
 }
 
 fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
-    let entry = KeyringEntry::new(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
-        .map_err(|e| format!("keyring init failed: {e}"))?;
-    match entry.delete_credential() {
-        Ok(_) | Err(KeyringError::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keyring delete failed: {e}")),
+    token_keyring_delete_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) = token_keyring_delete_secret(legacy_service, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        {
+            eprintln!(
+                "legacy dev curseforge key mirror delete failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
     }
+    Ok(())
 }
 
 fn persist_refresh_token_for_account(account_id: &str, refresh_token: &str) -> Result<(), String> {
@@ -7254,10 +7507,13 @@ fn check_instance_content_updates_inner(
         });
     }
 
+    let update_entry_worker_max =
+        env_worker_cap_or_default(UPDATE_ENTRY_WORKERS_MAX_ENV, 12, 1, 24);
     let parallelism = std::thread::available_parallelism()
         .map(|v| v.get())
         .unwrap_or(4)
-        .clamp(1, 6)
+        .clamp(1, 24)
+        .min(update_entry_worker_max)
         .min(candidate_entries.len());
 
     if parallelism <= 1 {
@@ -7486,10 +7742,11 @@ fn adaptive_update_prefetch_worker_cap(updates: &[ContentUpdateInfo]) -> usize {
         return eligible.max(1);
     }
 
+    let prefetch_worker_max = env_worker_cap_or_default(UPDATE_PREFETCH_WORKERS_MAX_ENV, 24, 1, 32);
     let cpu = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
-        .clamp(2, 16);
+        .clamp(2, 24);
     let target_by_workload = if eligible >= 32 {
         14
     } else if eligible >= 20 {
@@ -7503,6 +7760,7 @@ fn adaptive_update_prefetch_worker_cap(updates: &[ContentUpdateInfo]) -> usize {
     };
     let mut cap = target_by_workload
         .min(cpu.saturating_mul(2))
+        .min(prefetch_worker_max)
         .min(eligible)
         .max(1);
     if curseforge_jobs > 0 {
@@ -7552,7 +7810,8 @@ fn prefetch_update_downloads(
 
     let jobs = Arc::new(Mutex::new(queue));
     let out: Arc<Mutex<HashMap<usize, PrefetchedDownload>>> = Arc::new(Mutex::new(HashMap::new()));
-    let worker_count = worker_cap.max(1).min(16).min({
+    let prefetch_worker_max = env_worker_cap_or_default(UPDATE_PREFETCH_WORKERS_MAX_ENV, 24, 1, 32);
+    let worker_count = worker_cap.max(1).min(prefetch_worker_max).min({
         let guard = jobs.lock();
         match guard {
             Ok(items) => items.len(),
@@ -8057,55 +8316,283 @@ struct ResolvedCurseforgeInstallMod {
     file: CurseforgeFile,
 }
 
-fn resolve_curseforge_dependency_chain(
+fn is_curseforge_resolve_transient_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("403")
+        || lower.contains("forbidden")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+        || lower.contains("connection")
+        || lower.contains("network")
+}
+
+fn dedupe_i64_ordered(values: Vec<i64>) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        if seen.insert(value) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+fn adaptive_curseforge_resolve_worker_cap(frontier_len: usize, max_cap: usize) -> usize {
+    if frontier_len <= 1 {
+        return 1;
+    }
+    let cpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .clamp(2, 16);
+    let target = if frontier_len >= 12 {
+        8
+    } else if frontier_len >= 6 {
+        6
+    } else if frontier_len >= 3 {
+        4
+    } else {
+        2
+    };
+    target
+        .min(cpu)
+        .min(max_cap.max(1))
+        .min(frontier_len.max(1))
+        .max(1)
+}
+
+fn resolve_curseforge_selected_file_with_cache(
+    client: &Client,
+    api_key: &str,
+    instance: &Instance,
+    mod_id: i64,
+    files_cache: &Arc<Mutex<HashMap<i64, Vec<CurseforgeFile>>>>,
+    selected_files: &Arc<Mutex<HashMap<i64, CurseforgeFile>>>,
+) -> Result<CurseforgeFile, String> {
+    if let Ok(guard) = selected_files.lock() {
+        if let Some(cached) = guard.get(&mod_id) {
+            return Ok(cached.clone());
+        }
+    }
+
+    let mut files = if let Ok(guard) = files_cache.lock() {
+        guard.get(&mod_id).cloned().unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    if files.is_empty() {
+        files = fetch_curseforge_files(client, api_key, mod_id)?;
+        if let Ok(mut guard) = files_cache.lock() {
+            guard.insert(mod_id, files.clone());
+        }
+    }
+
+    files.retain(|f| {
+        !f.file_name.trim().is_empty() && file_looks_compatible_with_instance(f, instance, "mods")
+    });
+    files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+    let file = files.into_iter().next().ok_or_else(|| {
+        format!(
+            "No compatible CurseForge file found for dependency project {} ({} + {})",
+            mod_id, instance.loader, instance.mc_version
+        )
+    })?;
+    if let Ok(mut guard) = selected_files.lock() {
+        guard.insert(mod_id, file.clone());
+    }
+    Ok(file)
+}
+
+fn resolve_curseforge_dependency_chain_with_worker_cap(
     client: &Client,
     api_key: &str,
     instance: &Instance,
     root_mod_id: i64,
+    max_worker_cap: usize,
+    on_progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Vec<ResolvedCurseforgeInstallMod>, String> {
     let mut ordered: Vec<i64> = Vec::new();
-    let mut queue: VecDeque<i64> = VecDeque::new();
     let mut visited: HashSet<i64> = HashSet::new();
-    let mut selected_files: HashMap<i64, CurseforgeFile> = HashMap::new();
-    queue.push_back(root_mod_id);
+    let selected_files: Arc<Mutex<HashMap<i64, CurseforgeFile>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let files_cache: Arc<Mutex<HashMap<i64, Vec<CurseforgeFile>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
-    while let Some(mod_id) = queue.pop_front() {
-        if !visited.insert(mod_id) {
-            continue;
+    let mut frontier = vec![root_mod_id];
+    let mut resolved_count = 0usize;
+
+    while !frontier.is_empty() {
+        let level_ids: Vec<i64> = dedupe_i64_ordered(frontier)
+            .into_iter()
+            .filter(|mod_id| visited.insert(*mod_id))
+            .collect();
+        if level_ids.is_empty() {
+            break;
         }
-        ordered.push(mod_id);
-        let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-        files.retain(|f| {
-            !f.file_name.trim().is_empty()
-                && file_looks_compatible_with_instance(f, instance, "mods")
-        });
-        files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
-        let Some(file) = files.into_iter().next() else {
-            return Err(format!(
-                "No compatible CurseForge file found for dependency project {} ({} + {})",
-                mod_id, instance.loader, instance.mc_version
-            ));
+
+        ordered.extend(level_ids.iter().copied());
+
+        let queue = Arc::new(Mutex::new(VecDeque::from(level_ids.clone())));
+        let results: Arc<Mutex<Vec<(i64, CurseforgeFile, Vec<i64>)>>> = Arc::new(Mutex::new(vec![]));
+        let first_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let worker_count = adaptive_curseforge_resolve_worker_cap(level_ids.len(), max_worker_cap);
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let queue_ref = queue.clone();
+            let results_ref = results.clone();
+            let error_ref = first_error.clone();
+            let selected_ref = selected_files.clone();
+            let files_cache_ref = files_cache.clone();
+            let client_ref = client.clone();
+            let api_key_ref = api_key.to_string();
+            let instance_ref = instance.clone();
+            handles.push(thread::spawn(move || loop {
+                if let Ok(guard) = error_ref.lock() {
+                    if guard.is_some() {
+                        return;
+                    }
+                }
+                let next = {
+                    let mut guard = match queue_ref.lock() {
+                        Ok(g) => g,
+                        Err(_) => return,
+                    };
+                    guard.pop_front()
+                };
+                let Some(mod_id) = next else {
+                    return;
+                };
+                let file = match resolve_curseforge_selected_file_with_cache(
+                    &client_ref,
+                    &api_key_ref,
+                    &instance_ref,
+                    mod_id,
+                    &files_cache_ref,
+                    &selected_ref,
+                ) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        if let Ok(mut guard) = error_ref.lock() {
+                            if guard.is_none() {
+                                *guard = Some(err);
+                            }
+                        }
+                        return;
+                    }
+                };
+                let deps = file
+                    .dependencies
+                    .iter()
+                    .filter(|dep| dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type))
+                    .map(|dep| dep.mod_id)
+                    .collect::<Vec<_>>();
+                if let Ok(mut guard) = results_ref.lock() {
+                    guard.push((mod_id, file, deps));
+                }
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        if let Ok(mut guard) = first_error.lock() {
+            if let Some(err) = guard.take() {
+                return Err(err);
+            }
+        }
+
+        let mut resolved_level = match Arc::try_unwrap(results) {
+            Ok(mutex) => mutex.into_inner().unwrap_or_default(),
+            Err(shared) => shared.lock().map(|v| v.clone()).unwrap_or_default(),
         };
-        for dep in &file.dependencies {
-            if dep.mod_id <= 0 || !curseforge_relation_is_required(dep.relation_type) {
-                continue;
-            }
-            if !visited.contains(&dep.mod_id) {
-                queue.push_back(dep.mod_id);
+        resolved_level.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut next_frontier: Vec<i64> = Vec::new();
+        for (_, _, deps) in &resolved_level {
+            for dep_id in deps {
+                if !visited.contains(dep_id) {
+                    next_frontier.push(*dep_id);
+                }
             }
         }
-        selected_files.insert(mod_id, file);
+
+        resolved_count += resolved_level.len();
+        on_progress(resolved_count, next_frontier.len());
+
+        for (mod_id, file, _) in resolved_level {
+            if let Ok(mut guard) = selected_files.lock() {
+                guard.insert(mod_id, file);
+            }
+        }
+        frontier = dedupe_i64_ordered(next_frontier);
     }
 
     ordered.reverse();
     let mut plan: Vec<ResolvedCurseforgeInstallMod> = Vec::with_capacity(ordered.len());
     for mod_id in ordered {
         let file = selected_files
-            .remove(&mod_id)
+            .lock()
+            .ok()
+            .and_then(|guard| guard.get(&mod_id).cloned())
             .ok_or_else(|| format!("Missing selected CurseForge file for dependency project {mod_id}"))?;
         plan.push(ResolvedCurseforgeInstallMod { mod_id, file });
     }
     Ok(plan)
+}
+
+fn resolve_curseforge_dependency_chain<F>(
+    client: &Client,
+    api_key: &str,
+    instance: &Instance,
+    root_mod_id: i64,
+    mut on_progress: F,
+) -> Result<Vec<ResolvedCurseforgeInstallMod>, String>
+where
+    F: FnMut(usize, usize),
+{
+    let max_worker_cap = env_worker_cap_or_default(CURSEFORGE_RESOLVE_WORKERS_MAX_ENV, 8, 1, 16);
+    match resolve_curseforge_dependency_chain_with_worker_cap(
+        client,
+        api_key,
+        instance,
+        root_mod_id,
+        max_worker_cap,
+        &mut on_progress,
+    ) {
+        Ok(plan) => Ok(plan),
+        Err(err) => {
+            if !is_curseforge_resolve_transient_error(&err) || max_worker_cap <= 1 {
+                return Err(err);
+            }
+            let fallback_caps = [3usize, 1usize];
+            for cap in fallback_caps {
+                let reduced_cap = cap.min(max_worker_cap);
+                if reduced_cap >= max_worker_cap {
+                    continue;
+                }
+                match resolve_curseforge_dependency_chain_with_worker_cap(
+                    client,
+                    api_key,
+                    instance,
+                    root_mod_id,
+                    reduced_cap,
+                    &mut on_progress,
+                ) {
+                    Ok(plan) => return Ok(plan),
+                    Err(fallback_err) => {
+                        if !is_curseforge_resolve_transient_error(&fallback_err) {
+                            return Err(fallback_err);
+                        }
+                    }
+                }
+            }
+            Err(err)
+        }
+    }
 }
 
 fn discover_content_type_from_modrinth_project_type(project_type: &str) -> String {
@@ -11044,6 +11531,32 @@ mod content_compatibility_tests {
             url,
             "https://www.curseforge.com/minecraft/shaders/complementary-shaders"
         );
+    }
+
+    #[test]
+    fn local_loader_guard_blocks_fabric_and_forge_mismatch_both_directions() {
+        assert!(!instance_loader_accepts_mod_loader("fabric", "forge"));
+        assert!(!instance_loader_accepts_mod_loader("forge", "fabric"));
+    }
+
+    #[test]
+    fn local_loader_guard_allows_quilt_instance_to_accept_fabric_mods() {
+        assert!(instance_loader_accepts_mod_loader("quilt", "fabric"));
+        assert!(!instance_loader_accepts_mod_loader("fabric", "quilt"));
+    }
+
+    #[test]
+    fn local_loader_guard_keeps_neoforge_and_forge_distinct() {
+        assert!(!instance_loader_accepts_mod_loader("neoforge", "forge"));
+        assert!(!instance_loader_accepts_mod_loader("forge", "neoforge"));
+        assert!(instance_loader_accepts_mod_loader("neoforge", "neoforge"));
+    }
+
+    #[test]
+    fn local_loader_guard_allows_forge_family_hint_for_forge_variants() {
+        assert!(instance_loader_accepts_mod_loader("forge", "forge_family"));
+        assert!(instance_loader_accepts_mod_loader("neoforge", "forge_family"));
+        assert!(!instance_loader_accepts_mod_loader("fabric", "forge_family"));
     }
 }
 
