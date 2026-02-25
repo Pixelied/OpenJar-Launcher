@@ -1,86 +1,85 @@
 # Security Model: OpenJar Launcher
 
-This document describes the security hardening for Microsoft/Minecraft auth storage and FriendLink sync.
+This document describes the current security posture for authentication storage, Friend Link sync, and release/update integrity.
 
 ## Protected Assets
-- Microsoft refresh tokens
-- Minecraft/Xbox access tokens
-- FriendLink shared session secrets
-- Instance lock/config sync integrity and confidentiality
+- Microsoft refresh tokens and session identifiers
+- Minecraft/Xbox access-token chain
+- Friend Link session secrets
+- Friend Link peer identity bindings
+- Synced instance content and config integrity
 
-## Auth Storage Hardening
-- Production builds persist refresh tokens in OS secure storage only (`keyring` backend on macOS/Windows/Linux).
-- Plaintext fallback token persistence is removed from production runtime auth flows.
-- Debug builds (`cfg(debug_assertions)`, for example `npm run tauri:dev`) keep a development recovery fallback at `launcher/tokens_debug_fallback.json` to avoid repeated account disconnects when local keychain access is unstable during development.
-  - This file is never used in production builds.
-  - On Unix it is written with restrictive permissions (`0600`).
-- Legacy `launcher/tokens_fallback.json` is treated as migration-only:
-  - read once at startup
-  - migrate tokens into keyring (best effort)
-  - delete fallback file
-- Startup migration checks known legacy launcher data roots (including historical app identifiers) so old fallback files are migrated even after bundle-id changes.
-- Refresh-token lookup also supports secure-storage alias recovery (legacy service names and selected-account alias) and rewrites recovered tokens into canonical keyring entries.
-- No token values are logged.
-- If keyring storage is unavailable, auth operations fail with an actionable secure-storage error instead of falling back to disk.
+## Auth Storage (Microsoft/Minecraft)
+- Production builds persist refresh tokens in OS secure storage only (`keyring` backend).
+- Production auth flows do not use plaintext token fallback persistence.
+- Legacy fallback files are migration-only and are removed after successful migration.
+- Refresh-token lookup supports legacy alias/service recovery and rewrites to canonical secure-storage entries.
+- Sensitive token values are not logged.
+- If secure storage is unavailable, auth fails with actionable secure-storage errors instead of unsafe disk fallback.
 
-## FriendLink Secret Storage
-- FriendLink shared secrets are stored in OS secure storage.
-- `friend_link/store.v1.json` stores a key identifier only; raw shared secret material is not serialized.
-- Legacy on-disk shared secrets are migrated to keyring on read.
-- After migration, `store.v1.json` is rewritten immediately so legacy plaintext secret fields are removed from disk.
-- On Unix, FriendLink store files are written with restrictive permissions (`0600`).
-- If a stale session is missing its secure secret entry, host creation rotates session credentials instead of failing with an unrecoverable keyring error.
+## Friend Link Secret Storage
+- Friend Link shared secrets are stored in OS secure storage.
+- `friend_link/store.v1.json` persists secret handles/metadata, not raw secret bytes.
+- Legacy plaintext Friend Link secrets are migrated and scrubbed from store files.
+- On Unix, store writes use restrictive permissions (`0600`).
 
-## FriendLink Filesystem Safety
-- Added strict safe path handling for FriendLink disk operations:
-  - `safe_join_under(root, rel)` with component validation
-  - strict filename/world-name sanitization for lock entry binary paths
-  - traversal/absolute/prefix rejection
-- `lock_entry_paths` now validates and constrains all generated paths under the target instance directory.
-- Config deletion from network-derived keys now resolves through safe instance-file path logic.
+## Friend Link Transport Security
+- Length-prefixed frame transport with strict max-size limits.
+- Payload confidentiality/integrity via `XChaCha20-Poly1305` (AEAD).
+- Frame keys derived from session secret material with HKDF-SHA256.
+- Per-frame signatures (Ed25519) are verified before processing payloads.
+- Peer key fingerprint trust is enforced; mismatched key identity is rejected.
+- Nonce replay protection is enforced with bounded nonce tracking windows.
 
-## FriendLink Transport Security
-- Replaced unbounded raw reads with length-prefixed framing (`u32` big-endian).
-- Enforced maximum encrypted frame size and plaintext size limits to prevent memory/DoS abuse.
-- FriendLink frames are encrypted+authenticated with AEAD (`XChaCha20-Poly1305`).
-- Per-session frame keys are derived from shared secret material with HKDF-SHA256.
-- Tampered ciphertext fails auth/decrypt and is rejected.
+## Friend Link Endpoint and Exposure Controls
+- Loopback endpoints are blocked in internet mode unless explicitly allowed in Dev mode.
+- Internet endpoints are opt-in (`allow_internet_endpoints`).
+- UPnP is separate opt-in (`allow_upnp_endpoints`) and is not implied by internet mode.
+- UPnP mappings are cleaned up on listener stop/restart/leave (best-effort with warning logs on cleanup failure).
+- Public-IP discovery is disabled by default and gated by `OPENJAR_FRIENDLINK_DISCOVER_PUBLIC_IP=1`.
+- Internet mode join guidance requires reachable host endpoint override or UPnP mapping.
 
-## Endpoint and Trust Defaults
-- Invite/bootstrap endpoints are validated.
-- Loopback endpoints are blocked by default unless explicitly opted in.
-- Loopback opt-in is restricted to Dev mode (`MPM_DEV_MODE=1`) and enforced in backend command handlers.
-- Public internet endpoints are blocked by default unless explicitly opted in.
-- Trust defaults are hardened:
-  - no automatic trust-all behavior
-  - bootstrap host can be default trusted in bootstrap scenarios; all other peers require explicit trust action.
+## Invite and Session Controls
+- Invite payload V2 adds policy metadata (`invite_version`, `invite_id`, `max_uses`, expiry).
+- Invite usage is enforced host-side.
+- Default invite policy:
+  - Internet mode: one-time, short-lived
+  - LAN mode: limited multi-use, longer-lived
+- Legacy invite parsing remains supported for backward compatibility.
+- Listener session fingerprinting forces listener refresh when host credentials rotate.
 
-## Session Rotation Safety
-- FriendLink listeners are now bound to a session fingerprint (group id + local peer id + secret material).
-- If host credentials rotate, the listener is restarted automatically so stale in-memory secrets do not cause persistent decrypt/auth failures.
+## Trust Model
+- No global trust-all behavior.
+- Bootstrap host may be default-trusted in bootstrap scenarios.
+- Other peers require explicit trust.
+- Untrusted-peer changes can block or downgrade sync actions based on policy.
 
-## Runtime Behavior Notes
-- FriendLink auto-sync execution is handled by app-level background scheduling and does not require the Friend Link modal to be open.
-- `manual`, `ask`, `auto_metadata`, and `auto_all` mode behavior remains policy-driven; only the execution trigger location changed (from modal-only to app-level scheduler).
+## Filesystem Confinement and Symlink Safety
+- Friend Link file operations are confined under instance roots.
+- Path traversal/absolute/prefix escapes are rejected.
+- Symlinked target/parent paths are rejected for Friend Link config/content operations.
+- Lock/config path resolution uses constrained, validated path helpers.
 
-## Debug/Export Redaction
-- FriendLink debug bundle export redacts secret-bearing fields (shared secret/key handles/bootstrap credentials).
-- Support bundle redaction path remains token-aware for logs/config content.
+## Diagnostics and Redaction
+- Friend Link debug bundle export redacts secret-bearing fields.
+- Support bundle redaction remains token-aware for logs/config payloads.
 
-## CSP Hardening
-- Tauri CSP is now explicitly set and restrictive (`default-src 'self'`, no object/frame sources, scoped connect/img/style/font/script policies).
+## CSP and App Surface
+- Tauri CSP is explicitly restrictive (`default-src 'self'` with scoped allowances).
+- Network-derived inputs are validated before endpoint/path use.
 
-## Tests Added
-- Auth storage tests:
-  - keyring-only persist path (no plaintext fallback file creation)
-  - keyring read path
-  - legacy fallback migration + file deletion
-  - actionable failure when secure storage is unavailable
-- FriendLink path tests:
-  - filename/world-name traversal rejection
-  - `safe_join_under` traversal rejection
-  - `lock_entry_paths` confinement under instance directory
-- FriendLink protocol tests:
-  - oversized frame rejection
-  - tamper/decrypt-auth failure
-  - relay-style deterministic encrypted message exchange harness
+## Release and Update Integrity
+- Release CI verifies platform support declarations and desktop asset path constraints.
+- Updater artifact generation is enforced per-platform in build scripts/workflow.
+
+## Known Boundaries
+- Friend Link is P2P-first (no relay introduced in this pass).
+- Internet mode still increases attack surface versus LAN-only use.
+- Users should keep OS keychain/credential vault unlocked and healthy for stable auth/session persistence.
+
+## Test Coverage Highlights
+- Auth storage migration, alias recovery, and secure-storage error handling.
+- Friend Link frame tamper/replay/oversize protection.
+- Invite policy enforcement and backward-compat parsing.
+- Endpoint policy behavior (internet/loopback/UPnP toggles).
+- Filesystem traversal/symlink confinement checks.
