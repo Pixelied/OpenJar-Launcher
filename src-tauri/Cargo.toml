@@ -1,6 +1,6 @@
 [package]
 name = "openjar-launcher"
-version = "0.1.6"
+version = "0.1.7"
 description = "OpenJar Launcher"
 authors = ["OpenJar Launcher Contributors"]
 edition = "2021"
