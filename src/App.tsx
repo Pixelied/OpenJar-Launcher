@@ -11906,6 +11906,11 @@ export default function App() {
           : instanceFriendLinkStatus.status
             ? instanceFriendLinkStatus.status.replace(/_/g, " ")
             : "Linked";
+      const showFriendLinkReadinessCard =
+        Boolean(instanceFriendLinkStatus?.linked) &&
+        ((instanceFriendLinkStatus?.pending_conflicts_count ?? 0) > 0 ||
+          Boolean(friendUnsyncedBadge) ||
+          friendLinkSyncBusyInstanceId === inst.id);
       const instanceHealth = instanceHealthById[inst.id] ?? null;
       const instanceHealthPanelPrefs = instanceHealthPanelPrefsByInstance[inst.id] ?? {};
       const hideInstanceHealthPanel = Boolean(instanceHealthPanelPrefs.hidden);
@@ -12092,31 +12097,11 @@ export default function App() {
                 </div>
               ) : null}
 
-              {hideInstanceHealthPanel ? (
-                <div className="card instanceNoticeCard">
-                  <div className="instanceNoticeHead instanceNoticeHeadWrap">
-                    <div>
-                      <div style={{ fontWeight: 900 }}>Instance health hidden</div>
-                      <div className="muted">You can show this panel again any time.</div>
-                    </div>
-                    <button
-                      className="btn"
-                      onClick={() =>
-                        setInstanceHealthPanelPrefsByInstance((prev) => ({
-                          ...prev,
-                          [inst.id]: {
-                            ...(prev[inst.id] ?? {}),
-                            hidden: false,
-                          },
-                        }))
-                      }
-                    >
-                      Show panel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="card instanceNoticeCard">
+              <div
+                className={`instanceHealthPanelWrap ${hideInstanceHealthPanel ? "collapsed" : "expanded"}`}
+                aria-hidden={hideInstanceHealthPanel}
+              >
+                <div className="card instanceNoticeCard instanceHealthPanelCard">
                   <div className="instanceHealthHeader">
                     <div className="instanceHealthTitleBlock">
                       <div style={{ fontWeight: 900 }}>Instance health</div>
@@ -12129,22 +12114,6 @@ export default function App() {
                             : " • No immediate blockers detected."}
                         </div>
                       ) : null}
-                    </div>
-                    <div className="instanceHealthControls">
-                      <button
-                        className="btn"
-                        onClick={() =>
-                          setInstanceHealthPanelPrefsByInstance((prev) => ({
-                            ...prev,
-                            [inst.id]: {
-                              ...(prev[inst.id] ?? {}),
-                              hidden: true,
-                            },
-                          }))
-                        }
-                      >
-                        Hide
-                      </button>
                     </div>
                   </div>
                   <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
@@ -12168,7 +12137,7 @@ export default function App() {
                     </span>
                   </div>
                 </div>
-              )}
+              </div>
 
               <div className="instPageTop">
                 <div className="instHero">
@@ -12268,6 +12237,30 @@ export default function App() {
                       )}
                     </button>
                     <button
+                      className={`btn subtle ${compactHeroActions ? "instHeroIconBtn" : ""}`}
+                      onClick={() =>
+                        setInstanceHealthPanelPrefsByInstance((prev) => ({
+                          ...prev,
+                          [inst.id]: {
+                            ...(prev[inst.id] ?? {}),
+                            hidden: !hideInstanceHealthPanel,
+                          },
+                        }))
+                      }
+                      title={hideInstanceHealthPanel ? "Show instance health panel" : "Hide instance health panel"}
+                      aria-label={hideInstanceHealthPanel ? "Show instance health panel" : "Hide instance health panel"}
+                    >
+                      {compactHeroActions ? (
+                        <span className="btnIcon">
+                          <Icon name="sliders" size={18} />
+                        </span>
+                      ) : hideInstanceHealthPanel ? (
+                        "Show health"
+                      ) : (
+                        "Hide health"
+                      )}
+                    </button>
+                    <button
                       className={`btn settingsSpin ${compactHeroActions ? "instHeroIconBtn" : ""}`}
                       onClick={() => {
                         setInstanceLinksOpen(false);
@@ -12285,7 +12278,7 @@ export default function App() {
                 </div>
               </div>
 
-              {instanceFriendLinkStatus?.linked ? (
+              {showFriendLinkReadinessCard ? (
                 <div className="card instanceNoticeCard">
                   <div className="instanceNoticeHead instanceNoticeHeadWrap">
                     <div>

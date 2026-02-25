@@ -209,7 +209,7 @@ export default function InstanceModpackCard({
   const [guardrailsBusy, setGuardrailsBusy] = useState(false);
   const [allowlistBusy, setAllowlistBusy] = useState(false);
   const [driftReviewOpen, setDriftReviewOpen] = useState(false);
-  const [peerSafetyPanelOpen, setPeerSafetyPanelOpen] = useState(true);
+  const [peerSafetyPanelOpen, setPeerSafetyPanelOpen] = useState(false);
   const [policyPanelOpen, setPolicyPanelOpen] = useState(false);
   const [sessionActionsPanelOpen, setSessionActionsPanelOpen] = useState(false);
   const [selectedDriftKeys, setSelectedDriftKeys] = useState<string[]>([]);
@@ -245,7 +245,7 @@ export default function InstanceModpackCard({
     setFriendPublicEndpointOverride("");
     setPeerAliasDrafts({});
     setPeerAliasSavingId(null);
-    setPeerSafetyPanelOpen(true);
+    setPeerSafetyPanelOpen(false);
     setPolicyPanelOpen(false);
     setSessionActionsPanelOpen(false);
     lastDriftSignatureRef.current = "";
@@ -298,10 +298,6 @@ export default function InstanceModpackCard({
     return `${drift.added.length} added · ${drift.removed.length} removed · ${drift.version_changed.length} changed`;
   }, [drift]);
 
-  const friendDriftSummary = useMemo(() => {
-    if (!friendDrift) return "No drift preview";
-    return `+${friendDrift.added} / -${friendDrift.removed} / ~${friendDrift.changed}`;
-  }, [friendDrift]);
   const friendAllowlistPreset = useMemo(
     () => allowlistPresetForRows(friendStatus?.allowlist ?? []),
     [friendStatus?.allowlist]
@@ -809,7 +805,7 @@ export default function InstanceModpackCard({
         </div>
         {friendStatus?.linked ? (
           <>
-            <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
+            <div className="card friendLinkPanelCard friendLinkOverviewCard" style={{ marginTop: 10 }}>
               <div className="friendLinkOverview">
                 <div>
                   <div className="friendLinkOverviewTitle">Session overview</div>
@@ -831,449 +827,45 @@ export default function InstanceModpackCard({
                     </div>
                   ) : null}
                 </div>
-                <div className="muted">
-                  Safety gate: {friendStatus.pending_conflicts_count} unresolved conflict
-                  {friendStatus.pending_conflicts_count === 1 ? "" : "s"}.
+                <div className="friendLinkOverviewBadges">
+                  <span className="chip subtle">
+                    Safety gate {friendStatus.pending_conflicts_count} conflict{friendStatus.pending_conflicts_count === 1 ? "" : "s"}
+                  </span>
+                  {friendDrift ? (
+                    <span className="chip subtle" title="How many items would change if synced now.">
+                      {friendDrift.total_changes} change{friendDrift.total_changes === 1 ? "" : "s"}
+                    </span>
+                  ) : null}
                 </div>
               </div>
-            </div>
-
-            {friendDrift ? (
-              <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-                <div className="friendLinkSectionTitle">Dry-run preview</div>
-                <div className="muted" style={{ marginTop: 4 }}>
-                  {friendDriftSummaryMessage}
-                </div>
-                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                  <span className="chip subtle" title="How many items would change if synced now.">
-                    {friendDrift.total_changes} change{friendDrift.total_changes === 1 ? "" : "s"}
-                  </span>
-                  <span className="chip subtle" title="Best-effort total bytes for pending file/config changes.">
-                    ~{formatByteCount(friendDriftEstimatedBytes)}
-                  </span>
-                  <span className="chip subtle" title="Rows where byte size could not be estimated yet.">
-                    Unknown size rows {friendDriftUnknownBytesItems}
-                  </span>
-                </div>
-                {friendDriftTopPrefixes.length > 0 ? (
-                  <div className="muted" style={{ marginTop: 6 }}>
-                    Top paths: {friendDriftTopPrefixes.join(" · ")}
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-
-            {hostWaitingForPeer ? (
-              <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-                <div className="friendLinkSectionTitle">Waiting for first peer</div>
-                <div className="muted" style={{ marginTop: 4 }}>
-                  Share the invite code below. Sync and peer controls will activate after someone joins.
-                </div>
-              </div>
-            ) : null}
-
-            {!hostWaitingForPeer ? (
-              <>
-            <div className="card friendLinkPanelCard friendLinkPeersCard" style={{ marginTop: 10 }}>
-              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
-                <div className="friendLinkSectionTitle">Peers and safety overrides</div>
-                <button className="btn" onClick={() => setPeerSafetyPanelOpen((prev) => !prev)}>
-                  {peerSafetyPanelOpen ? "Collapse" : "Expand"}
+              <div className="friendLinkQuickActions">
+                <button
+                  className="btn primary"
+                  disabled={syncBusy}
+                  title="Run full Friend Link sync now (with retry fallback if files are missing)."
+                  onClick={() => void runManualSync("manual")}
+                >
+                  {syncBusy ? "Syncing…" : "Sync now"}
                 </button>
-              </div>
-              {peerSafetyPanelOpen ? (
-                <>
-                <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
-                  Untrusted peers are fully blocked: no manual or automatic sync is allowed from them until you trust them again.
-                </div>
-                {friendStatus.peers?.length ? (
-                <div className="friendLinkPeersList">
-                {friendStatus.peers.map((peer) => {
-                  const trusted = guardTrustedPeerIds.includes(peer.peer_id);
-                  const aliasValue = peerAliasDrafts[peer.peer_id] ?? peer.display_name;
-                  const aliasDirty = aliasValue.trim() !== peer.display_name.trim();
-                  return (
-                    <div
-                      key={peer.peer_id}
-                      className="friendLinkPeerRow"
-                    >
-                      <div>
-                        <div className="friendLinkPeerName">{peer.display_name}</div>
-                        <div className="muted friendLinkPeerMeta">
-                          {peer.online ? "online" : "offline"} · {peer.peer_id}
-                        </div>
-                      </div>
-                      <div className="friendLinkPeerActions">
-                        <div className="friendLinkPeerEditRow">
-                          <input
-                            className="input friendLinkPeerAliasInput"
-                            value={aliasValue}
-                            maxLength={48}
-                            title="Set a local nickname for this peer so it is easier to identify them."
-                            placeholder="Peer nickname"
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              setPeerAliasDrafts((prev) => ({ ...prev, [peer.peer_id]: value }));
-                            }}
-                          />
-                          <button
-                            className="btn"
-                            disabled={peerAliasSavingId === peer.peer_id || !aliasDirty}
-                            title="Save this peer nickname on your launcher."
-                            onClick={async () => {
-                              setPeerAliasSavingId(peer.peer_id);
-                              try {
-                                const updated = await setFriendLinkPeerAlias({
-                                  instanceId: instance.id,
-                                  peerId: peer.peer_id,
-                                  displayName: aliasValue,
-                                });
-                                updateFriendStatus(updated, { forceGuardrailSync: true });
-                                onNotice("Peer nickname updated.");
-                                await refresh({ quiet: true });
-                              } catch (err: any) {
-                                onError(err?.toString?.() ?? String(err));
-                              } finally {
-                                setPeerAliasSavingId(null);
-                              }
-                            }}
-                          >
-                            {peerAliasSavingId === peer.peer_id ? "Saving…" : "Save name"}
-                          </button>
-                          <button
-                            className="btn"
-                            disabled={peerAliasSavingId === peer.peer_id}
-                            title="Reset back to the peer's original shared name."
-                            onClick={async () => {
-                              setPeerAliasSavingId(peer.peer_id);
-                              try {
-                                const updated = await setFriendLinkPeerAlias({
-                                  instanceId: instance.id,
-                                  peerId: peer.peer_id,
-                                  displayName: "",
-                                });
-                                updateFriendStatus(updated, { forceGuardrailSync: true });
-                                onNotice("Peer nickname reset.");
-                                await refresh({ quiet: true });
-                              } catch (err: any) {
-                                onError(err?.toString?.() ?? String(err));
-                              } finally {
-                                setPeerAliasSavingId(null);
-                              }
-                            }}
-                          >
-                            Reset
-                          </button>
-                        </div>
-                        <div className="friendLinkPeerTrustRow">
-                          <span
-                            className={`chip ${trusted ? "" : "subtle"}`}
-                            title={
-                              trusted
-                                ? "Trusted peer: sync is allowed from this peer."
-                                : "Untrusted peer: sync is blocked from this peer until trusted."
-                            }
-                          >
-                            {trusted ? "Trusted" : "Untrusted"}
-                          </span>
-                          <button
-                            className={`btn ${trusted ? "" : "primary"}`}
-                            disabled={guardrailsBusy}
-                            title={trusted ? "Block syncing from this peer." : "Allow syncing from this peer again."}
-                            onClick={async () => {
-                              const nextTrusted = trusted
-                                ? guardTrustedPeerIds.filter((id) => id !== peer.peer_id)
-                                : [...guardTrustedPeerIds, peer.peer_id];
-                              setGuardrailsBusy(true);
-                              try {
-                                const updated = await setFriendLinkGuardrails({
-                                  instanceId: instance.id,
-                                  trustedPeerIds: nextTrusted,
-                                  maxAutoChanges: guardMaxAutoChanges,
-                                  syncMods: syncModsEnabled,
-                                  syncResourcepacks: syncResourcepacksEnabled,
-                                  syncShaderpacks: syncShaderpacksEnabled,
-                                  syncDatapacks: syncDatapacksEnabled,
-                                });
-                                updateFriendStatus(updated, { forceGuardrailSync: true });
-                                setGuardTrustedPeerIds(updated.trusted_peer_ids ?? []);
-                                setGuardrailsDirty(false);
-                                onNotice(trusted ? "Peer untrusted." : "Peer trusted.");
-                                await refresh({ quiet: true });
-                              } catch (err: any) {
-                                onError(err?.toString?.() ?? String(err));
-                              } finally {
-                                setGuardrailsBusy(false);
-                              }
-                            }}
-                          >
-                            {trusted ? "Untrust peer" : "Trust peer"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-                </div>
-                ) : (
-                  <div className="muted" style={{ marginTop: 8 }}>
-                    No followers joined yet.
-                  </div>
-                )}
-                </>
-              ) : (
-                <div className="muted" style={{ marginTop: 6 }}>
-                  Manage peer trust and nicknames.
-                </div>
-              )}
-            </div>
-
-            <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
-                <div className="friendLinkSectionTitle">Policy and guardrails</div>
-                <button className="btn" onClick={() => setPolicyPanelOpen((prev) => !prev)}>
-                  {policyPanelOpen ? "Collapse" : "Expand"}
-                </button>
-              </div>
-              {policyPanelOpen ? (
-                <>
-              <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
-                <div className="friendLinkSubsectionTitle">Allowlist preset</div>
-                <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
-                  Controls config-file scope. Mods/packs/datapacks are still controlled by the sync toggles below.
-                </div>
-                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    className={`btn ${friendAllowlistPreset === "mods_only" ? "primary" : ""}`}
-                    title="Sync lockfile-backed content only (no config files)."
-                    disabled={allowlistBusy}
-                    onClick={() => void applyAllowlistPreset("mods_only")}
-                  >
-                    Mods only
-                  </button>
-                  <button
-                    className={`btn ${friendAllowlistPreset === "mods_plus_configs" ? "primary" : ""}`}
-                    title="Sync lockfile-backed content plus common config files."
-                    disabled={allowlistBusy}
-                    onClick={() => void applyAllowlistPreset("mods_plus_configs")}
-                  >
-                    Mods + Configs
-                  </button>
-                  <button
-                    className={`btn ${friendAllowlistPreset === "everything" ? "primary danger" : ""}`}
-                    title="Sync most files except protected folders. Review before using."
-                    disabled={allowlistBusy}
-                    onClick={() => void applyAllowlistPreset("everything")}
-                  >
-                    Everything
-                  </button>
-                </div>
-                <div className="muted friendLinkPeerMeta" style={{ marginTop: 6 }}>
-                  Current preset: {friendAllowlistPreset === "mods_plus_configs"
-                    ? "Mods + Configs"
-                    : friendAllowlistPreset === "mods_only"
-                      ? "Mods only"
-                      : friendAllowlistPreset === "everything"
-                        ? "Everything (use with caution)"
-                        : `Custom (${friendAllowlistCount} pattern${friendAllowlistCount === 1 ? "" : "s"})`}
-                </div>
-              </div>
-              <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
-                <div className="friendLinkSubsectionTitle">What to sync</div>
-                <div className="friendLinkSyncTypesGrid" style={{ marginTop: 8 }}>
-                  <div className="friendLinkSyncTypeRow">
-                    <div>
-                      <div className="friendLinkSyncTypeLabel">Mods</div>
-                      <div className="muted friendLinkPeerMeta">Sync mod metadata and files.</div>
-                    </div>
-                    <button
-                      className={`btn ${syncModsEnabled ? "primary" : ""}`}
-                      disabled={guardrailsBusy}
-                      title="Toggle mod syncing for this instance."
-                      onClick={() => {
-                        setGuardrailsDirty(true);
-                        setSyncModsEnabled((prev) => !prev);
-                      }}
-                    >
-                      {syncModsEnabled ? "On" : "Off"}
-                    </button>
-                  </div>
-                  <div className="friendLinkSyncTypeRow">
-                    <div>
-                      <div className="friendLinkSyncTypeLabel">Resource packs (texture packs)</div>
-                      <div className="muted friendLinkPeerMeta">Optional visual packs. Default is Off.</div>
-                    </div>
-                    <button
-                      className={`btn ${syncResourcepacksEnabled ? "primary" : ""}`}
-                      disabled={guardrailsBusy}
-                      title="Toggle resource/texture pack syncing for this instance."
-                      onClick={() => {
-                        setGuardrailsDirty(true);
-                        setSyncResourcepacksEnabled((prev) => !prev);
-                      }}
-                    >
-                      {syncResourcepacksEnabled ? "On" : "Off"}
-                    </button>
-                  </div>
-                  <div className="friendLinkSyncTypeRow">
-                    <div>
-                      <div className="friendLinkSyncTypeLabel">Shader packs</div>
-                      <div className="muted friendLinkPeerMeta">Sync shader pack metadata and files.</div>
-                    </div>
-                    <button
-                      className={`btn ${syncShaderpacksEnabled ? "primary" : ""}`}
-                      disabled={guardrailsBusy}
-                      title="Toggle shader pack syncing for this instance."
-                      onClick={() => {
-                        setGuardrailsDirty(true);
-                        setSyncShaderpacksEnabled((prev) => !prev);
-                      }}
-                    >
-                      {syncShaderpacksEnabled ? "On" : "Off"}
-                    </button>
-                  </div>
-                  <div className="friendLinkSyncTypeRow">
-                    <div>
-                      <div className="friendLinkSyncTypeLabel">Datapacks</div>
-                      <div className="muted friendLinkPeerMeta">Sync world datapack metadata and files.</div>
-                    </div>
-                    <button
-                      className={`btn ${syncDatapacksEnabled ? "primary" : ""}`}
-                      disabled={guardrailsBusy}
-                      title="Toggle datapack syncing for this instance."
-                      onClick={() => {
-                        setGuardrailsDirty(true);
-                        setSyncDatapacksEnabled((prev) => !prev);
-                      }}
-                    >
-                      {syncDatapacksEnabled ? "On" : "Off"}
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                <span className="muted" style={{ alignSelf: "center" }}>
-                  Max auto changes:
-                </span>
-                <input
-                  className="input"
-                  style={{ width: 110 }}
-                  type="number"
-                  min={1}
-                  max={500}
-                  title="Safety limit for automatic sync actions. If a drift has more changes than this, auto-sync pauses for review."
-                  value={guardMaxAutoChanges}
-                  onChange={(event) => {
-                    setGuardrailsDirty(true);
-                    const next = Number(event.target.value || 25);
-                    setGuardMaxAutoChanges(Math.max(1, Math.min(500, Number.isFinite(next) ? next : 25)));
-                  }}
-                />
                 <button
                   className="btn"
-                  disabled={guardrailsBusy || !guardrailsDirty}
-                  title="Save trusted peers and auto-sync safety threshold."
-                  onClick={async () => {
-                    setGuardrailsBusy(true);
-                    try {
-                      const updated = await setFriendLinkGuardrails({
-                        instanceId: instance.id,
-                        trustedPeerIds: guardTrustedPeerIds,
-                        maxAutoChanges: guardMaxAutoChanges,
-                        syncMods: syncModsEnabled,
-                        syncResourcepacks: syncResourcepacksEnabled,
-                        syncShaderpacks: syncShaderpacksEnabled,
-                        syncDatapacks: syncDatapacksEnabled,
-                      });
-                      updateFriendStatus(updated, { forceGuardrailSync: true });
-                      setGuardrailsDirty(false);
-                      onNotice("Friend Link sync settings updated.");
-                    } catch (err: any) {
-                      onError(err?.toString?.() ?? String(err));
-                    } finally {
-                      setGuardrailsBusy(false);
+                  disabled={syncBusy || !friendDrift || friendDrift.total_changes === 0}
+                  title="Open selective review to choose which changes to sync."
+                  onClick={() => {
+                    setDriftReviewOpen(true);
+                    if ((friendDrift?.items.length ?? 0) > 0 && selectedDriftKeys.length === 0) {
+                      setSelectedDriftKeys(friendDrift!.items.map((item) => item.key));
                     }
                   }}
                 >
-                  {guardrailsBusy ? "Saving…" : "Save guardrails"}
+                  Review changes
                 </button>
-              </div>
-              <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
-                <button
-                  className={`btn ${syncPolicy === "manual" ? "primary" : ""}`}
-                  title="Manual mode: no automatic syncing. You control all sync actions."
-                  onClick={() => setSyncPolicy("manual")}
-                  disabled={syncBusy}
-                >
-                  Manual
-                </button>
-                <button
-                  className={`btn ${syncPolicy === "ask" ? "primary" : ""}`}
-                  title="Ask every time: show prompt when unsynced changes are detected."
-                  onClick={() => setSyncPolicy("ask")}
-                  disabled={syncBusy}
-                >
-                  Ask every time
-                </button>
-                <button
-                  className={`btn ${syncPolicy === "auto_metadata" ? "primary" : ""}`}
-                  title="Auto metadata only: update lock/config metadata automatically, without forcing full file fetch for every change."
-                  onClick={() => setSyncPolicy("auto_metadata")}
-                  disabled={syncBusy}
-                >
-                  Auto metadata only
-                </button>
-                <button
-                  className={`btn ${syncPolicy === "auto_all" ? "primary" : ""}`}
-                  title="Auto-sync everything: automatically reconcile and sync full changes when guardrails allow it."
-                  onClick={() => setSyncPolicy("auto_all")}
-                  disabled={syncBusy}
-                >
-                  Auto-sync everything
-                </button>
-              </div>
-              </>
-              ) : (
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Preset {friendAllowlistPreset === "mods_plus_configs"
-                    ? "Mods + Configs"
-                    : friendAllowlistPreset === "mods_only"
-                      ? "Mods only"
-                      : friendAllowlistPreset === "everything"
-                        ? "Everything"
-                        : "Custom"} · Policy {syncPolicyLabel}.
-                </div>
-              )}
-            </div>
-
-            {effectiveFriendUnsynced && !isSnoozed ? (
-              <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
-                <div style={{ fontWeight: 850 }} title={friendDriftLegend}>Unsynced changes detected</div>
-                <div className="muted" style={{ marginTop: 4 }} title={friendDriftLegend}>
-                  {friendDriftSummary} across {friendDrift?.total_changes ?? 0} item{(friendDrift?.total_changes ?? 0) === 1 ? "" : "s"}.
-                </div>
-                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                  <button
-                    className="btn"
-                    disabled={syncBusy}
-                    title="Open selective review to choose which changes to sync."
-                    onClick={() => {
-                      setDriftReviewOpen(true);
-                      if ((friendDrift?.items.length ?? 0) > 0 && selectedDriftKeys.length === 0) {
-                        setSelectedDriftKeys(friendDrift!.items.map((item) => item.key));
-                      }
-                    }}
-                  >
-                    Review changes
+                {friendStatus.pending_conflicts_count > 0 ? (
+                  <button className="btn danger" onClick={() => setDriftReviewOpen(true)}>
+                    Resolve conflicts
                   </button>
-                  <button
-                    className="btn primary"
-                    disabled={syncBusy}
-                    title="Run full Friend Link sync now (with retry fallback if files are missing)."
-                    onClick={() => void runManualSync("manual")}
-                  >
-                    {syncBusy ? "Syncing…" : "Sync now"}
-                  </button>
+                ) : null}
+                {effectiveFriendUnsynced && !isSnoozed ? (
                   <button
                     className="btn"
                     disabled={syncBusy}
@@ -1286,9 +878,421 @@ export default function InstanceModpackCard({
                   >
                     Snooze 30m
                   </button>
+                ) : null}
+                <button className="btn" onClick={() => setSessionActionsPanelOpen((prev) => !prev)}>
+                  {sessionActionsPanelOpen ? "Hide tools" : "More tools"}
+                </button>
+              </div>
+              {friendDrift ? (
+                <div className="friendLinkPreviewInline">
+                  <div className="friendLinkSectionTitle">Dry-run preview</div>
+                  <div className="muted" style={{ marginTop: 4 }}>
+                    {friendDriftSummaryMessage}
+                  </div>
+                  <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                    <span className="chip subtle" title="Best-effort total bytes for pending file/config changes.">
+                      ~{formatByteCount(friendDriftEstimatedBytes)}
+                    </span>
+                    <span className="chip subtle" title="Rows where byte size could not be estimated yet.">
+                      Unknown size rows {friendDriftUnknownBytesItems}
+                    </span>
+                  </div>
+                  {friendDriftTopPrefixes.length > 0 ? (
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      Top paths: {friendDriftTopPrefixes.join(" · ")}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            {hostWaitingForPeer ? (
+              <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
+                <div className="friendLinkSectionTitle">Waiting for first peer</div>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  Share the invite code below. Sync and peer controls will activate after someone joins.
                 </div>
               </div>
             ) : null}
+
+            {!hostWaitingForPeer ? (
+              <>
+            <div className="friendLinkManagementGrid">
+            <div className="card friendLinkPanelCard friendLinkPeersCard" style={{ marginTop: 0 }}>
+              <div className="rowBetween friendLinkSectionHead" style={{ gap: 8, flexWrap: "wrap" }}>
+                <div className="friendLinkSectionTitle">Peers and safety overrides</div>
+                <button className="btn friendLinkSectionToggle" onClick={() => setPeerSafetyPanelOpen((prev) => !prev)}>
+                  {peerSafetyPanelOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              <div className={`friendLinkCollapseBody ${peerSafetyPanelOpen ? "open" : "closed"}`}>
+                <div className="friendLinkCollapseInner">
+                    <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
+                      Untrusted peers are fully blocked: no manual or automatic sync is allowed from them until you trust them again.
+                    </div>
+                    {friendStatus.peers?.length ? (
+                      <div className="friendLinkPeersList">
+                        {friendStatus.peers.map((peer) => {
+                          const trusted = guardTrustedPeerIds.includes(peer.peer_id);
+                          const aliasValue = peerAliasDrafts[peer.peer_id] ?? peer.display_name;
+                          const aliasDirty = aliasValue.trim() !== peer.display_name.trim();
+                          return (
+                            <div
+                              key={peer.peer_id}
+                              className="friendLinkPeerRow"
+                            >
+                              <div>
+                                <div className="friendLinkPeerName">{peer.display_name}</div>
+                                <div className="muted friendLinkPeerMeta">
+                                  {peer.online ? "online" : "offline"} · {peer.peer_id}
+                                </div>
+                              </div>
+                              <div className="friendLinkPeerActions">
+                                <div className="friendLinkPeerEditRow">
+                                  <input
+                                    className="input friendLinkPeerAliasInput"
+                                    value={aliasValue}
+                                    maxLength={48}
+                                    title="Set a local nickname for this peer so it is easier to identify them."
+                                    placeholder="Peer nickname"
+                                    onChange={(event) => {
+                                      const value = event.target.value;
+                                      setPeerAliasDrafts((prev) => ({ ...prev, [peer.peer_id]: value }));
+                                    }}
+                                  />
+                                  <button
+                                    className="btn"
+                                    disabled={peerAliasSavingId === peer.peer_id || !aliasDirty}
+                                    title="Save this peer nickname on your launcher."
+                                    onClick={async () => {
+                                      setPeerAliasSavingId(peer.peer_id);
+                                      try {
+                                        const updated = await setFriendLinkPeerAlias({
+                                          instanceId: instance.id,
+                                          peerId: peer.peer_id,
+                                          displayName: aliasValue,
+                                        });
+                                        updateFriendStatus(updated, { forceGuardrailSync: true });
+                                        onNotice("Peer nickname updated.");
+                                        await refresh({ quiet: true });
+                                      } catch (err: any) {
+                                        onError(err?.toString?.() ?? String(err));
+                                      } finally {
+                                        setPeerAliasSavingId(null);
+                                      }
+                                    }}
+                                  >
+                                    {peerAliasSavingId === peer.peer_id ? "Saving…" : "Save name"}
+                                  </button>
+                                  <button
+                                    className="btn"
+                                    disabled={peerAliasSavingId === peer.peer_id}
+                                    title="Reset back to the peer's original shared name."
+                                    onClick={async () => {
+                                      setPeerAliasSavingId(peer.peer_id);
+                                      try {
+                                        const updated = await setFriendLinkPeerAlias({
+                                          instanceId: instance.id,
+                                          peerId: peer.peer_id,
+                                          displayName: "",
+                                        });
+                                        updateFriendStatus(updated, { forceGuardrailSync: true });
+                                        onNotice("Peer nickname reset.");
+                                        await refresh({ quiet: true });
+                                      } catch (err: any) {
+                                        onError(err?.toString?.() ?? String(err));
+                                      } finally {
+                                        setPeerAliasSavingId(null);
+                                      }
+                                    }}
+                                  >
+                                    Reset
+                                  </button>
+                                </div>
+                                <div className="friendLinkPeerTrustRow">
+                                  <span
+                                    className={`chip ${trusted ? "" : "subtle"}`}
+                                    title={
+                                      trusted
+                                        ? "Trusted peer: sync is allowed from this peer."
+                                        : "Untrusted peer: sync is blocked from this peer until trusted."
+                                    }
+                                  >
+                                    {trusted ? "Trusted" : "Untrusted"}
+                                  </span>
+                                  <button
+                                    className={`btn ${trusted ? "" : "primary"}`}
+                                    disabled={guardrailsBusy}
+                                    title={trusted ? "Block syncing from this peer." : "Allow syncing from this peer again."}
+                                    onClick={async () => {
+                                      const nextTrusted = trusted
+                                        ? guardTrustedPeerIds.filter((id) => id !== peer.peer_id)
+                                        : [...guardTrustedPeerIds, peer.peer_id];
+                                      setGuardrailsBusy(true);
+                                      try {
+                                        const updated = await setFriendLinkGuardrails({
+                                          instanceId: instance.id,
+                                          trustedPeerIds: nextTrusted,
+                                          maxAutoChanges: guardMaxAutoChanges,
+                                          syncMods: syncModsEnabled,
+                                          syncResourcepacks: syncResourcepacksEnabled,
+                                          syncShaderpacks: syncShaderpacksEnabled,
+                                          syncDatapacks: syncDatapacksEnabled,
+                                        });
+                                        updateFriendStatus(updated, { forceGuardrailSync: true });
+                                        setGuardTrustedPeerIds(updated.trusted_peer_ids ?? []);
+                                        setGuardrailsDirty(false);
+                                        onNotice(trusted ? "Peer untrusted." : "Peer trusted.");
+                                        await refresh({ quiet: true });
+                                      } catch (err: any) {
+                                        onError(err?.toString?.() ?? String(err));
+                                      } finally {
+                                        setGuardrailsBusy(false);
+                                      }
+                                    }}
+                                  >
+                                    {trusted ? "Untrust peer" : "Trust peer"}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        No followers joined yet.
+                      </div>
+                    )}
+                </div>
+              </div>
+              {!peerSafetyPanelOpen ? (
+                <div className="muted friendLinkCollapsedHint">
+                  Manage peer trust and nicknames.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="card friendLinkPanelCard" style={{ marginTop: 0 }}>
+              <div className="rowBetween friendLinkSectionHead" style={{ gap: 8, flexWrap: "wrap" }}>
+                <div className="friendLinkSectionTitle">Policy and guardrails</div>
+                <button className="btn friendLinkSectionToggle" onClick={() => setPolicyPanelOpen((prev) => !prev)}>
+                  {policyPanelOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              <div className={`friendLinkCollapseBody ${policyPanelOpen ? "open" : "closed"}`}>
+                <div className="friendLinkCollapseInner">
+                    <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
+                      <div className="friendLinkSubsectionTitle">Allowlist preset</div>
+                      <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
+                        Controls config-file scope. Mods/packs/datapacks are still controlled by the sync toggles below.
+                      </div>
+                      <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                        <button
+                          className={`btn ${friendAllowlistPreset === "mods_only" ? "primary" : ""}`}
+                          title="Sync lockfile-backed content only (no config files)."
+                          disabled={allowlistBusy}
+                          onClick={() => void applyAllowlistPreset("mods_only")}
+                        >
+                          Mods only
+                        </button>
+                        <button
+                          className={`btn ${friendAllowlistPreset === "mods_plus_configs" ? "primary" : ""}`}
+                          title="Sync lockfile-backed content plus common config files."
+                          disabled={allowlistBusy}
+                          onClick={() => void applyAllowlistPreset("mods_plus_configs")}
+                        >
+                          Mods + Configs
+                        </button>
+                        <button
+                          className={`btn ${friendAllowlistPreset === "everything" ? "primary danger" : ""}`}
+                          title="Sync most files except protected folders. Review before using."
+                          disabled={allowlistBusy}
+                          onClick={() => void applyAllowlistPreset("everything")}
+                        >
+                          Everything
+                        </button>
+                      </div>
+                      <div className="muted friendLinkPeerMeta" style={{ marginTop: 6 }}>
+                        Current preset: {friendAllowlistPreset === "mods_plus_configs"
+                          ? "Mods + Configs"
+                          : friendAllowlistPreset === "mods_only"
+                            ? "Mods only"
+                            : friendAllowlistPreset === "everything"
+                              ? "Everything (use with caution)"
+                              : `Custom (${friendAllowlistCount} pattern${friendAllowlistCount === 1 ? "" : "s"})`}
+                      </div>
+                    </div>
+                    <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
+                      <div className="friendLinkSubsectionTitle">What to sync</div>
+                      <div className="friendLinkSyncTypesGrid" style={{ marginTop: 8 }}>
+                        <div className="friendLinkSyncTypeRow">
+                          <div>
+                            <div className="friendLinkSyncTypeLabel">Mods</div>
+                            <div className="muted friendLinkPeerMeta">Sync mod metadata and files.</div>
+                          </div>
+                          <button
+                            className={`btn ${syncModsEnabled ? "primary" : ""}`}
+                            disabled={guardrailsBusy}
+                            title="Toggle mod syncing for this instance."
+                            onClick={() => {
+                              setGuardrailsDirty(true);
+                              setSyncModsEnabled((prev) => !prev);
+                            }}
+                          >
+                            {syncModsEnabled ? "On" : "Off"}
+                          </button>
+                        </div>
+                        <div className="friendLinkSyncTypeRow">
+                          <div>
+                            <div className="friendLinkSyncTypeLabel">Resource packs (texture packs)</div>
+                            <div className="muted friendLinkPeerMeta">Optional visual packs. Default is Off.</div>
+                          </div>
+                          <button
+                            className={`btn ${syncResourcepacksEnabled ? "primary" : ""}`}
+                            disabled={guardrailsBusy}
+                            title="Toggle resource/texture pack syncing for this instance."
+                            onClick={() => {
+                              setGuardrailsDirty(true);
+                              setSyncResourcepacksEnabled((prev) => !prev);
+                            }}
+                          >
+                            {syncResourcepacksEnabled ? "On" : "Off"}
+                          </button>
+                        </div>
+                        <div className="friendLinkSyncTypeRow">
+                          <div>
+                            <div className="friendLinkSyncTypeLabel">Shader packs</div>
+                            <div className="muted friendLinkPeerMeta">Sync shader pack metadata and files.</div>
+                          </div>
+                          <button
+                            className={`btn ${syncShaderpacksEnabled ? "primary" : ""}`}
+                            disabled={guardrailsBusy}
+                            title="Toggle shader pack syncing for this instance."
+                            onClick={() => {
+                              setGuardrailsDirty(true);
+                              setSyncShaderpacksEnabled((prev) => !prev);
+                            }}
+                          >
+                            {syncShaderpacksEnabled ? "On" : "Off"}
+                          </button>
+                        </div>
+                        <div className="friendLinkSyncTypeRow">
+                          <div>
+                            <div className="friendLinkSyncTypeLabel">Datapacks</div>
+                            <div className="muted friendLinkPeerMeta">Sync world datapack metadata and files.</div>
+                          </div>
+                          <button
+                            className={`btn ${syncDatapacksEnabled ? "primary" : ""}`}
+                            disabled={guardrailsBusy}
+                            title="Toggle datapack syncing for this instance."
+                            onClick={() => {
+                              setGuardrailsDirty(true);
+                              setSyncDatapacksEnabled((prev) => !prev);
+                            }}
+                          >
+                            {syncDatapacksEnabled ? "On" : "Off"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                      <span className="muted" style={{ alignSelf: "center" }}>
+                        Max auto changes:
+                      </span>
+                      <input
+                        className="input"
+                        style={{ width: 110 }}
+                        type="number"
+                        min={1}
+                        max={500}
+                        title="Safety limit for automatic sync actions. If a drift has more changes than this, auto-sync pauses for review."
+                        value={guardMaxAutoChanges}
+                        onChange={(event) => {
+                          setGuardrailsDirty(true);
+                          const next = Number(event.target.value || 25);
+                          setGuardMaxAutoChanges(Math.max(1, Math.min(500, Number.isFinite(next) ? next : 25)));
+                        }}
+                      />
+                      <button
+                        className="btn"
+                        disabled={guardrailsBusy || !guardrailsDirty}
+                        title="Save trusted peers and auto-sync safety threshold."
+                        onClick={async () => {
+                          setGuardrailsBusy(true);
+                          try {
+                            const updated = await setFriendLinkGuardrails({
+                              instanceId: instance.id,
+                              trustedPeerIds: guardTrustedPeerIds,
+                              maxAutoChanges: guardMaxAutoChanges,
+                              syncMods: syncModsEnabled,
+                              syncResourcepacks: syncResourcepacksEnabled,
+                              syncShaderpacks: syncShaderpacksEnabled,
+                              syncDatapacks: syncDatapacksEnabled,
+                            });
+                            updateFriendStatus(updated, { forceGuardrailSync: true });
+                            setGuardrailsDirty(false);
+                            onNotice("Friend Link sync settings updated.");
+                          } catch (err: any) {
+                            onError(err?.toString?.() ?? String(err));
+                          } finally {
+                            setGuardrailsBusy(false);
+                          }
+                        }}
+                      >
+                        {guardrailsBusy ? "Saving…" : "Save guardrails"}
+                      </button>
+                    </div>
+                    <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+                      <button
+                        className={`btn ${syncPolicy === "manual" ? "primary" : ""}`}
+                        title="Manual mode: no automatic syncing. You control all sync actions."
+                        onClick={() => setSyncPolicy("manual")}
+                        disabled={syncBusy}
+                      >
+                        Manual
+                      </button>
+                      <button
+                        className={`btn ${syncPolicy === "ask" ? "primary" : ""}`}
+                        title="Ask every time: show prompt when unsynced changes are detected."
+                        onClick={() => setSyncPolicy("ask")}
+                        disabled={syncBusy}
+                      >
+                        Ask every time
+                      </button>
+                      <button
+                        className={`btn ${syncPolicy === "auto_metadata" ? "primary" : ""}`}
+                        title="Auto metadata only: update lock/config metadata automatically, without forcing full file fetch for every change."
+                        onClick={() => setSyncPolicy("auto_metadata")}
+                        disabled={syncBusy}
+                      >
+                        Auto metadata only
+                      </button>
+                      <button
+                        className={`btn ${syncPolicy === "auto_all" ? "primary" : ""}`}
+                        title="Auto-sync everything: automatically reconcile and sync full changes when guardrails allow it."
+                        onClick={() => setSyncPolicy("auto_all")}
+                        disabled={syncBusy}
+                      >
+                        Auto-sync everything
+                      </button>
+                    </div>
+                </div>
+              </div>
+              {!policyPanelOpen ? (
+                <div className="muted friendLinkCollapsedHint">
+                  Preset {friendAllowlistPreset === "mods_plus_configs"
+                    ? "Mods + Configs"
+                    : friendAllowlistPreset === "mods_only"
+                      ? "Mods only"
+                      : friendAllowlistPreset === "everything"
+                        ? "Everything"
+                        : "Custom"} · Policy {syncPolicyLabel}.
+                </div>
+              ) : null}
+            </div>
+            </div>
+
               </>
             ) : null}
 
@@ -1426,131 +1430,132 @@ export default function InstanceModpackCard({
             ) : null}
 
             <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
+              <div className="rowBetween friendLinkSectionHead" style={{ gap: 8, flexWrap: "wrap" }}>
                 <div className="friendLinkSectionTitle">Session actions</div>
-                <button className="btn" onClick={() => setSessionActionsPanelOpen((prev) => !prev)}>
+                <button className="btn friendLinkSectionToggle" onClick={() => setSessionActionsPanelOpen((prev) => !prev)}>
                   {sessionActionsPanelOpen ? "Collapse" : "Expand"}
                 </button>
               </div>
-              {sessionActionsPanelOpen ? (
-                <>
-              <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-              <button
-                className="btn"
-                disabled={busy || syncBusy}
-                title="Copy current invite code. If none is cached, generate one and copy it."
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    let code = invitePreview?.trim() ?? "";
-                    let generated = false;
-                    if (!code) {
-                      const invite = await createFriendLinkSession({ instanceId: instance.id });
-                      code = invite.invite_code;
-                      generated = true;
-                      setInvitePreview(code);
-                    }
-                    const copied = await copyInviteToClipboard(code);
-                    if (copied) {
-                      onNotice(generated ? "Generated and copied invite code." : "Invite code copied.");
-                    }
-                    await refresh({ quiet: true });
-                  } catch (err: any) {
-                    onError(err?.toString?.() ?? String(err));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Copy invite
-              </button>
-              <button
-                className="btn"
-                disabled={busy || syncBusy}
-                title="Regenerate and copy a fresh invite code for this session."
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const invite = await createFriendLinkSession({ instanceId: instance.id });
-                    setInvitePreview(invite.invite_code);
-                    setGuardrailsDirty(false);
-                    onNotice("Generated fresh invite code.");
-                    await refresh({ quiet: true });
-                  } catch (err: any) {
-                    onError(err?.toString?.() ?? String(err));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Refresh invite
-              </button>
-              <button
-                className="btn"
-                disabled={busy || syncBusy}
-                title="Run full Friend Link sync now (with retry fallback if files are missing)."
-                onClick={() => void runManualSync("manual")}
-              >
-                Sync now
-              </button>
-              <button
-                className="btn"
-                disabled={busy || syncBusy}
-                title="Export a Friend Link debug bundle for troubleshooting."
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    const out = await exportFriendLinkDebugBundle({ instanceId: instance.id });
-                    onNotice(`Exported debug bundle to ${out.path}`);
-                  } catch (err: any) {
-                    onError(err?.toString?.() ?? String(err));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Export debug
-              </button>
-              <button
-                className="btn danger"
-                disabled={busy || syncBusy}
-                title="Leave this Friend Link session for this instance."
-                onClick={async () => {
-                  setBusy(true);
-                  try {
-                    await leaveFriendLinkSession({ instanceId: instance.id });
-                    setInvitePreview(null);
-                    setFriendConflicts(null);
-                    setGuardrailsDirty(false);
-                    updateFriendDrift(null, { quiet: true });
-                    updateFriendStatus(null);
-                    onNotice("Left friend link session.");
-                    await refresh({ quiet: true });
-                  } catch (err: any) {
-                    onError(err?.toString?.() ?? String(err));
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                Leave link
-              </button>
+              <div className={`friendLinkCollapseBody ${sessionActionsPanelOpen ? "open" : "closed"}`}>
+                <div className="friendLinkCollapseInner">
+                    <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                    <button
+                      className="btn"
+                      disabled={busy || syncBusy}
+                      title="Copy current invite code. If none is cached, generate one and copy it."
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          let code = invitePreview?.trim() ?? "";
+                          let generated = false;
+                          if (!code) {
+                            const invite = await createFriendLinkSession({ instanceId: instance.id });
+                            code = invite.invite_code;
+                            generated = true;
+                            setInvitePreview(code);
+                          }
+                          const copied = await copyInviteToClipboard(code);
+                          if (copied) {
+                            onNotice(generated ? "Generated and copied invite code." : "Invite code copied.");
+                          }
+                          await refresh({ quiet: true });
+                        } catch (err: any) {
+                          onError(err?.toString?.() ?? String(err));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Copy invite
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={busy || syncBusy}
+                      title="Regenerate and copy a fresh invite code for this session."
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          const invite = await createFriendLinkSession({ instanceId: instance.id });
+                          setInvitePreview(invite.invite_code);
+                          setGuardrailsDirty(false);
+                          onNotice("Generated fresh invite code.");
+                          await refresh({ quiet: true });
+                        } catch (err: any) {
+                          onError(err?.toString?.() ?? String(err));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Refresh invite
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={busy || syncBusy}
+                      title="Run full Friend Link sync now (with retry fallback if files are missing)."
+                      onClick={() => void runManualSync("manual")}
+                    >
+                      Sync now
+                    </button>
+                    <button
+                      className="btn"
+                      disabled={busy || syncBusy}
+                      title="Export a Friend Link debug bundle for troubleshooting."
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          const out = await exportFriendLinkDebugBundle({ instanceId: instance.id });
+                          onNotice(`Exported debug bundle to ${out.path}`);
+                        } catch (err: any) {
+                          onError(err?.toString?.() ?? String(err));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Export debug
+                    </button>
+                    <button
+                      className="btn danger"
+                      disabled={busy || syncBusy}
+                      title="Leave this Friend Link session for this instance."
+                      onClick={async () => {
+                        setBusy(true);
+                        try {
+                          await leaveFriendLinkSession({ instanceId: instance.id });
+                          setInvitePreview(null);
+                          setFriendConflicts(null);
+                          setGuardrailsDirty(false);
+                          updateFriendDrift(null, { quiet: true });
+                          updateFriendStatus(null);
+                          onNotice("Left friend link session.");
+                          await refresh({ quiet: true });
+                        } catch (err: any) {
+                          onError(err?.toString?.() ?? String(err));
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                    >
+                      Leave link
+                    </button>
+                    </div>
+                    <div style={{ marginTop: 8 }}>
+                      <input
+                        className="input"
+                        readOnly
+                        value={invitePreview ?? ""}
+                        placeholder="No invite cached yet. Click Copy invite."
+                        title="Current invite code for this host session."
+                      />
+                    </div>
+                </div>
               </div>
-              <div style={{ marginTop: 8 }}>
-                <input
-                  className="input"
-                  readOnly
-                  value={invitePreview ?? ""}
-                  placeholder="No invite cached yet. Click Copy invite."
-                  title="Current invite code for this host session."
-                />
-              </div>
-              </>
-              ) : (
-                <div className="muted" style={{ marginTop: 8 }}>
+              {!sessionActionsPanelOpen ? (
+                <div className="muted friendLinkCollapsedHint">
                   Invite, sync, debug export, and leave-link controls.
                 </div>
-              )}
+              ) : null}
             </div>
             {friendStatus.pending_conflicts_count > 0 ? (
               <div className="muted" style={{ marginTop: 6 }}>
