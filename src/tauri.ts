@@ -162,6 +162,14 @@ export function setInstalledModEnabled(input: {
   return invoke("set_installed_mod_enabled", { args: input });
 }
 
+export function setInstalledModProvider(input: {
+  instanceId: string;
+  versionId: string;
+  source: string;
+}): Promise<InstalledMod> {
+  return invoke("set_installed_mod_provider", { args: input });
+}
+
 export function removeInstalledMod(input: {
   instanceId: string;
   versionId: string;

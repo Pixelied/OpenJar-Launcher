@@ -42,7 +42,19 @@ export type InstalledMod = {
   pinned_version?: string | null;
   enabled: boolean;
   file_exists: boolean;
+  added_at?: number;
   hashes?: Record<string, string>;
+  provider_candidates?: ProviderCandidate[];
+};
+
+export type ProviderCandidate = {
+  source: "modrinth" | "curseforge" | string;
+  project_id: string;
+  version_id: string;
+  name: string;
+  version_number: string;
+  confidence?: string;
+  reason?: string;
 };
 
 export type InstallProgressEvent = {
