@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "bash scripts/tauri-build-release.sh",
+    "verify:tauri-command-contract": "node scripts/verify-tauri-command-contract.mjs",
     "verify:platform-support": "node scripts/verify-platform-support.mjs",
     "verify:desktop-asset-paths": "node scripts/verify-desktop-asset-paths.mjs"
   },

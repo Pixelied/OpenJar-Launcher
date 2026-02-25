@@ -28,6 +28,9 @@ jobs:
       - name: Verify README/workflow platform matrix
         run: npm run verify:platform-support
 
+      - name: Verify Tauri command contract (Rust <-> TS invoke wrappers)
+        run: npm run verify:tauri-command-contract
+
   tauri-build:
     needs: verify-platform-support
     name: Build (${{ matrix.label }})
