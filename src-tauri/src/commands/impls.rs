@@ -40,6 +40,67 @@ fn capture_run_report_best_effort(
     }
 }
 
+const MINECRAFT_SETTINGS_SYNC_FILES: &[&str] =
+    &["options.txt", "optionsof.txt", "optionsshaders.txt"];
+
+fn sync_instance_minecraft_settings_before_launch(
+    instances_dir: &Path,
+    source_instance: &Instance,
+    source_settings: &InstanceSettings,
+) -> Result<usize, String> {
+    if !source_settings.sync_minecraft_settings {
+        return Ok(0);
+    }
+    let source_dir = instance_dir_for_instance(instances_dir, source_instance);
+    let source_target = source_settings.sync_minecraft_settings_target.trim();
+    let index = read_index(instances_dir)?;
+    let target_ids: Vec<String> = if source_target.eq_ignore_ascii_case("all") || source_target.is_empty() {
+        index
+            .instances
+            .iter()
+            .filter(|item| item.id != source_instance.id)
+            .map(|item| item.id.clone())
+            .collect()
+    } else {
+        index
+            .instances
+            .iter()
+            .find(|item| item.id == source_target && item.id != source_instance.id)
+            .map(|item| vec![item.id.clone()])
+            .unwrap_or_default()
+    };
+    if target_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let mut copied_files = 0usize;
+    for filename in MINECRAFT_SETTINGS_SYNC_FILES {
+        let source_file = source_dir.join(filename);
+        if !source_file.exists() {
+            continue;
+        }
+        for target_id in &target_ids {
+            let target_dir = instance_dir_for_id(instances_dir, target_id)?;
+            fs::create_dir_all(&target_dir).map_err(|e| {
+                format!(
+                    "create target instance dir for settings sync failed ('{}'): {e}",
+                    target_dir.display()
+                )
+            })?;
+            let target_file = target_dir.join(filename);
+            fs::copy(&source_file, &target_file).map_err(|e| {
+                format!(
+                    "copy settings file '{}' to '{}' failed: {e}",
+                    source_file.display(),
+                    target_file.display()
+                )
+            })?;
+            copied_files += 1;
+        }
+    }
+    Ok(copied_files)
+}
+
 fn is_jar_filename(filename: &str) -> bool {
     Path::new(filename)
         .extension()
@@ -416,6 +477,9 @@ pub(crate) fn set_launcher_settings(
     }
     if let Some(auto_identify) = args.auto_identify_local_jars {
         settings.auto_identify_local_jars = auto_identify;
+    }
+    if let Some(auto_trigger_prompt) = args.auto_trigger_mic_permission_prompt {
+        settings.auto_trigger_mic_permission_prompt = auto_trigger_prompt;
     }
     write_launcher_settings(&app, &settings)?;
     Ok(settings)
@@ -4023,6 +4087,23 @@ pub(crate) async fn launch_instance(
             instance.id, err
         );
     }
+    match sync_instance_minecraft_settings_before_launch(&instances_dir, &instance, &instance_settings) {
+        Ok(copied) if copied > 0 => {
+            log_instance_event_best_effort(
+                &app,
+                &instance.id,
+                "settings_sync",
+                format!("Synced Minecraft settings to {} file target(s).", copied),
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!(
+                "minecraft settings sync before launch failed for '{}': {}",
+                instance.id, err
+            );
+        }
+    }
 
     let method_for_report = method.clone();
     let launch_result: Result<LaunchResult, String> = match method {
@@ -4835,6 +4916,38 @@ fn detect_duplicate_enabled_mod_filenames(
 }
 
 #[tauri::command]
+pub(crate) async fn trigger_instance_microphone_permission_prompt(
+    app: tauri::AppHandle,
+    args: PreflightLaunchCompatibilityArgs,
+) -> Result<String, String> {
+    run_blocking_task("trigger instance microphone permission prompt", move || {
+        trigger_instance_microphone_permission_prompt_inner(&app, &args.instance_id)
+    })
+    .await
+}
+
+fn trigger_instance_microphone_permission_prompt_inner(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+) -> Result<String, String> {
+    let instances_dir = app_instances_dir(app)?;
+    let instance = find_instance(&instances_dir, instance_id)?;
+    let instance_settings = normalize_instance_settings(instance.settings.clone());
+    let settings = read_launcher_settings(app)?;
+    let java_executable = if !instance_settings.java_path.trim().is_empty() {
+        instance_settings.java_path.trim().to_string()
+    } else {
+        resolve_java_executable(&settings)?
+    };
+    crate::permissions::trigger_java_microphone_permission_prompt(&java_executable)
+}
+
+#[tauri::command]
+pub(crate) fn open_microphone_system_settings() -> Result<String, String> {
+    crate::permissions::open_microphone_system_settings()
+}
+
+#[tauri::command]
 pub(crate) fn preflight_launch_compatibility(
     app: tauri::AppHandle,
     args: PreflightLaunchCompatibilityArgs,
@@ -5493,6 +5606,19 @@ mod tests {
         }
     }
 
+    fn sample_instance(id: &str, name: &str) -> Instance {
+        Instance {
+            id: id.to_string(),
+            name: name.to_string(),
+            folder_name: None,
+            mc_version: "1.20.1".to_string(),
+            loader: "fabric".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            icon_path: None,
+            settings: InstanceSettings::default(),
+        }
+    }
+
     #[test]
     fn mod_filename_identity_key_normalizes_essential_variants() {
         assert_eq!(
@@ -5552,5 +5678,74 @@ mod tests {
             .all(|entry| entry.filename != "Essential (forge_1.20.1).jar"));
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sync_instance_minecraft_settings_respects_target_mode() {
+        let instances_dir = temp_path("sync-minecraft-settings");
+        fs::create_dir_all(&instances_dir).expect("create instances dir");
+
+        let source = sample_instance("source", "Source");
+        let target_a = sample_instance("target-a", "Target A");
+        let target_b = sample_instance("target-b", "Target B");
+        let idx = InstanceIndex {
+            instances: vec![source.clone(), target_a.clone(), target_b.clone()],
+        };
+        write_index(&instances_dir, &idx).expect("write index");
+
+        let source_dir =
+            instance_dir_for_instance(&instances_dir, &source);
+        fs::create_dir_all(&source_dir).expect("create source dir");
+        fs::write(source_dir.join("options.txt"), b"gamma:0.8").expect("write options");
+        fs::write(source_dir.join("optionsof.txt"), b"optifine=true").expect("write optionsof");
+        fs::write(source_dir.join("notes.txt"), b"do-not-sync").expect("write unrelated");
+
+        let target_a_dir = instance_dir_for_id(&instances_dir, &target_a.id).expect("target a dir");
+        fs::create_dir_all(&target_a_dir).expect("create target a dir");
+        let target_b_dir = instance_dir_for_id(&instances_dir, &target_b.id).expect("target b dir");
+        fs::create_dir_all(&target_b_dir).expect("create target b dir");
+
+        let mut all_targets = InstanceSettings::default();
+        all_targets.sync_minecraft_settings = true;
+        all_targets.sync_minecraft_settings_target = "all".to_string();
+        let copied_all = sync_instance_minecraft_settings_before_launch(
+            &instances_dir,
+            &source,
+            &all_targets,
+        )
+        .expect("sync all");
+        assert_eq!(copied_all, 4);
+        assert_eq!(
+            fs::read_to_string(target_a_dir.join("options.txt")).expect("read target a options"),
+            "gamma:0.8"
+        );
+        assert_eq!(
+            fs::read_to_string(target_b_dir.join("optionsof.txt")).expect("read target b optionsof"),
+            "optifine=true"
+        );
+        assert!(!target_a_dir.join("notes.txt").exists());
+        assert!(!target_b_dir.join("notes.txt").exists());
+
+        fs::remove_file(target_a_dir.join("options.txt")).expect("clear target a options");
+        fs::remove_file(target_a_dir.join("optionsof.txt")).expect("clear target a optionsof");
+        fs::remove_file(target_b_dir.join("options.txt")).expect("clear target b options");
+        fs::remove_file(target_b_dir.join("optionsof.txt")).expect("clear target b optionsof");
+
+        let mut specific_target = InstanceSettings::default();
+        specific_target.sync_minecraft_settings = true;
+        specific_target.sync_minecraft_settings_target = target_a.id.clone();
+        let copied_specific = sync_instance_minecraft_settings_before_launch(
+            &instances_dir,
+            &source,
+            &specific_target,
+        )
+        .expect("sync specific");
+        assert_eq!(copied_specific, 2);
+        assert!(target_a_dir.join("options.txt").exists());
+        assert!(target_a_dir.join("optionsof.txt").exists());
+        assert!(!target_b_dir.join("options.txt").exists());
+        assert!(!target_b_dir.join("optionsof.txt").exists());
+
+        let _ = fs::remove_dir_all(&instances_dir);
     }
 }

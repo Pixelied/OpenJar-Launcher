@@ -259,6 +259,17 @@ export function preflightLaunchCompatibility(input: {
   return invoke("preflight_launch_compatibility", { args: input });
 }
 
+export function triggerInstanceMicrophonePermissionPrompt(input: {
+  instanceId: string;
+  method?: LaunchMethod;
+}): Promise<string> {
+  return invoke("trigger_instance_microphone_permission_prompt", { args: input });
+}
+
+export function openMicrophoneSystemSettings(): Promise<string> {
+  return invoke("open_microphone_system_settings");
+}
+
 export function getLauncherSettings(): Promise<LauncherSettings> {
   return invoke("get_launcher_settings");
 }
@@ -289,6 +300,7 @@ export function setLauncherSettings(input: {
   updateAutoApplyMode?: "never" | "opt_in_instances" | "all_instances";
   updateApplyScope?: "scheduled_only" | "scheduled_and_manual";
   autoIdentifyLocalJars?: boolean;
+  autoTriggerMicPermissionPrompt?: boolean;
 }): Promise<LauncherSettings> {
   return invoke("set_launcher_settings", { args: input });
 }

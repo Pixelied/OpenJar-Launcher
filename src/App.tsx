@@ -95,6 +95,7 @@ import {
   previewPresetApply,
   applyPresetToInstance,
   launchInstance,
+  openMicrophoneSystemSettings as openMicrophoneSystemSettingsNative,
   listInstanceWorlds,
   listInstanceSnapshots,
   listLauncherAccounts,
@@ -112,6 +113,7 @@ import {
   pollMicrosoftLogin,
   previewModrinthInstall,
   preflightLaunchCompatibility,
+  triggerInstanceMicrophonePermissionPrompt,
   readInstanceLogs,
   readLocalImageDataUrl,
   revealConfigEditorFile,
@@ -397,6 +399,7 @@ type InstanceHealthPanelPrefs = Record<
   {
     hidden?: boolean;
     collapsed?: boolean;
+    permissions_expanded?: boolean;
   }
 >;
 
@@ -667,6 +670,8 @@ function defaultInstanceSettings(): InstanceSettings {
     keep_launcher_open_while_playing: true,
     close_launcher_on_game_exit: false,
     notes: "",
+    sync_minecraft_settings: true,
+    sync_minecraft_settings_target: "all",
     auto_update_installed_content: false,
     prefer_release_builds: true,
     java_path: "",
@@ -713,9 +718,13 @@ function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): In
   const snapshotMaxAgeDays = Number.isFinite(Number(merged.snapshot_max_age_days))
     ? Math.max(1, Math.min(90, Math.round(Number(merged.snapshot_max_age_days))))
     : 14;
+  const syncTargetRaw = String(merged.sync_minecraft_settings_target ?? "all").trim();
+  const syncTarget = syncTargetRaw.length > 0 ? syncTargetRaw : "all";
   return {
     ...merged,
     notes: String(merged.notes ?? ""),
+    sync_minecraft_settings: Boolean(merged.sync_minecraft_settings),
+    sync_minecraft_settings_target: syncTarget,
     java_path: String(merged.java_path ?? "").trim(),
     jvm_args: String(merged.jvm_args ?? "").trim(),
     graphics_preset: graphicsPreset,
@@ -1394,12 +1403,15 @@ function launchCompatibilityFingerprint(report: LaunchCompatibilityReport) {
   return `${report.status}|${report.blocking_count}|${report.warning_count}|${parts.join("||")}`;
 }
 
-const MAC_MICROPHONE_SETTINGS_URL =
-  "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
-
 function isMacDesktopPlatform() {
   const ua = `${navigator.userAgent || ""} ${navigator.platform || ""}`.toLowerCase();
   return ua.includes("mac");
+}
+
+function micPermissionNeedsAction(item?: LaunchPermissionChecklistItem | null) {
+  if (!item?.required) return false;
+  const status = String(item.status ?? "").trim().toLowerCase();
+  return ["denied", "not_determined", "unavailable", "unknown"].includes(status);
 }
 
 function permissionStatusLabel(status: string) {
@@ -3955,6 +3967,7 @@ export default function App() {
           next[instanceId] = {
             hidden: Boolean((value as any).hidden),
             collapsed: Boolean((value as any).collapsed),
+            permissions_expanded: Boolean((value as any).permissions_expanded),
           };
         }
         return next;
@@ -4017,7 +4030,9 @@ export default function App() {
   const [permissionChecklistBusyByInstance, setPermissionChecklistBusyByInstance] = useState<
     Record<string, boolean>
   >({});
+  const [autoMicPromptSettingBusy, setAutoMicPromptSettingBusy] = useState(false);
   const permissionChecklistRefreshInFlightRef = useRef<Record<string, boolean>>({});
+  const autoMicPromptAttemptRef = useRef<Record<string, { fingerprint: string; at: number }>>({});
   const [preflightIgnoreByInstance, setPreflightIgnoreByInstance] = useState<
     Record<string, LaunchPreflightIgnoreEntry>
   >(() => {
@@ -4624,7 +4639,10 @@ export default function App() {
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) return;
-    void refreshInstancePermissionChecklist(selectedId, launchMethodPick, { silent: true });
+    void refreshInstancePermissionChecklist(selectedId, launchMethodPick, {
+      silent: true,
+      skipAutoPrompt: true,
+    });
   }, [route, selectedId, launchMethodPick]);
 
   useEffect(() => {
@@ -7128,10 +7146,50 @@ export default function App() {
     }
   }
 
+  async function maybeAutoTriggerMicPermissionPrompt(
+    instanceId: string,
+    report: LaunchCompatibilityReport | null | undefined,
+    method: LaunchMethod,
+    opts?: { silent?: boolean }
+  ) {
+    const autoEnabled = launcherSettings?.auto_trigger_mic_permission_prompt ?? true;
+    if (!autoEnabled || !isMacDesktopPlatform() || method !== "native" || !report) return;
+    const micPermission =
+      (report.permissions ?? []).find((item) => item.key === "microphone") ?? null;
+    if (!micPermissionNeedsAction(micPermission)) return;
+    const fingerprint = `${String(micPermission.status ?? "").toLowerCase()}|${String(
+      micPermission.detail ?? ""
+    ).slice(0, 120)}`;
+    const now = Date.now();
+    const prevAttempt = autoMicPromptAttemptRef.current[instanceId];
+    if (
+      prevAttempt &&
+      prevAttempt.fingerprint === fingerprint &&
+      now - prevAttempt.at < 3 * 60 * 1000
+    ) {
+      return;
+    }
+    autoMicPromptAttemptRef.current[instanceId] = { fingerprint, at: now };
+    try {
+      const message = await triggerInstanceMicrophonePermissionPrompt({
+        instanceId,
+        method: "native",
+      });
+      if (!opts?.silent) {
+        setInstallNotice(`Automatic microphone setup: ${message}`);
+      }
+    } catch (e: any) {
+      if (!opts?.silent) {
+        const msg = e?.toString?.() ?? String(e);
+        setInstallNotice(`Automatic microphone setup failed: ${msg}`);
+      }
+    }
+  }
+
   async function refreshInstancePermissionChecklist(
     instanceId: string,
     method: LaunchMethod = launchMethodPick,
-    opts?: { silent?: boolean }
+    opts?: { silent?: boolean; skipAutoPrompt?: boolean }
   ) {
     if (permissionChecklistRefreshInFlightRef.current[instanceId]) return;
     permissionChecklistRefreshInFlightRef.current[instanceId] = true;
@@ -7142,6 +7200,11 @@ export default function App() {
         method,
       });
       setPreflightReportByInstance((prev) => ({ ...prev, [instanceId]: report }));
+      if (!opts?.skipAutoPrompt) {
+        await maybeAutoTriggerMicPermissionPrompt(instanceId, report, method, {
+          silent: true,
+        });
+      }
       return report;
     } catch (e: any) {
       if (!opts?.silent) {
@@ -7163,11 +7226,34 @@ export default function App() {
       return;
     }
     try {
-      await shellOpen(MAC_MICROPHONE_SETTINGS_URL);
-      setInstallNotice("Opened System Settings > Privacy & Security > Microphone. Enable Java, then click Re-check.");
-    } catch {
-      await shellOpen("x-apple.systempreferences:").catch(() => null);
-      setInstallNotice("Opened System Settings. Enable microphone access for Java/Minecraft, then click Re-check.");
+      const message = await openMicrophoneSystemSettingsNative();
+      setInstallNotice(message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setInstallNotice(`Could not open System Settings automatically: ${msg}`);
+    }
+  }
+
+  async function triggerInstanceMicrophonePrompt(instanceId: string) {
+    if (!isMacDesktopPlatform()) {
+      setInstallNotice(
+        "Microphone permission prompt helper is available on macOS only. Open your OS privacy settings and allow Java/Minecraft microphone access."
+      );
+      return;
+    }
+    setPermissionChecklistBusyByInstance((prev) => ({ ...prev, [instanceId]: true }));
+    try {
+      const message = await triggerInstanceMicrophonePermissionPrompt({
+        instanceId,
+        method: "native",
+      });
+      setInstallNotice(message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setInstallNotice(`Could not trigger Java microphone prompt: ${msg}`);
+    } finally {
+      setPermissionChecklistBusyByInstance((prev) => ({ ...prev, [instanceId]: false }));
+      await refreshInstancePermissionChecklist(instanceId, "native", { silent: true, skipAutoPrompt: true });
     }
   }
 
@@ -7202,6 +7288,7 @@ export default function App() {
         method: requestedMethod,
       });
       setPreflightReportByInstance((prev) => ({ ...prev, [inst.id]: preflight }));
+      await maybeAutoTriggerMicPermissionPrompt(inst.id, preflight, requestedMethod, { silent: false });
       const preflightFingerprint = launchCompatibilityFingerprint(preflight);
       const now = Date.now();
       const ignoreEntry = preflightIgnoreByInstance[inst.id];
@@ -7490,6 +7577,27 @@ export default function App() {
       setError(msg);
     } finally {
       setAutoIdentifyLocalJarsBusy(false);
+    }
+  }
+
+  async function onToggleAutoMicPermissionPrompt() {
+    const nextEnabled = !(launcherSettings?.auto_trigger_mic_permission_prompt ?? true);
+    setAutoMicPromptSettingBusy(true);
+    setLauncherErr(null);
+    try {
+      const next = await setLauncherSettings({
+        autoTriggerMicPermissionPrompt: nextEnabled,
+      });
+      setLauncherSettingsState(next);
+      setInstallNotice(
+        `Automatic microphone permission prompt ${nextEnabled ? "enabled" : "disabled"}.`
+      );
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setAutoMicPromptSettingBusy(false);
     }
   }
 
@@ -9872,6 +9980,7 @@ export default function App() {
       { id: "global:appearance", label: "Settings: Appearance", target: "global", keywords: ["theme", "accent"] },
       { id: "global:launch-method", label: "Settings: Default launch method", target: "global", keywords: ["prism", "native"] },
       { id: "global:java-path", label: "Settings: Java executable", target: "global", advanced: true, keywords: ["java"] },
+      { id: "global:permissions", label: "Settings: Launch permissions", target: "global", advanced: true, keywords: ["microphone", "voice"] },
       { id: "global:oauth-client", label: "Settings: OAuth client override", target: "global", advanced: true, keywords: ["oauth", "client id"] },
       { id: "global:account", label: "Settings: Microsoft account", target: "global", keywords: ["login"] },
       { id: "global:app-updates", label: "Settings: App updates", target: "global", keywords: ["update"] },
@@ -10705,6 +10814,12 @@ export default function App() {
     }
 
     if (route === "settings") {
+      const selectedPermissionsInstance = selectedId
+        ? instances.find((item) => item.id === selectedId) ?? null
+        : null;
+      const selectedPermissionsChecklist: LaunchPermissionChecklistItem[] = selectedPermissionsInstance
+        ? preflightReportByInstance[selectedPermissionsInstance.id]?.permissions ?? []
+        : [];
       return (
         <div className="settingsPage">
           <div className="settingsPageTitle">Settings</div>
@@ -11065,8 +11180,14 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+                </div>
+              </div>
 
-                  {settingsMode === "advanced" ? (
+              {settingsMode === "advanced" ? (
+                <div className="card settingsSectionCard">
+                  <div className="settingsSectionTitle">Advanced settings</div>
+                  <div className="p settingsSectionSub">Power-user defaults and launch permission controls.</div>
+                  <div className="settingStack">
                     <div>
                       <div className="settingTitle">Power-user defaults</div>
                       <div className="settingSub">
@@ -11099,9 +11220,76 @@ export default function App() {
                         />
                       </div>
                     </div>
-                  ) : null}
+
+                    <div id="setting-anchor-global:permissions">
+                      <div className="settingTitle">Launch permissions</div>
+                      <div className="settingSub">
+                        Voice chat instances can auto-trigger a Java microphone permission probe before launch.
+                      </div>
+                      <div className="row">
+                        <button
+                          className={`btn ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "primary" : ""}`}
+                          onClick={() => void onToggleAutoMicPermissionPrompt()}
+                          disabled={autoMicPromptSettingBusy}
+                        >
+                          {autoMicPromptSettingBusy
+                            ? "Saving…"
+                            : (launcherSettings?.auto_trigger_mic_permission_prompt ?? true)
+                              ? "Auto prompt enabled"
+                              : "Auto prompt disabled"}
+                        </button>
+                        <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
+                          Open microphone settings
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() =>
+                            selectedPermissionsInstance
+                              ? void triggerInstanceMicrophonePrompt(selectedPermissionsInstance.id)
+                              : setInstallNotice("Select an instance first to trigger microphone prompt.")
+                          }
+                          disabled={!selectedPermissionsInstance}
+                        >
+                          Trigger selected prompt
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() =>
+                            selectedPermissionsInstance
+                              ? void refreshInstancePermissionChecklist(selectedPermissionsInstance.id, launchMethodPick)
+                              : setInstallNotice("Select an instance first to run a permission re-check.")
+                          }
+                          disabled={!selectedPermissionsInstance}
+                        >
+                          Re-check selected instance
+                        </button>
+                      </div>
+                      <div className="muted" style={{ marginTop: 6 }}>
+                        Selected instance: {selectedPermissionsInstance?.name ?? "None"}.
+                      </div>
+                      {selectedPermissionsChecklist.length > 0 ? (
+                        <div className="preflightPermissionsList" style={{ marginTop: 8 }}>
+                          {selectedPermissionsChecklist.map((perm) => (
+                            <div key={`settings-perm:${perm.key}`} className="preflightPermissionRow">
+                              <div className="preflightCheckMain">
+                                <div className="preflightCheckTitle">{perm.label}</div>
+                                <div className="preflightCheckMsg">{perm.detail}</div>
+                              </div>
+                              <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
+                                {permissionStatusLabel(perm.status)}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="muted" style={{ marginTop: 8 }}>
+                          No permission report yet for the selected instance. Click Re-check selected instance.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              </div>
+              ) : null}
             </section>
           </div>
 
@@ -12136,12 +12324,43 @@ export default function App() {
       const instancePreflightReport = preflightReportByInstance[inst.id] ?? null;
       const instancePermissionChecklist: LaunchPermissionChecklistItem[] =
         instancePreflightReport?.permissions ?? [];
-      const instanceMicPermission =
-        instancePermissionChecklist.find((item) => item.key === "microphone") ?? null;
-      const micNeedsPermissionAction = Boolean(
-        instanceMicPermission?.required &&
-          ["denied", "not_determined"].includes(String(instanceMicPermission?.status ?? "").toLowerCase())
+      const setupNeededPermissions = instancePermissionChecklist.filter((item) =>
+        micPermissionNeedsAction(item)
       );
+      const grantedPermissions = instancePermissionChecklist.filter(
+        (item) => String(item.status ?? "").trim().toLowerCase() === "granted"
+      );
+      const notRequiredPermissions = instancePermissionChecklist.filter(
+        (item) => String(item.status ?? "").trim().toLowerCase() === "not_required"
+      );
+      const permissionStatusTagLabel =
+        permissionChecklistBusyByInstance[inst.id]
+          ? "Permissions checking…"
+          : setupNeededPermissions.length > 0
+            ? setupNeededPermissions.length === 1
+              ? `${setupNeededPermissions[0]?.label ?? "Permission"} needs setup`
+              : `${setupNeededPermissions.length} permissions need setup`
+            : grantedPermissions.length > 0
+              ? "Permissions ready"
+              : notRequiredPermissions.length === instancePermissionChecklist.length &&
+                  instancePermissionChecklist.length > 0
+                ? "No permissions required"
+                : "Permissions unknown";
+      const permissionStatusTagTitle =
+        setupNeededPermissions.length > 0
+          ? `Needs setup: ${setupNeededPermissions
+              .slice(0, 3)
+              .map((item) => item.label)
+              .join(", ")}. Manage details in Settings > Advanced > Launch permissions.`
+          : grantedPermissions.length > 0
+            ? `Permissions ready: ${grantedPermissions
+                .slice(0, 3)
+                .map((item) => item.label)
+                .join(", ")}.`
+            : notRequiredPermissions.length === instancePermissionChecklist.length &&
+                instancePermissionChecklist.length > 0
+              ? "No required launch permissions detected for this instance."
+              : "Permission status is not available yet.";
       const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
       const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
       const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
@@ -12481,6 +12700,12 @@ export default function App() {
                     <span className={`chip ${instanceLastExitKindRaw === "crashed" ? "danger" : "subtle"}`}>
                       Status {instanceRunStatusLabel}
                     </span>
+                    <span
+                      className={`chip ${setupNeededPermissions.length > 0 ? "danger" : "subtle"}`}
+                      title={permissionStatusTagTitle}
+                    >
+                      {permissionStatusTagLabel}
+                    </span>
                   </div>
                   {instanceLastRunReport ? (
                     <div className="instanceRunReportPreview">
@@ -12510,47 +12735,6 @@ export default function App() {
                       Last run report appears here after launch.
                     </div>
                   )}
-                  <div className="instancePermissionsChecklist">
-                    <div className="rowBetween" style={{ gap: 10 }}>
-                      <div style={{ fontWeight: 860 }}>Permissions</div>
-                      <div className="row" style={{ gap: 8 }}>
-                        {micNeedsPermissionAction ? (
-                          <button className="btn subtle" onClick={() => void openMicrophoneSystemSettings()}>
-                            Open settings
-                          </button>
-                        ) : null}
-                        <button
-                          className="btn subtle"
-                          onClick={() => void refreshInstancePermissionChecklist(inst.id, launchMethodPick)}
-                          disabled={permissionChecklistBusyByInstance[inst.id]}
-                        >
-                          {permissionChecklistBusyByInstance[inst.id] ? "Checking…" : "Re-check"}
-                        </button>
-                      </div>
-                    </div>
-                    <div className="muted" style={{ marginTop: 4 }}>
-                      Per-instance launch permissions checklist. Microphone is auto-detected for voice chat mods.
-                    </div>
-                    {instancePermissionChecklist.length > 0 ? (
-                      <div className="instancePermissionsList">
-                        {instancePermissionChecklist.map((perm) => (
-                          <div key={perm.key} className="instancePermissionRow">
-                            <div className="instancePermissionMain">
-                              <div style={{ fontWeight: 760 }}>{perm.label}</div>
-                              <div className="muted">{perm.detail}</div>
-                            </div>
-                            <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
-                              {permissionStatusLabel(perm.status)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Not checked yet.
-                      </div>
-                    )}
-                  </div>
                 </div>
               </div>
 
@@ -14201,9 +14385,9 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="settingCard">
-                          <div className="settingTitle">Updates</div>
-                          <div className="settingSub">Control install and update behavior for this instance.</div>
+	                        <div className="settingCard">
+	                          <div className="settingTitle">Updates</div>
+	                          <div className="settingSub">Control install and update behavior for this instance.</div>
                           <label className="toggleRow">
                             <input
                               type="checkbox"
@@ -14234,12 +14418,71 @@ export default function App() {
                               disabled={instanceSettingsBusy}
                             />
                             <span className="togglePill" />
-                            <span>Prefer release builds</span>
-                          </label>
-                        </div>
-                      </div>
-                    </>
-                  )}
+	                            <span>Prefer release builds</span>
+	                          </label>
+	                        </div>
+
+	                        <div className="settingCard">
+	                          <div className="settingTitle">Minecraft settings sync</div>
+	                          <div className="settingSub">
+	                            Keep your in-game options aligned across instances.
+	                          </div>
+	                          <label className="toggleRow">
+	                            <input
+	                              type="checkbox"
+	                              checked={instSettings.sync_minecraft_settings}
+	                              onChange={(e) =>
+	                                void persistInstanceChanges(
+	                                  inst,
+	                                  { settings: { sync_minecraft_settings: e.target.checked } },
+	                                  `Minecraft settings sync ${e.target.checked ? "enabled" : "disabled"}.`
+	                                )
+	                              }
+	                              disabled={instanceSettingsBusy}
+	                            />
+	                            <span className="togglePill" />
+	                            <span>Sync on launch</span>
+	                          </label>
+	                          {instSettings.sync_minecraft_settings ? (
+	                            <>
+	                              {instances.filter((item) => item.id !== inst.id).length > 0 ? (
+	                                <MenuSelect
+	                                  value={
+	                                    instSettings.sync_minecraft_settings_target === "all" ||
+	                                    instances.some((item) => item.id === instSettings.sync_minecraft_settings_target)
+	                                      ? instSettings.sync_minecraft_settings_target
+	                                      : "all"
+	                                  }
+	                                  labelPrefix="Sync target"
+	                                  onChange={(v) =>
+	                                    void persistInstanceChanges(
+	                                      inst,
+	                                      { settings: { sync_minecraft_settings_target: String(v ?? "all") } },
+	                                      `Minecraft settings sync target updated.`
+	                                    )
+	                                  }
+	                                  options={[
+	                                    { value: "all", label: "All instances" },
+	                                    ...instances
+	                                      .filter((item) => item.id !== inst.id)
+	                                      .map((item) => ({
+	                                        value: item.id,
+	                                        label: `Only ${item.name || item.id}`,
+	                                      })),
+	                                  ]}
+	                                />
+	                              ) : null}
+	                              <div className="muted" style={{ marginTop: 8 }}>
+	                                {instances.filter((item) => item.id !== inst.id).length === 0
+	                                  ? "Add another instance to choose a sync target."
+	                                  : "Syncs options files (options.txt, optionsof.txt, optionsshaders.txt) right before launch."}
+	                              </div>
+	                            </>
+	                          ) : null}
+	                        </div>
+	                      </div>
+	                    </>
+	                  )}
 
                   {instanceSettingsSection === "java" && (
                     <>
@@ -15617,11 +15860,15 @@ export default function App() {
           const micPermissionItem = (preflightReportModal.report.permissions ?? []).find(
             (item) => item.key === "microphone"
           );
+          const micPermissionStatus = String(micPermissionItem?.status ?? "").toLowerCase();
           const showMicPermissionPrompt = Boolean(
             micPermissionItem?.required &&
-              ["denied", "not_determined"].includes(
-                String(micPermissionItem.status ?? "").toLowerCase()
-              )
+              ["denied", "not_determined", "unavailable", "unknown"].includes(micPermissionStatus)
+          );
+          const canTriggerMicPromptInModal = Boolean(
+            isMacDesktopPlatform() &&
+              micPermissionItem?.required &&
+              ["denied", "not_determined", "unavailable", "unknown"].includes(micPermissionStatus)
           );
           return (
             <Modal
@@ -15702,9 +15949,19 @@ export default function App() {
               </div>
               <div className="footerBar">
                 {showMicPermissionPrompt ? (
-                  <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
-                    Open System Settings
-                  </button>
+                  <>
+                    {canTriggerMicPromptInModal ? (
+                      <button
+                        className="btn"
+                        onClick={() => void triggerInstanceMicrophonePrompt(preflightReportModal.instanceId)}
+                      >
+                        Trigger Java prompt
+                      </button>
+                    ) : null}
+                    <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
+                      Open System Settings
+                    </button>
+                  </>
                 ) : (
                   <button
                     className="btn"

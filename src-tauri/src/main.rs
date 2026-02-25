@@ -314,6 +314,10 @@ struct InstanceSettings {
     close_launcher_on_game_exit: bool,
     #[serde(default)]
     notes: String,
+    #[serde(default = "default_true")]
+    sync_minecraft_settings: bool,
+    #[serde(default = "default_sync_minecraft_settings_target")]
+    sync_minecraft_settings_target: String,
     #[serde(default)]
     auto_update_installed_content: bool,
     #[serde(default = "default_true")]
@@ -346,6 +350,8 @@ impl Default for InstanceSettings {
             keep_launcher_open_while_playing: true,
             close_launcher_on_game_exit: false,
             notes: String::new(),
+            sync_minecraft_settings: true,
+            sync_minecraft_settings_target: default_sync_minecraft_settings_target(),
             auto_update_installed_content: false,
             prefer_release_builds: true,
             java_path: String::new(),
@@ -664,6 +670,8 @@ struct SetLauncherSettingsArgs {
     update_apply_scope: Option<String>,
     #[serde(alias = "autoIdentifyLocalJars", default)]
     auto_identify_local_jars: Option<bool>,
+    #[serde(alias = "autoTriggerMicPermissionPrompt", default)]
+    auto_trigger_mic_permission_prompt: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1384,6 +1392,8 @@ struct LauncherSettings {
     update_apply_scope: String,
     selected_account_id: Option<String>,
     auto_identify_local_jars: bool,
+    #[serde(default = "default_auto_trigger_mic_permission_prompt")]
+    auto_trigger_mic_permission_prompt: bool,
 }
 
 impl Default for LauncherSettings {
@@ -1397,6 +1407,7 @@ impl Default for LauncherSettings {
             update_apply_scope: default_update_apply_scope(),
             selected_account_id: None,
             auto_identify_local_jars: false,
+            auto_trigger_mic_permission_prompt: default_auto_trigger_mic_permission_prompt(),
         }
     }
 }
@@ -2268,6 +2279,10 @@ fn default_graphics_preset() -> String {
     "Balanced".to_string()
 }
 
+fn default_sync_minecraft_settings_target() -> String {
+    "all".to_string()
+}
+
 fn default_world_backup_interval_minutes() -> u32 {
     DEFAULT_WORLD_BACKUP_INTERVAL_MINUTES
 }
@@ -2314,6 +2329,10 @@ fn normalize_update_auto_apply_mode(input: &str) -> String {
 
 fn default_update_apply_scope() -> String {
     "scheduled_only".to_string()
+}
+
+fn default_auto_trigger_mic_permission_prompt() -> bool {
+    true
 }
 
 fn normalize_update_apply_scope(input: &str) -> String {
@@ -3087,6 +3106,11 @@ fn migrate_instance_folder_names(
 
 fn normalize_instance_settings(mut settings: InstanceSettings) -> InstanceSettings {
     settings.notes = settings.notes.trim().to_string();
+    settings.sync_minecraft_settings_target =
+        settings.sync_minecraft_settings_target.trim().to_string();
+    if settings.sync_minecraft_settings_target.is_empty() {
+        settings.sync_minecraft_settings_target = default_sync_minecraft_settings_target();
+    }
     settings.java_path = settings.java_path.trim().to_string();
     settings.jvm_args = settings.jvm_args.trim().to_string();
     settings.graphics_preset = match settings.graphics_preset.trim() {
@@ -11411,6 +11435,8 @@ fn main() {
             commands::set_installed_mod_enabled,
             commands::set_installed_mod_provider,
             commands::remove_installed_mod,
+            commands::trigger_instance_microphone_permission_prompt,
+            commands::open_microphone_system_settings,
             commands::preflight_launch_compatibility,
             commands::launch_instance,
             commands::get_launcher_settings,

@@ -15,6 +15,8 @@ export type InstanceSettings = {
   keep_launcher_open_while_playing: boolean;
   close_launcher_on_game_exit: boolean;
   notes: string;
+  sync_minecraft_settings: boolean;
+  sync_minecraft_settings_target: string;
   auto_update_installed_content: boolean;
   prefer_release_builds: boolean;
   java_path: string;
@@ -300,6 +302,7 @@ export type LauncherSettings = {
   update_apply_scope?: UpdateApplyScope;
   selected_account_id?: string | null;
   auto_identify_local_jars?: boolean;
+  auto_trigger_mic_permission_prompt?: boolean;
 };
 
 export type LauncherAccount = {

@@ -3649,21 +3649,21 @@ button, input, select { font-family: inherit; }
   flex-wrap: wrap;
 }
 .instanceHealthPanelWrap{
-  overflow: hidden;
   transform-origin: top;
   transition:
-    max-height 300ms var(--ease),
     opacity 220ms var(--ease),
     transform 300ms var(--ease),
     margin-bottom 300ms var(--ease);
 }
 .instanceHealthPanelWrap.expanded{
-  max-height: 420px;
+  overflow: visible;
+  max-height: none;
   opacity: 1;
   transform: translateY(0) scale(1);
   margin-bottom: 10px;
 }
 .instanceHealthPanelWrap.collapsed{
+  overflow: hidden;
   max-height: 0;
   opacity: 0;
   transform: translateY(-10px) scale(0.985);

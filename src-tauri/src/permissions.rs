@@ -3,9 +3,13 @@ use serde::Serialize;
 #[cfg(target_os = "macos")]
 use std::collections::HashSet;
 #[cfg(target_os = "macos")]
+use std::fs;
+#[cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct LaunchMicRequirementSummary {
@@ -559,6 +563,205 @@ fn sanitize_macos_tcc_error(raw: &str) -> String {
     }
 }
 
+pub(crate) fn trigger_java_microphone_permission_prompt(
+    java_executable: &str,
+) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = java_executable;
+        Ok("Automatic Java microphone permission prompt is available on macOS only.".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        trigger_java_microphone_permission_prompt_macos(java_executable)
+    }
+}
+
+pub(crate) fn open_microphone_system_settings() -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok("Open your OS privacy settings and allow microphone access for Java/Minecraft, then click Re-check."
+            .to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        open_microphone_system_settings_macos()
+    }
+}
+
+fn microphone_settings_open_targets() -> &'static [&'static str] {
+    &[
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy",
+        "x-apple.systempreferences:",
+        "/System/Applications/System Settings.app",
+        "/System/Applications/System Preferences.app",
+    ]
+}
+
+fn microphone_settings_open_success_message(target: &str) -> String {
+    if target.contains("Privacy_Microphone") {
+        "Opened System Settings > Privacy & Security > Microphone. Enable Java/Minecraft, then click Re-check."
+            .to_string()
+    } else {
+        "Opened System Settings. Enable microphone access for Java/Minecraft, then click Re-check."
+            .to_string()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_microphone_system_settings_macos() -> Result<String, String> {
+    let mut failures: Vec<String> = Vec::new();
+    for target in microphone_settings_open_targets() {
+        match Command::new("/usr/bin/open").arg(target).output() {
+            Ok(output) if output.status.success() => {
+                return Ok(microphone_settings_open_success_message(target));
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let reason = if stderr.is_empty() {
+                    format!("exit status {}", output.status)
+                } else {
+                    stderr
+                };
+                failures.push(format!("{} ({})", target, reason));
+            }
+            Err(err) => failures.push(format!("{} ({})", target, err)),
+        }
+    }
+    let details = failures
+        .into_iter()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("; ");
+    if details.is_empty() {
+        Err("Could not open System Settings automatically.".to_string())
+    } else {
+        Err(format!(
+            "Could not open System Settings automatically ({details})."
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn trigger_java_microphone_permission_prompt_macos(java_executable: &str) -> Result<String, String> {
+    let java = java_executable.trim();
+    if java.is_empty() {
+        return Err("Java executable is not configured for this instance.".to_string());
+    }
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let temp_root = std::env::temp_dir().join(format!("openjar-mic-probe-{nonce}"));
+    fs::create_dir_all(&temp_root)
+        .map_err(|e| format!("create microphone probe temp dir failed: {e}"))?;
+    let source_path = temp_root.join("OpenJarMicProbe.java");
+    fs::write(&source_path, java_mic_probe_source())
+        .map_err(|e| format!("write microphone probe source failed: {e}"))?;
+
+    let output = Command::new(java).arg(&source_path).output();
+    let _ = fs::remove_file(&source_path);
+    let _ = fs::remove_dir(&temp_root);
+
+    let output = output.map_err(|e| format!("run Java microphone probe failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+    let merged_lower = merged.to_ascii_lowercase();
+
+    if merged.contains("OPENJAR_MIC_GRANTED") {
+        return Ok(
+            "Java microphone probe succeeded and this Java runtime can access microphone input. If voice chat still cannot hear input, verify Java/Minecraft under System Settings > Privacy & Security > Microphone."
+                .to_string(),
+        );
+    }
+    if merged.contains("OPENJAR_MIC_DENIED") {
+        return Ok(
+            "Java microphone probe indicates access is denied. Open System Settings > Privacy & Security > Microphone and allow Java/Minecraft."
+                .to_string(),
+        );
+    }
+    if merged.contains("OPENJAR_MIC_NO_DEVICE") || merged.contains("OPENJAR_MIC_NO_LINE") {
+        return Ok(
+            "Java microphone probe ran but no input device was available. Connect a microphone, then try again."
+                .to_string(),
+        );
+    }
+
+    if merged_lower.contains("source-file mode") || merged_lower.contains("source file mode") {
+        return Err(
+            "This Java runtime does not support source-file execution for the microphone probe. Use Java 11+ for this helper."
+                .to_string(),
+        );
+    }
+
+    if !output.status.success() {
+        return Err(format!(
+            "Java microphone probe failed: {}",
+            summarize_java_probe_error(&merged)
+        ));
+    }
+
+    Ok("Java microphone probe ran. If no prompt appeared, launch Minecraft and then Re-check permissions."
+        .to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn summarize_java_probe_error(raw: &str) -> String {
+    let compact = raw
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string();
+    if compact.is_empty() {
+        "unknown Java probe failure".to_string()
+    } else {
+        compact.chars().take(220).collect::<String>()
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn java_mic_probe_source() -> &'static str {
+    r#"import javax.sound.sampled.AudioFormat;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.DataLine;
+import javax.sound.sampled.LineUnavailableException;
+import javax.sound.sampled.TargetDataLine;
+
+public class OpenJarMicProbe {
+    public static void main(String[] args) {
+        AudioFormat format = new AudioFormat(16000.0f, 16, 1, true, false);
+        DataLine.Info info = new DataLine.Info(TargetDataLine.class, format);
+        if (!AudioSystem.isLineSupported(info)) {
+            System.out.println("OPENJAR_MIC_NO_LINE");
+            return;
+        }
+        try (TargetDataLine line = (TargetDataLine) AudioSystem.getLine(info)) {
+            line.open(format);
+            line.start();
+            try {
+                Thread.sleep(250L);
+            } catch (InterruptedException ignored) {
+            }
+            line.stop();
+            System.out.println("OPENJAR_MIC_GRANTED");
+        } catch (SecurityException denied) {
+            System.out.println("OPENJAR_MIC_DENIED");
+        } catch (LineUnavailableException unavailable) {
+            System.out.println("OPENJAR_MIC_NO_DEVICE");
+        } catch (Throwable other) {
+            System.out.println("OPENJAR_MIC_ERROR");
+        }
+    }
+}
+"#
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,5 +871,24 @@ mod tests {
 
         let passthrough = sanitize_macos_tcc_error("no such table: access");
         assert_eq!(passthrough, "no such table: access");
+    }
+
+    #[test]
+    fn microphone_settings_targets_prioritize_microphone_privacy_pane() {
+        let targets = microphone_settings_open_targets();
+        assert_eq!(
+            targets.first().copied(),
+            Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
+        );
+        assert!(targets.iter().any(|value| value.contains("System Settings.app")));
+    }
+
+    #[test]
+    fn microphone_settings_success_message_mentions_microphone_for_privacy_target() {
+        let message = microphone_settings_open_success_message(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+        );
+        assert!(message.contains("Microphone"));
+        assert!(message.contains("Re-check"));
     }
 }

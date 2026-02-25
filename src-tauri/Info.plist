@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>OpenJar Launcher uses microphone access so Java/Minecraft voice chat mods can capture your voice.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>OpenJar Launcher can use camera access for Minecraft features or mods that require camera input.</string>
+</dict>
+</plist>
