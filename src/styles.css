@@ -41,7 +41,7 @@
   --density-panel-pad: 20px;
   --density-card-pad: 18px;
   --density-gap: 16px;
-  --z-tooltip: 1200;
+  --z-tooltip: 3340;
   --z-modal: 3000;
   --z-dropdown: 3300;
   --z-danger: 3600;
@@ -464,6 +464,47 @@ button, input, select { font-family: inherit; }
 .navBtn:hover .navTooltip{
   opacity: 1;
   transform: translateY(-50%) translateX(2px);
+}
+.appTooltipBubble{
+  position: fixed;
+  max-width: min(340px, calc(100vw - 16px));
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  background: color-mix(in srgb, var(--tooltipBg) 90%, var(--panel2) 10%);
+  color: var(--tooltipText);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.28;
+  letter-spacing: 0.01em;
+  box-shadow: 0 9px 24px rgba(0,0,0,0.26), 0 2px 7px rgba(0,0,0,0.16);
+  pointer-events: none;
+  z-index: var(--z-tooltip);
+  opacity: 0;
+  transform: translateY(6px) scale(0.965);
+  filter: blur(0.4px);
+  transition:
+    opacity 170ms cubic-bezier(.2,.8,.2,1),
+    transform 220ms cubic-bezier(.16,.84,.24,1),
+    filter 220ms cubic-bezier(.16,.84,.24,1);
+}
+.appTooltipBubble.above{
+  transform: translateY(-6px) scale(0.965);
+}
+.appTooltipBubble.open{
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  filter: none;
+}
+.appTooltipBubble::after{
+  content: none;
+}
+@media (prefers-reduced-motion: reduce){
+  .appTooltipBubble{
+    transition: none;
+    filter: none;
+    transform: none;
+  }
 }
 .navBottom{
   margin-top: auto;
@@ -2183,10 +2224,17 @@ button, input, select { font-family: inherit; }
   right: 0;
 }
 
-.menuPanel{ padding: 8px; }
+.menuPanel{
+  padding: 8px;
+  display: grid;
+  gap: 3px;
+}
 .menuItem{
   padding: 10px 10px;
   border-radius: 14px;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+  margin: 0;
   cursor:pointer;
   font-weight: 950;
   color: var(--text);
@@ -2194,11 +2242,25 @@ button, input, select { font-family: inherit; }
   align-items:center;
   justify-content:space-between;
   gap: 12px;
-  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
   min-height: 44px;
 }
-.menuItem:hover{ background: rgba(127,127,127,0.12); transform: translateY(-1px); }
-.menuItem.active{ background: var(--accent-soft); color: var(--accent-text); }
+.menuItem + .menuItem{
+  margin-top: 3px;
+}
+.menuItem:hover{
+  background: rgba(127,127,127,0.12);
+  border-color: color-mix(in srgb, var(--stroke2) 70%, transparent);
+}
+.menuItem.active{
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent-ring) 62%, transparent);
+  color: var(--accent-text);
+}
+.menuItem.active:hover{
+  background: color-mix(in srgb, var(--accent-soft) 84%, var(--surface) 16%);
+  border-color: color-mix(in srgb, var(--accent-ring) 70%, transparent);
+}
 .menuItem > :first-child{ white-space: nowrap; }
 .menuCheck{
   opacity: 0.9;
@@ -2219,13 +2281,35 @@ button, input, select { font-family: inherit; }
 .dropItem{
   padding: 10px 10px;
   border-radius: 14px;
+  border: 1px solid transparent;
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 44px;
   cursor:pointer;
   font-weight: 950;
   color: var(--text);
-  transition: background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
-.dropItem:hover{ background: rgba(127,127,127,0.12); transform: translateY(-1px); }
-.dropItem.active{ background: var(--accent-soft); color: var(--accent-text); }
+.dropItem + .dropItem{
+  margin-top: 3px;
+}
+.dropItem:hover{
+  background: rgba(127,127,127,0.12);
+  border-color: color-mix(in srgb, var(--stroke2) 70%, transparent);
+}
+.dropItem.active{
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent-ring) 62%, transparent);
+  color: var(--accent-text);
+}
+.dropItem.active:hover{
+  background: color-mix(in srgb, var(--accent-soft) 84%, var(--surface) 16%);
+  border-color: color-mix(in srgb, var(--accent-ring) 70%, transparent);
+}
 
 .segCtrl{
   display:flex;
@@ -2242,16 +2326,23 @@ button, input, select { font-family: inherit; }
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  font-weight: 950;
+  font-weight: 880;
   cursor:pointer;
   transition: background 150ms var(--ease), border-color 150ms var(--ease), transform 150ms var(--ease), color 150ms var(--ease);
   white-space: nowrap;
+  position: relative;
+  z-index: 1;
 }
-.segBtn:hover{ background: rgba(127,127,127,0.10); transform: translateY(-1px); }
+.segBtn:hover{
+  background: transparent;
+  transform: none;
+  color: color-mix(in srgb, var(--text) 86%, var(--muted));
+}
 .segBtn.active{
-  background: var(--accent-soft);
-  border-color: var(--accent-ring);
-  color: var(--accent-text);
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+  font-weight: 920;
 }
 
 .checkboxRow{
@@ -2585,13 +2676,66 @@ button, input, select { font-family: inherit; }
 .segmented{
   display:flex;
   gap:6px;
-  padding:6px;
+  padding:4px;
   border-radius: 999px;
   border:1px solid var(--stroke);
   background: var(--panel);
   box-shadow: var(--shadow);
   align-items:center;
   min-width: 0;
+  position: relative;
+}
+.segmentedIndicator{
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  border-radius: 999px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+}
+.segmentedIndicator::before{
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #ffffff 28%, transparent),
+    0 1px 1px color-mix(in srgb, #000 8%, transparent);
+  transform: scaleX(1);
+}
+.segmentedIndicator.stretch-right{
+  transform-origin: left center;
+}
+.segmentedIndicator.stretch-left{
+  transform-origin: right center;
+}
+.segmentedIndicator.stretch-right::before{
+  transform-origin: left center;
+  animation: segStretchRight 260ms cubic-bezier(.22,.8,.2,1);
+}
+.segmentedIndicator.stretch-left::before{
+  transform-origin: right center;
+  animation: segStretchLeft 260ms cubic-bezier(.22,.8,.2,1);
+}
+@keyframes segStretchRight{
+  0%{ transform: scaleX(1); }
+  42%{ transform: scaleX(1.09); }
+  100%{ transform: scaleX(1); }
+}
+@keyframes segStretchLeft{
+  0%{ transform: scaleX(1); }
+  42%{ transform: scaleX(1.09); }
+  100%{ transform: scaleX(1); }
+}
+.segmentedIndicator.ready{
+  opacity: 1;
+  transition: transform 240ms cubic-bezier(.22,.8,.2,1), width 240ms cubic-bezier(.22,.8,.2,1), height 240ms cubic-bezier(.22,.8,.2,1), opacity 120ms linear;
+  will-change: transform, width, height;
 }
 .segmented.scroll{
   overflow-x: auto;
@@ -2614,15 +2758,15 @@ button, input, select { font-family: inherit; }
   max-width: 1340px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 9px;
 }
 .homeSpotlight{
   margin-top: 0;
-  padding: 16px;
-  border-radius: 20px;
+  padding: 14px;
+  border-radius: 18px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
-  gap: 12px;
+  gap: 10px;
   align-items: stretch;
   border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
   background:
@@ -2701,7 +2845,7 @@ button, input, select { font-family: inherit; }
 .homeMainGrid{
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
-  gap: 12px;
+  gap: 10px;
   align-items: start;
 }
 .homeMainCol,
@@ -2709,11 +2853,11 @@ button, input, select { font-family: inherit; }
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .homePanel{
-  padding: 12px;
-  border-radius: 18px;
+  padding: 10px;
+  border-radius: 16px;
   border: 1px solid color-mix(in srgb, var(--stroke) 70%, transparent);
   background: color-mix(in srgb, var(--surface) 96%, var(--panel2) 4%);
 }
@@ -2736,12 +2880,12 @@ button, input, select { font-family: inherit; }
   margin-top: 0;
 }
 .homePanelTitle{
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 960;
   letter-spacing: -0.01em;
 }
 .homePanelActions{
-  margin-top: 10px;
+  margin-top: 8px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2751,22 +2895,22 @@ button, input, select { font-family: inherit; }
   min-width: 108px;
 }
 .homeLaunchpad{
-  margin-top: 12px;
+  margin-top: 9px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 8px;
 }
 .homeLaunchAction{
   border: 1px solid color-mix(in srgb, var(--stroke2) 82%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--surface) 93%, var(--panel2) 7%);
-  min-height: 82px;
-  padding: 12px;
+  min-height: 70px;
+  padding: 10px;
   color: var(--text);
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   text-align: left;
   transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
 }
@@ -2776,16 +2920,16 @@ button, input, select { font-family: inherit; }
   background: color-mix(in srgb, var(--surface) 88%, var(--accent-soft) 12%);
 }
 .homeList{
-  margin-top: 10px;
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
 }
 .homeListRow{
   border: 1px solid color-mix(in srgb, var(--stroke) 62%, transparent);
   border-radius: 11px;
   background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
-  padding: 9px 11px;
+  padding: 8px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2819,16 +2963,16 @@ button, input, select { font-family: inherit; }
   min-width: 78px;
 }
 .homeAlertList{
-  margin-top: 10px;
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 .homeAlertRow{
   border: 1px solid color-mix(in srgb, var(--stroke2) 78%, transparent);
   border-radius: 12px;
   background: var(--surface);
-  padding: 10px;
+  padding: 8px 9px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2863,11 +3007,11 @@ button, input, select { font-family: inherit; }
   display: none;
 }
 .homeSideCol .homePanel{
-  padding: 11px;
-  border-radius: 17px;
+  padding: 10px;
+  border-radius: 15px;
 }
 .homeSideCol .homeListRow{
-  padding: 9px 10px;
+  padding: 8px 9px;
 }
 .homeSideCol .homePanelActions{
   margin-top: 8px;
@@ -2880,13 +3024,15 @@ button, input, select { font-family: inherit; }
   padding: 8px 12px;
 }
 .homeEmpty{
-  margin-top: 8px;
-  border: 1px dashed var(--stroke2);
+  margin-top: 6px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 64%, transparent);
   border-radius: 12px;
-  padding: 12px;
+  padding: 9px 10px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
   color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 98%, var(--panel2) 2%);
+  font-size: 12.5px;
 }
 .homeMaintenanceActions .btn{
   min-width: 0;
@@ -3745,6 +3891,15 @@ button, input, select { font-family: inherit; }
 .instToolbarLeft{ display:flex; align-items:center; gap: 10px; padding: 10px 12px; border-radius: 14px; border:1px solid var(--stroke); background: var(--surface); box-shadow: var(--shadow); min-width: 280px; flex: 1 1 360px; }
 .instToolbarLeft .input{ border:none; background: transparent; padding:0; box-shadow:none; flex:1; }
 .instToolbarLeft .navIcon{ opacity: 0.75; }
+.instToolbarClearBtn{
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+}
+.instToolbarClearBtn.hidden{
+  visibility: hidden;
+  pointer-events: none;
+}
 .instToolbarRight{ display:flex; align-items:center; gap: 10px; }
 .instToolbarRight .btn{
   min-height: var(--density-control-h);
@@ -4032,10 +4187,10 @@ button, input, select { font-family: inherit; }
 }
 .instanceModsHeaderRow{
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) minmax(180px, 0.52fr) 136px;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(250px, 0.54fr) 98px;
   gap: 12px;
   align-items: center;
-  padding: 6px 10px;
+  padding: 6px 14px 4px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 900;
@@ -4054,21 +4209,79 @@ button, input, select { font-family: inherit; }
 }
 .instanceModsRow{
   border: 1px solid var(--stroke);
-  border-radius: 14px;
-  background: rgba(127,127,127,0.08);
-  padding: 8px 10px;
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  padding: 12px 14px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) minmax(180px, 0.52fr) 136px;
-  gap: 10px;
+  grid-template-columns: 38px minmax(0, 1fr) minmax(250px, 0.54fr) 98px;
+  gap: 12px;
   align-items: center;
+  cursor: pointer;
+  min-height: 74px;
+  position: relative;
+  overflow: hidden;
+  transition:
+    transform 170ms var(--ease),
+    background 170ms var(--ease),
+    border-color 170ms var(--ease),
+    box-shadow 200ms var(--ease);
+}
+.instanceModsRow::before{
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 190ms var(--ease);
+  background: linear-gradient(
+    120deg,
+    color-mix(in srgb, var(--accent-soft) 22%, transparent) 0%,
+    transparent 46%,
+    color-mix(in srgb, var(--surface-2) 24%, transparent) 100%
+  );
+}
+.instanceModsRow:hover{
+  transform: translateY(-1px);
+  border-color: var(--stroke2);
+  background: color-mix(in srgb, var(--surface-2) 78%, var(--panel) 22%);
+  box-shadow: var(--shadow-xs);
+}
+.instanceModsRow:hover::before,
+.instanceModsRow:focus-within::before{
+  opacity: 1;
+}
+.instanceModsRow:focus-visible{
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
 }
 .instanceModsRow.disabled{
-  opacity: 0.78;
+  opacity: 0.82;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  transform: none;
+  box-shadow: none;
+}
+.instanceModsRow.disabled .instanceModsNameTitle,
+.instanceModsRow.disabled .instanceModsFilenamePrimary{
+  color: color-mix(in srgb, var(--muted) 86%, var(--text));
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  text-decoration-color: color-mix(in srgb, var(--muted) 72%, transparent);
+}
+.instanceModsRow.disabled .instanceModsNameMeta{
+  color: color-mix(in srgb, var(--muted) 94%, transparent);
+}
+.instanceModsRow.disabled .instanceModIcon{
+  border-color: color-mix(in srgb, var(--stroke) 84%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+.instanceModsRow.disabled .instanceModIcon img{
+  filter: grayscale(92%) saturate(0.55);
 }
 .instanceModsSelectCell{
   display: flex;
   align-items: center;
   justify-content: center;
+  align-self: center;
 }
 .instanceModsSelectCheck{
   width: 16px;
@@ -4078,52 +4291,137 @@ button, input, select { font-family: inherit; }
 .instanceModsNameCell{
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
+  align-self: center;
 }
 .instanceModIcon{
-  width: 36px;
-  height: 36px;
-  border-radius: 10px;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
   border: 1px solid var(--stroke);
   background: color-mix(in srgb, var(--surface-2) 82%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  flex: 0 0 36px;
+  flex: 0 0 54px;
+  transition: transform 220ms var(--ease), border-color 180ms var(--ease), box-shadow 220ms var(--ease);
+}
+.instanceModsRow:hover .instanceModIcon{
+  transform: scale(1.035) rotate(-2deg);
+  border-color: var(--stroke2);
+  box-shadow: var(--shadowSoft);
+}
+.instanceModIcon img{
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  object-fit: cover;
+  display: block;
 }
 .instanceModsNameText{
   min-width: 0;
+  display: grid;
+  gap: 3px;
+  align-content: center;
 }
 .instanceModsNameTitle{
-  font-size: 14px;
-  font-weight: 950;
+  font-size: 15.5px;
+  font-weight: 960;
   letter-spacing: -0.01em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  line-height: 1.14;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .instanceModsNameMeta{
-  margin-top: 2px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 780;
+  line-height: 1.12;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.instanceModsProviderBadges{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 26px;
+}
+.instanceProviderBadge{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  min-height: 26px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 820;
+  line-height: 1 !important;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.instanceProviderBadge.active{
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--stroke));
+  color: var(--accent-text);
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface) 28%);
+}
+button.instanceProviderBadge{
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  padding: 0 11px;
+  height: 26px;
+  min-height: 26px;
+  line-height: 1 !important;
+  font: inherit;
+  cursor: default;
+}
+button.instanceProviderBadge.clickable{
+  cursor: pointer;
+  transition: border-color 140ms var(--ease), transform 140ms var(--ease), background 140ms var(--ease), color 140ms var(--ease);
+}
+button.instanceProviderBadge.clickable:hover{
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--stroke));
+  background: color-mix(in srgb, var(--surface-2) 75%, transparent);
+  transform: translateY(-1px);
+}
+button.instanceProviderBadge.clickable:focus-visible{
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+button.instanceProviderBadge:disabled{
+  opacity: 0.72;
+  cursor: not-allowed;
+  transform: none;
 }
 .instanceModsUpdatedCell{
+  display: grid;
+  gap: 4px;
   min-width: 0;
+  align-self: center;
+  align-content: center;
 }
-.instanceModsVersion{
-  font-size: 14px;
-  font-weight: 900;
+.instanceModsFilenamePrimary{
+  font-size: 15.5px;
+  font-weight: 940;
   letter-spacing: -0.01em;
+  line-height: 1.14;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.instanceModsFilename{
-  margin-top: 2px;
+.instanceModsVersionMeta{
   color: var(--muted);
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 780;
+  line-height: 1.12;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4132,7 +4430,8 @@ button, input, select { font-family: inherit; }
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  padding-left: 8px;
+  padding-left: 0;
+  align-self: center;
 }
 .instanceModsActionRow{
   display: flex;
@@ -4141,32 +4440,60 @@ button, input, select { font-family: inherit; }
   margin-left: auto;
 }
 .instanceActionIconBtn{
-  min-width: 40px;
-  width: 40px;
-  height: 40px;
+  appearance: none;
+  border: none;
+  background: transparent;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
   padding: 0;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  border-radius: 12px;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text));
+  cursor: pointer;
+  opacity: 0.56;
+  transition:
+    opacity 140ms var(--ease),
+    color 140ms var(--ease),
+    background 140ms var(--ease),
+    transform 140ms var(--ease);
+}
+.instanceModsRow:hover .instanceActionIconBtn,
+.instanceModsRow:focus-within .instanceActionIconBtn{
+  opacity: 1;
 }
 .instanceActionIconBtn .navIcon{
-  width: 17px;
-  height: 17px;
+  width: 19px;
+  height: 19px;
+}
+.instanceActionIconBtn:hover{
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  transform: translateY(-1px);
+}
+.instanceActionIconBtn:focus-visible{
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 1px;
+}
+.instanceActionIconBtn:disabled{
+  opacity: 0.36;
+  cursor: not-allowed;
+  transform: none;
+  background: transparent;
 }
 .instanceActionToggleBtn.enabled{
-  border-color: rgba(34,197,94,0.45);
-  background: color-mix(in srgb, rgba(34,197,94,0.2) 82%, var(--surface) 18%);
-  color: rgba(22,163,74,0.98);
-}
-.instanceActionToggleBtn.enabled:hover{
-  border-color: rgba(34,197,94,0.62);
+  color: color-mix(in srgb, rgba(22,163,74,0.98) 76%, var(--accent) 24%);
 }
 .instanceActionToggleBtn.disabled{
-  border-color: rgba(245,158,11,0.42);
-  background: color-mix(in srgb, rgba(245,158,11,0.16) 82%, var(--surface) 18%);
-  color: rgba(180,83,9,0.98);
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
 }
 .instanceActionDeleteBtn{
-  border-color: color-mix(in srgb, rgba(239,68,68,0.42) 58%, var(--stroke));
-  color: color-mix(in srgb, rgba(239,68,68,0.9) 68%, var(--text));
+  color: var(--muted);
+}
+.instanceActionDeleteBtn:hover{
+  color: rgba(239,68,68,0.95);
 }
 .preflightModalBody{
   display: grid;
@@ -4394,6 +4721,15 @@ button, input, select { font-family: inherit; }
   max-height: min(68vh, 820px);
   overflow: auto;
   background: transparent;
+  position: relative;
+}
+.instanceLogsJumpBtn{
+  position: sticky;
+  left: calc(100% - 148px);
+  bottom: 10px;
+  margin-top: 10px;
+  margin-left: auto;
+  z-index: 2;
 }
 .instanceLogsMetaStrip{
   display: flex;
@@ -4538,12 +4874,22 @@ button, input, select { font-family: inherit; }
   width: 100%;
   min-height: 32px;
   padding: 6px 8px;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
   cursor: pointer;
   text-align: left;
+}
+.instanceLogSuspectItem > :first-child{
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.22;
+}
+.instanceLogSuspectItem > .chip{
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .instanceLogSuspectItem.on{
   border-color: var(--accent-ring);
@@ -5157,6 +5503,25 @@ button, input, select { font-family: inherit; }
 }
 .settingsPage{
   max-width: 1240px;
+  --settings-page-title-size: clamp(1.85rem, 1.35rem + 1.15vw, 2.45rem);
+  --settings-page-title-weight: 980;
+  --settings-section-title-size: 1.26rem;
+  --settings-section-title-weight: 900;
+  --settings-subheading-size: 0.95rem;
+  --settings-subheading-weight: 560;
+  --settings-label-size: 1.03rem;
+  --settings-label-weight: 760;
+}
+.settingsPageTitle{
+  margin: 0;
+  font-size: var(--settings-page-title-size);
+  font-weight: var(--settings-page-title-weight);
+  letter-spacing: -0.03em;
+}
+.settingsPageIntro{
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
 }
 .settingsLayout{
   margin-top: 14px;
@@ -5171,7 +5536,7 @@ button, input, select { font-family: inherit; }
   gap: 12px;
 }
 .settingsSectionCard{
-  padding: 14px;
+  padding: 16px;
   border-radius: 20px;
 }
 .settingAnchorFlash{
@@ -5189,12 +5554,26 @@ button, input, select { font-family: inherit; }
   }
 }
 .settingsSectionTitle{
-  font-weight: 980;
-  font-size: 15px;
+  font-weight: var(--settings-section-title-weight);
+  font-size: var(--settings-section-title-size);
+  letter-spacing: -0.01em;
 }
 .settingsSectionSub{
   margin-top: 6px;
   color: var(--muted);
+  font-size: var(--settings-subheading-size);
+  font-weight: var(--settings-subheading-weight);
+  line-height: 1.35;
+}
+.settingsPage .settingTitle{
+  font-size: var(--settings-label-size);
+  font-weight: var(--settings-label-weight);
+  letter-spacing: -0.012em;
+}
+.settingsPage .settingSub{
+  font-size: var(--settings-subheading-size);
+  font-weight: var(--settings-subheading-weight);
+  line-height: 1.42;
 }
 .settingsSaveRow{
   display: flex;
@@ -6332,7 +6711,7 @@ button, input, select { font-family: inherit; }
   border-radius: 14px;
 }
 .configHeaderPicker .menuItem + .menuItem{
-  margin-top: 8px;
+  margin-top: 4px;
 }
 .configHeaderPicker .menuItem:hover{
   background: color-mix(in srgb, var(--accent-soft) 48%, var(--dropdown-bg-soft-solid) 52%);
