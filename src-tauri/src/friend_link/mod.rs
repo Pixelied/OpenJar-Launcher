@@ -9,9 +9,9 @@ use crate::friend_link::net::{
 };
 use crate::friend_link::state::{
     app_instances_dir, collect_sync_state, config_file_map, lock_entry_hash, lock_entry_map,
-    preview_for_config_file, preview_for_lock_entry, state_manifest, CanonicalLockEntry,
-    ConfigFileState, InstanceConfigFileEntry, ReadInstanceConfigFileResult, SyncState,
-    WriteInstanceConfigFileResult,
+    preview_for_config_file, preview_for_lock_entry, read_lock_entry_bytes, state_manifest,
+    CanonicalLockEntry, ConfigFileState, InstanceConfigFileEntry, ReadInstanceConfigFileResult,
+    SyncState, WriteInstanceConfigFileResult,
 };
 use crate::friend_link::store::{
     delete_session_shared_secret, delete_session_signing_private_key, get_session, get_session_mut,
@@ -135,6 +135,14 @@ pub struct FriendLinkDriftPreview {
     pub online_peers: usize,
     pub peer_count: usize,
     pub has_untrusted_changes: bool,
+    #[serde(default)]
+    pub total_bytes_estimate: u64,
+    #[serde(default)]
+    pub unknown_bytes_items: usize,
+    #[serde(default)]
+    pub top_path_prefixes: Vec<String>,
+    #[serde(default)]
+    pub change_summary: String,
 }
 
 pub type FriendSyncItemKind = String;
@@ -1349,7 +1357,75 @@ fn collect_remote_peer_states(
     (snapshots, online)
 }
 
+fn drift_item_top_prefix(item: &FriendLinkDriftItem) -> String {
+    if item.kind == "lock_entry" {
+        let content_type = item
+            .key
+            .split("::")
+            .nth(2)
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "mods".to_string());
+        return format!("{content_type}/");
+    }
+    let rel = item
+        .key
+        .strip_prefix("config::")
+        .unwrap_or(item.key.as_str())
+        .trim();
+    if rel.is_empty() {
+        return "config/".to_string();
+    }
+    if let Some((prefix, _)) = rel.split_once('/') {
+        if prefix.trim().is_empty() {
+            return "config/".to_string();
+        }
+        return format!("{}/", prefix.trim());
+    }
+    rel.to_string()
+}
+
+fn summarize_drift_changes(
+    added: usize,
+    removed: usize,
+    changed: usize,
+    total: usize,
+    has_untrusted_changes: bool,
+) -> String {
+    if total == 0 {
+        return "No changes to apply.".to_string();
+    }
+    let mut message = format!(
+        "Will add {added}, remove {removed}, and update {changed} item{}.",
+        if total == 1 { "" } else { "s" }
+    );
+    if has_untrusted_changes {
+        message.push_str(" Some changes are from untrusted peers and need trust approval.");
+    }
+    message
+}
+
+fn empty_friend_link_drift_preview(instance_id: String, status: &str) -> FriendLinkDriftPreview {
+    FriendLinkDriftPreview {
+        instance_id,
+        status: status.to_string(),
+        added: 0,
+        removed: 0,
+        changed: 0,
+        total_changes: 0,
+        items: vec![],
+        online_peers: 0,
+        peer_count: 0,
+        has_untrusted_changes: false,
+        total_bytes_estimate: 0,
+        unknown_bytes_items: 0,
+        top_path_prefixes: vec![],
+        change_summary: "No changes to apply.".to_string(),
+    }
+}
+
 fn build_friend_link_drift_preview(
+    instances_dir: &std::path::Path,
     instance_id: &str,
     session: &FriendLinkSessionRecord,
     local_state: &SyncState,
@@ -1363,6 +1439,9 @@ fn build_friend_link_drift_preview(
         .collect::<HashSet<_>>();
     let mut items = Vec::<FriendLinkDriftItem>::new();
     let mut seen = HashSet::<String>::new();
+    let mut total_bytes_estimate = 0u64;
+    let mut unknown_bytes_items = 0usize;
+    let mut prefix_counts = HashMap::<String, usize>::new();
 
     for peer in peer_states {
         let peer_name = peer_display_name(session, &peer.peer_id, &peer.display_name);
@@ -1386,7 +1465,7 @@ fn build_friend_link_drift_preview(
             if !seen.insert(dedupe) {
                 continue;
             }
-            items.push(FriendLinkDriftItem {
+            let item = FriendLinkDriftItem {
                 id: format!("drift_{}", Uuid::new_v4()),
                 key: key.clone(),
                 kind: "lock_entry".to_string(),
@@ -1396,7 +1475,17 @@ fn build_friend_link_drift_preview(
                 mine_preview: local.map(preview_for_lock_entry),
                 theirs_preview: Some(preview_for_lock_entry(remote_entry)),
                 trusted_peer: trusted_peers.contains(&peer.peer_id),
-            });
+            };
+            let known_bytes = local
+                .and_then(|entry| read_lock_entry_bytes(instances_dir, instance_id, entry).ok().flatten())
+                .map(|bytes| bytes.len() as u64);
+            if let Some(bytes) = known_bytes {
+                total_bytes_estimate = total_bytes_estimate.saturating_add(bytes);
+            } else {
+                unknown_bytes_items += 1;
+            }
+            *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+            items.push(item);
         }
         if peer_states.len() == 1 {
             for (key, local_entry) in &local_lock {
@@ -1410,7 +1499,7 @@ fn build_friend_link_drift_preview(
                 if !seen.insert(dedupe) {
                     continue;
                 }
-                items.push(FriendLinkDriftItem {
+                let item = FriendLinkDriftItem {
                     id: format!("drift_{}", Uuid::new_v4()),
                     key: key.clone(),
                     kind: "lock_entry".to_string(),
@@ -1420,7 +1509,18 @@ fn build_friend_link_drift_preview(
                     mine_preview: Some(preview_for_lock_entry(local_entry)),
                     theirs_preview: None,
                     trusted_peer: trusted_peers.contains(&peer.peer_id),
-                });
+                };
+                let known_bytes = read_lock_entry_bytes(instances_dir, instance_id, local_entry)
+                    .ok()
+                    .flatten()
+                    .map(|bytes| bytes.len() as u64);
+                if let Some(bytes) = known_bytes {
+                    total_bytes_estimate = total_bytes_estimate.saturating_add(bytes);
+                } else {
+                    unknown_bytes_items += 1;
+                }
+                *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+                items.push(item);
             }
         }
 
@@ -1439,7 +1539,7 @@ fn build_friend_link_drift_preview(
             if !seen.insert(dedupe) {
                 continue;
             }
-            items.push(FriendLinkDriftItem {
+            let item = FriendLinkDriftItem {
                 id: format!("drift_{}", Uuid::new_v4()),
                 key: key.clone(),
                 kind: "config_file".to_string(),
@@ -1449,7 +1549,11 @@ fn build_friend_link_drift_preview(
                 mine_preview: local.map(preview_for_config_file),
                 theirs_preview: Some(preview_for_config_file(remote_file)),
                 trusted_peer: trusted_peers.contains(&peer.peer_id),
-            });
+            };
+            total_bytes_estimate =
+                total_bytes_estimate.saturating_add(remote_file.content.as_bytes().len() as u64);
+            *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+            items.push(item);
         }
         if peer_states.len() == 1 {
             for (key, local_file) in &local_config {
@@ -1460,7 +1564,7 @@ fn build_friend_link_drift_preview(
                 if !seen.insert(dedupe) {
                     continue;
                 }
-                items.push(FriendLinkDriftItem {
+                let item = FriendLinkDriftItem {
                     id: format!("drift_{}", Uuid::new_v4()),
                     key: key.clone(),
                     kind: "config_file".to_string(),
@@ -1470,7 +1574,11 @@ fn build_friend_link_drift_preview(
                     mine_preview: Some(preview_for_config_file(local_file)),
                     theirs_preview: None,
                     trusted_peer: trusted_peers.contains(&peer.peer_id),
-                });
+                };
+                total_bytes_estimate =
+                    total_bytes_estimate.saturating_add(local_file.content.as_bytes().len() as u64);
+                *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+                items.push(item);
             }
         }
     }
@@ -1480,6 +1588,15 @@ fn build_friend_link_drift_preview(
     let changed = items.iter().filter(|item| item.change == "changed").count();
     let total_changes = items.len();
     let has_untrusted_changes = items.iter().any(|item| !item.trusted_peer);
+    let mut top_path_prefixes = prefix_counts.into_iter().collect::<Vec<_>>();
+    top_path_prefixes.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let top_path_prefixes = top_path_prefixes
+        .into_iter()
+        .take(3)
+        .map(|(prefix, count)| format!("{prefix} ({count})"))
+        .collect::<Vec<_>>();
+    let change_summary =
+        summarize_drift_changes(added, removed, changed, total_changes, has_untrusted_changes);
     let status = if session.pending_conflicts.is_empty() {
         if session.peers.is_empty() {
             "no_peers".to_string()
@@ -1505,6 +1622,10 @@ fn build_friend_link_drift_preview(
         online_peers,
         peer_count: session.peers.len(),
         has_untrusted_changes,
+        total_bytes_estimate,
+        unknown_bytes_items,
+        top_path_prefixes,
+        change_summary,
     }
 }
 
@@ -2586,18 +2707,7 @@ fn preview_friend_link_drift_inner(
     let mut rotated_host_secret = false;
     {
         let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
-            return Ok(FriendLinkDriftPreview {
-                instance_id: args.instance_id,
-                status: "unlinked".to_string(),
-                added: 0,
-                removed: 0,
-                changed: 0,
-                total_changes: 0,
-                items: vec![],
-                online_peers: 0,
-                peer_count: 0,
-                has_untrusted_changes: false,
-            });
+            return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
         };
         match ensure_session_security_material_loaded(session) {
             Ok(()) => {
@@ -2627,37 +2737,16 @@ fn preview_friend_link_drift_inner(
     }
     if let Some(reason) = broken_secret_reason {
         unlink_broken_session(&app, &mut store, &args.instance_id, &reason)?;
-        return Ok(FriendLinkDriftPreview {
-            instance_id: args.instance_id,
-            status: "unlinked".to_string(),
-            added: 0,
-            removed: 0,
-            changed: 0,
-            total_changes: 0,
-            items: vec![],
-            online_peers: 0,
-            peer_count: 0,
-            has_untrusted_changes: false,
-        });
+        return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
     }
     let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
-        return Ok(FriendLinkDriftPreview {
-            instance_id: args.instance_id,
-            status: "unlinked".to_string(),
-            added: 0,
-            removed: 0,
-            changed: 0,
-            total_changes: 0,
-            items: vec![],
-            online_peers: 0,
-            peer_count: 0,
-            has_untrusted_changes: false,
-        });
+        return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
     };
     let instances_dir = app_instances_dir(&app)?;
     let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
     let (peer_states, online_peers) = collect_remote_peer_states(session);
     let preview = build_friend_link_drift_preview(
+        &instances_dir,
         &args.instance_id,
         session,
         &local_state,
@@ -2739,6 +2828,7 @@ fn sync_friend_link_selected_inner(
     let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
     let (peer_states, online_peers) = collect_remote_peer_states(session);
     let preview = build_friend_link_drift_preview(
+        &instances_dir,
         &args.instance_id,
         session,
         &local_state,

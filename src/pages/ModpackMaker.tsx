@@ -1807,7 +1807,7 @@ export default function ModpackMaker({
                   ) : null}
                   {importLocalJarsBusy ? (
                     <div className="muted" style={{ marginTop: 8 }}>
-                      Processing queue with up to 5 workers...
+                      Processing queue with adaptive workers (based on workload and CPU)...
                     </div>
                   ) : null}
                   {localJarQueueStats.skipped > 0 ? (

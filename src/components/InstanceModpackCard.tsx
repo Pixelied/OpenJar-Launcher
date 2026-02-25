@@ -22,6 +22,7 @@ import {
   previewUpdateModpackFromInstance,
   reconcileFriendLink,
   resolveFriendLinkConflicts,
+  setFriendLinkAllowlist,
   setFriendLinkGuardrails,
   setFriendLinkPeerAlias,
   syncFriendLinkSelected,
@@ -30,6 +31,7 @@ import {
 } from "../tauri";
 
 type FriendSyncPolicy = "manual" | "ask" | "auto_metadata" | "auto_all";
+type FriendAllowlistPreset = "mods_only" | "mods_plus_configs" | "everything" | "custom";
 
 type FriendSyncPrefs = {
   policy: FriendSyncPolicy;
@@ -41,6 +43,54 @@ const DEFAULT_FRIEND_SYNC_PREFS: FriendSyncPrefs = {
   policy: "ask",
   snoozed_until: 0,
 };
+const FRIEND_ALLOWLIST_MODS_PLUS_CONFIGS = [
+  "options.txt",
+  "config/**/*.json",
+  "config/**/*.toml",
+  "config/**/*.properties",
+];
+const FRIEND_ALLOWLIST_EVERYTHING = ["**/*"];
+
+function normalizeAllowlistRows(rows: string[] | undefined | null): string[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => String(row ?? "").trim())
+    .filter(Boolean)
+    .map((row) => row.replace(/\\/g, "/").toLowerCase())
+    .sort();
+}
+
+function allowlistPresetForRows(rows: string[] | undefined | null): FriendAllowlistPreset {
+  const normalized = normalizeAllowlistRows(rows);
+  if (normalized.length === 0) return "mods_only";
+  if (normalized.some((row) => row === "**/*")) return "everything";
+  const configs = normalizeAllowlistRows(FRIEND_ALLOWLIST_MODS_PLUS_CONFIGS);
+  if (normalized.length === configs.length && normalized.every((row, idx) => row === configs[idx])) {
+    return "mods_plus_configs";
+  }
+  return "custom";
+}
+
+function allowlistRowsForPreset(preset: Exclude<FriendAllowlistPreset, "custom">): string[] {
+  if (preset === "mods_only") return [];
+  if (preset === "everything") return FRIEND_ALLOWLIST_EVERYTHING;
+  return FRIEND_ALLOWLIST_MODS_PLUS_CONFIGS;
+}
+
+function formatByteCount(value: number | null | undefined): string {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let idx = -1;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx += 1;
+  }
+  const rounded = size >= 100 ? size.toFixed(0) : size >= 10 ? size.toFixed(1) : size.toFixed(2);
+  return `${rounded} ${units[Math.max(0, idx)]}`;
+}
 
 function readFriendSyncPrefs(instanceId: string): FriendSyncPrefs {
   if (typeof window === "undefined") return DEFAULT_FRIEND_SYNC_PREFS;
@@ -157,7 +207,11 @@ export default function InstanceModpackCard({
   const [busy, setBusy] = useState(false);
   const [syncBusy, setSyncBusy] = useState(false);
   const [guardrailsBusy, setGuardrailsBusy] = useState(false);
+  const [allowlistBusy, setAllowlistBusy] = useState(false);
   const [driftReviewOpen, setDriftReviewOpen] = useState(false);
+  const [peerSafetyPanelOpen, setPeerSafetyPanelOpen] = useState(true);
+  const [policyPanelOpen, setPolicyPanelOpen] = useState(false);
+  const [sessionActionsPanelOpen, setSessionActionsPanelOpen] = useState(false);
   const [selectedDriftKeys, setSelectedDriftKeys] = useState<string[]>([]);
   const [guardTrustedPeerIds, setGuardTrustedPeerIds] = useState<string[]>([]);
   const [guardMaxAutoChanges, setGuardMaxAutoChanges] = useState(25);
@@ -191,6 +245,9 @@ export default function InstanceModpackCard({
     setFriendPublicEndpointOverride("");
     setPeerAliasDrafts({});
     setPeerAliasSavingId(null);
+    setPeerSafetyPanelOpen(true);
+    setPolicyPanelOpen(false);
+    setSessionActionsPanelOpen(false);
     lastDriftSignatureRef.current = "";
     lastAutoAttemptSignatureRef.current = "";
   }, [instance.id, isDevMode]);
@@ -226,6 +283,12 @@ export default function InstanceModpackCard({
     writeFriendSyncPrefs(instance.id, { policy: syncPolicy, snoozed_until: snoozedUntil });
   }, [instance.id, syncPolicy, snoozedUntil]);
 
+  useEffect(() => {
+    if (guardrailsDirty) {
+      setPolicyPanelOpen(true);
+    }
+  }, [guardrailsDirty]);
+
   const linked = status?.link?.mode === "linked";
   const now = Date.now();
   const isSnoozed = snoozedUntil > now;
@@ -239,6 +302,11 @@ export default function InstanceModpackCard({
     if (!friendDrift) return "No drift preview";
     return `+${friendDrift.added} / -${friendDrift.removed} / ~${friendDrift.changed}`;
   }, [friendDrift]);
+  const friendAllowlistPreset = useMemo(
+    () => allowlistPresetForRows(friendStatus?.allowlist ?? []),
+    [friendStatus?.allowlist]
+  );
+  const friendAllowlistCount = friendStatus?.allowlist?.length ?? 0;
   const friendDriftLegend = useMemo(() => driftLegendTooltip(friendDrift), [friendDrift]);
   const friendDriftBreakdown = useMemo(() => {
     const items = friendDrift?.items ?? [];
@@ -256,6 +324,12 @@ export default function InstanceModpackCard({
     };
   }, [friendDrift]);
   const friendModDriftSummary = `+${friendDriftBreakdown.mods.added} / -${friendDriftBreakdown.mods.removed} / ~${friendDriftBreakdown.mods.changed}`;
+  const friendDriftTopPrefixes = (friendDrift?.top_path_prefixes ?? []).slice(0, 3);
+  const friendDriftEstimatedBytes = Number(friendDrift?.total_bytes_estimate ?? 0);
+  const friendDriftUnknownBytesItems = Number(friendDrift?.unknown_bytes_items ?? 0);
+  const friendDriftSummaryMessage =
+    String(friendDrift?.change_summary ?? "").trim() ||
+    `Will add ${friendDrift?.added ?? 0}, remove ${friendDrift?.removed ?? 0}, and update ${friendDrift?.changed ?? 0} item(s).`;
 
   const friendUnsynced = friendDrift?.status === "unsynced" && friendDriftBreakdown.mods.total > 0;
   const friendConfigOnlyUnsynced =
@@ -267,6 +341,18 @@ export default function InstanceModpackCard({
   const effectiveFriendUnsynced = friendUnsynced && hasConnectedPeers;
   const effectiveFriendConfigOnlyUnsynced = friendConfigOnlyUnsynced && hasConnectedPeers;
   const selectedDriftKeySet = useMemo(() => new Set(selectedDriftKeys), [selectedDriftKeys]);
+  const friendHeaderStatusLabel = !friendStatus?.linked
+    ? "Unlinked"
+    : effectiveFriendUnsynced
+      ? `Unsynced mods ${friendModDriftSummary}`
+      : effectiveFriendConfigOnlyUnsynced
+        ? `Config drift ${friendDriftBreakdown.config.total}`
+        : friendStatus.pending_conflicts_count > 0
+          ? `${friendStatus.pending_conflicts_count} conflict${friendStatus.pending_conflicts_count === 1 ? "" : "s"}`
+          : "Synced";
+  const friendHeaderMeta = !friendStatus?.linked
+    ? "Create a host link or join with invite code."
+    : `${onlinePeerCount}/${peerCount} peer${peerCount === 1 ? "" : "s"} online`;
 
   const syncPolicyLabel =
     syncPolicy === "manual"
@@ -457,6 +543,29 @@ export default function InstanceModpackCard({
       onError(err?.toString?.() ?? String(err));
     } finally {
       setSyncBusy(false);
+    }
+  }
+
+  async function applyAllowlistPreset(preset: Exclude<FriendAllowlistPreset, "custom">) {
+    setAllowlistBusy(true);
+    try {
+      const updated = await setFriendLinkAllowlist({
+        instanceId: instance.id,
+        allowlist: allowlistRowsForPreset(preset),
+      });
+      updateFriendStatus(updated, { forceGuardrailSync: true });
+      if (preset === "everything") {
+        onNotice("Friend Link allowlist set to Everything. Review dry-run changes before syncing.");
+      } else if (preset === "mods_only") {
+        onNotice("Friend Link allowlist set to Mods only.");
+      } else {
+        onNotice("Friend Link allowlist set to Mods + Configs.");
+      }
+      await refresh({ quiet: true });
+    } catch (err: any) {
+      onError(err?.toString?.() ?? String(err));
+    } finally {
+      setAllowlistBusy(false);
     }
   }
 
@@ -681,21 +790,19 @@ export default function InstanceModpackCard({
 
       <div style={{ marginTop: 16, borderTop: "1px solid rgba(255,255,255,0.08)", paddingTop: 12 }}>
         <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 900 }}>Friend Link</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 900 }}>Friend Link</div>
+            <div className="muted" style={{ marginTop: 2 }}>
+              {friendHeaderMeta}
+            </div>
+          </div>
           <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-            <span
-              className="chip subtle"
-              title="Current Friend Link session status for this instance."
-            >
-              {friendStatus?.linked ? friendStatus.status || "linked" : "unlinked"}
+            <span className={`chip ${effectiveFriendUnsynced ? "danger" : "subtle"}`} title={friendDriftLegend}>
+              {friendHeaderStatusLabel}
             </span>
-            {friendStatus?.linked && friendDrift ? (
-              <span className={`chip ${effectiveFriendUnsynced ? "danger" : "subtle"}`} title={friendDriftLegend}>
-                {effectiveFriendUnsynced
-                  ? `Unsynced mods ${friendModDriftSummary}`
-                  : effectiveFriendConfigOnlyUnsynced
-                    ? `Config drift ${friendDriftBreakdown.config.total}`
-                    : "Synced"}
+            {friendStatus?.linked && friendStatus.pending_conflicts_count > 0 ? (
+              <span className="chip subtle">
+                {friendStatus.pending_conflicts_count} conflict{friendStatus.pending_conflicts_count === 1 ? "" : "s"}
               </span>
             ) : null}
           </div>
@@ -724,20 +831,37 @@ export default function InstanceModpackCard({
                     </div>
                   ) : null}
                 </div>
-                <div className="friendLinkOverviewBadges">
-                  <span className={`chip ${effectiveFriendUnsynced ? "danger" : ""}`} title={friendDriftLegend}>
-                    {effectiveFriendUnsynced
-                      ? `Unsynced mods ${friendModDriftSummary}`
-                      : effectiveFriendConfigOnlyUnsynced
-                        ? "Config drift only"
-                        : "Synced"}
-                  </span>
-                  <span className="chip subtle" title="Number of unresolved Friend Link conflicts for this instance.">
-                    {friendStatus.pending_conflicts_count} conflict{friendStatus.pending_conflicts_count === 1 ? "" : "s"}
-                  </span>
+                <div className="muted">
+                  Safety gate: {friendStatus.pending_conflicts_count} unresolved conflict
+                  {friendStatus.pending_conflicts_count === 1 ? "" : "s"}.
                 </div>
               </div>
             </div>
+
+            {friendDrift ? (
+              <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
+                <div className="friendLinkSectionTitle">Dry-run preview</div>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  {friendDriftSummaryMessage}
+                </div>
+                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                  <span className="chip subtle" title="How many items would change if synced now.">
+                    {friendDrift.total_changes} change{friendDrift.total_changes === 1 ? "" : "s"}
+                  </span>
+                  <span className="chip subtle" title="Best-effort total bytes for pending file/config changes.">
+                    ~{formatByteCount(friendDriftEstimatedBytes)}
+                  </span>
+                  <span className="chip subtle" title="Rows where byte size could not be estimated yet.">
+                    Unknown size rows {friendDriftUnknownBytesItems}
+                  </span>
+                </div>
+                {friendDriftTopPrefixes.length > 0 ? (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Top paths: {friendDriftTopPrefixes.join(" · ")}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             {hostWaitingForPeer ? (
               <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
@@ -750,12 +874,19 @@ export default function InstanceModpackCard({
 
             {!hostWaitingForPeer ? (
               <>
-            {friendStatus.peers?.length ? (
-              <div className="card friendLinkPanelCard friendLinkPeersCard" style={{ marginTop: 10 }}>
+            <div className="card friendLinkPanelCard friendLinkPeersCard" style={{ marginTop: 10 }}>
+              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
                 <div className="friendLinkSectionTitle">Peers and safety overrides</div>
+                <button className="btn" onClick={() => setPeerSafetyPanelOpen((prev) => !prev)}>
+                  {peerSafetyPanelOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {peerSafetyPanelOpen ? (
+                <>
                 <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
                   Untrusted peers are fully blocked: no manual or automatic sync is allowed from them until you trust them again.
                 </div>
+                {friendStatus.peers?.length ? (
                 <div className="friendLinkPeersList">
                 {friendStatus.peers.map((peer) => {
                   const trusted = guardTrustedPeerIds.includes(peer.peer_id);
@@ -884,15 +1015,69 @@ export default function InstanceModpackCard({
                   );
                 })}
                 </div>
-              </div>
-            ) : (
-              <div className="muted" style={{ marginTop: 6 }}>
-                No followers joined yet.
-              </div>
-            )}
+                ) : (
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    No followers joined yet.
+                  </div>
+                )}
+                </>
+              ) : (
+                <div className="muted" style={{ marginTop: 6 }}>
+                  Manage peer trust and nicknames.
+                </div>
+              )}
+            </div>
 
             <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-              <div className="friendLinkSectionTitle">Policy and guardrails</div>
+              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
+                <div className="friendLinkSectionTitle">Policy and guardrails</div>
+                <button className="btn" onClick={() => setPolicyPanelOpen((prev) => !prev)}>
+                  {policyPanelOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {policyPanelOpen ? (
+                <>
+              <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
+                <div className="friendLinkSubsectionTitle">Allowlist preset</div>
+                <div className="muted friendLinkPeerMeta" style={{ marginTop: 4 }}>
+                  Controls config-file scope. Mods/packs/datapacks are still controlled by the sync toggles below.
+                </div>
+                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    className={`btn ${friendAllowlistPreset === "mods_only" ? "primary" : ""}`}
+                    title="Sync lockfile-backed content only (no config files)."
+                    disabled={allowlistBusy}
+                    onClick={() => void applyAllowlistPreset("mods_only")}
+                  >
+                    Mods only
+                  </button>
+                  <button
+                    className={`btn ${friendAllowlistPreset === "mods_plus_configs" ? "primary" : ""}`}
+                    title="Sync lockfile-backed content plus common config files."
+                    disabled={allowlistBusy}
+                    onClick={() => void applyAllowlistPreset("mods_plus_configs")}
+                  >
+                    Mods + Configs
+                  </button>
+                  <button
+                    className={`btn ${friendAllowlistPreset === "everything" ? "primary danger" : ""}`}
+                    title="Sync most files except protected folders. Review before using."
+                    disabled={allowlistBusy}
+                    onClick={() => void applyAllowlistPreset("everything")}
+                  >
+                    Everything
+                  </button>
+                </div>
+                <div className="muted friendLinkPeerMeta" style={{ marginTop: 6 }}>
+                  Current preset: {friendAllowlistPreset === "mods_plus_configs"
+                    ? "Mods + Configs"
+                    : friendAllowlistPreset === "mods_only"
+                      ? "Mods only"
+                      : friendAllowlistPreset === "everything"
+                        ? "Everything (use with caution)"
+                        : `Custom (${friendAllowlistCount} pattern${friendAllowlistCount === 1 ? "" : "s"})`}
+                </div>
+              </div>
               <div className="friendLinkSyncTypes" style={{ marginTop: 10 }}>
                 <div className="friendLinkSubsectionTitle">What to sync</div>
                 <div className="friendLinkSyncTypesGrid" style={{ marginTop: 8 }}>
@@ -1047,6 +1232,18 @@ export default function InstanceModpackCard({
                   Auto-sync everything
                 </button>
               </div>
+              </>
+              ) : (
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Preset {friendAllowlistPreset === "mods_plus_configs"
+                    ? "Mods + Configs"
+                    : friendAllowlistPreset === "mods_only"
+                      ? "Mods only"
+                      : friendAllowlistPreset === "everything"
+                        ? "Everything"
+                        : "Custom"} · Policy {syncPolicyLabel}.
+                </div>
+              )}
             </div>
 
             {effectiveFriendUnsynced && !isSnoozed ? (
@@ -1229,7 +1426,14 @@ export default function InstanceModpackCard({
             ) : null}
 
             <div className="card friendLinkPanelCard" style={{ marginTop: 10 }}>
-              <div className="friendLinkSectionTitle">Session actions</div>
+              <div className="rowBetween" style={{ gap: 8, flexWrap: "wrap" }}>
+                <div className="friendLinkSectionTitle">Session actions</div>
+                <button className="btn" onClick={() => setSessionActionsPanelOpen((prev) => !prev)}>
+                  {sessionActionsPanelOpen ? "Collapse" : "Expand"}
+                </button>
+              </div>
+              {sessionActionsPanelOpen ? (
+                <>
               <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
               <button
                 className="btn"
@@ -1341,6 +1545,12 @@ export default function InstanceModpackCard({
                   title="Current invite code for this host session."
                 />
               </div>
+              </>
+              ) : (
+                <div className="muted" style={{ marginTop: 8 }}>
+                  Invite, sync, debug export, and leave-link controls.
+                </div>
+              )}
             </div>
             {friendStatus.pending_conflicts_count > 0 ? (
               <div className="muted" style={{ marginTop: 6 }}>

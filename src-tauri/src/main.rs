@@ -2,6 +2,7 @@
 
 use base64::Engine as _;
 use chrono::{DateTime, Local, Utc};
+#[cfg(not(test))]
 use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
 use reqwest::blocking::{multipart, Client, Response};
@@ -70,6 +71,7 @@ const UPDATE_ENTRY_WORKERS_MAX_ENV: &str = "MPM_UPDATE_ENTRY_WORKERS_MAX";
 const UPDATE_PREFETCH_WORKERS_MAX_ENV: &str = "MPM_UPDATE_PREFETCH_WORKERS_MAX";
 const CURSEFORGE_RESOLVE_WORKERS_MAX_ENV: &str = "MPM_CURSEFORGE_RESOLVE_WORKERS_MAX";
 pub(crate) const LOCAL_JAR_IMPORT_WORKERS_MAX_ENV: &str = "MPM_LOCAL_JAR_IMPORT_WORKERS_MAX";
+const INSTANCE_LAST_RUN_METADATA_FILE: &str = "last_run_metadata.v1.json";
 
 fn runtime_refresh_token_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -781,6 +783,18 @@ struct ListInstanceSnapshotsArgs {
 
 #[derive(Debug, Deserialize)]
 struct ListInstanceWorldsArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetInstanceDiskUsageArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetInstanceLastRunMetadataArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
 }
@@ -1565,6 +1579,17 @@ struct InstanceWorld {
     backup_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct InstanceLastRunMetadata {
+    #[serde(default)]
+    last_launch_at: Option<String>,
+    #[serde(default)]
+    last_exit_kind: Option<String>,
+    #[serde(default)]
+    last_exit_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct WorldConfigFileEntry {
     path: String,
@@ -1747,6 +1772,125 @@ pub(crate) fn instance_dir_for_id(
 ) -> Result<PathBuf, String> {
     let inst = find_instance(instances_dir, instance_id)?;
     Ok(instance_dir_for_instance(instances_dir, &inst))
+}
+
+fn instance_last_run_metadata_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(INSTANCE_LAST_RUN_METADATA_FILE)
+}
+
+fn read_instance_last_run_metadata_from_dir(instance_dir: &Path) -> InstanceLastRunMetadata {
+    let path = instance_last_run_metadata_path(instance_dir);
+    if !path.exists() {
+        return InstanceLastRunMetadata::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(raw) => match serde_json::from_str::<InstanceLastRunMetadata>(&raw) {
+            Ok(parsed) => parsed,
+            Err(err) => {
+                eprintln!(
+                    "parse instance last-run metadata failed for '{}': {}",
+                    path.display(),
+                    err
+                );
+                InstanceLastRunMetadata::default()
+            }
+        },
+        Err(err) => {
+            eprintln!(
+                "read instance last-run metadata failed for '{}': {}",
+                path.display(),
+                err
+            );
+            InstanceLastRunMetadata::default()
+        }
+    }
+}
+
+fn write_instance_last_run_metadata_to_dir(
+    instance_dir: &Path,
+    meta: &InstanceLastRunMetadata,
+) -> Result<(), String> {
+    let path = instance_last_run_metadata_path(instance_dir);
+    let raw = serde_json::to_string_pretty(meta)
+        .map_err(|e| format!("serialize instance last-run metadata failed: {e}"))?;
+    fs::write(&path, raw).map_err(|e| {
+        format!(
+            "write instance last-run metadata failed for '{}': {e}",
+            path.display()
+        )
+    })
+}
+
+fn read_instance_last_run_metadata(
+    instances_dir: &Path,
+    instance_id: &str,
+) -> Result<InstanceLastRunMetadata, String> {
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    Ok(read_instance_last_run_metadata_from_dir(&instance_dir))
+}
+
+fn mark_instance_launch_triggered(instances_dir: &Path, instance_id: &str) -> Result<(), String> {
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    let mut meta = read_instance_last_run_metadata_from_dir(&instance_dir);
+    meta.last_launch_at = Some(now_iso());
+    meta.last_exit_kind = Some("unknown".to_string());
+    meta.last_exit_at = None;
+    write_instance_last_run_metadata_to_dir(&instance_dir, &meta)
+}
+
+fn mark_instance_launch_exit(
+    instances_dir: &Path,
+    instance_id: &str,
+    exit_kind: &str,
+) -> Result<(), String> {
+    let kind = exit_kind.trim().to_lowercase();
+    let next_kind = match kind.as_str() {
+        "success" | "crashed" | "stopped" => kind,
+        _ => "unknown".to_string(),
+    };
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    let mut meta = read_instance_last_run_metadata_from_dir(&instance_dir);
+    if meta.last_launch_at.is_none() {
+        meta.last_launch_at = Some(now_iso());
+    }
+    meta.last_exit_kind = Some(next_kind);
+    meta.last_exit_at = Some(now_iso());
+    write_instance_last_run_metadata_to_dir(&instance_dir, &meta)
+}
+
+fn dir_total_size_bytes(path: &Path) -> u64 {
+    if !path.exists() {
+        return 0;
+    }
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let meta = match fs::symlink_metadata(&current) {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_file() {
+            total = total.saturating_add(meta.len());
+            continue;
+        }
+        if !meta.is_dir() {
+            continue;
+        }
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(err) => {
+                eprintln!("read dir failed for '{}': {}", current.display(), err);
+                continue;
+            }
+        };
+        for entry in entries.flatten() {
+            stack.push(entry.path());
+        }
+    }
+    total
 }
 
 fn lock_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
@@ -11279,6 +11423,8 @@ fn main() {
             commands::cancel_instance_launch,
             commands::list_instance_snapshots,
             commands::list_instance_worlds,
+            commands::get_instance_disk_usage,
+            commands::get_instance_last_run_metadata,
             commands::list_world_config_files,
             commands::read_world_config_file,
             commands::write_world_config_file,
@@ -11998,5 +12144,70 @@ mod token_storage_tests {
             canonical.as_deref(),
             Some("refresh_token_from_legacy_service")
         );
+    }
+
+    #[test]
+    fn dev_curseforge_key_migrates_from_legacy_service_to_canonical_service() {
+        let _guard = token_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+
+        token_keyring_set_secret(
+            LEGACY_KEYRING_SERVICES[0],
+            DEV_CURSEFORGE_KEY_KEYRING_USER,
+            "legacy_dev_cf_key",
+        )
+        .expect("seed legacy dev curseforge key");
+
+        let key = keyring_get_dev_curseforge_key().expect("read dev curseforge key");
+        assert_eq!(key.as_deref(), Some("legacy_dev_cf_key"));
+
+        let canonical = token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
+            .expect("read canonical migrated dev curseforge key");
+        assert_eq!(canonical.as_deref(), Some("legacy_dev_cf_key"));
+    }
+}
+
+#[cfg(test)]
+mod instance_health_tests {
+    use super::*;
+
+    #[test]
+    fn instance_last_run_metadata_serializes_camel_case_shape() {
+        let payload = serde_json::to_value(InstanceLastRunMetadata {
+            last_launch_at: Some("2026-02-25T20:00:00Z".to_string()),
+            last_exit_kind: Some("success".to_string()),
+            last_exit_at: Some("2026-02-25T20:02:00Z".to_string()),
+        })
+        .expect("serialize last-run metadata");
+
+        assert_eq!(
+            payload.get("lastLaunchAt").and_then(|v| v.as_str()),
+            Some("2026-02-25T20:00:00Z")
+        );
+        assert_eq!(
+            payload.get("lastExitKind").and_then(|v| v.as_str()),
+            Some("success")
+        );
+        assert_eq!(
+            payload.get("lastExitAt").and_then(|v| v.as_str()),
+            Some("2026-02-25T20:02:00Z")
+        );
+        assert!(payload.get("last_launch_at").is_none());
+        assert!(payload.get("last_exit_kind").is_none());
+    }
+
+    #[test]
+    fn disk_usage_helper_counts_instance_files() {
+        let tmp = std::env::temp_dir().join(format!("openjar-disk-usage-{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).expect("create temp instance dir");
+        fs::write(tmp.join("a.bin"), vec![1_u8; 64]).expect("write first file");
+        fs::create_dir_all(tmp.join("nested")).expect("create nested dir");
+        fs::write(tmp.join("nested").join("b.bin"), vec![2_u8; 128]).expect("write nested file");
+
+        let size = dir_total_size_bytes(&tmp);
+        assert!(size >= 192, "size should include both regular files");
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

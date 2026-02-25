@@ -10,11 +10,12 @@ use uuid::Uuid;
 
 const STORE_DIR: &str = "friend_link";
 const STORE_FILE: &str = "store.v1.json";
-const FRIEND_LINK_SECRET_SERVICE: &str = "ModpackManager";
-const FRIEND_LINK_LEGACY_SECRET_SERVICES: [&str; 3] = [
+const FRIEND_LINK_SECRET_SERVICE: &str = "OpenJar Launcher";
+const FRIEND_LINK_LEGACY_SECRET_SERVICES: [&str; 4] = [
+    "ModpackManager",
     "com.adrien.modpackmanager",
     "modpack-manager",
-    "OpenJar Launcher",
+    "openjar-launcher",
 ];
 const FRIEND_LINK_SECRET_KEY_PREFIX: &str = "friend_link_secret_v1_";
 const FRIEND_LINK_SIGNING_KEY_PREFIX: &str = "friend_link_signing_v1_";

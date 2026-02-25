@@ -45,8 +45,8 @@
   --z-modal: 3000;
   --z-dropdown: 3300;
   --z-danger: 3600;
-  --tooltipBg: rgba(0,0,0,0.92);
-  --tooltipText: rgba(255,255,255,0.92);
+  --tooltipBg: color-mix(in srgb, var(--surface) 88%, #0e131c 12%);
+  --tooltipText: color-mix(in srgb, var(--text) 96%, #ffffff 4%);
   --dropdown-bg-solid: #1a2231;
   --dropdown-bg-soft-solid: #20293a;
   --accent-base: rgba(138, 145, 163, 0.70);
@@ -75,8 +75,8 @@
   --muted2: rgba(92, 92, 92, 0.60);
   --shadow: 0 16px 42px rgba(20, 20, 20, 0.10);
   --shadowSoft: 0 10px 26px rgba(20, 20, 20, 0.08);
-  --tooltipBg: rgba(0,0,0,0.90);
-  --tooltipText: rgba(255,255,255,0.95);
+  --tooltipBg: color-mix(in srgb, var(--surface) 94%, #ffffff 6%);
+  --tooltipText: color-mix(in srgb, var(--text) 97%, #000000 3%);
   --dropdown-bg-solid: #f8f9fb;
   --dropdown-bg-soft-solid: #f0f1f4;
   --surface: #f8f9fb;
@@ -470,31 +470,29 @@ button, input, select { font-family: inherit; }
   max-width: min(340px, calc(100vw - 16px));
   padding: 9px 12px;
   border-radius: 12px;
-  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
-  background: color-mix(in srgb, var(--tooltipBg) 90%, var(--panel2) 10%);
+  border: 1px solid color-mix(in srgb, var(--stroke2) 72%, transparent);
+  background: var(--tooltipBg);
   color: var(--tooltipText);
   font-size: 12px;
   font-weight: 760;
   line-height: 1.28;
   letter-spacing: 0.01em;
-  box-shadow: 0 9px 24px rgba(0,0,0,0.26), 0 2px 7px rgba(0,0,0,0.16);
+  box-shadow: 0 10px 26px rgba(0,0,0,0.18), 0 3px 8px rgba(0,0,0,0.10);
   pointer-events: none;
   z-index: var(--z-tooltip);
   opacity: 0;
-  transform: translateY(6px) scale(0.965);
-  filter: blur(0.4px);
+  transform: translateY(10px) scale(0.94);
+  will-change: opacity, transform;
   transition:
-    opacity 170ms cubic-bezier(.2,.8,.2,1),
-    transform 220ms cubic-bezier(.16,.84,.24,1),
-    filter 220ms cubic-bezier(.16,.84,.24,1);
+    opacity 220ms cubic-bezier(.22,.8,.2,1),
+    transform 260ms cubic-bezier(.16,.84,.24,1);
 }
 .appTooltipBubble.above{
-  transform: translateY(-6px) scale(0.965);
+  transform: translateY(-10px) scale(0.94);
 }
 .appTooltipBubble.open{
   opacity: 1;
   transform: translateY(0) scale(1);
-  filter: none;
 }
 .appTooltipBubble::after{
   content: none;
@@ -502,7 +500,6 @@ button, input, select { font-family: inherit; }
 @media (prefers-reduced-motion: reduce){
   .appTooltipBubble{
     transition: none;
-    filter: none;
     transform: none;
   }
 }
@@ -3644,6 +3641,34 @@ button, input, select { font-family: inherit; }
   gap: 8px;
   flex-wrap: wrap;
 }
+.instanceHealthHeader{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.instanceHealthTitleBlock{
+  min-width: 0;
+  flex: 1 1 360px;
+}
+.instanceHealthScoreSummary{
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 780;
+  line-height: 1.35;
+}
+.instanceHealthControls{
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.instanceHealthControls .btn{
+  min-height: var(--density-control-h);
+}
 .instPageTop{
   display:flex;
   align-items:center;
@@ -4347,21 +4372,23 @@ button, input, select { font-family: inherit; }
 .instanceModsProviderBadges{
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
-  min-height: 26px;
+  min-height: 22px;
+  margin-top: 1px;
+  margin-left: 0;
 }
 .instanceProviderBadge{
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 26px;
-  min-height: 26px;
-  padding: 0 11px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0 9px;
   border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
   border-radius: 999px;
-  font-size: 12px;
-  font-weight: 820;
+  font-size: 10.5px;
+  font-weight: 720;
   line-height: 1 !important;
   color: color-mix(in srgb, var(--muted) 88%, var(--text));
   background: color-mix(in srgb, var(--surface-2) 58%, transparent);
@@ -4369,18 +4396,21 @@ button, input, select { font-family: inherit; }
   vertical-align: middle;
 }
 .instanceProviderBadge.active{
-  border-color: color-mix(in srgb, var(--accent) 44%, var(--stroke));
-  color: var(--accent-text);
-  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface) 28%);
+  border-color: color-mix(in srgb, var(--stroke) 72%, transparent);
+  color: color-mix(in srgb, var(--muted) 88%, var(--text));
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  box-shadow: none;
 }
 button.instanceProviderBadge{
   appearance: none;
   border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
-  padding: 0 11px;
-  height: 26px;
-  min-height: 26px;
+  padding: 0 9px;
+  height: 22px;
+  min-height: 22px;
   line-height: 1 !important;
-  font: inherit;
+  font-size: 10.5px;
+  font-weight: 720;
+  font-family: inherit;
   cursor: default;
 }
 button.instanceProviderBadge.clickable{

@@ -13,6 +13,7 @@ import type {
   LaunchCompatibilityReport,
   ImportInstanceFromLauncherResult,
   InstanceSettings,
+  InstanceLastRunMetadata,
   InstanceWorld,
   InstallPlanPreview,
   Instance,
@@ -417,6 +418,18 @@ export function listInstanceWorlds(input: {
   instanceId: string;
 }): Promise<InstanceWorld[]> {
   return invoke("list_instance_worlds", { args: input });
+}
+
+export function getInstanceDiskUsage(input: {
+  instanceId: string;
+}): Promise<number> {
+  return invoke("get_instance_disk_usage", { args: input });
+}
+
+export function getInstanceLastRunMetadata(input: {
+  instanceId: string;
+}): Promise<InstanceLastRunMetadata> {
+  return invoke("get_instance_last_run_metadata", { args: input });
 }
 
 export function listWorldConfigFiles(input: {

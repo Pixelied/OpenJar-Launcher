@@ -423,6 +423,12 @@ export type InstanceWorld = {
   backup_count?: number;
 };
 
+export type InstanceLastRunMetadata = {
+  lastLaunchAt?: string | null;
+  lastExitKind?: "success" | "crashed" | "stopped" | "unknown" | string | null;
+  lastExitAt?: string | null;
+};
+
 export type WorldConfigFileEntry = {
   path: string;
   size_bytes: number;
@@ -540,6 +546,10 @@ export type FriendLinkDriftPreview = {
   online_peers: number;
   peer_count: number;
   has_untrusted_changes: boolean;
+  total_bytes_estimate?: number;
+  unknown_bytes_items?: number;
+  top_path_prefixes?: string[];
+  change_summary?: string;
 };
 
 export type FriendSyncItemKind = "lock_entry" | "config_file" | string;

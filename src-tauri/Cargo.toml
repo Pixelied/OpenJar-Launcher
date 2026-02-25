@@ -1,5 +1,5 @@
 [package]
-name = "modpack-manager"
+name = "openjar-launcher"
 version = "0.1.6"
 description = "OpenJar Launcher"
 authors = ["OpenJar Launcher Contributors"]

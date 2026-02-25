@@ -948,6 +948,31 @@ fn list_instance_worlds_inner(
     Ok(out)
 }
 
+#[tauri::command]
+pub(crate) async fn get_instance_disk_usage(
+    app: tauri::AppHandle,
+    args: GetInstanceDiskUsageArgs,
+) -> Result<u64, String> {
+    run_blocking_task("get instance disk usage", move || {
+        let instances_dir = app_instances_dir(&app)?;
+        let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+        Ok(dir_total_size_bytes(&instance_dir))
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn get_instance_last_run_metadata(
+    app: tauri::AppHandle,
+    args: GetInstanceLastRunMetadataArgs,
+) -> Result<InstanceLastRunMetadata, String> {
+    run_blocking_task("get instance last-run metadata", move || {
+        let instances_dir = app_instances_dir(&app)?;
+        read_instance_last_run_metadata(&instances_dir, &args.instance_id)
+    })
+    .await
+}
+
 fn running_instance_ids(state: &tauri::State<AppState>) -> Result<HashSet<String>, String> {
     let guard = state
         .running
@@ -3485,6 +3510,12 @@ pub(crate) async fn launch_instance(
         settings.default_launch_method.clone()
     };
     clear_launch_cancel_request(&state, &instance.id)?;
+    if let Err(err) = mark_instance_launch_triggered(&instances_dir, &instance.id) {
+        eprintln!(
+            "instance last-run metadata launch marker write failed for '{}': {}",
+            instance.id, err
+        );
+    }
 
     match method {
         LaunchMethod::Prism => {
@@ -3863,6 +3894,12 @@ pub(crate) async fn launch_instance(
             }
             thread::sleep(Duration::from_millis(900));
             if let Ok(Some(status)) = child.try_wait() {
+                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "crashed") {
+                    eprintln!(
+                        "instance last-run metadata crash marker write failed for '{}': {}",
+                        instance.id, err
+                    );
+                }
                 let tail = tail_lines_from_file(&launch_log_path, 24)
                     .map(|t| format!("\nRecent native-launch.log:\n{t}"))
                     .unwrap_or_default();
@@ -3941,7 +3978,7 @@ pub(crate) async fn launch_instance(
             thread::spawn(move || {
                 let mut next_world_backup_at =
                     Instant::now() + Duration::from_secs(world_backup_interval_secs_for_thread);
-                let exit_message = loop {
+                let (mut exit_kind, exit_message) = loop {
                     if run_world_backups_for_thread && Instant::now() >= next_world_backup_at {
                         let _ = create_world_backups_for_instance(
                             &instances_dir_for_thread,
@@ -3955,16 +3992,29 @@ pub(crate) async fn launch_instance(
                     let waited = if let Ok(mut c) = child.lock() {
                         match c.try_wait() {
                             Ok(Some(status)) => {
-                                Some(format!("Game exited with status {:?}", status.code()))
+                                Some((
+                                    if status.success() {
+                                        "success".to_string()
+                                    } else {
+                                        "crashed".to_string()
+                                    },
+                                    format!("Game exited with status {:?}", status.code()),
+                                ))
                             }
                             Ok(None) => None,
-                            Err(e) => Some(format!("Failed to wait for game process: {e}")),
+                            Err(e) => Some((
+                                "crashed".to_string(),
+                                format!("Failed to wait for game process: {e}"),
+                            )),
                         }
                     } else {
-                        Some("Failed to lock child process handle.".to_string())
+                        Some((
+                            "crashed".to_string(),
+                            "Failed to lock child process handle.".to_string(),
+                        ))
                     };
-                    if let Some(message) = waited {
-                        break message;
+                    if let Some(result) = waited {
+                        break result;
                     }
                     thread::sleep(Duration::from_millis(450));
                 };
@@ -3977,10 +4027,19 @@ pub(crate) async fn launch_instance(
                     .map(|mut guard| guard.remove(&launch_id_for_thread))
                     .unwrap_or(false);
                 let exit_message = if user_requested_stop {
+                    exit_kind = "stopped".to_string();
                     "Instance stopped by user.".to_string()
                 } else {
                     exit_message
                 };
+                if let Err(err) =
+                    mark_instance_launch_exit(&instances_dir_for_thread, &instance_id_for_thread, &exit_kind)
+                {
+                    eprintln!(
+                        "instance last-run metadata exit marker write failed for '{}': {}",
+                        instance_id_for_thread, err
+                    );
+                }
                 if let Some(path) = runtime_session_cleanup_for_thread {
                     let _ = remove_path_if_exists(&path);
                 }

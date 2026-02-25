@@ -22,6 +22,7 @@ import type {
   DiscoverContentType,
   DiscoverSearchHit,
   DiscoverSource,
+  InstanceLastRunMetadata,
   InstanceWorld,
   LaunchMethod,
   LauncherAccount,
@@ -78,6 +79,8 @@ import {
   getCurseforgeApiStatus,
   getCurseforgeProjectDetail,
   getSelectedAccountDiagnostics,
+  getInstanceDiskUsage,
+  getInstanceLastRunMetadata,
   getLauncherSettings,
   importPresetsJson,
   importLocalModFile,
@@ -183,8 +186,8 @@ import {
   AUTOPROFILE_APPLIED_KEY,
   AUTOPROFILE_DISMISSED_KEY,
   DISCOVER_ADD_TRAY_STICKY_KEY,
-  HEALTH_SCORE_DISMISSED_KEY,
   HOME_LAYOUT_KEY,
+  INSTANCE_HEALTH_PANEL_PREFS_KEY,
   INSTANCE_CONTENT_FILTERS_KEY,
   INSTANCE_SETTINGS_MODE_KEY,
   INSTALL_NOTICE_AUTO_HIDE_MS,
@@ -192,6 +195,7 @@ import {
   LAUNCH_OUTCOMES_KEY,
   PERF_ACTION_LOG_KEY,
   PREFLIGHT_IGNORE_KEY,
+  SCHEDULED_UPDATE_WORKERS_MAX_KEY,
   SETTINGS_MODE_KEY,
   SKIN_HEAD_CACHE_MAX,
   SKIN_IMAGE_FETCH_TIMEOUT_MS,
@@ -382,6 +386,13 @@ type LaunchPreflightIgnoreEntry = {
   fingerprint: string;
   expires_at: number;
 };
+type InstanceHealthPanelPrefs = Record<
+  string,
+  {
+    hidden?: boolean;
+    collapsed?: boolean;
+  }
+>;
 
 const CRITICAL_UPDATE_TOKENS = [
   "fabric-api",
@@ -1582,6 +1593,35 @@ function readInstanceContentFiltersState(): Record<string, InstanceContentFilter
   } catch {
     return {};
   }
+}
+
+function scheduledUpdateWorkerLimit(instanceCount: number): number {
+  if (instanceCount <= 1) return Math.max(1, instanceCount);
+  const cpuRaw =
+    typeof navigator !== "undefined" && Number.isFinite(Number(navigator.hardwareConcurrency))
+      ? Number(navigator.hardwareConcurrency)
+      : 8;
+  const cpuCap = Math.max(2, Math.min(16, Math.floor(cpuRaw)));
+  const byWorkload =
+    instanceCount >= 24
+      ? 10
+      : instanceCount >= 12
+        ? 9
+        : instanceCount >= 6
+          ? 8
+          : 6;
+  let cap = Math.min(byWorkload, cpuCap, instanceCount);
+  if (typeof window !== "undefined") {
+    try {
+      const raw = Number.parseInt(localStorage.getItem(SCHEDULED_UPDATE_WORKERS_MAX_KEY) ?? "", 10);
+      if (Number.isFinite(raw)) {
+        cap = Math.max(1, Math.min(instanceCount, Math.min(16, raw)));
+      }
+    } catch {
+      // ignore override read failures
+    }
+  }
+  return Math.max(1, cap);
 }
 
 function skinThumbSourceCandidates(input?: string | null): string[] {
@@ -3031,6 +3071,10 @@ export default function App() {
   const [modpacksStudioTab, setModpacksStudioTab] = useState<"creator" | "templates" | "saved" | "config">("creator");
   const [creatorDraft, setCreatorDraft] = useState<UserPreset | null>(null);
   const [instanceWorlds, setInstanceWorlds] = useState<InstanceWorld[]>([]);
+  const [instanceDiskUsageById, setInstanceDiskUsageById] = useState<Record<string, number>>({});
+  const [instanceLastRunMetadataById, setInstanceLastRunMetadataById] = useState<
+    Record<string, InstanceLastRunMetadata>
+  >({});
   const [presetPreview, setPresetPreview] = useState<PresetApplyPreview | null>(null);
   const [presetPreviewBusy, setPresetPreviewBusy] = useState(false);
   const [templateQuery, setTemplateQuery] = useState("");
@@ -3849,19 +3893,26 @@ export default function App() {
       return {};
     }
   });
-  const [healthScoreDismissedByInstance, setHealthScoreDismissedByInstance] = useState<Record<string, boolean>>(
-    () => {
+  const [instanceHealthPanelPrefsByInstance, setInstanceHealthPanelPrefsByInstance] =
+    useState<InstanceHealthPanelPrefs>(() => {
       try {
-        const raw = localStorage.getItem(HEALTH_SCORE_DISMISSED_KEY);
+        const raw = localStorage.getItem(INSTANCE_HEALTH_PANEL_PREFS_KEY);
         if (!raw) return {};
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object") return {};
-        return parsed as Record<string, boolean>;
+        const next: InstanceHealthPanelPrefs = {};
+        for (const [instanceId, value] of Object.entries(parsed as Record<string, any>)) {
+          if (!instanceId || !value || typeof value !== "object") continue;
+          next[instanceId] = {
+            hidden: Boolean((value as any).hidden),
+            collapsed: Boolean((value as any).collapsed),
+          };
+        }
+        return next;
       } catch {
         return {};
       }
-    }
-  );
+    });
   const [autoProfileAppliedHintsByInstance, setAutoProfileAppliedHintsByInstance] = useState<Record<string, string>>(
     () => {
       try {
@@ -4515,8 +4566,11 @@ export default function App() {
   }, [preflightIgnoreByInstance]);
 
   useEffect(() => {
-    localStorage.setItem(HEALTH_SCORE_DISMISSED_KEY, JSON.stringify(healthScoreDismissedByInstance));
-  }, [healthScoreDismissedByInstance]);
+    localStorage.setItem(
+      INSTANCE_HEALTH_PANEL_PREFS_KEY,
+      JSON.stringify(instanceHealthPanelPrefsByInstance)
+    );
+  }, [instanceHealthPanelPrefsByInstance]);
 
   useEffect(() => {
     localStorage.setItem(AUTOPROFILE_APPLIED_KEY, JSON.stringify(autoProfileAppliedHintsByInstance));
@@ -6199,6 +6253,23 @@ export default function App() {
     }
   }
 
+  async function refreshInstanceHealthPanelData(instanceId: string) {
+    try {
+      const [diskUsage, lastRun] = await Promise.all([
+        getInstanceDiskUsage({ instanceId }).catch(() => null),
+        getInstanceLastRunMetadata({ instanceId }).catch(() => null),
+      ]);
+      if (typeof diskUsage === "number" && Number.isFinite(diskUsage) && diskUsage >= 0) {
+        setInstanceDiskUsageById((prev) => ({ ...prev, [instanceId]: diskUsage }));
+      }
+      if (lastRun && typeof lastRun === "object") {
+        setInstanceLastRunMetadataById((prev) => ({ ...prev, [instanceId]: lastRun }));
+      }
+    } catch {
+      // Keep this best-effort and non-blocking for the instance page.
+    }
+  }
+
   async function onInstallToInstance(inst: Instance) {
     const target = installTarget;
     if (!target) return;
@@ -6488,7 +6559,7 @@ export default function App() {
         throw new Error("No presets to export.");
       }
       const savePath = await saveDialog({
-        defaultPath: "modpack-manager-presets.json",
+        defaultPath: "openjar-launcher-presets.json",
         filters: [{ name: "JSON", extensions: ["json"] }],
       });
       if (!savePath || Array.isArray(savePath)) return;
@@ -7352,7 +7423,7 @@ export default function App() {
     let completed = 0;
     let autoAppliedInstances = 0;
     let autoAppliedEntries = 0;
-    const workerLimit = Math.min(6, Math.max(1, instances.length));
+    const workerLimit = scheduledUpdateWorkerLimit(instances.length);
     const canAutoApplyInRun = updateAutoApplyMode !== "never" && (
       reason === "scheduled" || updateApplyScope === "scheduled_and_manual"
     );
@@ -7652,6 +7723,7 @@ export default function App() {
     }
     refreshInstalledMods(selectedId);
     refreshSnapshots(selectedId);
+    void refreshInstanceHealthPanelData(selectedId);
     listInstanceWorlds({ instanceId: selectedId })
       .then((worlds) => setInstanceWorlds(worlds))
       .catch(() => setInstanceWorlds([]));
@@ -8050,6 +8122,9 @@ export default function App() {
       const isCleanExitEvent = /some\(0\)|status\s+0/i.test(message);
 
       if (instanceId) {
+        if (status === "starting" || status === "stopped" || status === "exited") {
+          void refreshInstanceHealthPanelData(instanceId);
+        }
         if (status === "starting") {
           setLaunchProgressChecksByInstance((prev) => ({
             ...prev,
@@ -11724,6 +11799,34 @@ export default function App() {
                 ? "Quilt"
                 : "Vanilla";
       const instSettings = normalizeInstanceSettings(inst.settings);
+      const instanceDiskUsageBytes = Number(instanceDiskUsageById[inst.id] ?? 0);
+      const instanceLastRunMeta = instanceLastRunMetadataById[inst.id] ?? null;
+      const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
+      const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
+      const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
+      const autoBackupsEnabled =
+        Number(instSettings.world_backup_interval_minutes ?? 0) > 0 &&
+        Number(instSettings.world_backup_retention_count ?? 0) > 0;
+      let latestInstanceBackupAt: string | null = null;
+      for (const world of instanceWorlds) {
+        const candidate = String(world.latest_backup_at ?? "").trim();
+        if (!candidate) continue;
+        if (!latestInstanceBackupAt) {
+          latestInstanceBackupAt = candidate;
+          continue;
+        }
+        const currentTs = parseDateLike(latestInstanceBackupAt)?.getTime() ?? 0;
+        const candidateTs = parseDateLike(candidate)?.getTime() ?? 0;
+        if (candidateTs >= currentTs) {
+          latestInstanceBackupAt = candidate;
+        }
+      }
+      const instanceRunStatusLabel =
+        instanceLastExitKindRaw === "success"
+          ? "Successful launch"
+          : instanceLastExitKindRaw === "crashed"
+            ? "Crashed"
+            : "Unknown";
       const requiredJavaMajor = requiredJavaMajorForMcVersion(inst.mc_version);
       const launchHooksDraft = instanceLaunchHooksById[inst.id] ?? defaultLaunchHooksDraft();
       const setLaunchHooksDraft = (patch: Partial<InstanceLaunchHooksDraft>) => {
@@ -11804,7 +11907,8 @@ export default function App() {
             ? instanceFriendLinkStatus.status.replace(/_/g, " ")
             : "Linked";
       const instanceHealth = instanceHealthById[inst.id] ?? null;
-      const hideHealthCard = Boolean(healthScoreDismissedByInstance[inst.id]);
+      const instanceHealthPanelPrefs = instanceHealthPanelPrefsByInstance[inst.id] ?? {};
+      const hideInstanceHealthPanel = Boolean(instanceHealthPanelPrefs.hidden);
       const friendOnlinePeers = (instanceFriendLinkStatus?.peers ?? []).filter((peer) => peer.online).length;
       const friendPeerTotal = instanceFriendLinkStatus?.peers?.length ?? 0;
       const autoProfileRecommendation = selectedInstanceAutoProfileRecommendation;
@@ -11988,31 +12092,83 @@ export default function App() {
                 </div>
               ) : null}
 
-              {instanceHealth && !hideHealthCard ? (
+              {hideInstanceHealthPanel ? (
                 <div className="card instanceNoticeCard">
-                  <div className="instanceNoticeHead">
+                  <div className="instanceNoticeHead instanceNoticeHeadWrap">
                     <div>
-                      <div style={{ fontWeight: 950 }}>Instance health: {instanceHealth.grade} ({instanceHealth.score})</div>
-                      <div className="muted">
-                        {instanceHealth.reasons.length > 0
-                          ? instanceHealth.reasons.join(" • ")
-                          : "No immediate blockers detected."}
-                      </div>
+                      <div style={{ fontWeight: 900 }}>Instance health hidden</div>
+                      <div className="muted">You can show this panel again any time.</div>
                     </div>
                     <button
                       className="btn"
                       onClick={() =>
-                        setHealthScoreDismissedByInstance((prev) => ({
+                        setInstanceHealthPanelPrefsByInstance((prev) => ({
                           ...prev,
-                          [inst.id]: true,
+                          [inst.id]: {
+                            ...(prev[inst.id] ?? {}),
+                            hidden: false,
+                          },
                         }))
                       }
                     >
-                      Dismiss
+                      Show panel
                     </button>
                   </div>
                 </div>
-              ) : null}
+              ) : (
+                <div className="card instanceNoticeCard">
+                  <div className="instanceHealthHeader">
+                    <div className="instanceHealthTitleBlock">
+                      <div style={{ fontWeight: 900 }}>Instance health</div>
+                      <div className="muted">Disk, launch, and backup status at a glance.</div>
+                      {instanceHealth ? (
+                        <div className="instanceHealthScoreSummary">
+                          Health {instanceHealth.grade} ({instanceHealth.score})
+                          {instanceHealth.reasons.length > 0
+                            ? ` • ${instanceHealth.reasons.join(" • ")}`
+                            : " • No immediate blockers detected."}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="instanceHealthControls">
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          setInstanceHealthPanelPrefsByInstance((prev) => ({
+                            ...prev,
+                            [inst.id]: {
+                              ...(prev[inst.id] ?? {}),
+                              hidden: true,
+                            },
+                          }))
+                        }
+                      >
+                        Hide
+                      </button>
+                    </div>
+                  </div>
+                  <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
+                    <span className="chip subtle" title="Total size of this instance folder on disk.">
+                      Disk {formatFileSize(instanceDiskUsageBytes)}
+                    </span>
+                    <span className="chip subtle" title="Timestamp captured when launch starts.">
+                      Last launch {instanceLastLaunchAt ? formatDateTime(instanceLastLaunchAt) : "Never"}
+                    </span>
+                    <span className="chip subtle" title="Best-effort timestamp of last known exit state.">
+                      Last exit {instanceLastExitAt ? formatDateTime(instanceLastExitAt) : "Unknown"}
+                    </span>
+                    <span className="chip subtle" title="Most recent auto world backup across this instance.">
+                      Backup {latestInstanceBackupAt ? formatDateTime(latestInstanceBackupAt) : "None yet"}
+                    </span>
+                    <span className={`chip ${autoBackupsEnabled ? "subtle" : "danger"}`}>
+                      Auto backups {autoBackupsEnabled ? "On" : "Off"}
+                    </span>
+                    <span className={`chip ${instanceLastExitKindRaw === "crashed" ? "danger" : "subtle"}`}>
+                      Status {instanceRunStatusLabel}
+                    </span>
+                  </div>
+                </div>
+              )}
 
               <div className="instPageTop">
                 <div className="instHero">
@@ -12028,11 +12184,6 @@ export default function App() {
                       ) : (
                         <span className="chip subtle">{hasRunningForInstance ? "Running" : "Never played"}</span>
                       )}
-                      {instanceHealth && !compactHeroActions ? (
-                        <span className={`chip ${instanceHealth.score < 60 ? "danger" : "subtle"}`}>
-                          Health {instanceHealth.grade} ({instanceHealth.score})
-                        </span>
-                      ) : null}
                       {hasLaunchFailure ? <span className="chip">Last launch failed</span> : null}
                     </div>
                   </div>

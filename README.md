@@ -15,11 +15,14 @@ Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
 - [Features](#features)
   - [Discover + Install (Multi-provider)](#discover--install-multi-provider)
   - [Updates + Update Availability (Multi-provider)](#updates--update-availability-multi-provider)
+  - [Update Preview + Risk](#update-preview--risk)
+  - [Instance Health (Per instance)](#instance-health-per-instance)
   - [Installed Content (Per instance)](#installed-content-per-instance)
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
   - [Friend Link (Peer Sync for Shared Packs)](#friend-link-peer-sync-for-shared-packs)
+  - [Friend Link Dry-Run](#friend-link-dry-run)
   - [World Backups + World Rollback (your saves)](#world-backups--world-rollback-your-saves)
   - [Snapshots + Rollback (installed content)](#snapshots--rollback-installed-content)
   - [Multi-Launch Explained (Isolated Runtime Sessions)](#multi-launch-explained-isolated-runtime-sessions)
@@ -172,6 +175,29 @@ In short: OpenJar tells you exactly which tracked entries are outdated, lets you
 
 ---
 
+### Update Preview + Risk
+
+OpenJar adds lightweight “preview before apply” signals so updates feel safer:
+
+- **Preview update modpack from instance** shows added / removed / overridden entries before apply.
+- **Conflict suggestions include risk tags** (`low` / `medium`) so you can triage quickly.
+- **Confidence + warnings** stay visible through resolve/apply flows instead of being hidden.
+
+---
+
+### Instance Health (Per instance)
+
+Each instance now includes a compact health panel for quick status checks:
+
+- **Disk usage** of the instance folder.
+- **Last launch timestamp** (captured when launch starts).
+- **Last known run status** (`Successful launch`, `Crashed`, or `Unknown`) and last exit time.
+- **Backup status** (latest world backup time + whether auto backups are enabled).
+
+Last-run metadata is stored per instance in app data (`last_run_metadata.v1.json`), not browser local storage.
+
+---
+
 ### Installed Content (Per instance)
 
 Keep track of what’s installed, and quickly toggle or remove entries when troubleshooting.
@@ -308,6 +334,19 @@ Current scope:
 - Designed for small groups (max 8 peers)
 - No hosted cloud relay service in v1 (direct peer endpoint model)
 - No world save replication in v1 (content/config parity only)
+
+### Friend Link Dry-Run
+
+The Friend Link panel includes a dry-run summary before sync:
+
+- **Change count** and `+ / - / ~` drift breakdown.
+- **Estimated total bytes** plus unknown-size row count.
+- **Top path prefixes** so you can see where most changes are.
+- **Clear “what will change” summary** (including untrusted-peer warnings when present).
+- **Allowlist presets** for quick scope control:
+  - `Mods only`
+  - `Mods + Configs`
+  - `Everything` (warning shown)
 
 ---
 

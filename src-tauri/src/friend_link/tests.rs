@@ -240,6 +240,7 @@ fn drift_preview_honors_content_type_sync_toggles() {
     };
 
     let preview = build_friend_link_drift_preview(
+        std::path::Path::new("."),
         "inst_1",
         &session,
         &local_state,
@@ -257,6 +258,13 @@ fn drift_preview_honors_content_type_sync_toggles() {
         .items
         .iter()
         .all(|item| item.key.contains("::mods::")));
+}
+
+#[test]
+fn drift_change_summary_flags_untrusted_risk() {
+    let message = summarize_drift_changes(2, 1, 3, 6, true);
+    assert!(message.contains("Will add 2, remove 1, and update 3 items."));
+    assert!(message.to_lowercase().contains("untrusted"));
 }
 
 #[test]
@@ -617,7 +625,7 @@ fn get_session_secret_migrates_from_legacy_keyring_service_alias() {
     assert_eq!(session.shared_secret_b64, "legacy_secret_b64");
 
     let canonical = store::get_test_friend_link_secret_for_service(
-        "ModpackManager",
+        "OpenJar Launcher",
         &session.shared_secret_key_id,
     );
     assert_eq!(canonical.as_deref(), Some("legacy_secret_b64"));

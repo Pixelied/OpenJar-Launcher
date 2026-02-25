@@ -73,7 +73,7 @@ function headers() {
   return {
     "Accept": "application/json",
     // Modrinth asks for a user-agent. Desktop app name is enough here.
-    "User-Agent": "ModpackManager/0.0.1 (Tauri)",
+    "User-Agent": "OpenJarLauncher/0.1.6 (Tauri)",
   };
 }
 

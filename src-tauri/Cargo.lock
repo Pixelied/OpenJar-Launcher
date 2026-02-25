@@ -2346,33 +2346,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "modpack-manager"
-version = "0.1.6"
-dependencies = [
- "base64 0.22.1",
- "chacha20poly1305",
- "chrono",
- "ed25519-dalek",
- "globset",
- "hkdf",
- "hmac",
- "igd",
- "keyring",
- "open_launcher",
- "rand 0.8.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tokio",
- "url",
- "uuid",
- "zip 0.6.6",
-]
-
-[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2572,6 +2545,33 @@ dependencies = [
  "tokio",
  "tokio-util",
  "zip 1.1.4",
+]
+
+[[package]]
+name = "openjar-launcher"
+version = "0.1.6"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "chrono",
+ "ed25519-dalek",
+ "globset",
+ "hkdf",
+ "hmac",
+ "igd",
+ "keyring",
+ "open_launcher",
+ "rand 0.8.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tokio",
+ "url",
+ "uuid",
+ "zip 0.6.6",
 ]
 
 [[package]]

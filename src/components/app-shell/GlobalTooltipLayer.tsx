@@ -151,7 +151,7 @@ export default function GlobalTooltipLayer() {
       closeDelayRef.current = window.setTimeout(() => {
         closeDelayRef.current = null;
         setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
-      }, 170);
+      }, 280);
     };
     const scheduleLayout = () => {
       if (frameRef.current != null) return;
@@ -220,7 +220,7 @@ export default function GlobalTooltipLayer() {
       if (immediate || prefersReducedMotion()) {
         openBubble();
       } else {
-        const delayMs = openRef.current ? 170 : 320;
+        const delayMs = openRef.current ? 260 : 460;
         openDelayRef.current = window.setTimeout(openBubble, delayMs);
       }
     };
