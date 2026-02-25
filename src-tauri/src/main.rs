@@ -357,6 +357,19 @@ struct InstanceIndex {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProviderCandidate {
+    source: String,
+    project_id: String,
+    version_id: String,
+    name: String,
+    version_number: String,
+    #[serde(default)]
+    confidence: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LockEntry {
     source: String,
     project_id: String,
@@ -375,6 +388,8 @@ struct LockEntry {
     enabled: bool,
     #[serde(default)]
     hashes: HashMap<String, String>,
+    #[serde(default)]
+    provider_candidates: Vec<ProviderCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,7 +424,11 @@ struct InstalledMod {
     enabled: bool,
     file_exists: bool,
     #[serde(default)]
+    added_at: i64,
+    #[serde(default)]
     hashes: HashMap<String, String>,
+    #[serde(default)]
+    provider_candidates: Vec<ProviderCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -504,6 +523,15 @@ struct SetInstalledModEnabledArgs {
     #[serde(alias = "versionId")]
     version_id: String,
     enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetInstalledModProviderArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(alias = "versionId")]
+    version_id: String,
+    source: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2471,6 +2499,27 @@ fn snapshot_reason_slug(reason: &str) -> String {
     cleaned.chars().take(32).collect()
 }
 
+fn snapshot_install_subject(project_title: Option<&str>, project_id: &str) -> String {
+    let title = project_title
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| project_id.trim());
+    let mut cleaned = String::with_capacity(title.len());
+    for ch in title.chars() {
+        if ch == ':' || ch == '\n' || ch == '\r' || ch == '\t' {
+            cleaned.push(' ');
+        } else {
+            cleaned.push(ch);
+        }
+    }
+    let normalized = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        project_id.trim().to_string()
+    } else {
+        normalized
+    }
+}
+
 fn create_instance_snapshot(
     instances_dir: &Path,
     instance_id: &str,
@@ -3252,6 +3301,20 @@ struct LocalImportedProviderMatch {
     reason: String,
 }
 
+impl LocalImportedProviderMatch {
+    fn to_provider_candidate(&self) -> ProviderCandidate {
+        ProviderCandidate {
+            source: self.source.clone(),
+            project_id: self.project_id.clone(),
+            version_id: self.version_id.clone(),
+            name: self.name.clone(),
+            version_number: self.version_number.clone(),
+            confidence: Some(self.confidence.clone()),
+            reason: Some(self.reason.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct LocalMetadataHint {
     project_hint: Option<String>,
@@ -3561,9 +3624,14 @@ fn detect_provider_from_metadata_hint(
     safe_filename: &str,
     metadata: &LocalMetadataHint,
     sha512: &str,
-) -> Option<LocalImportedProviderMatch> {
-    let project_hint = metadata.project_hint.as_ref()?;
-    let versions = fetch_project_versions(client, project_hint).ok()?;
+) -> Vec<LocalImportedProviderMatch> {
+    let Some(project_hint) = metadata.project_hint.as_ref() else {
+        return vec![];
+    };
+    let versions = match fetch_project_versions(client, project_hint) {
+        Ok(value) => value,
+        Err(_) => return vec![],
+    };
     let mut exact_matches: Vec<(String, ModrinthVersion, ModrinthVersionFile)> = Vec::new();
 
     for version in versions {
@@ -3575,7 +3643,9 @@ fn detect_provider_from_metadata_hint(
     }
 
     if exact_matches.len() == 1 {
-        let (_, version, file) = exact_matches.into_iter().next()?;
+        let Some((_, version, file)) = exact_matches.into_iter().next() else {
+            return vec![];
+        };
         let mut hashes = file.hashes.clone();
         hashes
             .entry("sha512".to_string())
@@ -3587,7 +3657,7 @@ fn detect_provider_from_metadata_hint(
             .or_else(|| version.name.clone().filter(|v| !v.trim().is_empty()))
             .or_else(|| fetch_project_title(client, project_hint))
             .unwrap_or_else(|| infer_local_name(safe_filename));
-        return Some(LocalImportedProviderMatch {
+        return vec![LocalImportedProviderMatch {
             source: "modrinth".to_string(),
             project_id: version.project_id.clone(),
             version_id: version.id.clone(),
@@ -3600,19 +3670,57 @@ fn detect_provider_from_metadata_hint(
             hashes,
             confidence: "high".to_string(),
             reason: "Metadata hint + exact filename match on Modrinth.".to_string(),
-        });
+        }];
     }
 
-    None
+    vec![]
 }
 
-fn detect_provider_for_local_mod(
+fn provider_match_priority(value: &LocalImportedProviderMatch) -> i32 {
+    match value.confidence.trim().to_ascii_lowercase().as_str() {
+        "deterministic" => 3,
+        "high" => 2,
+        "medium" => 1,
+        _ => 0,
+    }
+}
+
+fn dedupe_provider_matches(
+    mut matches: Vec<LocalImportedProviderMatch>,
+) -> Vec<LocalImportedProviderMatch> {
+    if matches.is_empty() {
+        return matches;
+    }
+    matches.sort_by(|a, b| {
+        provider_match_priority(b)
+            .cmp(&provider_match_priority(a))
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.project_id.cmp(&b.project_id))
+    });
+    let mut out: Vec<LocalImportedProviderMatch> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for item in matches {
+        let key = format!(
+            "{}:{}:{}",
+            item.source.trim().to_ascii_lowercase(),
+            item.project_id.trim().to_ascii_lowercase(),
+            item.version_id.trim().to_ascii_lowercase()
+        );
+        if seen.insert(key) {
+            out.push(item);
+        }
+    }
+    out
+}
+
+fn detect_provider_matches_for_local_mod(
     client: &Client,
     file_bytes: &[u8],
     safe_filename: &str,
     include_metadata_fallback: bool,
-) -> Option<LocalImportedProviderMatch> {
+) -> Vec<LocalImportedProviderMatch> {
     let sha512 = sha512_hex(file_bytes);
+    let mut matches: Vec<LocalImportedProviderMatch> = Vec::new();
     if let Some(api_key) = curseforge_api_key() {
         let fingerprints = curseforge_fingerprint_candidates(file_bytes);
         if let Ok(Some((project, file))) =
@@ -3636,7 +3744,7 @@ fn detect_provider_for_local_mod(
             } else {
                 project.name.clone()
             };
-            return Some(LocalImportedProviderMatch {
+            matches.push(LocalImportedProviderMatch {
                 source: "curseforge".to_string(),
                 project_id: format!("cf:{}", project.id),
                 version_id: format!("cf_file:{}", file.id),
@@ -3685,7 +3793,7 @@ fn detect_provider_for_local_mod(
                 .filter(|v| !v.trim().is_empty())
                 .or_else(|| fetch_project_title(client, &project_id))
                 .unwrap_or_else(|| infer_local_name(safe_filename));
-            return Some(LocalImportedProviderMatch {
+            matches.push(LocalImportedProviderMatch {
                 source: "modrinth".to_string(),
                 project_id,
                 version_id: version.id,
@@ -3700,15 +3808,60 @@ fn detect_provider_for_local_mod(
 
     if include_metadata_fallback {
         if let Some(metadata) = parse_mod_metadata_hint_from_jar(file_bytes) {
-            if let Some(matched) =
-                detect_provider_from_metadata_hint(client, safe_filename, &metadata, &sha512)
-            {
-                return Some(matched);
-            }
+            matches.extend(detect_provider_from_metadata_hint(
+                client,
+                safe_filename,
+                &metadata,
+                &sha512,
+            ));
         }
     }
 
-    None
+    dedupe_provider_matches(matches)
+}
+
+fn select_preferred_provider_match<'a>(
+    matches: &'a [LocalImportedProviderMatch],
+    preferred_source: Option<&str>,
+) -> Option<&'a LocalImportedProviderMatch> {
+    if matches.is_empty() {
+        return None;
+    }
+    if let Some(preferred) = preferred_source
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    {
+        if let Some(found) = matches
+            .iter()
+            .find(|item| item.source.trim().eq_ignore_ascii_case(&preferred))
+        {
+            return Some(found);
+        }
+    }
+    matches.iter().max_by(|a, b| {
+        provider_match_priority(a)
+            .cmp(&provider_match_priority(b))
+            .then_with(|| b.source.cmp(&a.source))
+    })
+}
+
+fn to_provider_candidates(matches: &[LocalImportedProviderMatch]) -> Vec<ProviderCandidate> {
+    matches.iter().map(|item| item.to_provider_candidate()).collect()
+}
+
+fn detect_provider_for_local_mod(
+    client: &Client,
+    file_bytes: &[u8],
+    safe_filename: &str,
+    include_metadata_fallback: bool,
+) -> Option<LocalImportedProviderMatch> {
+    let matches = detect_provider_matches_for_local_mod(
+        client,
+        file_bytes,
+        safe_filename,
+        include_metadata_fallback,
+    );
+    select_preferred_provider_match(&matches, None).cloned()
 }
 
 fn local_entry_key(entry: &LockEntry) -> String {
@@ -3727,6 +3880,17 @@ fn apply_provider_match_to_lock_entry(entry: &mut LockEntry, found: &LocalImport
     entry.name = found.name.clone();
     entry.version_number = found.version_number.clone();
     entry.hashes = found.hashes.clone();
+    if entry.provider_candidates.is_empty() {
+        entry.provider_candidates = vec![found.to_provider_candidate()];
+    }
+}
+
+fn apply_provider_candidate_to_lock_entry(entry: &mut LockEntry, candidate: &ProviderCandidate) {
+    entry.source = candidate.source.clone();
+    entry.project_id = candidate.project_id.clone();
+    entry.version_id = candidate.version_id.clone();
+    entry.name = candidate.name.clone();
+    entry.version_number = candidate.version_number.clone();
 }
 
 fn mod_paths(instance_dir: &Path, filename: &str) -> (PathBuf, PathBuf) {
@@ -3878,8 +4042,33 @@ fn entry_file_exists(instance_dir: &Path, entry: &LockEntry) -> bool {
     }
 }
 
+fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
+    if !entry.provider_candidates.is_empty() {
+        return entry.provider_candidates.clone();
+    }
+    let source = entry.source.trim().to_ascii_lowercase();
+    if source == "modrinth" || source == "curseforge" {
+        return vec![ProviderCandidate {
+            source: entry.source.clone(),
+            project_id: entry.project_id.clone(),
+            version_id: entry.version_id.clone(),
+            name: entry.name.clone(),
+            version_number: entry.version_number.clone(),
+            confidence: None,
+            reason: None,
+        }];
+    }
+    vec![]
+}
+
 fn lock_entry_to_installed(instance_dir: &Path, entry: &LockEntry) -> InstalledMod {
     let file_exists = entry_file_exists(instance_dir, entry);
+    let added_at = local_entry_file_read_path(instance_dir, entry)
+        .ok()
+        .flatten()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|meta| modified_millis(&meta))
+        .unwrap_or(0);
 
     InstalledMod {
         source: entry.source.clone(),
@@ -3894,7 +4083,9 @@ fn lock_entry_to_installed(instance_dir: &Path, entry: &LockEntry) -> InstalledM
         pinned_version: entry.pinned_version.clone(),
         enabled: entry.enabled,
         file_exists,
+        added_at,
         hashes: entry.hashes.clone(),
+        provider_candidates: lock_entry_provider_candidates(entry),
     }
 }
 
@@ -4059,8 +4250,10 @@ fn resolve_oauth_client_id(app: &tauri::AppHandle) -> Result<String, String> {
 fn build_http_client() -> Result<Client, String> {
     Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(20))
-        .timeout(Duration::from_secs(90))
+        .connect_timeout(Duration::from_secs(12))
+        .timeout(Duration::from_secs(150))
+        .pool_max_idle_per_host(8)
+        .tcp_nodelay(true)
         .build()
         .map_err(|e| format!("build http client failed: {e}"))
 }
@@ -4089,15 +4282,30 @@ fn error_mentions_forbidden(text: &str) -> bool {
     lower.contains("403") || lower.contains("forbidden")
 }
 
-fn download_bytes_with_retry(client: &Client, url: &str, label: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn download_bytes_with_retry(
+    client: &Client,
+    url: &str,
+    label: &str,
+) -> Result<Vec<u8>, String> {
     let max_attempts = 3usize;
+    let slow_ttfb_retry_ms: u128 = 8_000;
     let mut attempt = 0usize;
     loop {
         attempt += 1;
-        match client.get(url).send() {
+        let request_started = Instant::now();
+        match client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send()
+        {
             Ok(mut response) => {
+                let connect_tls_ms = request_started.elapsed().as_millis();
                 let status = response.status();
                 if status.is_success() {
+                    if connect_tls_ms >= slow_ttfb_retry_ms && attempt < max_attempts {
+                        thread::sleep(Duration::from_millis(180 * attempt as u64));
+                        continue;
+                    }
                     let mut bytes = Vec::new();
                     response
                         .copy_to(&mut bytes)
@@ -4119,6 +4327,211 @@ fn download_bytes_with_retry(client: &Client, url: &str, label: &str) -> Result<
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct StreamDownloadProfile {
+    attempts: usize,
+    retries: usize,
+    connect_tls_ms: u128,
+    time_to_first_byte_ms: u128,
+    transfer_ms: u128,
+    disk_commit_ms: u128,
+    post_process_ms: u128,
+    bytes_downloaded: u64,
+    content_length: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct StreamDownloadResult {
+    sha512: String,
+    profile: StreamDownloadProfile,
+}
+
+fn download_profile_enabled() -> bool {
+    matches!(
+        std::env::var("MPM_DOWNLOAD_PROFILE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn is_transient_io_error(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        err.kind(),
+        ErrorKind::Interrupted
+            | ErrorKind::TimedOut
+            | ErrorKind::UnexpectedEof
+            | ErrorKind::WouldBlock
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::ConnectionReset
+            | ErrorKind::BrokenPipe
+            | ErrorKind::NotConnected
+    )
+}
+
+fn unknown_progress_ratio(downloaded_bytes: u64) -> f64 {
+    if downloaded_bytes == 0 {
+        return 0.0;
+    }
+    // Smoothly advance when content-length is unavailable so progress doesn't stick at 0.
+    let mb = downloaded_bytes as f64 / (1024.0 * 1024.0);
+    let ratio = 0.05 + (mb / (mb + 24.0)) * 0.88;
+    ratio.clamp(0.05, 0.93)
+}
+
+fn format_download_meter(downloaded_bytes: u64, total_bytes: Option<u64>) -> String {
+    let downloaded_mb = downloaded_bytes as f64 / (1024.0 * 1024.0);
+    if let Some(total) = total_bytes {
+        if total > 0 {
+            let total_mb = total as f64 / (1024.0 * 1024.0);
+            return format!("{downloaded_mb:.1} / {total_mb:.1} MB");
+        }
+    }
+    format!("{downloaded_mb:.1} MB")
+}
+
+fn download_stream_to_temp_with_retry<F>(
+    client: &Client,
+    url: &str,
+    label: &str,
+    temp_path: &Path,
+    mut on_progress: F,
+) -> Result<StreamDownloadResult, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let max_attempts = 3usize;
+    let slow_ttfb_retry_ms: u128 = 8_000;
+    let mut attempt = 0usize;
+    'attempt_loop: loop {
+        attempt += 1;
+        if temp_path.exists() {
+            let _ = fs::remove_file(temp_path);
+        }
+        let request_started = Instant::now();
+        let mut response = match client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send()
+        {
+            Ok(response) => response,
+            Err(err) => {
+                if attempt < max_attempts && is_transient_network_error(&err) {
+                    thread::sleep(Duration::from_millis(220 * attempt as u64));
+                    continue;
+                }
+                return Err(format!("download failed for {label}: {err}"));
+            }
+        };
+        let connect_tls_ms = request_started.elapsed().as_millis();
+        let status = response.status();
+        if !status.is_success() {
+            if attempt < max_attempts && should_retry_http_status(status) {
+                thread::sleep(Duration::from_millis(220 * attempt as u64));
+                continue;
+            }
+            return Err(format!("download failed for {label} with status {status}"));
+        }
+        if connect_tls_ms >= slow_ttfb_retry_ms && attempt < max_attempts {
+            // Retry once or twice when the edge path looks stale/slow before payload starts.
+            thread::sleep(Duration::from_millis(260 * attempt as u64));
+            continue;
+        }
+
+        let total_bytes = response.content_length();
+        on_progress(0, total_bytes);
+        let mut out =
+            File::create(temp_path).map_err(|e| format!("create temp file failed for {label}: {e}"))?;
+        let mut hasher = Sha512::new();
+        let mut downloaded_bytes: u64 = 0;
+        let mut buf = vec![0_u8; 256 * 1024];
+        let mut first_byte_at: Option<Instant> = None;
+        loop {
+            let n = match response.read(&mut buf) {
+                Ok(n) => n,
+                Err(err) => {
+                    if attempt < max_attempts && is_transient_io_error(&err) {
+                        let _ = fs::remove_file(temp_path);
+                        thread::sleep(Duration::from_millis(220 * attempt as u64));
+                        continue 'attempt_loop;
+                    }
+                    let _ = fs::remove_file(temp_path);
+                    return Err(format!("read download stream failed for {label}: {err}"));
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            if first_byte_at.is_none() {
+                first_byte_at = Some(Instant::now());
+            }
+            out.write_all(&buf[..n])
+                .map_err(|e| format!("write download stream failed for {label}: {e}"))?;
+            hasher.update(&buf[..n]);
+            downloaded_bytes += n as u64;
+            on_progress(downloaded_bytes, total_bytes);
+        }
+        let disk_commit_started = Instant::now();
+        out.flush()
+            .map_err(|e| format!("flush download stream failed for {label}: {e}"))?;
+        out.sync_data()
+            .map_err(|e| format!("sync download stream failed for {label}: {e}"))?;
+        let disk_commit_ms = disk_commit_started.elapsed().as_millis();
+
+        let time_to_first_byte_ms = first_byte_at
+            .map(|ts| ts.duration_since(request_started).as_millis().saturating_sub(connect_tls_ms))
+            .unwrap_or(0);
+        let transfer_ms = first_byte_at
+            .map(|ts| Instant::now().duration_since(ts).as_millis())
+            .unwrap_or(0);
+        let digest = hasher.finalize();
+        let mut sha512 = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            sha512.push_str(&format!("{byte:02x}"));
+        }
+        let profile = StreamDownloadProfile {
+            attempts: attempt,
+            retries: attempt.saturating_sub(1),
+            connect_tls_ms,
+            time_to_first_byte_ms,
+            transfer_ms,
+            disk_commit_ms,
+            post_process_ms: 0,
+            bytes_downloaded: downloaded_bytes,
+            content_length: total_bytes,
+        };
+        return Ok(StreamDownloadResult {
+            sha512,
+            profile,
+        });
+    }
+}
+
+fn maybe_log_download_profile(label: &str, profile: &StreamDownloadProfile) {
+    if !download_profile_enabled() {
+        return;
+    }
+    let size = profile
+        .content_length
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    eprintln!(
+        "[download_profile] {label} attempts={} retries={} connect_tls={}ms ttfb={}ms transfer={}ms disk_commit={}ms post_process={}ms bytes={} content_length={}",
+        profile.attempts,
+        profile.retries,
+        profile.connect_tls_ms,
+        profile.time_to_first_byte_ms,
+        profile.transfer_ms,
+        profile.disk_commit_ms,
+        profile.post_process_ms,
+        profile.bytes_downloaded,
+        size
+    );
 }
 
 fn network_block_hint(url: &str) -> Option<&'static str> {
@@ -7300,7 +7713,7 @@ fn try_fast_install_content_update(
             } else {
                 update.name.clone()
             },
-            version_number: latest_version_number,
+            version_number: latest_version_number.clone(),
             filename: safe_filename,
             content_type: normalized.clone(),
             target_scope: if normalized == "datapacks" {
@@ -7312,6 +7725,19 @@ fn try_fast_install_content_update(
             pinned_version: None,
             enabled: update.enabled,
             hashes: latest_hashes,
+            provider_candidates: vec![ProviderCandidate {
+                source: "modrinth".to_string(),
+                project_id: update.project_id.clone(),
+                version_id: latest_version_id.to_string(),
+                name: if update.name.trim().is_empty() {
+                    update.project_id.clone()
+                } else {
+                    update.name.clone()
+                },
+                version_number: latest_version_number.clone(),
+                confidence: None,
+                reason: None,
+            }],
         };
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
@@ -7422,7 +7848,7 @@ fn try_fast_install_content_update(
             } else {
                 update.name.clone()
             },
-            version_number: latest_version_number,
+            version_number: latest_version_number.clone(),
             filename: safe_filename,
             content_type: normalized.clone(),
             target_scope: if normalized == "datapacks" {
@@ -7434,6 +7860,19 @@ fn try_fast_install_content_update(
             pinned_version: None,
             enabled: update.enabled,
             hashes: latest_hashes,
+            provider_candidates: vec![ProviderCandidate {
+                source: "curseforge".to_string(),
+                project_id: format!("cf:{mod_id}"),
+                version_id: format!("cf_file:{}", latest_file_id),
+                name: if update.name.trim().is_empty() {
+                    format!("CurseForge {mod_id}")
+                } else {
+                    update.name.clone()
+                },
+                version_number: latest_version_number.clone(),
+                confidence: None,
+                reason: None,
+            }],
         };
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
@@ -7610,15 +8049,22 @@ fn curseforge_relation_is_required(relation_type: i64) -> bool {
     relation_type == 3
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedCurseforgeInstallMod {
+    mod_id: i64,
+    file: CurseforgeFile,
+}
+
 fn resolve_curseforge_dependency_chain(
     client: &Client,
     api_key: &str,
     instance: &Instance,
     root_mod_id: i64,
-) -> Result<Vec<i64>, String> {
+) -> Result<Vec<ResolvedCurseforgeInstallMod>, String> {
     let mut ordered: Vec<i64> = Vec::new();
     let mut queue: VecDeque<i64> = VecDeque::new();
     let mut visited: HashSet<i64> = HashSet::new();
+    let mut selected_files: HashMap<i64, CurseforgeFile> = HashMap::new();
     queue.push_back(root_mod_id);
 
     while let Some(mod_id) = queue.pop_front() {
@@ -7638,7 +8084,7 @@ fn resolve_curseforge_dependency_chain(
                 mod_id, instance.loader, instance.mc_version
             ));
         };
-        for dep in file.dependencies {
+        for dep in &file.dependencies {
             if dep.mod_id <= 0 || !curseforge_relation_is_required(dep.relation_type) {
                 continue;
             }
@@ -7646,10 +8092,18 @@ fn resolve_curseforge_dependency_chain(
                 queue.push_back(dep.mod_id);
             }
         }
+        selected_files.insert(mod_id, file);
     }
 
     ordered.reverse();
-    Ok(ordered)
+    let mut plan: Vec<ResolvedCurseforgeInstallMod> = Vec::with_capacity(ordered.len());
+    for mod_id in ordered {
+        let file = selected_files
+            .remove(&mod_id)
+            .ok_or_else(|| format!("Missing selected CurseForge file for dependency project {mod_id}"))?;
+        plan.push(ResolvedCurseforgeInstallMod { mod_id, file });
+    }
+    Ok(plan)
 }
 
 fn discover_content_type_from_modrinth_project_type(project_type: &str) -> String {
@@ -7944,7 +8398,77 @@ fn write_download_to_content_targets(
     Ok(())
 }
 
-fn install_modrinth_content_inner(
+fn write_staged_download_to_content_targets(
+    instance_dir: &Path,
+    content_type: &str,
+    filename: &str,
+    target_worlds: &[String],
+    staged_path: &Path,
+) -> Result<(), String> {
+    let normalized = normalize_lock_content_type(content_type);
+    match normalized.as_str() {
+        "mods" | "resourcepacks" | "shaderpacks" => {
+            let dir = content_dir_for_type(instance_dir, &normalized);
+            fs::create_dir_all(&dir)
+                .map_err(|e| format!("mkdir '{}' failed: {e}", dir.display()))?;
+            let out_path = dir.join(filename);
+            if out_path.exists() {
+                fs::remove_file(&out_path)
+                    .map_err(|e| format!("remove '{}' failed: {e}", out_path.display()))?;
+            }
+            match fs::rename(staged_path, &out_path) {
+                Ok(()) => {}
+                Err(_) => {
+                    fs::copy(staged_path, &out_path).map_err(|e| {
+                        format!(
+                            "copy '{}' -> '{}' failed: {e}",
+                            staged_path.display(),
+                            out_path.display()
+                        )
+                    })?;
+                    let _ = fs::remove_file(staged_path);
+                }
+            }
+        }
+        "datapacks" => {
+            for world in target_worlds {
+                let dir = instance_dir.join("saves").join(world).join("datapacks");
+                fs::create_dir_all(&dir)
+                    .map_err(|e| format!("mkdir '{}' failed: {e}", dir.display()))?;
+                let out_path = dir.join(filename);
+                let part_path = dir.join(format!("{filename}.part"));
+                if part_path.exists() {
+                    let _ = fs::remove_file(&part_path);
+                }
+                fs::copy(staged_path, &part_path).map_err(|e| {
+                    format!(
+                        "copy staged datapack '{}' -> '{}' failed: {e}",
+                        staged_path.display(),
+                        part_path.display()
+                    )
+                })?;
+                if out_path.exists() {
+                    fs::remove_file(&out_path)
+                        .map_err(|e| format!("remove '{}' failed: {e}", out_path.display()))?;
+                }
+                fs::rename(&part_path, &out_path).map_err(|e| {
+                    format!(
+                        "move staged datapack '{}' -> '{}' failed: {e}",
+                        part_path.display(),
+                        out_path.display()
+                    )
+                })?;
+            }
+            let _ = fs::remove_file(staged_path);
+        }
+        _ => {
+            return Err("Unsupported content type for direct install".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn install_modrinth_content_inner<F>(
     instance: &Instance,
     instance_dir: &Path,
     lock: &mut Lockfile,
@@ -7953,7 +8477,11 @@ fn install_modrinth_content_inner(
     project_title: Option<&str>,
     content_type: &str,
     target_worlds: &[String],
-) -> Result<LockEntry, String> {
+    mut on_progress: F,
+) -> Result<LockEntry, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
     let normalized = normalize_lock_content_type(content_type);
     if normalized == "modpacks" {
         return Err(
@@ -7998,28 +8526,33 @@ fn install_modrinth_content_inner(
         .or_else(|| fetch_project_title(client, project_id))
         .unwrap_or_else(|| project_id.to_string());
 
-    let mut response = client
-        .get(&file.url)
-        .send()
-        .map_err(|e| format!("download failed for {}: {e}", project_id))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download failed for {} with status {}",
-            project_id,
-            response.status()
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .copy_to(&mut bytes)
-        .map_err(|e| format!("download read failed for {}: {e}", project_id))?;
+    let tmp_dir = instance_dir.join(".openjar_downloads");
+    fs::create_dir_all(&tmp_dir)
+        .map_err(|e| format!("mkdir '{}' failed: {e}", tmp_dir.display()))?;
+    let tmp_path = tmp_dir.join(format!("{safe_filename}.{}.part", version.id));
+    let mut stream_result = download_stream_to_temp_with_retry(
+        client,
+        &file.url,
+        project_id,
+        &tmp_path,
+        |downloaded_bytes, total_bytes| on_progress(downloaded_bytes, total_bytes),
+    )?;
 
     let worlds = if normalized == "datapacks" {
         normalize_target_worlds_for_datapack(instance_dir, target_worlds)?
     } else {
         vec![]
     };
-    write_download_to_content_targets(instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
+    let post_process_started = Instant::now();
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &worlds,
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(project_id, &stream_result.profile);
 
     remove_replaced_entries_for_content(lock, instance_dir, project_id, &normalized)?;
 
@@ -8027,7 +8560,7 @@ fn install_modrinth_content_inner(
         source: "modrinth".to_string(),
         project_id: project_id.to_string(),
         version_id: version.id.clone(),
-        name: resolved_title,
+        name: resolved_title.clone(),
         version_number: version.version_number.clone(),
         filename: safe_filename,
         content_type: normalized.clone(),
@@ -8039,13 +8572,30 @@ fn install_modrinth_content_inner(
         target_worlds: worlds,
         pinned_version: None,
         enabled: true,
-        hashes: file.hashes.clone(),
+        hashes: {
+            let mut hashes = file.hashes.clone();
+            if !stream_result.sha512.trim().is_empty() {
+                hashes
+                    .entry("sha512".to_string())
+                    .or_insert_with(|| stream_result.sha512.clone());
+            }
+            hashes
+        },
+        provider_candidates: vec![ProviderCandidate {
+            source: "modrinth".to_string(),
+            project_id: project_id.to_string(),
+            version_id: version.id.clone(),
+            name: resolved_title.clone(),
+            version_number: version.version_number.clone(),
+            confidence: None,
+            reason: None,
+        }],
     };
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
 }
 
-fn install_curseforge_content_inner(
+fn install_curseforge_content_inner<F>(
     instance: &Instance,
     instance_dir: &Path,
     lock: &mut Lockfile,
@@ -8055,7 +8605,12 @@ fn install_curseforge_content_inner(
     project_title: Option<&str>,
     content_type: &str,
     target_worlds: &[String],
-) -> Result<LockEntry, String> {
+    resolved_file: Option<&CurseforgeFile>,
+    mut on_progress: F,
+) -> Result<LockEntry, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
     let normalized = normalize_lock_content_type(content_type);
     if normalized == "modpacks" {
         return Err(
@@ -8066,53 +8621,63 @@ fn install_curseforge_content_inner(
     let mod_id = parse_curseforge_project_id(project_id)?;
     let project_key = format!("cf:{mod_id}");
     let project = fetch_curseforge_project(client, api_key, mod_id)?;
-    let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
-    files.retain(|f| {
-        !f.file_name.trim().is_empty()
-            && file_looks_compatible_with_instance(f, instance, &normalized)
-    });
-    files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
-    let file = files.into_iter().next().ok_or_else(|| {
-        if normalized == "mods" {
-            format!(
-                "No compatible CurseForge file found for {} + {}",
-                instance.loader, instance.mc_version
-            )
-        } else {
-            format!(
-                "No compatible CurseForge {} file found for Minecraft {}",
-                content_type_display_name(&normalized),
-                instance.mc_version
-            )
-        }
-    })?;
+    let file = if let Some(file) = resolved_file {
+        file.clone()
+    } else {
+        let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
+        files.retain(|f| {
+            !f.file_name.trim().is_empty()
+                && file_looks_compatible_with_instance(f, instance, &normalized)
+        });
+        files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+        files.into_iter().next().ok_or_else(|| {
+            if normalized == "mods" {
+                format!(
+                    "No compatible CurseForge file found for {} + {}",
+                    instance.loader, instance.mc_version
+                )
+            } else {
+                format!(
+                    "No compatible CurseForge {} file found for Minecraft {}",
+                    content_type_display_name(&normalized),
+                    instance.mc_version
+                )
+            }
+        })?
+    };
 
     let safe_filename = sanitize_filename(&file.file_name);
     if safe_filename.is_empty() {
         return Err("Resolved CurseForge filename is invalid".to_string());
     }
     let download_url = resolve_curseforge_file_download_url(client, api_key, mod_id, &file)?;
-    let mut response = client
-        .get(&download_url)
-        .send()
-        .map_err(|e| format!("download CurseForge file failed: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "download CurseForge file failed with status {}",
-            response.status()
-        ));
-    }
-    let mut bytes = Vec::new();
-    response
-        .copy_to(&mut bytes)
-        .map_err(|e| format!("download read failed: {e}"))?;
+    let tmp_dir = instance_dir.join(".openjar_downloads");
+    fs::create_dir_all(&tmp_dir)
+        .map_err(|e| format!("mkdir '{}' failed: {e}", tmp_dir.display()))?;
+    let tmp_path = tmp_dir.join(format!("{safe_filename}.{}.part", file.id));
+    let mut stream_result = download_stream_to_temp_with_retry(
+        client,
+        &download_url,
+        &format!("cf:{mod_id}:{}", file.id),
+        &tmp_path,
+        |downloaded_bytes, total_bytes| on_progress(downloaded_bytes, total_bytes),
+    )?;
 
     let worlds = if normalized == "datapacks" {
         normalize_target_worlds_for_datapack(instance_dir, target_worlds)?
     } else {
         vec![]
     };
-    write_download_to_content_targets(instance_dir, &normalized, &safe_filename, &worlds, &bytes)?;
+    let post_process_started = Instant::now();
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &worlds,
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(&format!("cf:{mod_id}:{}", file.id), &stream_result.profile);
 
     remove_replaced_entries_for_content(lock, instance_dir, &project_key, &normalized)?;
 
@@ -8140,6 +8705,22 @@ fn install_curseforge_content_inner(
         pinned_version: None,
         enabled: true,
         hashes: parse_cf_hashes(&file),
+        provider_candidates: vec![ProviderCandidate {
+            source: "curseforge".to_string(),
+            project_id: format!("cf:{mod_id}"),
+            version_id: format!("cf_file:{}", file.id),
+            name: project_title
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| project.name.clone()),
+            version_number: if file.display_name.trim().is_empty() {
+                file.file_name.clone()
+            } else {
+                file.display_name.clone()
+            },
+            confidence: None,
+            reason: None,
+        }],
     };
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
@@ -11379,7 +11960,7 @@ fn install_discover_content_inner(
             stage: "resolving".to_string(),
             downloaded: 0,
             total: Some(1),
-            percent: Some(0.0),
+            percent: None,
             message: Some(format!(
                 "Resolving compatible {source_label} {content_label} file…"
             )),
@@ -11398,8 +11979,8 @@ fn install_discover_content_inner(
             stage: "downloading".to_string(),
             downloaded: 0,
             total: Some(1),
-            percent: Some(35.0),
-            message: Some(format!("Downloading {source_label} {content_label}…")),
+            percent: Some(0.8),
+            message: Some(format!("Starting {source_label} {content_label} download…")),
         },
     );
 
@@ -11415,6 +11996,33 @@ fn install_discover_content_inner(
             args.project_title.as_deref(),
             &content_type,
             &args.target_worlds,
+            None,
+            |downloaded_bytes, total_bytes| {
+                let ratio = match total_bytes {
+                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
+                    _ => unknown_progress_ratio(downloaded_bytes),
+                };
+                let visible_percent = if downloaded_bytes > 0 {
+                    (ratio * 100.0).max(0.8)
+                } else {
+                    0.8
+                };
+                emit_install_progress(
+                    &app,
+                    InstallProgressEvent {
+                        instance_id: args.instance_id.clone(),
+                        project_id: args.project_id.clone(),
+                        stage: "downloading".to_string(),
+                        downloaded: downloaded_bytes,
+                        total: total_bytes,
+                        percent: Some(visible_percent.clamp(0.0, 99.4)),
+                        message: Some(format!(
+                            "Downloading {source_label} {content_label}… · {}",
+                            format_download_meter(downloaded_bytes, total_bytes)
+                        )),
+                    },
+                );
+            },
         )?
     } else {
         install_modrinth_content_inner(
@@ -11426,6 +12034,32 @@ fn install_discover_content_inner(
             args.project_title.as_deref(),
             &content_type,
             &args.target_worlds,
+            |downloaded_bytes, total_bytes| {
+                let ratio = match total_bytes {
+                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
+                    _ => unknown_progress_ratio(downloaded_bytes),
+                };
+                let visible_percent = if downloaded_bytes > 0 {
+                    (ratio * 100.0).max(0.8)
+                } else {
+                    0.8
+                };
+                emit_install_progress(
+                    &app,
+                    InstallProgressEvent {
+                        instance_id: args.instance_id.clone(),
+                        project_id: args.project_id.clone(),
+                        stage: "downloading".to_string(),
+                        downloaded: downloaded_bytes,
+                        total: total_bytes,
+                        percent: Some(visible_percent.clamp(0.0, 99.4)),
+                        message: Some(format!(
+                            "Downloading {source_label} {content_label}… · {}",
+                            format_download_meter(downloaded_bytes, total_bytes)
+                        )),
+                    },
+                );
+            },
         )?
     };
 
@@ -11456,7 +12090,8 @@ async fn install_discover_content(
     args: InstallDiscoverContentArgs,
 ) -> Result<InstalledMod, String> {
     run_blocking_task("install discover content", move || {
-        let reason = format!("before-install-discover:{}", args.project_id);
+        let subject = snapshot_install_subject(args.project_title.as_deref(), &args.project_id);
+        let reason = format!("before-install-discover:{subject}");
         install_discover_content_inner(app, &args, Some(reason.as_str()))
     })
     .await
@@ -12515,16 +13150,12 @@ fn install_modrinth_mod_inner(
             stage: "resolving".into(),
             downloaded: 0,
             total: None,
-            percent: None,
+            percent: Some(1.0),
             message: Some("Resolving compatible versions and required dependencies…".into()),
         },
     );
 
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("build http client failed: {e}"))?;
+    let client = build_http_client()?;
 
     let plan = resolve_modrinth_install_plan(&client, &instance, &args.project_id)?;
     let total_mods = plan.len();
@@ -12545,7 +13176,7 @@ fn install_modrinth_mod_inner(
             stage: "resolving".into(),
             downloaded: 0,
             total: Some(total_actions as u64),
-            percent: Some(if total_actions == 0 { 100.0 } else { 0.0 }),
+            percent: Some(if total_actions == 0 { 100.0 } else { 2.0 }),
             message: Some(format!(
                 "Install plan ready: {} mod(s) total ({} required dependencies)",
                 total_mods, dependency_mods
@@ -12553,7 +13184,6 @@ fn install_modrinth_mod_inner(
         },
     );
 
-    let mut title_cache: HashMap<String, String> = HashMap::new();
     let mut root_installed: Option<InstalledMod> = None;
     let mut completed_actions: usize = 0;
 
@@ -12576,23 +13206,6 @@ fn install_modrinth_mod_inner(
 
         let final_path = mods_dir.join(&safe_filename);
         let tmp_path = mods_dir.join(format!("{safe_filename}.part"));
-        if tmp_path.exists() {
-            fs::remove_file(&tmp_path).map_err(|e| format!("remove old temp file failed: {e}"))?;
-        }
-
-        let mut download_resp = client
-            .get(&item.file.url)
-            .send()
-            .map_err(|e| format!("download failed for {}: {e}", item.project_id))?;
-        if !download_resp.status().is_success() {
-            return Err(format!(
-                "download failed for {} with status {}",
-                item.project_id,
-                download_resp.status()
-            ));
-        }
-
-        let file_total = download_resp.content_length();
         emit_install_progress(
             &app,
             InstallProgressEvent {
@@ -12604,69 +13217,58 @@ fn install_modrinth_mod_inner(
                 percent: Some(if total_actions == 0 {
                     100.0
                 } else {
-                    (completed_actions as f64 / total_actions as f64) * 100.0
+                    let base = (completed_actions as f64 / total_actions as f64) * 100.0;
+                    if completed_actions == 0 {
+                        base.max(0.2)
+                    } else {
+                        base
+                    }
                 }),
                 message: Some(format!("Installing {} ({safe_filename})", item.project_id)),
             },
         );
-
-        let mut out =
-            File::create(&tmp_path).map_err(|e| format!("create temp file failed: {e}"))?;
-        let mut downloaded_bytes: u64 = 0;
-        let mut buf = vec![0_u8; 64 * 1024];
-        let mut last_emit = Instant::now()
-            .checked_sub(Duration::from_secs(1))
-            .unwrap_or_else(Instant::now);
-
-        loop {
-            let n = download_resp
-                .read(&mut buf)
-                .map_err(|e| format!("read download stream failed: {e}"))?;
-            if n == 0 {
-                break;
-            }
-            out.write_all(&buf[..n])
-                .map_err(|e| format!("write mod file failed: {e}"))?;
-            downloaded_bytes += n as u64;
-
-            if last_emit.elapsed() >= Duration::from_millis(90) {
-                let ratio = file_total
-                    .map(|t| {
-                        if t == 0 {
-                            0.0
-                        } else {
-                            downloaded_bytes as f64 / t as f64
-                        }
-                    })
-                    .unwrap_or(0.0);
+        let mut stream_result = download_stream_to_temp_with_retry(
+            &client,
+            &item.file.url,
+            &item.project_id,
+            &tmp_path,
+            |downloaded_bytes, total_bytes| {
+                let ratio = match total_bytes {
+                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
+                    _ => unknown_progress_ratio(downloaded_bytes),
+                };
                 let overall = if total_actions == 0 {
                     100.0
                 } else {
                     ((completed_actions as f64 + ratio) / total_actions as f64) * 100.0
                 };
+                let visible_overall = overall.max(0.2);
                 emit_install_progress(
                     &app,
                     InstallProgressEvent {
                         instance_id: args.instance_id.clone(),
                         project_id: args.project_id.clone(),
                         stage: "downloading".into(),
-                        downloaded: completed_actions as u64,
-                        total: Some(total_actions as u64),
-                        percent: Some(overall),
-                        message: Some(format!("Installing {} ({safe_filename})", item.project_id)),
+                        downloaded: downloaded_bytes,
+                        total: total_bytes,
+                        percent: Some(visible_overall.clamp(0.0, 99.4)),
+                        message: Some(format!(
+                            "Installing {} ({safe_filename}) · {}",
+                            item.project_id,
+                            format_download_meter(downloaded_bytes, total_bytes)
+                        )),
                     },
                 );
-                last_emit = Instant::now();
-            }
-        }
-
-        out.flush()
-            .map_err(|e| format!("flush mod file failed: {e}"))?;
+            },
+        )?;
 
         if final_path.exists() {
             fs::remove_file(&final_path).map_err(|e| format!("remove old mod file failed: {e}"))?;
         }
+        let post_process_started = Instant::now();
         fs::rename(&tmp_path, &final_path).map_err(|e| format!("move mod file failed: {e}"))?;
+        stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+        maybe_log_download_profile(&item.project_id, &stream_result.profile);
 
         remove_replaced_entries_for_project(
             &mut lock,
@@ -12679,6 +13281,8 @@ fn install_modrinth_mod_inner(
             .version
             .name
             .clone()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
             .unwrap_or_else(|| item.project_id.clone());
         let resolved_name = if item.project_id == args.project_id {
             if let Some(title) = args.project_title.as_ref() {
@@ -12691,19 +13295,15 @@ fn install_modrinth_mod_inner(
             } else {
                 fetch_project_title(&client, &item.project_id).unwrap_or(fallback_name)
             }
-        } else if let Some(cached) = title_cache.get(&item.project_id) {
-            cached.clone()
         } else {
-            let fetched = fetch_project_title(&client, &item.project_id).unwrap_or(fallback_name);
-            title_cache.insert(item.project_id.clone(), fetched.clone());
-            fetched
+            fallback_name
         };
 
         let new_entry = LockEntry {
             source: "modrinth".into(),
             project_id: item.project_id.clone(),
             version_id: item.version.id.clone(),
-            name: resolved_name,
+            name: resolved_name.clone(),
             version_number: item.version.version_number.clone(),
             filename: safe_filename,
             content_type: "mods".to_string(),
@@ -12711,7 +13311,24 @@ fn install_modrinth_mod_inner(
             target_worlds: vec![],
             pinned_version: None,
             enabled: true,
-            hashes: item.file.hashes.clone(),
+            hashes: {
+                let mut hashes = item.file.hashes.clone();
+                if !stream_result.sha512.trim().is_empty() {
+                    hashes
+                        .entry("sha512".to_string())
+                        .or_insert_with(|| stream_result.sha512.clone());
+                }
+                hashes
+            },
+            provider_candidates: vec![ProviderCandidate {
+                source: "modrinth".to_string(),
+                project_id: item.project_id.clone(),
+                version_id: item.version.id.clone(),
+                name: resolved_name.clone(),
+                version_number: item.version.version_number.clone(),
+                confidence: None,
+                reason: None,
+            }],
         };
 
         lock.entries.push(new_entry.clone());
@@ -12764,7 +13381,8 @@ async fn install_modrinth_mod(
     args: InstallModrinthModArgs,
 ) -> Result<InstalledMod, String> {
     run_blocking_task("install modrinth mod", move || {
-        let reason = format!("before-install-modrinth:{}", args.project_id);
+        let subject = snapshot_install_subject(args.project_title.as_deref(), &args.project_id);
+        let reason = format!("before-install-modrinth:{subject}");
         install_modrinth_mod_inner(app, args, Some(reason.as_str()))
     })
     .await
@@ -12776,7 +13394,8 @@ async fn install_curseforge_mod(
     args: InstallCurseforgeModArgs,
 ) -> Result<InstalledMod, String> {
     run_blocking_task("install curseforge mod", move || {
-        let reason = format!("before-install-curseforge:{}", args.project_id);
+        let subject = snapshot_install_subject(args.project_title.as_deref(), &args.project_id);
+        let reason = format!("before-install-curseforge:{subject}");
         install_curseforge_mod_inner(app, args, Some(reason.as_str()))
     })
     .await
@@ -12793,9 +13412,9 @@ fn install_curseforge_mod_inner(
     let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
     let root_mod_id = parse_curseforge_project_id(&args.project_id)?;
-    let install_order =
+    let install_plan =
         resolve_curseforge_dependency_chain(&client, &api_key, &instance, root_mod_id)?;
-    let total_actions = install_order.len().max(1);
+    let total_actions = install_plan.len().max(1);
 
     emit_install_progress(
         &app,
@@ -12805,7 +13424,7 @@ fn install_curseforge_mod_inner(
             stage: "resolving".to_string(),
             downloaded: 0,
             total: Some(total_actions as u64),
-            percent: Some(0.0),
+            percent: Some(if total_actions == 0 { 100.0 } else { 1.0 }),
             message: Some(if total_actions > 1 {
                 "Resolving CurseForge dependency chain…".to_string()
             } else {
@@ -12819,8 +13438,8 @@ fn install_curseforge_mod_inner(
     }
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let mut root_entry: Option<LockEntry> = None;
-    for (idx, mod_id) in install_order.iter().enumerate() {
-        let is_root = *mod_id == root_mod_id;
+    for (idx, plan_item) in install_plan.iter().enumerate() {
+        let is_root = plan_item.mod_id == root_mod_id;
         emit_install_progress(
             &app,
             InstallProgressEvent {
@@ -12829,7 +13448,14 @@ fn install_curseforge_mod_inner(
                 stage: "downloading".to_string(),
                 downloaded: idx as u64,
                 total: Some(total_actions as u64),
-                percent: Some(((idx as f64) / (total_actions as f64) * 100.0).clamp(0.0, 99.0)),
+                percent: Some(
+                    if idx == 0 {
+                        0.2
+                    } else {
+                        (idx as f64) / (total_actions as f64) * 100.0
+                    }
+                    .clamp(0.0, 99.0),
+                ),
                 message: Some(if is_root {
                     "Installing selected CurseForge mod…".to_string()
                 } else {
@@ -12848,7 +13474,7 @@ fn install_curseforge_mod_inner(
             &mut lock,
             &client,
             &api_key,
-            &mod_id.to_string(),
+            &plan_item.mod_id.to_string(),
             if is_root {
                 args.project_title.as_deref()
             } else {
@@ -12856,6 +13482,39 @@ fn install_curseforge_mod_inner(
             },
             "mods",
             &[],
+            Some(&plan_item.file),
+            |downloaded_bytes, total_bytes| {
+                let ratio = match total_bytes {
+                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
+                    _ => unknown_progress_ratio(downloaded_bytes),
+                };
+                let overall = ((idx as f64 + ratio) / total_actions as f64) * 100.0;
+                let visible_overall = overall.max(0.2);
+                emit_install_progress(
+                    &app,
+                    InstallProgressEvent {
+                        instance_id: args.instance_id.clone(),
+                        project_id: args.project_id.clone(),
+                        stage: "downloading".to_string(),
+                        downloaded: downloaded_bytes,
+                        total: total_bytes,
+                        percent: Some(visible_overall.clamp(0.0, 99.4)),
+                        message: Some(if is_root {
+                            format!(
+                                "Installing selected CurseForge mod… · {}",
+                                format_download_meter(downloaded_bytes, total_bytes)
+                            )
+                        } else {
+                            format!(
+                                "Installing required dependency {}/{}… · {}",
+                                idx + 1,
+                                total_actions,
+                                format_download_meter(downloaded_bytes, total_bytes)
+                            )
+                        }),
+                    },
+                );
+            },
         )?;
         if is_root {
             root_entry = Some(entry);
@@ -12912,11 +13571,7 @@ fn preview_modrinth_install_inner(
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
-    let client = Client::builder()
-        .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| format!("build http client failed: {e}"))?;
+    let client = build_http_client()?;
 
     let plan = resolve_modrinth_install_plan(&client, &instance, &args.project_id)?;
     let total_mods = plan.len();
@@ -13011,20 +13666,24 @@ fn import_local_mod_file_inner(
         &file_bytes,
     )?;
 
-    let detected_provider = Client::builder()
+    let detected_provider_matches = Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(2))
         .timeout(Duration::from_secs(4))
         .build()
         .ok()
         .and_then(|client| {
-            detect_provider_for_local_mod(
+            Some(detect_provider_matches_for_local_mod(
                 &client,
                 &file_bytes,
                 &safe_filename,
                 normalized_content_type == "mods",
-            )
+            ))
         });
+    let detected_provider_matches = detected_provider_matches.unwrap_or_default();
+    let detected_provider =
+        select_preferred_provider_match(&detected_provider_matches, None).cloned();
+    let detected_provider_candidates = to_provider_candidates(&detected_provider_matches);
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| {
@@ -13059,6 +13718,7 @@ fn import_local_mod_file_inner(
             pinned_version: None,
             enabled: true,
             hashes: found.hashes,
+            provider_candidates: detected_provider_candidates,
         }
     } else {
         let project_id = format!(
@@ -13083,6 +13743,7 @@ fn import_local_mod_file_inner(
             pinned_version: None,
             enabled: true,
             hashes: HashMap::new(),
+            provider_candidates: vec![],
         }
     };
 
@@ -13166,16 +13827,18 @@ fn resolve_local_mod_sources_inner(
                 continue;
             }
         };
-        let Some(found) = detect_provider_for_local_mod(
+        let found_matches = detect_provider_matches_for_local_mod(
             &client,
             &file_bytes,
             &filename,
             entry_content_type == "mods",
-        ) else {
+        );
+        let Some(found) = select_preferred_provider_match(&found_matches, None) else {
             continue;
         };
         let key_before = local_entry_key(&lock.entries[idx]);
         apply_provider_match_to_lock_entry(&mut lock.entries[idx], &found);
+        lock.entries[idx].provider_candidates = to_provider_candidates(&found_matches);
         resolved_entries += 1;
         changed = true;
         matches.push(LocalResolverMatch {
@@ -14662,6 +15325,46 @@ fn set_installed_mod_enabled(
 }
 
 #[tauri::command]
+fn set_installed_mod_provider(
+    app: tauri::AppHandle,
+    args: SetInstalledModProviderArgs,
+) -> Result<InstalledMod, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let _ = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+
+    let idx = lock
+        .entries
+        .iter()
+        .position(|e| e.version_id == args.version_id)
+        .ok_or_else(|| "installed mod entry not found".to_string())?;
+
+    let requested_source = args.source.trim().to_ascii_lowercase();
+    if requested_source.is_empty() {
+        return Err("source is required".to_string());
+    }
+
+    let entry = &mut lock.entries[idx];
+    if entry.provider_candidates.is_empty() {
+        entry.provider_candidates = lock_entry_provider_candidates(entry);
+    }
+
+    let candidate = entry
+        .provider_candidates
+        .iter()
+        .find(|item| item.source.trim().eq_ignore_ascii_case(&requested_source))
+        .cloned()
+        .ok_or_else(|| "Requested provider is not available for this entry".to_string())?;
+
+    apply_provider_candidate_to_lock_entry(entry, &candidate);
+    write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+
+    let updated = lock.entries[idx].clone();
+    Ok(lock_entry_to_installed(&instance_dir, &updated))
+}
+
+#[tauri::command]
 fn remove_installed_mod(
     app: tauri::AppHandle,
     args: RemoveInstalledModArgs,
@@ -14789,6 +15492,7 @@ fn main() {
             resolve_local_mod_sources,
             list_installed_mods,
             set_installed_mod_enabled,
+            set_installed_mod_provider,
             remove_installed_mod,
             preflight_launch_compatibility,
             launch_instance,
