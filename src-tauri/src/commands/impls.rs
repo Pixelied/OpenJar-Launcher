@@ -40,6 +40,231 @@ fn capture_run_report_best_effort(
     }
 }
 
+fn is_jar_filename(filename: &str) -> bool {
+    Path::new(filename)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("jar"))
+        .unwrap_or(false)
+}
+
+fn mod_filename_identity_key(filename: &str) -> Option<String> {
+    const NOISE: &[&str] = &[
+        "mc",
+        "minecraft",
+        "forge",
+        "fabric",
+        "quilt",
+        "neoforge",
+        "neo",
+        "loader",
+        "mod",
+        "mods",
+        "jar",
+        "client",
+        "server",
+        "api",
+        "v",
+    ];
+    let stem = Path::new(filename).file_stem()?.to_str()?.trim().to_ascii_lowercase();
+    if stem.is_empty() {
+        return None;
+    }
+    let parts = stem
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| {
+            if token.is_empty() {
+                return false;
+            }
+            if token.chars().all(|ch| ch.is_ascii_digit()) {
+                return false;
+            }
+            !NOISE.contains(token)
+        })
+        .take(4)
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("_"))
+    }
+}
+
+fn list_mod_jar_filenames(mods_dir: &Path) -> Result<Vec<String>, String> {
+    if !mods_dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut jars: Vec<String> = Vec::new();
+    let read = fs::read_dir(mods_dir)
+        .map_err(|e| format!("read mods directory '{}' failed: {e}", mods_dir.display()))?;
+    for ent in read {
+        let ent = ent.map_err(|e| format!("read mods entry failed: {e}"))?;
+        let meta = ent.metadata().map_err(|e| {
+            format!(
+                "read mods entry metadata '{}' failed: {e}",
+                ent.path().display()
+            )
+        })?;
+        if !meta.is_file() {
+            continue;
+        }
+        let Some(name) = ent.file_name().to_str().map(|value| value.to_string()) else {
+            continue;
+        };
+        if !is_jar_filename(&name) {
+            continue;
+        }
+        jars.push(name);
+    }
+    jars.sort_by_key(|name| name.to_ascii_lowercase());
+    Ok(jars)
+}
+
+fn detect_mod_filename_key_collisions(jar_filenames: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
+    for filename in jar_filenames {
+        let Some(key) = mod_filename_identity_key(filename) else {
+            continue;
+        };
+        grouped
+            .entry(key)
+            .or_default()
+            .push(filename.clone());
+    }
+    let mut out = grouped
+        .into_iter()
+        .filter_map(|(key, mut names)| {
+            if names.len() < 2 {
+                return None;
+            }
+            names.sort_by_key(|name| name.to_ascii_lowercase());
+            Some((key, names))
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn remove_conflicting_local_mod_entries_for_filename(
+    lock: &mut Lockfile,
+    instance_dir: &Path,
+    keep_filename: &str,
+) -> Result<Vec<String>, String> {
+    let Some(keep_key) = mod_filename_identity_key(keep_filename) else {
+        return Ok(vec![]);
+    };
+    let mut removed: Vec<String> = Vec::new();
+    let mut retained: Vec<LockEntry> = Vec::with_capacity(lock.entries.len());
+    for entry in lock.entries.drain(..) {
+        let is_local_mod = entry.source.trim().eq_ignore_ascii_case("local")
+            && normalize_lock_content_type(&entry.content_type) == "mods";
+        let collides = is_local_mod
+            && mod_filename_identity_key(&entry.filename)
+                .map(|key| key == keep_key)
+                .unwrap_or(false);
+        if !collides {
+            retained.push(entry);
+            continue;
+        }
+
+        let same_filename = entry.filename.eq_ignore_ascii_case(keep_filename);
+        let label = if same_filename {
+            format!(
+                "{} (local lock entry replaced by provider-managed install)",
+                entry.filename
+            )
+        } else {
+            entry.filename.clone()
+        };
+        removed.push(label);
+
+        if same_filename {
+            continue;
+        }
+        let (enabled_path, disabled_path) = mod_paths(instance_dir, &entry.filename);
+        if enabled_path.exists() {
+            fs::remove_file(&enabled_path).map_err(|e| {
+                format!(
+                    "remove conflicting local mod file '{}' failed: {e}",
+                    enabled_path.display()
+                )
+            })?;
+        }
+        if disabled_path.exists() {
+            fs::remove_file(&disabled_path).map_err(|e| {
+                format!(
+                    "remove conflicting local disabled mod file '{}' failed: {e}",
+                    disabled_path.display()
+                )
+            })?;
+        }
+    }
+    lock.entries = retained;
+    Ok(removed)
+}
+
+fn append_runtime_mod_diagnostics(
+    launch_log_file: &mut File,
+    runtime_dir: &Path,
+) -> Result<Vec<(String, Vec<String>)>, String> {
+    let game_dir_display = runtime_dir
+        .canonicalize()
+        .unwrap_or_else(|_| runtime_dir.to_path_buf());
+    let mods_dir = runtime_dir.join("mods");
+    let mods_dir_display = mods_dir
+        .canonicalize()
+        .unwrap_or_else(|_| mods_dir.clone());
+    let jar_filenames = list_mod_jar_filenames(&mods_dir)?;
+    let collisions = detect_mod_filename_key_collisions(&jar_filenames);
+    writeln!(
+        launch_log_file,
+        "[OpenJar] Launch preflight: game_dir={}",
+        game_dir_display.display()
+    )
+    .map_err(|e| format!("write launch preflight game dir failed: {e}"))?;
+    writeln!(
+        launch_log_file,
+        "[OpenJar] Launch preflight: mods_dir={}",
+        mods_dir_display.display()
+    )
+    .map_err(|e| format!("write launch preflight mods dir failed: {e}"))?;
+    writeln!(
+        launch_log_file,
+        "[OpenJar] Launch preflight: mods_jars_count={}",
+        jar_filenames.len()
+    )
+    .map_err(|e| format!("write launch preflight mods jar count failed: {e}"))?;
+    if jar_filenames.is_empty() {
+        writeln!(
+            launch_log_file,
+            "[OpenJar] Launch preflight: mods_jars=<none>"
+        )
+        .map_err(|e| format!("write launch preflight empty jar list failed: {e}"))?;
+    } else {
+        for name in &jar_filenames {
+            writeln!(launch_log_file, "[OpenJar] Launch preflight: mod_jar={name}")
+                .map_err(|e| format!("write launch preflight jar list failed: {e}"))?;
+        }
+    }
+    if collisions.is_empty() {
+        writeln!(
+            launch_log_file,
+            "[OpenJar] Launch preflight: mod_key_collisions=<none>"
+        )
+        .map_err(|e| format!("write launch preflight collision status failed: {e}"))?;
+    } else {
+        for (key, names) in &collisions {
+            writeln!(
+                launch_log_file,
+                "[OpenJar] Launch preflight: mod_key_collision={key} => {}",
+                names.join(", ")
+            )
+            .map_err(|e| format!("write launch preflight collisions failed: {e}"))?;
+        }
+    }
+    Ok(collisions)
+}
+
 #[tauri::command]
 pub(crate) fn get_launcher_settings(app: tauri::AppHandle) -> Result<LauncherSettings, String> {
     read_launcher_settings(&app)
@@ -2667,6 +2892,7 @@ fn install_modrinth_mod_inner(
 
     let mut root_installed: Option<InstalledMod> = None;
     let mut completed_actions: usize = 0;
+    let mut removed_local_conflicts: Vec<String> = Vec::new();
 
     for item in plan {
         let safe_filename =
@@ -2757,6 +2983,14 @@ fn install_modrinth_mod_inner(
             &item.project_id,
             Some(&safe_filename),
         )?;
+        let removed = remove_conflicting_local_mod_entries_for_filename(
+            &mut lock,
+            &instance_dir,
+            &safe_filename,
+        )?;
+        if !removed.is_empty() {
+            removed_local_conflicts.extend(removed);
+        }
 
         let fallback_name = item
             .version
@@ -2861,6 +3095,30 @@ fn install_modrinth_mod_inner(
             root_installed.name, dependency_mods
         ),
     );
+    if !removed_local_conflicts.is_empty() {
+        removed_local_conflicts.sort_by_key(|value| value.to_ascii_lowercase());
+        removed_local_conflicts.dedup();
+        let preview = removed_local_conflicts
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>();
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "mod_install_cleanup",
+            format!(
+                "Removed {} conflicting local mod entr{} after provider install: {}.",
+                removed_local_conflicts.len(),
+                if removed_local_conflicts.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                preview.join(", ")
+            ),
+        );
+    }
 
     Ok(root_installed)
 }
@@ -2953,6 +3211,7 @@ fn install_curseforge_mod_inner(
     }
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let mut root_entry: Option<LockEntry> = None;
+    let mut removed_local_conflicts: Vec<String> = Vec::new();
     for (idx, plan_item) in install_plan.iter().enumerate() {
         let is_root = plan_item.mod_id == root_mod_id;
         emit_install_progress(
@@ -3031,6 +3290,14 @@ fn install_curseforge_mod_inner(
                 );
             },
         )?;
+        let removed = remove_conflicting_local_mod_entries_for_filename(
+            &mut lock,
+            &instance_dir,
+            &entry.filename,
+        )?;
+        if !removed.is_empty() {
+            removed_local_conflicts.extend(removed);
+        }
         if is_root {
             root_entry = Some(entry);
         }
@@ -3072,6 +3339,30 @@ fn install_curseforge_mod_inner(
             total_actions.saturating_sub(1)
         ),
     );
+    if !removed_local_conflicts.is_empty() {
+        removed_local_conflicts.sort_by_key(|value| value.to_ascii_lowercase());
+        removed_local_conflicts.dedup();
+        let preview = removed_local_conflicts
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>();
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "mod_install_cleanup",
+            format!(
+                "Removed {} conflicting local mod entr{} after provider install: {}.",
+                removed_local_conflicts.len(),
+                if removed_local_conflicts.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                },
+                preview.join(", ")
+            ),
+        );
+    }
 
     Ok(lock_entry_to_installed(&instance_dir, &entry))
 }
@@ -4075,8 +4366,19 @@ pub(crate) async fn launch_instance(
                 launch_id.replace(':', "_")
             );
             let launch_log_path = persistent_logs_dir.join(launch_log_file_name);
-            let launch_log_file = File::create(&launch_log_path)
+            let mut launch_log_file = File::create(&launch_log_path)
                 .map_err(|e| format!("create native launch log failed: {e}"))?;
+            let collisions = append_runtime_mod_diagnostics(&mut launch_log_file, &runtime_dir)?;
+            if let Some((_, names)) = collisions
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case("essential"))
+            {
+                let duplicate_list = names.join(", ");
+                return Err(format!(
+                    "Detected multiple Essential jars in the effective mods folder before launch: {duplicate_list}. Keep one Essential jar in '{}', then retry.",
+                    runtime_dir.join("mods").display()
+                ));
+            }
             let launch_log_file_err = launch_log_file
                 .try_clone()
                 .map_err(|e| format!("clone native launch log handle failed: {e}"))?;
@@ -4550,6 +4852,7 @@ pub(crate) fn preflight_launch_compatibility(
         .as_deref()
         .and_then(LaunchMethod::parse)
         .unwrap_or(LaunchMethod::Native);
+    let mut resolved_native_java_executable: Option<String> = None;
     if launch_method == LaunchMethod::Native {
         let required_java = required_java_major_for_mc(&instance.mc_version);
         let java_executable = if !instance_settings.java_path.trim().is_empty() {
@@ -4557,6 +4860,9 @@ pub(crate) fn preflight_launch_compatibility(
         } else {
             resolve_java_executable(&settings).unwrap_or_default()
         };
+        if !java_executable.trim().is_empty() {
+            resolved_native_java_executable = Some(java_executable.clone());
+        }
         if java_executable.trim().is_empty() {
             items.push(LaunchCompatibilityItem {
                 code: "JAVA_PATH_UNRESOLVED".to_string(),
@@ -4602,6 +4908,21 @@ pub(crate) fn preflight_launch_compatibility(
                 missing_enabled_non_mods += 1;
             }
         }
+    }
+
+    let permission_eval = crate::permissions::evaluate_launch_permissions(
+        &lock,
+        launch_method == LaunchMethod::Native,
+        resolved_native_java_executable.as_deref(),
+    );
+    for signal in &permission_eval.signals {
+        items.push(LaunchCompatibilityItem {
+            code: signal.code.to_string(),
+            title: signal.title.clone(),
+            message: signal.message.clone(),
+            severity: signal.severity.to_string(),
+            blocking: signal.blocking,
+        });
     }
     if missing_enabled_mods > 0 {
         items.push(LaunchCompatibilityItem {
@@ -4698,6 +5019,8 @@ pub(crate) fn preflight_launch_compatibility(
         warning_count,
         unresolved_local_entries,
         items,
+        permissions: permission_eval.checklist,
+        mic_requirement: permission_eval.mic_requirement,
     })
 }
 
@@ -5137,4 +5460,97 @@ pub(crate) fn remove_installed_mod(
         ),
     );
     Ok(lock_entry_to_installed(&instance_dir, &entry))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("openjar-{label}-{nanos}"))
+    }
+
+    fn sample_entry(source: &str, filename: &str, enabled: bool) -> LockEntry {
+        LockEntry {
+            source: source.to_string(),
+            project_id: format!("{source}:{filename}"),
+            version_id: format!("v-{filename}"),
+            name: filename.to_string(),
+            version_number: "1".to_string(),
+            filename: filename.to_string(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled,
+            hashes: HashMap::new(),
+            provider_candidates: vec![],
+        }
+    }
+
+    #[test]
+    fn mod_filename_identity_key_normalizes_essential_variants() {
+        assert_eq!(
+            mod_filename_identity_key("Essential-1.20.1.jar"),
+            mod_filename_identity_key("Essential (forge_1.20.1).jar")
+        );
+        assert_eq!(
+            mod_filename_identity_key("geckolib-forge-1.20.1-4.8.3.jar"),
+            Some("geckolib".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_mod_filename_key_collisions_groups_variants() {
+        let collisions = detect_mod_filename_key_collisions(&[
+            "Essential-1.20.1.jar".to_string(),
+            "Essential (forge_1.20.1).jar".to_string(),
+            "another-mod.jar".to_string(),
+        ]);
+        assert_eq!(collisions.len(), 1);
+        assert_eq!(collisions[0].0, "essential");
+        assert_eq!(collisions[0].1.len(), 2);
+    }
+
+    #[test]
+    fn remove_conflicting_local_mod_entries_replaces_local_duplicates() {
+        let root = temp_path("local-conflict");
+        let mods_dir = root.join("mods");
+        fs::create_dir_all(&mods_dir).expect("create mods dir");
+        fs::write(mods_dir.join("Essential-1.20.1.jar"), b"provider").expect("write provider jar");
+        fs::write(mods_dir.join("Essential (forge_1.20.1).jar"), b"local").expect("write local jar");
+        fs::write(mods_dir.join("other.jar"), b"other").expect("write other jar");
+
+        let mut lock = Lockfile {
+            version: 2,
+            entries: vec![
+                sample_entry("local", "Essential (forge_1.20.1).jar", true),
+                sample_entry("local", "other.jar", true),
+                sample_entry("curseforge", "Essential-1.20.1.jar", true),
+            ],
+        };
+
+        let removed = remove_conflicting_local_mod_entries_for_filename(
+            &mut lock,
+            &root,
+            "Essential-1.20.1.jar",
+        )
+        .expect("remove conflicting local entries");
+
+        assert_eq!(removed.len(), 1);
+        assert!(!mods_dir.join("Essential (forge_1.20.1).jar").exists());
+        assert!(mods_dir.join("Essential-1.20.1.jar").exists());
+        assert_eq!(lock.entries.len(), 2);
+        assert!(lock
+            .entries
+            .iter()
+            .all(|entry| entry.filename != "Essential (forge_1.20.1).jar"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

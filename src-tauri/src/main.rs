@@ -28,6 +28,7 @@ use zip::ZipArchive;
 mod friend_link;
 mod modpack;
 mod commands;
+mod permissions;
 pub(crate) mod run_reports;
 pub(crate) use commands::import_provider_modpack_template;
 
@@ -1301,6 +1302,10 @@ struct LaunchCompatibilityReport {
     warning_count: usize,
     unresolved_local_entries: usize,
     items: Vec<LaunchCompatibilityItem>,
+    #[serde(default)]
+    permissions: Vec<permissions::LaunchPermissionChecklistItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mic_requirement: Option<permissions::LaunchMicRequirementSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]

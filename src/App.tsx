@@ -47,6 +47,7 @@ import type {
   FriendLinkStatus,
   InstanceHealthScore,
   LaunchCompatibilityReport,
+  LaunchPermissionChecklistItem,
   LaunchFixAction,
   LaunchFixApplyResult,
   LaunchFixPlan,
@@ -1391,6 +1392,46 @@ function launchCompatibilityFingerprint(report: LaunchCompatibilityReport) {
     .filter(Boolean)
     .sort();
   return `${report.status}|${report.blocking_count}|${report.warning_count}|${parts.join("||")}`;
+}
+
+const MAC_MICROPHONE_SETTINGS_URL =
+  "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone";
+
+function isMacDesktopPlatform() {
+  const ua = `${navigator.userAgent || ""} ${navigator.platform || ""}`.toLowerCase();
+  return ua.includes("mac");
+}
+
+function permissionStatusLabel(status: string) {
+  switch ((status || "").trim().toLowerCase()) {
+    case "granted":
+      return "Allowed";
+    case "denied":
+      return "Denied";
+    case "not_determined":
+      return "Needs setup";
+    case "not_required":
+      return "Not required";
+    case "unavailable":
+      return "Check manually";
+    default:
+      return "Unknown";
+  }
+}
+
+function permissionStatusChipClass(status: string) {
+  switch ((status || "").trim().toLowerCase()) {
+    case "granted":
+      return "subtle";
+    case "denied":
+      return "danger";
+    case "not_determined":
+      return "danger";
+    case "unavailable":
+      return "";
+    default:
+      return "";
+  }
 }
 
 function normalizeMinecraftUuid(uuid?: string | null) {
@@ -3970,6 +4011,13 @@ export default function App() {
     method: LaunchMethod;
     report: LaunchCompatibilityReport;
   } | null>(null);
+  const [preflightReportByInstance, setPreflightReportByInstance] = useState<
+    Record<string, LaunchCompatibilityReport>
+  >({});
+  const [permissionChecklistBusyByInstance, setPermissionChecklistBusyByInstance] = useState<
+    Record<string, boolean>
+  >({});
+  const permissionChecklistRefreshInFlightRef = useRef<Record<string, boolean>>({});
   const [preflightIgnoreByInstance, setPreflightIgnoreByInstance] = useState<
     Record<string, LaunchPreflightIgnoreEntry>
   >(() => {
@@ -4573,6 +4621,11 @@ export default function App() {
       setPreflightIgnoreByInstance(normalized);
     }
   }, [preflightIgnoreByInstance]);
+
+  useEffect(() => {
+    if (route !== "instance" || !selectedId) return;
+    void refreshInstancePermissionChecklist(selectedId, launchMethodPick, { silent: true });
+  }, [route, selectedId, launchMethodPick]);
 
   useEffect(() => {
     localStorage.setItem(
@@ -6344,6 +6397,7 @@ export default function App() {
               instanceId: inst.id,
               method: launchMethodPick,
             });
+            setPreflightReportByInstance((prev) => ({ ...prev, [inst.id]: report }));
             if (report.status === "blocked") {
               result.failed += 1;
               result.messages.push("Preflight still has blockers.");
@@ -7074,6 +7128,49 @@ export default function App() {
     }
   }
 
+  async function refreshInstancePermissionChecklist(
+    instanceId: string,
+    method: LaunchMethod = launchMethodPick,
+    opts?: { silent?: boolean }
+  ) {
+    if (permissionChecklistRefreshInFlightRef.current[instanceId]) return;
+    permissionChecklistRefreshInFlightRef.current[instanceId] = true;
+    setPermissionChecklistBusyByInstance((prev) => ({ ...prev, [instanceId]: true }));
+    try {
+      const report = await preflightLaunchCompatibility({
+        instanceId,
+        method,
+      });
+      setPreflightReportByInstance((prev) => ({ ...prev, [instanceId]: report }));
+      return report;
+    } catch (e: any) {
+      if (!opts?.silent) {
+        const msg = e?.toString?.() ?? String(e);
+        setInstallNotice(`Permission check failed: ${msg}`);
+      }
+      return null;
+    } finally {
+      delete permissionChecklistRefreshInFlightRef.current[instanceId];
+      setPermissionChecklistBusyByInstance((prev) => ({ ...prev, [instanceId]: false }));
+    }
+  }
+
+  async function openMicrophoneSystemSettings() {
+    if (!isMacDesktopPlatform()) {
+      setInstallNotice(
+        "Open your OS privacy settings and allow microphone access for Java/Minecraft, then click Re-check."
+      );
+      return;
+    }
+    try {
+      await shellOpen(MAC_MICROPHONE_SETTINGS_URL);
+      setInstallNotice("Opened System Settings > Privacy & Security > Microphone. Enable Java, then click Re-check.");
+    } catch {
+      await shellOpen("x-apple.systempreferences:").catch(() => null);
+      setInstallNotice("Opened System Settings. Enable microphone access for Java/Minecraft, then click Re-check.");
+    }
+  }
+
   async function onPlayInstance(inst: Instance, method?: LaunchMethod) {
     const requestedMethod = method ?? launchMethodPick;
     if (launchBusyInstanceIds.includes(inst.id)) {
@@ -7104,6 +7201,7 @@ export default function App() {
         instanceId: inst.id,
         method: requestedMethod,
       });
+      setPreflightReportByInstance((prev) => ({ ...prev, [inst.id]: preflight }));
       const preflightFingerprint = launchCompatibilityFingerprint(preflight);
       const now = Date.now();
       const ignoreEntry = preflightIgnoreByInstance[inst.id];
@@ -12035,6 +12133,15 @@ export default function App() {
       const instanceDiskUsageBytes = Number(instanceDiskUsageById[inst.id] ?? 0);
       const instanceLastRunMeta = instanceLastRunMetadataById[inst.id] ?? null;
       const instanceLastRunReport = instanceRunReportById[inst.id] ?? null;
+      const instancePreflightReport = preflightReportByInstance[inst.id] ?? null;
+      const instancePermissionChecklist: LaunchPermissionChecklistItem[] =
+        instancePreflightReport?.permissions ?? [];
+      const instanceMicPermission =
+        instancePermissionChecklist.find((item) => item.key === "microphone") ?? null;
+      const micNeedsPermissionAction = Boolean(
+        instanceMicPermission?.required &&
+          ["denied", "not_determined"].includes(String(instanceMicPermission?.status ?? "").toLowerCase())
+      );
       const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
       const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
       const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
@@ -12080,10 +12187,15 @@ export default function App() {
       const runningForInstance = runningByInstanceId.get(inst.id) ?? [];
       const hasRunningForInstance = runningForInstance.length > 0;
       const isLaunchBusyForInstance = launchBusyInstanceIds.includes(inst.id);
-      const canStartConcurrentNative = hasRunningForInstance && launchMethodPick === "native";
       const hasNativeRunningForInstance = runningForInstance.some(
         (r) => String(r.method ?? "").toLowerCase() === "native"
       );
+      const canStartConcurrentNative = hasNativeRunningForInstance && launchMethodPick === "native";
+      const launchActionTitle = isLaunchBusyForInstance
+        ? "Cancel current launch"
+        : canStartConcurrentNative
+          ? "Launch in isolated native runtime session"
+          : `Launch with ${launchMethodPick === "native" ? "native launcher" : "Prism Launcher"}`;
       const launchFailure = launchFailureByInstance[inst.id] ?? null;
       const hasLaunchFailure = Boolean(launchFailure);
       const launchHealth = launchHealthByInstance[inst.id] ?? null;
@@ -12398,6 +12510,47 @@ export default function App() {
                       Last run report appears here after launch.
                     </div>
                   )}
+                  <div className="instancePermissionsChecklist">
+                    <div className="rowBetween" style={{ gap: 10 }}>
+                      <div style={{ fontWeight: 860 }}>Permissions</div>
+                      <div className="row" style={{ gap: 8 }}>
+                        {micNeedsPermissionAction ? (
+                          <button className="btn subtle" onClick={() => void openMicrophoneSystemSettings()}>
+                            Open settings
+                          </button>
+                        ) : null}
+                        <button
+                          className="btn subtle"
+                          onClick={() => void refreshInstancePermissionChecklist(inst.id, launchMethodPick)}
+                          disabled={permissionChecklistBusyByInstance[inst.id]}
+                        >
+                          {permissionChecklistBusyByInstance[inst.id] ? "Checking…" : "Re-check"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      Per-instance launch permissions checklist. Microphone is auto-detected for voice chat mods.
+                    </div>
+                    {instancePermissionChecklist.length > 0 ? (
+                      <div className="instancePermissionsList">
+                        {instancePermissionChecklist.map((perm) => (
+                          <div key={perm.key} className="instancePermissionRow">
+                            <div className="instancePermissionMain">
+                              <div style={{ fontWeight: 760 }}>{perm.label}</div>
+                              <div className="muted">{perm.detail}</div>
+                            </div>
+                            <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
+                              {permissionStatusLabel(perm.status)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        Not checked yet.
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -12434,13 +12587,7 @@ export default function App() {
                     className={`btn instanceLaunchBtn ${isLaunchBusyForInstance ? "danger" : "primary"}`}
                     onClick={() => onPlayInstance(inst, launchMethodPick)}
                     disabled={launchCancelBusyInstanceId === inst.id}
-                    title={
-                      isLaunchBusyForInstance
-                        ? "Cancel current launch"
-                        : canStartConcurrentNative
-                          ? "Launch an isolated concurrent native session"
-                          : `Launch with ${launchMethodPick === "native" ? "native launcher" : "Prism Launcher"}`
-                    }
+                    title={launchActionTitle}
                   >
                     <span className="btnIcon">
                       <Icon name={isLaunchBusyForInstance ? "x" : "play"} size={18} />
@@ -15466,129 +15613,187 @@ export default function App() {
       ) : null}
 
       {preflightReportModal ? (
-        <Modal
-          title="Launch compatibility checks"
-          onClose={() => setPreflightReportModal(null)}
-        >
-          <div className="modalBody preflightModalBody">
-            <div className={`preflightSummaryCard ${preflightReportModal.report.status === "blocked" ? "blocked" : "warning"}`}>
-              <div className="preflightSummaryTitle">
-                {preflightReportModal.report.status === "blocked"
-                  ? "Launch is currently blocked"
-                  : "Launch can continue with warnings"}
-              </div>
-              <div className="preflightSummaryMeta">
-                {preflightReportModal.report.blocking_count} blocker{preflightReportModal.report.blocking_count === 1 ? "" : "s"} ·{" "}
-                {preflightReportModal.report.warning_count} warning{preflightReportModal.report.warning_count === 1 ? "" : "s"}
-              </div>
-            </div>
-            <div className="preflightChecksList">
-              {preflightReportModal.report.items.length === 0 ? (
-                <div className="preflightCheckItem">
-                  <div className="preflightCheckMain">
-                    <div className="preflightCheckTitle">No issues detected</div>
-                    <div className="preflightCheckMsg">Compatibility checks passed for this launch mode.</div>
+        (() => {
+          const micPermissionItem = (preflightReportModal.report.permissions ?? []).find(
+            (item) => item.key === "microphone"
+          );
+          const showMicPermissionPrompt = Boolean(
+            micPermissionItem?.required &&
+              ["denied", "not_determined"].includes(
+                String(micPermissionItem.status ?? "").toLowerCase()
+              )
+          );
+          return (
+            <Modal
+              title="Launch compatibility checks"
+              onClose={() => setPreflightReportModal(null)}
+            >
+              <div className="modalBody preflightModalBody">
+                <div
+                  className={`preflightSummaryCard ${
+                    preflightReportModal.report.status === "blocked" ? "blocked" : "warning"
+                  }`}
+                >
+                  <div className="preflightSummaryTitle">
+                    {showMicPermissionPrompt
+                      ? "Voice chat needs microphone permission"
+                      : preflightReportModal.report.status === "blocked"
+                        ? "Launch is currently blocked"
+                        : "Launch can continue with warnings"}
                   </div>
-                  <span className="chip subtle">ok</span>
-                </div>
-              ) : (
-                preflightReportModal.report.items.map((item) => (
-                  <div
-                    key={`${item.code}:${item.title}`}
-                    className={`preflightCheckItem ${item.blocking ? "blocker" : "warning"}`}
-                  >
-                    <div className="preflightCheckMain">
-                      <div className="preflightCheckTitle">{item.title}</div>
-                      <div className="preflightCheckMsg">{item.message}</div>
+                  <div className="preflightSummaryMeta">
+                    {preflightReportModal.report.blocking_count} blocker
+                    {preflightReportModal.report.blocking_count === 1 ? "" : "s"} ·{" "}
+                    {preflightReportModal.report.warning_count} warning
+                    {preflightReportModal.report.warning_count === 1 ? "" : "s"}
+                  </div>
+                  {showMicPermissionPrompt ? (
+                    <div className="preflightMicPrompt">
+                      This instance uses voice chat. Java/Minecraft needs microphone permission.
                     </div>
-                    <span className={`chip ${item.blocking ? "danger" : "subtle"}`}>{item.severity}</span>
+                  ) : null}
+                </div>
+                {(preflightReportModal.report.permissions ?? []).length > 0 ? (
+                  <div className="preflightPermissionsCard">
+                    <div className="preflightPermissionsTitle">Permissions checklist</div>
+                    <div className="preflightPermissionsList">
+                      {(preflightReportModal.report.permissions ?? []).map((perm) => (
+                        <div key={perm.key} className="preflightPermissionRow">
+                          <div className="preflightCheckMain">
+                            <div className="preflightCheckTitle">{perm.label}</div>
+                            <div className="preflightCheckMsg">{perm.detail}</div>
+                          </div>
+                          <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
+                            {permissionStatusLabel(perm.status)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                ))
-              )}
-            </div>
-          </div>
-          <div className="footerBar">
-            <button
-              className="btn"
-              onClick={() => {
-                setPreflightReportModal(null);
-                setRoute("instance");
-                setInstanceSettingsSection("java");
-                setInstanceSettingsOpen(true);
-              }}
-            >
-              Open Java settings
-            </button>
-            <button
-              className="btn"
-              onClick={() =>
-                void openInstancePath({
-                  instanceId: preflightReportModal.instanceId,
-                  target: "mods",
-                }).catch(() => null)
-              }
-            >
-              Open mods folder
-            </button>
-            <button
-              className="btn"
-              onClick={() =>
-                void runLocalResolverBackfill(preflightReportModal.instanceId, "all", {
-                  silent: false,
-                  refreshListAfterResolve: true,
-                })
-              }
-            >
-              Identify local files
-            </button>
-            {preflightReportModal.report.status === "blocked" ? (
-              <button
-                className="btn danger"
-                onClick={() => {
-                  const modal = preflightReportModal;
-                  if (!modal) return;
-                  const fingerprint = launchCompatibilityFingerprint(modal.report);
-                  const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
-                  setPreflightIgnoreByInstance((prev) => ({
-                    ...prev,
-                    [modal.instanceId]: {
-                      fingerprint,
-                      expires_at: expiresAt,
-                    },
-                  }));
-                  setPreflightReportModal(null);
-                  setInstallNotice(
-                    `Ignoring identical compatibility blockers for this instance until ${formatDateTime(
-                      new Date(expiresAt).toISOString()
-                    )}.`
-                  );
-                  const inst = instances.find((item) => item.id === modal.instanceId);
-                  if (inst) {
-                    void onPlayInstance(inst, modal.method);
+                ) : null}
+                <div className="preflightChecksList">
+                  {preflightReportModal.report.items.length === 0 ? (
+                    <div className="preflightCheckItem">
+                      <div className="preflightCheckMain">
+                        <div className="preflightCheckTitle">No issues detected</div>
+                        <div className="preflightCheckMsg">
+                          Compatibility checks passed for this launch mode.
+                        </div>
+                      </div>
+                      <span className="chip subtle">ok</span>
+                    </div>
+                  ) : (
+                    preflightReportModal.report.items.map((item) => (
+                      <div
+                        key={`${item.code}:${item.title}`}
+                        className={`preflightCheckItem ${item.blocking ? "blocker" : "warning"}`}
+                      >
+                        <div className="preflightCheckMain">
+                          <div className="preflightCheckTitle">{item.title}</div>
+                          <div className="preflightCheckMsg">{item.message}</div>
+                        </div>
+                        <span className={`chip ${item.blocking ? "danger" : "subtle"}`}>
+                          {item.severity}
+                        </span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="footerBar">
+                {showMicPermissionPrompt ? (
+                  <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
+                    Open System Settings
+                  </button>
+                ) : (
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setPreflightReportModal(null);
+                      setRoute("instance");
+                      setInstanceSettingsSection("java");
+                      setInstanceSettingsOpen(true);
+                    }}
+                  >
+                    Open Java settings
+                  </button>
+                )}
+                <button
+                  className="btn"
+                  onClick={() =>
+                    void openInstancePath({
+                      instanceId: preflightReportModal.instanceId,
+                      target: "mods",
+                    }).catch(() => null)
                   }
-                }}
-              >
-                Launch anyway (ignore 24h)
-              </button>
-            ) : null}
-            <button
-              className="btn primary"
-              onClick={async () => {
-                const report = await preflightLaunchCompatibility({
-                  instanceId: preflightReportModal.instanceId,
-                  method: preflightReportModal.method,
-                }).catch(() => null);
-                if (!report) return;
-                setPreflightReportModal((prev) => (prev ? { ...prev, report } : null));
-                if (report.status !== "blocked") {
-                  setInstallNotice("Preflight blockers cleared.");
-                }
-              }}
-            >
-              Re-check
-            </button>
-          </div>
-        </Modal>
+                >
+                  Open mods folder
+                </button>
+                <button
+                  className="btn"
+                  onClick={() =>
+                    void runLocalResolverBackfill(preflightReportModal.instanceId, "all", {
+                      silent: false,
+                      refreshListAfterResolve: true,
+                    })
+                  }
+                >
+                  Identify local files
+                </button>
+                {preflightReportModal.report.status === "blocked" ? (
+                  <button
+                    className="btn danger"
+                    onClick={() => {
+                      const modal = preflightReportModal;
+                      if (!modal) return;
+                      const fingerprint = launchCompatibilityFingerprint(modal.report);
+                      const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
+                      setPreflightIgnoreByInstance((prev) => ({
+                        ...prev,
+                        [modal.instanceId]: {
+                          fingerprint,
+                          expires_at: expiresAt,
+                        },
+                      }));
+                      setPreflightReportModal(null);
+                      setInstallNotice(
+                        `Ignoring identical compatibility blockers for this instance until ${formatDateTime(
+                          new Date(expiresAt).toISOString()
+                        )}.`
+                      );
+                      const inst = instances.find((item) => item.id === modal.instanceId);
+                      if (inst) {
+                        void onPlayInstance(inst, modal.method);
+                      }
+                    }}
+                  >
+                    Launch anyway (ignore 24h)
+                  </button>
+                ) : null}
+                <button
+                  className="btn primary"
+                  onClick={async () => {
+                    const report = await preflightLaunchCompatibility({
+                      instanceId: preflightReportModal.instanceId,
+                      method: preflightReportModal.method,
+                    }).catch(() => null);
+                    if (!report) return;
+                    setPreflightReportByInstance((prev) => ({
+                      ...prev,
+                      [preflightReportModal.instanceId]: report,
+                    }));
+                    setPreflightReportModal((prev) => (prev ? { ...prev, report } : null));
+                    if (report.status !== "blocked") {
+                      setInstallNotice("Preflight blockers cleared.");
+                    }
+                  }}
+                >
+                  Re-check
+                </button>
+              </div>
+            </Modal>
+          );
+        })()
       ) : null}
 
       {launchFixModalInstanceId ? (

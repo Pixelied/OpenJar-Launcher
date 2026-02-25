@@ -20,6 +20,7 @@ Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
   - [Installed Content (Per instance)](#installed-content-per-instance)
   - [Logs + Crash Hints](#logs--crash-hints)
   - [Run Reports + Fix My Instance](#run-reports--fix-my-instance)
+  - [Permission-Aware Launching (Voice Chat)](#permission-aware-launching-voice-chat)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
   - [Friend Link (Peer Sync for Shared Packs)](#friend-link-peer-sync-for-shared-packs)
@@ -245,6 +246,20 @@ The **Fix My Instance** flow now uses these reports to show:
 - **What to try next** with dry-run summaries before apply
 
 Safe actions include disabling suspect mods, snapshot rollback, Java-settings jump, config reset with backup, opening logs, and support bundle export.
+
+---
+
+### Permission-Aware Launching (Voice Chat)
+
+OpenJar now includes a local pre-launch permission pass for voice chat packs:
+
+- Detects known mic-needing mods from enabled lockfile entries (starting with high-confidence voice chat mod rules).
+- Adds a per-instance **Permissions** checklist (microphone now, camera/screen/accessibility placeholders for future expansion).
+- On macOS native launch, checks Java microphone privacy state before launch and shows a focused pre-launch prompt when access is missing/denied:
+  - **Open System Settings**
+  - **Launch anyway**
+  - **Re-check**
+- Windows/Linux keep the same checklist flow and degrade gracefully without hard launch blocking.
 
 ---
 

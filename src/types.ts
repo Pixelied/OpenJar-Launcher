@@ -144,6 +144,30 @@ export type LaunchCompatibilityItem = {
   blocking: boolean;
 };
 
+export type LaunchPermissionChecklistItem = {
+  key: string;
+  label: string;
+  status:
+    | "granted"
+    | "denied"
+    | "not_determined"
+    | "not_required"
+    | "unavailable"
+    | "unknown"
+    | string;
+  required: boolean;
+  blocking: boolean;
+  detail: string;
+  evidence?: string[];
+};
+
+export type LaunchMicRequirementSummary = {
+  required: boolean;
+  confidence: "high" | "medium" | "low" | string;
+  detected_mods?: string[];
+  reasons?: string[];
+};
+
 export type LaunchCompatibilityReport = {
   instance_id: string;
   status: "ok" | "warning" | "blocked" | string;
@@ -152,6 +176,8 @@ export type LaunchCompatibilityReport = {
   warning_count: number;
   unresolved_local_entries: number;
   items: LaunchCompatibilityItem[];
+  permissions?: LaunchPermissionChecklistItem[];
+  mic_requirement?: LaunchMicRequirementSummary | null;
 };
 
 export type LocalResolverMatch = {
