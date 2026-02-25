@@ -429,6 +429,80 @@ export type InstanceLastRunMetadata = {
   lastExitAt?: string | null;
 };
 
+export type RunArtifactRef = {
+  kind: string;
+  path: string;
+  exists: boolean;
+};
+
+export type RunFinding = {
+  id: string;
+  category: string;
+  title: string;
+  explanation: string;
+  confidence: number;
+  evidence: string[];
+  likelyFix?: string | null;
+  modId?: string | null;
+  filePath?: string | null;
+};
+
+export type InstanceHistoryEvent = {
+  id: string;
+  at: string;
+  kind: string;
+  summary: string;
+};
+
+export type RunSuggestedAction = {
+  id: string;
+  kind: string;
+  title: string;
+  detail: string;
+  dryRun: string;
+  reversible: boolean;
+  payload?: Record<string, unknown> | null;
+};
+
+export type InstanceRunReport = {
+  id: string;
+  instanceId: string;
+  createdAt: string;
+  launchMethod: string;
+  mcVersion: string;
+  loader: string;
+  javaPath?: string | null;
+  javaMajor?: number | null;
+  requiredJavaMajor: number;
+  memoryMb: number;
+  jvmArgs: string;
+  exitKind: string;
+  exitCode?: number | null;
+  message?: string | null;
+  artifacts: RunArtifactRef[];
+  findings: RunFinding[];
+  topCauses: string[];
+  phase?: string | null;
+  recentChanges: InstanceHistoryEvent[];
+  suggestedActions: RunSuggestedAction[];
+};
+
+export type ConfigResetItem = {
+  path: string;
+  backupPath: string;
+  status: string;
+  message: string;
+};
+
+export type ResetConfigFilesResult = {
+  dryRun: boolean;
+  resetCount: number;
+  skippedCount: number;
+  backupsCreated: number;
+  items: ConfigResetItem[];
+  message: string;
+};
+
 export type WorldConfigFileEntry = {
   path: string;
   size_bytes: number;

@@ -3085,6 +3085,20 @@ fn sync_friend_link_selected_inner(
     };
 
     write_store(&app, &store)?;
+    if result.actions_applied > 0 {
+        let summary = format!(
+            "Friend Link selective sync ({}) applied {} change(s).",
+            result.mode, result.actions_applied
+        );
+        if let Err(err) =
+            crate::run_reports::log_instance_event(&app, &args.instance_id, "friend_link_sync", &summary)
+        {
+            eprintln!(
+                "friend-link event write failed for '{}' [friend_link_sync]: {}",
+                args.instance_id, err
+            );
+        }
+    }
     Ok(result)
 }
 
@@ -3095,7 +3109,25 @@ pub async fn reconcile_friend_link(
 ) -> Result<FriendLinkReconcileResult, String> {
     run_friend_link_blocking("friend link reconcile", move || {
         let mode = args.mode.unwrap_or_else(|| "manual".to_string());
-        reconcile_internal(&app, &args.instance_id, &mode)
+        let result = reconcile_internal(&app, &args.instance_id, &mode)?;
+        if result.actions_applied > 0 {
+            let summary = format!(
+                "Friend Link reconcile ({}) applied {} change(s).",
+                result.mode, result.actions_applied
+            );
+            if let Err(err) = crate::run_reports::log_instance_event(
+                &app,
+                &args.instance_id,
+                "friend_link_reconcile",
+                &summary,
+            ) {
+                eprintln!(
+                    "friend-link event write failed for '{}' [friend_link_reconcile]: {}",
+                    args.instance_id, err
+                );
+            }
+        }
+        Ok(result)
     })
     .await
 }
@@ -3275,11 +3307,21 @@ pub fn write_instance_config_file(
     args: WriteInstanceConfigFileArgs,
 ) -> Result<WriteInstanceConfigFileResult, String> {
     let instances_dir = app_instances_dir(&app)?;
-    state::write_instance_config_file(
+    let output = state::write_instance_config_file(
         &instances_dir,
         &args.instance_id,
         &args.path,
         &args.content,
         args.expected_modified_at,
-    )
+    )?;
+    let summary = format!("Edited config file '{}'.", output.path);
+    if let Err(err) =
+        crate::run_reports::log_instance_event(&app, &args.instance_id, "config_edit", &summary)
+    {
+        eprintln!(
+            "friend-link event write failed for '{}' [config_edit]: {}",
+            args.instance_id, err
+        );
+    }
+    Ok(output)
 }

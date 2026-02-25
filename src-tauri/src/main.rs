@@ -28,6 +28,7 @@ use zip::ZipArchive;
 mod friend_link;
 mod modpack;
 mod commands;
+pub(crate) mod run_reports;
 pub(crate) use commands::import_provider_modpack_template;
 
 const USER_AGENT: &str = "OpenJarLauncher/0.1.6 (Tauri)";
@@ -11425,6 +11426,9 @@ fn main() {
             commands::list_instance_worlds,
             commands::get_instance_disk_usage,
             commands::get_instance_last_run_metadata,
+            commands::get_instance_last_run_report,
+            commands::list_instance_run_reports,
+            commands::reset_instance_config_files_with_backup,
             commands::list_world_config_files,
             commands::read_world_config_file,
             commands::write_world_config_file,

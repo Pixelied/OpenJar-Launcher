@@ -13,6 +13,33 @@ use tauri::Manager;
 use uuid::Uuid;
 use zip::write::FileOptions;
 
+fn log_instance_event_best_effort(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    kind: &str,
+    summary: String,
+) {
+    if let Err(err) = crate::run_reports::log_instance_event(app, instance_id, kind, &summary) {
+        eprintln!(
+            "instance history event write failed for '{}' [{}]: {}",
+            instance_id, kind, err
+        );
+    }
+}
+
+fn capture_run_report_best_effort(
+    app: &tauri::AppHandle,
+    input: crate::run_reports::CaptureRunReportInput,
+) {
+    let instance_id = input.instance_id.clone();
+    if let Err(err) = crate::run_reports::capture_and_store_run_report(app, input) {
+        eprintln!(
+            "run report capture failed for '{}': {}",
+            instance_id, err
+        );
+    }
+}
+
 #[tauri::command]
 pub(crate) fn get_launcher_settings(app: tauri::AppHandle) -> Result<LauncherSettings, String> {
     read_launcher_settings(&app)
@@ -880,6 +907,15 @@ pub(crate) fn rollback_instance(
     let restored_files =
         restore_instance_content_zip(&snapshot_content_zip_path(&snapshot_dir), &instance_dir)?;
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "snapshot_rollback",
+        format!(
+            "Rolled back to snapshot '{}' and restored {} file(s).",
+            selected.id, restored_files
+        ),
+    );
 
     Ok(RollbackResult {
         snapshot_id: selected.id,
@@ -969,6 +1005,68 @@ pub(crate) async fn get_instance_last_run_metadata(
     run_blocking_task("get instance last-run metadata", move || {
         let instances_dir = app_instances_dir(&app)?;
         read_instance_last_run_metadata(&instances_dir, &args.instance_id)
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct GetInstanceLastRunReportArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+}
+
+#[tauri::command]
+pub(crate) async fn get_instance_last_run_report(
+    app: tauri::AppHandle,
+    args: GetInstanceLastRunReportArgs,
+) -> Result<Option<crate::run_reports::InstanceRunReport>, String> {
+    run_blocking_task("get instance last-run report", move || {
+        crate::run_reports::latest_run_report(&app, &args.instance_id)
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ListInstanceRunReportsArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[tauri::command]
+pub(crate) async fn list_instance_run_reports(
+    app: tauri::AppHandle,
+    args: ListInstanceRunReportsArgs,
+) -> Result<Vec<crate::run_reports::InstanceRunReport>, String> {
+    run_blocking_task("list instance run reports", move || {
+        crate::run_reports::list_run_reports(&app, &args.instance_id, args.limit.unwrap_or(10))
+    })
+    .await
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ResetInstanceConfigFilesArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(alias = "dryRun", default)]
+    pub dry_run: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn reset_instance_config_files_with_backup(
+    app: tauri::AppHandle,
+    args: ResetInstanceConfigFilesArgs,
+) -> Result<crate::run_reports::ResetConfigFilesResult, String> {
+    run_blocking_task("reset instance config files", move || {
+        crate::run_reports::reset_instance_config_files_with_backup(
+            &app,
+            &args.instance_id,
+            &args.paths,
+            args.dry_run,
+        )
     })
     .await
 }
@@ -1158,6 +1256,12 @@ pub(crate) fn write_world_config_file(
     }
     let after_meta = fs::metadata(&resolved_path)
         .map_err(|e| format!("read world file metadata failed: {e}"))?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "world_config_edit",
+        format!("Updated world '{}' config file '{}'.", args.world_id, normalized_path),
+    );
     Ok(WriteWorldConfigFileResult {
         path: normalized_path,
         size_bytes: after_meta.len(),
@@ -1209,6 +1313,15 @@ pub(crate) fn rollback_instance_world_backup(
     let backup_dir = world_backups_dir(&instance_dir).join(&selected.id);
     let world_dir = instance_dir.join("saves").join(world_id);
     let restored_files = restore_world_backup_zip(&world_backup_zip_path(&backup_dir), &world_dir)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "world_rollback",
+        format!(
+            "Rolled back world '{}' to backup '{}' and restored {} file(s).",
+            world_id, selected.id, restored_files
+        ),
+    );
     Ok(WorldRollbackResult {
         world_id: world_id.to_string(),
         backup_id: selected.id.clone(),
@@ -1382,6 +1495,21 @@ fn install_discover_content_inner(
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "content_install",
+        format!(
+            "Installed {} '{}' via {}.",
+            content_type_display_name(&content_type),
+            new_entry.name,
+            if source == "curseforge" {
+                "CurseForge"
+            } else {
+                "Modrinth"
+            }
+        ),
+    );
     emit_install_progress(
         &app,
         InstallProgressEvent {
@@ -1501,6 +1629,16 @@ fn apply_preset_to_instance_inner(
             .entry(normalize_lock_content_type(&item.content_type))
             .or_insert(0) += 1;
     }
+
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "preset_apply",
+        format!(
+            "Applied preset '{}' (installed {}, failed {}).",
+            args.preset.name, result.applied_entries, result.failed_entries
+        ),
+    );
 
     Ok(PresetApplyResult {
         message: result.message,
@@ -2687,6 +2825,15 @@ fn install_modrinth_mod_inner(
             )),
         },
     );
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "mod_install",
+        format!(
+            "Installed/updated mod '{}' ({} dependencies).",
+            root_installed.name, dependency_mods
+        ),
+    );
 
     Ok(root_installed)
 }
@@ -2887,6 +3034,16 @@ fn install_curseforge_mod_inner(
                 "CurseForge install complete".to_string()
             }),
         },
+    );
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "mod_install",
+        format!(
+            "Installed/updated CurseForge mod '{}' ({} dependencies).",
+            entry.name,
+            total_actions.saturating_sub(1)
+        ),
     );
 
     Ok(lock_entry_to_installed(&instance_dir, &entry))
@@ -3093,6 +3250,16 @@ fn import_local_mod_file_inner(
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "local_import",
+        format!(
+            "Imported local {} file '{}'.",
+            content_type_display_name(&normalized_content_type),
+            new_entry.name
+        ),
+    );
 
     Ok(lock_entry_to_installed(&instance_dir, &new_entry))
 }
@@ -3200,6 +3367,12 @@ fn resolve_local_mod_sources_inner(
         lock.entries
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         write_lockfile(&instances_dir, instance_id, &lock)?;
+        log_instance_event_best_effort(
+            app,
+            instance_id,
+            "local_resolve",
+            format!("Resolved {} local entry provider mapping(s).", resolved_entries),
+        );
     }
 
     let remaining_local_entries = lock
@@ -3391,6 +3564,14 @@ fn update_all_instance_content_inner(
         }
     }
 
+    if updated_entries > 0 {
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "content_update_all",
+            format!("Updated {} content entries from update-all.", updated_entries),
+        );
+    }
     Ok(UpdateAllContentResult {
         checked_entries: check.checked_entries,
         updated_entries,
@@ -3487,6 +3668,14 @@ fn update_all_modrinth_mods_inner(
             Err(_) => {}
         }
     }
+    if updated_mods > 0 {
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "mods_update_all",
+            format!("Updated {} mod(s) from Modrinth update-all.", updated_mods),
+        );
+    }
     Ok(UpdateAllResult {
         checked_mods: check.checked_entries,
         updated_mods,
@@ -3517,7 +3706,8 @@ pub(crate) async fn launch_instance(
         );
     }
 
-    match method {
+    let method_for_report = method.clone();
+    let launch_result: Result<LaunchResult, String> = match method {
         LaunchMethod::Prism => {
             if is_launch_cancel_requested(&state, &instance.id)? {
                 emit_launch_state(
@@ -3975,10 +4165,13 @@ pub(crate) async fn launch_instance(
             let world_backup_retention_count_for_thread = world_backup_retention_count;
             let run_world_backups_for_thread = !use_isolated_runtime_session;
             let runtime_session_cleanup_for_thread = runtime_session_cleanup_dir.clone();
+            let java_executable_for_thread = java_executable.clone();
+            let java_major_for_thread = Some(java_major);
+            let launch_log_path_for_thread = launch_log_path.clone();
             thread::spawn(move || {
                 let mut next_world_backup_at =
                     Instant::now() + Duration::from_secs(world_backup_interval_secs_for_thread);
-                let (mut exit_kind, exit_message) = loop {
+                let (mut exit_kind, exit_code, exit_message) = loop {
                     if run_world_backups_for_thread && Instant::now() >= next_world_backup_at {
                         let _ = create_world_backups_for_instance(
                             &instances_dir_for_thread,
@@ -3998,18 +4191,21 @@ pub(crate) async fn launch_instance(
                                     } else {
                                         "crashed".to_string()
                                     },
+                                    status.code(),
                                     format!("Game exited with status {:?}", status.code()),
                                 ))
                             }
                             Ok(None) => None,
                             Err(e) => Some((
                                 "crashed".to_string(),
+                                None,
                                 format!("Failed to wait for game process: {e}"),
                             )),
                         }
                     } else {
                         Some((
                             "crashed".to_string(),
+                            None,
                             "Failed to lock child process handle.".to_string(),
                         ))
                     };
@@ -4040,6 +4236,19 @@ pub(crate) async fn launch_instance(
                         instance_id_for_thread, err
                     );
                 }
+                capture_run_report_best_effort(
+                    &app_for_thread,
+                    crate::run_reports::CaptureRunReportInput {
+                        instance_id: instance_id_for_thread.clone(),
+                        launch_method: LaunchMethod::Native.as_str().to_string(),
+                        exit_kind: exit_kind.clone(),
+                        exit_code,
+                        message: Some(exit_message.clone()),
+                        java_path: Some(java_executable_for_thread.clone()),
+                        java_major: java_major_for_thread,
+                        launch_log_path: Some(launch_log_path_for_thread.clone()),
+                    },
+                );
                 if let Some(path) = runtime_session_cleanup_for_thread {
                     let _ = remove_path_if_exists(&path);
                 }
@@ -4076,7 +4285,69 @@ pub(crate) async fn launch_instance(
                 },
             })
         }
+    };
+
+    match &launch_result {
+        Ok(result) => {
+            if matches!(method_for_report, LaunchMethod::Prism) {
+                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "success") {
+                    eprintln!(
+                        "instance last-run metadata prism success marker write failed for '{}': {}",
+                        instance.id, err
+                    );
+                }
+                capture_run_report_best_effort(
+                    &app,
+                    crate::run_reports::CaptureRunReportInput {
+                        instance_id: instance.id.clone(),
+                        launch_method: LaunchMethod::Prism.as_str().to_string(),
+                        exit_kind: "success".to_string(),
+                        exit_code: None,
+                        message: Some(result.message.clone()),
+                        java_path: None,
+                        java_major: None,
+                        launch_log_path: None,
+                    },
+                );
+            }
+        }
+        Err(err) => {
+            let lower = err.to_lowercase();
+            let exit_kind = if lower.contains("cancelled") {
+                "stopped"
+            } else {
+                "crashed"
+            };
+            if let Err(mark_err) = mark_instance_launch_exit(&instances_dir, &instance.id, exit_kind) {
+                eprintln!(
+                    "instance last-run metadata error marker write failed for '{}': {}",
+                    instance.id, mark_err
+                );
+            }
+            let java_path = if !instance_settings.java_path.trim().is_empty() {
+                Some(instance_settings.java_path.clone())
+            } else if !settings.java_path.trim().is_empty() {
+                Some(settings.java_path.clone())
+            } else {
+                None
+            };
+            capture_run_report_best_effort(
+                &app,
+                crate::run_reports::CaptureRunReportInput {
+                    instance_id: instance.id.clone(),
+                    launch_method: method_for_report.as_str().to_string(),
+                    exit_kind: exit_kind.to_string(),
+                    exit_code: None,
+                    message: Some(err.clone()),
+                    java_path,
+                    java_major: None,
+                    launch_log_path: None,
+                },
+            );
+        }
     }
+
+    launch_result
 }
 
 fn count_occurrences(text: &str, needle: &str) -> usize {
@@ -4694,6 +4965,17 @@ pub(crate) fn set_installed_mod_enabled(
 
     if changed {
         write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "content_toggle",
+            format!(
+                "{} '{}' ({}).",
+                if args.enabled { "Enabled" } else { "Disabled" },
+                lock.entries[idx].name,
+                content_type_display_name(&normalize_lock_content_type(&lock.entries[idx].content_type))
+            ),
+        );
     }
 
     let entry = lock.entries[idx].clone();
@@ -4817,5 +5099,15 @@ pub(crate) fn remove_installed_mod(
     }
 
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "content_remove",
+        format!(
+            "Removed {} '{}'.",
+            content_type_display_name(&content_type),
+            entry.name
+        ),
+    );
     Ok(lock_entry_to_installed(&instance_dir, &entry))
 }

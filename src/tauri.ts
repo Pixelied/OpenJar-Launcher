@@ -12,6 +12,7 @@ import type {
   ExportModsResult,
   LaunchCompatibilityReport,
   ImportInstanceFromLauncherResult,
+  InstanceRunReport,
   InstanceSettings,
   InstanceLastRunMetadata,
   InstanceWorld,
@@ -37,6 +38,7 @@ import type {
   PresetApplyResult,
   PresetsJsonIoResult,
   RollbackResult,
+  ResetConfigFilesResult,
   ReadInstanceLogsResult,
   RunningInstance,
   SeedDevResult,
@@ -430,6 +432,27 @@ export function getInstanceLastRunMetadata(input: {
   instanceId: string;
 }): Promise<InstanceLastRunMetadata> {
   return invoke("get_instance_last_run_metadata", { args: input });
+}
+
+export function getInstanceLastRunReport(input: {
+  instanceId: string;
+}): Promise<InstanceRunReport | null> {
+  return invoke("get_instance_last_run_report", { args: input });
+}
+
+export function listInstanceRunReports(input: {
+  instanceId: string;
+  limit?: number;
+}): Promise<InstanceRunReport[]> {
+  return invoke("list_instance_run_reports", { args: input });
+}
+
+export function resetInstanceConfigFilesWithBackup(input: {
+  instanceId: string;
+  paths: string[];
+  dryRun?: boolean;
+}): Promise<ResetConfigFilesResult> {
+  return invoke("reset_instance_config_files_with_backup", { args: input });
 }
 
 export function listWorldConfigFiles(input: {

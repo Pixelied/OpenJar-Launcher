@@ -23,6 +23,7 @@ import type {
   DiscoverSearchHit,
   DiscoverSource,
   InstanceLastRunMetadata,
+  InstanceRunReport,
   InstanceWorld,
   LaunchMethod,
   LauncherAccount,
@@ -81,6 +82,7 @@ import {
   getSelectedAccountDiagnostics,
   getInstanceDiskUsage,
   getInstanceLastRunMetadata,
+  getInstanceLastRunReport,
   getLauncherSettings,
   importPresetsJson,
   importLocalModFile,
@@ -123,6 +125,7 @@ import {
   setInstanceIcon,
   setInstalledModEnabled,
   setInstalledModProvider,
+  resetInstanceConfigFilesWithBackup,
   syncFriendLinkSelected,
   stopRunningInstance,
   resolveLocalModSources,
@@ -379,6 +382,8 @@ type LaunchOutcomeEntry = {
 
 type LaunchFixActionDraft = LaunchFixAction & {
   selected: boolean;
+  dryRun?: string;
+  reversible?: boolean;
 };
 
 type LaunchOutcomesByInstance = Record<string, LaunchOutcomeEntry[]>;
@@ -3075,6 +3080,9 @@ export default function App() {
   const [instanceLastRunMetadataById, setInstanceLastRunMetadataById] = useState<
     Record<string, InstanceLastRunMetadata>
   >({});
+  const [instanceRunReportById, setInstanceRunReportById] = useState<
+    Record<string, InstanceRunReport | null>
+  >({});
   const [presetPreview, setPresetPreview] = useState<PresetApplyPreview | null>(null);
   const [presetPreviewBusy, setPresetPreviewBusy] = useState(false);
   const [templateQuery, setTemplateQuery] = useState("");
@@ -3993,6 +4001,7 @@ export default function App() {
   const [launchFixBusyInstanceId, setLaunchFixBusyInstanceId] = useState<string | null>(null);
   const [launchFixApplyBusyInstanceId, setLaunchFixApplyBusyInstanceId] = useState<string | null>(null);
   const [launchFixModalInstanceId, setLaunchFixModalInstanceId] = useState<string | null>(null);
+  const [launchFixDryRunByActionId, setLaunchFixDryRunByActionId] = useState<Record<string, string>>({});
   const localResolverBackfillAtRef = useRef<Record<string, number>>({});
   const localResolverBusyRef = useRef<Record<string, boolean>>({});
   const [supportBundleModalInstanceId, setSupportBundleModalInstanceId] = useState<string | null>(null);
@@ -5912,6 +5921,69 @@ export default function App() {
     }));
   }
 
+  function launchFixActionDryRunSummary(action: LaunchFixActionDraft): string {
+    const explicit = String(action.dryRun ?? "").trim();
+    if (explicit) return explicit;
+    if (action.kind === "toggle_mod") {
+      const targetEnabled = Boolean(action.payload?.target_enabled);
+      return `Would ${targetEnabled ? "enable" : "disable"} the selected mod entry.`;
+    }
+    if (action.kind === "disable_suspect_mods") {
+      const count = Array.isArray(action.payload?.versionIds)
+        ? (action.payload?.versionIds as unknown[]).length
+        : 0;
+      return `Would disable ${count} suspect mod${count === 1 ? "" : "s"}.`;
+    }
+    if (action.kind === "rollback_snapshot") {
+      return "Would restore the selected snapshot content and lockfile.";
+    }
+    if (action.kind === "reset_config_files") {
+      const count = Array.isArray(action.payload?.paths) ? (action.payload?.paths as unknown[]).length : 0;
+      return `Would back up and reset ${count} config file${count === 1 ? "" : "s"}.`;
+    }
+    if (action.kind === "open_java_settings") {
+      return "Would open Java settings with the recommended runtime highlighted.";
+    }
+    if (action.kind === "open_logs") {
+      return "Would open latest launch/crash logs in Finder/Explorer.";
+    }
+    if (action.kind === "export_support_bundle") {
+      return "Would open support-bundle export flow with redaction enabled.";
+    }
+    if (action.kind === "install_dependency") {
+      return "Would install the required dependency mod.";
+    }
+    if (action.kind === "open_config") {
+      return "Would open the referenced config file or Java settings.";
+    }
+    if (action.kind === "rerun_preflight") {
+      return "Would rerun compatibility checks and report blockers.";
+    }
+    return "Would apply this action without deleting instance data.";
+  }
+
+  function buildLaunchFixPlanFromRunReport(inst: Instance, report: InstanceRunReport): LaunchFixPlan {
+    const causes =
+      report.topCauses.length > 0
+        ? report.topCauses.slice(0, 6)
+        : report.findings.slice(0, 6).map((finding) => finding.title);
+    const actions: LaunchFixAction[] = report.suggestedActions.map((action) => ({
+      id: action.id,
+      kind: action.kind,
+      title: action.title,
+      detail: action.detail,
+      selected: true,
+      payload: (action.payload ?? undefined) as Record<string, unknown> | undefined,
+    }));
+    return {
+      instance_id: inst.id,
+      generated_at: report.createdAt || new Date().toISOString(),
+      source: "run_report",
+      causes,
+      actions,
+    };
+  }
+
   function buildLaunchFixPlanFromAnalysis(
     inst: Instance,
     analysis: LogAnalyzeResult,
@@ -6001,10 +6073,59 @@ export default function App() {
     setLaunchFixBusyInstanceId(inst.id);
     setError(null);
     try {
-      const [launchLog, crashLog, mods] = await Promise.all([
+      const [runReport, mods] = await Promise.all([
+        getInstanceLastRunReport({ instanceId: inst.id }).catch(() => null),
+        listInstalledMods(inst.id).catch(() => [] as InstalledMod[]),
+      ]);
+      setInstanceRunReportById((prev) => ({
+        ...prev,
+        [inst.id]: runReport && typeof runReport === "object" ? runReport : null,
+      }));
+      if (
+        runReport &&
+        ((runReport.findings?.length ?? 0) > 0 || (runReport.suggestedActions?.length ?? 0) > 0)
+      ) {
+        const plan = buildLaunchFixPlanFromRunReport(inst, runReport);
+        const drafts: LaunchFixActionDraft[] = (runReport.suggestedActions ?? [])
+          .slice(0, 10)
+          .map((action) => ({
+            id: action.id,
+            kind: action.kind,
+            title: action.title,
+            detail: action.detail,
+            selected: true,
+            payload: (action.payload ?? undefined) as Record<string, unknown> | undefined,
+            dryRun: action.dryRun,
+            reversible: action.reversible,
+          }));
+        setLaunchFixPlanByInstance((prev) => ({ ...prev, [inst.id]: plan }));
+        setLaunchFixPlanDraftByInstance((prev) => ({
+          ...prev,
+          [inst.id]:
+            drafts.length > 0
+              ? drafts
+              : plan.actions.map((action) => ({
+                  ...action,
+                  selected: action.selected !== false,
+                  dryRun: launchFixActionDryRunSummary({ ...action, selected: true }),
+                })),
+        }));
+        setLaunchFixApplyResultByInstance((prev) => {
+          const next = { ...prev };
+          delete next[inst.id];
+          return next;
+        });
+        setLaunchFixDryRunByActionId({});
+        setLaunchFixModalInstanceId(inst.id);
+        setInstallNotice(
+          `Built instance fix plan from last run report (${plan.causes.length} cause${plan.causes.length === 1 ? "" : "s"}).`
+        );
+        return;
+      }
+
+      const [launchLog, crashLog] = await Promise.all([
         readInstanceLogs({ instanceId: inst.id, source: "latest_launch", maxLines: 4000 }).catch(() => null),
         readInstanceLogs({ instanceId: inst.id, source: "latest_crash", maxLines: 4000 }).catch(() => null),
-        listInstalledMods(inst.id).catch(() => [] as InstalledMod[]),
       ]);
       const lines: Array<{
         message: string;
@@ -6028,30 +6149,75 @@ export default function App() {
       append(launchLog, "latest_launch");
       append(crashLog, "latest_crash");
       if (lines.length === 0) {
-        throw new Error("No launch logs found yet. Launch once, then retry Fix My Launch.");
+        throw new Error("No launch logs found yet. Launch once, then retry Fix My Instance.");
       }
       const analysis = analyzeLogLines(lines);
       const plan = buildLaunchFixPlanFromAnalysis(inst, analysis, mods);
       if (plan.actions.length === 0) {
         throw new Error("No actionable fixes were detected from current logs.");
       }
+      const drafts = plan.actions.map((action) => ({
+        ...action,
+        selected: action.selected !== false,
+        dryRun: launchFixActionDryRunSummary({ ...action, selected: action.selected !== false }),
+      }));
       setLaunchFixPlanByInstance((prev) => ({ ...prev, [inst.id]: plan }));
       setLaunchFixPlanDraftByInstance((prev) => ({
         ...prev,
-        [inst.id]: plan.actions.map((action) => ({ ...action, selected: action.selected !== false })),
+        [inst.id]: drafts,
       }));
       setLaunchFixApplyResultByInstance((prev) => {
         const next = { ...prev };
         delete next[inst.id];
         return next;
       });
+      setLaunchFixDryRunByActionId({});
       setLaunchFixModalInstanceId(inst.id);
-      setInstallNotice(`Built launch fix plan with ${plan.actions.length} action${plan.actions.length === 1 ? "" : "s"}.`);
+      setInstallNotice(
+        `Built launch fix plan with ${plan.actions.length} action${plan.actions.length === 1 ? "" : "s"}.`
+      );
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setError(msg);
     } finally {
       setLaunchFixBusyInstanceId(null);
+    }
+  }
+
+  async function previewLaunchFixAction(inst: Instance, action: LaunchFixActionDraft) {
+    const fallback = launchFixActionDryRunSummary(action);
+    if (action.kind !== "reset_config_files") {
+      setLaunchFixDryRunByActionId((prev) => ({ ...prev, [action.id]: fallback }));
+      return;
+    }
+    const paths = Array.isArray(action.payload?.paths)
+      ? (action.payload?.paths as unknown[]).map((value) => String(value)).filter(Boolean)
+      : [];
+    if (paths.length === 0) {
+      setLaunchFixDryRunByActionId((prev) => ({ ...prev, [action.id]: fallback }));
+      return;
+    }
+    try {
+      const out = await resetInstanceConfigFilesWithBackup({
+        instanceId: inst.id,
+        paths,
+        dryRun: true,
+      });
+      setLaunchFixDryRunByActionId((prev) => ({
+        ...prev,
+        [action.id]:
+          out.items.length > 0
+            ? `${out.message} ${out.items
+                .slice(0, 3)
+                .map((item) => item.path)
+                .join(", ")}`
+            : out.message,
+      }));
+    } catch (err: any) {
+      setLaunchFixDryRunByActionId((prev) => ({
+        ...prev,
+        [action.id]: `Dry run failed: ${err?.toString?.() ?? String(err)}`,
+      }));
     }
   }
 
@@ -6083,6 +6249,64 @@ export default function App() {
             await setInstalledModEnabled({ instanceId: inst.id, versionId, enabled: targetEnabled });
             result.applied += 1;
             result.messages.push(`${action.title}: applied`);
+          } else if (action.kind === "disable_suspect_mods") {
+            const versionIds = Array.isArray(action.payload?.versionIds)
+              ? (action.payload?.versionIds as unknown[]).map((value) => String(value)).filter(Boolean)
+              : [];
+            if (versionIds.length === 0) {
+              result.skipped += 1;
+              result.messages.push(`${action.title}: no suspect version ids were provided`);
+              continue;
+            }
+            for (const versionId of versionIds) {
+              await setInstalledModEnabled({ instanceId: inst.id, versionId, enabled: false });
+            }
+            result.applied += 1;
+            result.messages.push(`${action.title}: disabled ${versionIds.length} mod(s)`);
+          } else if (action.kind === "rollback_snapshot") {
+            const snapshotId = String(action.payload?.snapshotId ?? "").trim();
+            const out = await rollbackInstance({
+              instanceId: inst.id,
+              snapshotId: snapshotId || undefined,
+            });
+            result.applied += 1;
+            result.messages.push(`${action.title}: restored ${out.snapshot_id}`);
+          } else if (action.kind === "open_java_settings") {
+            setInstanceSettingsSection("java");
+            setInstanceSettingsOpen(true);
+            setRoute("instance");
+            result.applied += 1;
+            result.messages.push(`${action.title}: opened`);
+          } else if (action.kind === "reset_config_files") {
+            const paths = Array.isArray(action.payload?.paths)
+              ? (action.payload?.paths as unknown[]).map((value) => String(value)).filter(Boolean)
+              : [];
+            if (paths.length === 0) {
+              result.skipped += 1;
+              result.messages.push(`${action.title}: no config files detected`);
+              continue;
+            }
+            const out = await resetInstanceConfigFilesWithBackup({
+              instanceId: inst.id,
+              paths,
+              dryRun: false,
+            });
+            if (out.resetCount > 0) {
+              result.applied += 1;
+            } else {
+              result.skipped += 1;
+            }
+            result.messages.push(
+              `${action.title}: reset ${out.resetCount}, skipped ${out.skippedCount}`
+            );
+          } else if (action.kind === "open_logs") {
+            await onOpenLaunchLog(inst);
+            result.applied += 1;
+            result.messages.push(`${action.title}: opened`);
+          } else if (action.kind === "export_support_bundle") {
+            setSupportBundleModalInstanceId(inst.id);
+            result.applied += 1;
+            result.messages.push(`${action.title}: opened`);
           } else if (action.kind === "install_dependency") {
             const projectId = String(action.payload?.project_id ?? "").trim();
             const source = String(action.payload?.source ?? "modrinth");
@@ -6137,6 +6361,8 @@ export default function App() {
         }
       }
       await refreshInstalledMods(inst.id);
+      await refreshInstanceHealthPanelData(inst.id);
+      await refreshSnapshots(inst.id).catch(() => null);
       setLaunchFixApplyResultByInstance((prev) => ({ ...prev, [inst.id]: result }));
       setInstallNotice(
         `Fix plan complete: ${result.applied} applied, ${result.failed} failed, ${result.skipped} skipped.`
@@ -6255,9 +6481,10 @@ export default function App() {
 
   async function refreshInstanceHealthPanelData(instanceId: string) {
     try {
-      const [diskUsage, lastRun] = await Promise.all([
+      const [diskUsage, lastRun, runReport] = await Promise.all([
         getInstanceDiskUsage({ instanceId }).catch(() => null),
         getInstanceLastRunMetadata({ instanceId }).catch(() => null),
+        getInstanceLastRunReport({ instanceId }).catch(() => null),
       ]);
       if (typeof diskUsage === "number" && Number.isFinite(diskUsage) && diskUsage >= 0) {
         setInstanceDiskUsageById((prev) => ({ ...prev, [instanceId]: diskUsage }));
@@ -6265,6 +6492,10 @@ export default function App() {
       if (lastRun && typeof lastRun === "object") {
         setInstanceLastRunMetadataById((prev) => ({ ...prev, [instanceId]: lastRun }));
       }
+      setInstanceRunReportById((prev) => ({
+        ...prev,
+        [instanceId]: runReport && typeof runReport === "object" ? runReport : null,
+      }));
     } catch {
       // Keep this best-effort and non-blocking for the instance page.
     }
@@ -11801,6 +12032,7 @@ export default function App() {
       const instSettings = normalizeInstanceSettings(inst.settings);
       const instanceDiskUsageBytes = Number(instanceDiskUsageById[inst.id] ?? 0);
       const instanceLastRunMeta = instanceLastRunMetadataById[inst.id] ?? null;
+      const instanceLastRunReport = instanceRunReportById[inst.id] ?? null;
       const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
       const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
       const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
@@ -12081,7 +12313,7 @@ export default function App() {
                         onClick={() => void prepareLaunchFixPlan(inst)}
                         disabled={launchFixBusyInstanceId === inst.id}
                       >
-                        {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my launch"}
+                        {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my instance"}
                       </button>
                       <button className="btn" onClick={() => setSupportBundleModalInstanceId(inst.id)}>
                         Export support bundle
@@ -12136,6 +12368,34 @@ export default function App() {
                       Status {instanceRunStatusLabel}
                     </span>
                   </div>
+                  {instanceLastRunReport ? (
+                    <div className="instanceRunReportPreview">
+                      <div className="rowBetween" style={{ gap: 10 }}>
+                        <div style={{ fontWeight: 860 }}>Last run report</div>
+                        <span className={`chip ${instanceLastRunReport.exitKind === "crashed" ? "danger" : "subtle"}`}>
+                          {instanceLastRunReport.exitKind}
+                          {typeof instanceLastRunReport.exitCode === "number"
+                            ? ` (${instanceLastRunReport.exitCode})`
+                            : ""}
+                        </span>
+                      </div>
+                      <div className="muted" style={{ marginTop: 4 }}>
+                        {instanceLastRunReport.createdAt
+                          ? `Captured ${formatDateTime(instanceLastRunReport.createdAt)}`
+                          : "Captured on last launch."}
+                        {instanceLastRunReport.phase ? ` • Phase: ${instanceLastRunReport.phase.replace(/_/g, " ")}` : ""}
+                      </div>
+                      <div className="row" style={{ marginTop: 8, gap: 6, flexWrap: "wrap" }}>
+                        {(instanceLastRunReport.topCauses ?? []).slice(0, 3).map((cause) => (
+                          <span key={cause} className="chip subtle">{cause}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ marginTop: 8 }}>
+                      Last run report appears here after launch.
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -13331,7 +13591,7 @@ export default function App() {
                               onClick={() => void prepareLaunchFixPlan(inst)}
                               disabled={launchFixBusyInstanceId === inst.id}
                             >
-                              {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my launch"}
+                              {launchFixBusyInstanceId === inst.id ? "Building fixes…" : "Fix my instance"}
                             </button>
                           </div>
                           {logAnalyzeSourcesUsed.length > 0 ? (
@@ -15335,30 +15595,83 @@ export default function App() {
           const plan = inst ? launchFixPlanByInstance[inst.id] : null;
           const draft = inst ? launchFixPlanDraftByInstance[inst.id] ?? [] : [];
           const applyResult = inst ? launchFixApplyResultByInstance[inst.id] : null;
+          const runReport = inst ? instanceRunReportById[inst.id] ?? null : null;
+          const topCauses = (runReport?.topCauses?.length ? runReport.topCauses : plan?.causes ?? []).slice(0, 3);
+          const findings = (runReport?.findings ?? []).slice(0, 6);
+          const recentChanges = (runReport?.recentChanges ?? []).slice(-8);
           if (!inst || !plan) return null;
           return (
             <Modal
-              title={`Fix My Launch · ${inst.name}`}
+              title={`Fix My Instance · ${inst.name}`}
               size="wide"
               onClose={() => setLaunchFixModalInstanceId(null)}
             >
               <div className="modalBody">
                 <div className="p" style={{ marginTop: 0 }}>
-                  Review actions, keep selected fixes, and apply safely. No destructive deletes are performed.
+                  Local diagnosis only. Review likely causes, recent changes, then apply reversible actions.
                 </div>
-                <div className="row" style={{ marginTop: 8, gap: 8, flexWrap: "wrap" }}>
-                  {plan.causes.slice(0, 5).map((cause) => (
-                    <span key={cause} className="chip subtle">{cause}</span>
-                  ))}
-                </div>
-                <div className="card" style={{ marginTop: 10, padding: 10, borderRadius: 12 }}>
+                <div className="card launchFixExplainCard">
                   <div className="rowBetween">
-                    <div style={{ fontWeight: 900 }}>Actions</div>
+                    <div style={{ fontWeight: 900 }}>Why this likely happened</div>
+                    {runReport ? (
+                      <span className={`chip ${runReport.exitKind === "crashed" ? "danger" : "subtle"}`}>
+                        {runReport.exitKind}
+                        {typeof runReport.exitCode === "number" ? ` (${runReport.exitCode})` : ""}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="row launchFixCauseChips">
+                    {topCauses.length > 0 ? (
+                      topCauses.map((cause) => (
+                        <span key={cause} className="chip subtle">{cause}</span>
+                      ))
+                    ) : (
+                      <span className="muted">No high-confidence causes available yet.</span>
+                    )}
+                  </div>
+                  {findings.length > 0 ? (
+                    <div className="launchFixFindingsList">
+                      {findings.map((finding) => (
+                        <div key={finding.id} className="launchFixFindingItem">
+                          <div className="rowBetween" style={{ gap: 10 }}>
+                            <div style={{ fontWeight: 800 }}>{finding.title}</div>
+                            <span className="chip subtle">{Math.round((finding.confidence ?? 0) * 100)}%</span>
+                          </div>
+                          <div className="muted">{finding.explanation}</div>
+                          {finding.modId ? (
+                            <div className="muted">Mod: {finding.modId}</div>
+                          ) : null}
+                          {finding.evidence?.[0] ? (
+                            <div className="muted">Evidence: {finding.evidence[0]}</div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div style={{ marginTop: 10, fontWeight: 820 }}>What changed recently?</div>
+                  {recentChanges.length > 0 ? (
+                    <div className="launchFixRecentList">
+                      {recentChanges.map((entry) => (
+                        <div key={entry.id} className="launchFixRecentItem">
+                          <span className="chip subtle">{entry.kind.replace(/_/g, " ")}</span>
+                          <span>{entry.summary}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="muted" style={{ marginTop: 4 }}>
+                      No recent instance changes were recorded yet.
+                    </div>
+                  )}
+                </div>
+                <div className="card launchFixActionsCard">
+                  <div className="rowBetween">
+                    <div style={{ fontWeight: 900 }}>What to try next</div>
                     <span className="chip subtle">{draft.filter((item) => item.selected).length}/{draft.length} selected</span>
                   </div>
-                  <div style={{ display: "grid", gap: 8, marginTop: 10 }}>
+                  <div className="launchFixActionList">
                     {draft.map((action) => (
-                      <label key={action.id} className="rowBetween" style={{ gap: 10 }}>
+                      <label key={action.id} className="launchFixActionRow">
                         <div className="row" style={{ marginTop: 0, gap: 8 }}>
                           <input
                             type="checkbox"
@@ -15372,12 +15685,27 @@ export default function App() {
                               }))
                             }
                           />
-                          <div>
+                          <div className="launchFixActionMain">
                             <div style={{ fontWeight: 800 }}>{action.title}</div>
                             <div className="muted">{action.detail}</div>
+                            <div className="muted">
+                              Dry run: {launchFixDryRunByActionId[action.id] ?? launchFixActionDryRunSummary(action)}
+                            </div>
                           </div>
                         </div>
-                        <span className="chip subtle">{action.kind}</span>
+                        <div className="launchFixActionMeta">
+                          <span className="chip subtle">{action.kind}</span>
+                          <button
+                            type="button"
+                            className="btn subtle"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              void previewLaunchFixAction(inst, action);
+                            }}
+                          >
+                            Dry run
+                          </button>
+                        </div>
                       </label>
                     ))}
                   </div>

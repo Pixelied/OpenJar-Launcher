@@ -19,6 +19,7 @@ Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
   - [Instance Health (Per instance)](#instance-health-per-instance)
   - [Installed Content (Per instance)](#installed-content-per-instance)
   - [Logs + Crash Hints](#logs--crash-hints)
+  - [Run Reports + Fix My Instance](#run-reports--fix-my-instance)
   - [Config Editor (UI-first, powerful)](#config-editor-ui-first-powerful)
   - [Modpack Maker (Spec / Resolve / Apply)](#modpack-maker-spec--resolve--apply)
   - [Friend Link (Peer Sync for Shared Packs)](#friend-link-peer-sync-for-shared-packs)
@@ -225,6 +226,25 @@ OpenJar can read the latest instance logs and give you faster signals.
   - counts errors/warnings
   - tries to identify likely causes (“suspects”) based on common patterns
     (mod mentioned in a stack trace, missing dependency, incompatible loader/version, etc.)
+
+---
+
+### Run Reports + Fix My Instance
+
+Each launch now writes a local per-instance run report (`run_reports.v1.json`) with:
+
+- launch context (MC/loader version, Java, memory/JVM args, exit kind/code, timestamp)
+- artifact references (latest launch/crash logs when available)
+- local heuristic findings with confidence + short evidence snippets
+- top likely causes, recent instance changes, and reversible suggested actions
+
+The **Fix My Instance** flow now uses these reports to show:
+
+- **Why this happened** (top causes + findings)
+- **What changed recently** (installs/updates/rollbacks/config/friend-link activity)
+- **What to try next** with dry-run summaries before apply
+
+Safe actions include disabling suspect mods, snapshot rollback, Java-settings jump, config reset with backup, opening logs, and support bundle export.
 
 ---
 
