@@ -50,7 +50,7 @@ export default function AdvancedEditor({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCursorRef = useRef<number | null>(null);
-  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(true);
   const [suggestions, setSuggestions] = useState<ConfigSuggestion[]>([]);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [cursorIndex, setCursorIndex] = useState(0);
@@ -84,7 +84,7 @@ export default function AdvancedEditor({
       setActiveSuggestionIndex(0);
       return;
     }
-    setSuggestionsOpen((prev) => (prev ? next.length > 0 : false));
+    setSuggestionsOpen(next.length > 0);
     setActiveSuggestionIndex((prev) => Math.max(0, Math.min(prev, Math.max(0, next.length - 1))));
   }
 
@@ -125,23 +125,25 @@ export default function AdvancedEditor({
         ref={textareaRef}
         className="configAdvancedEditor"
         spellCheck={false}
+        title="Suggestions: Ctrl/Cmd+Space (or Ctrl/Cmd+/)"
         value={value}
         onChange={(event) => {
           onChange(event.target.value);
           const idx = event.target.selectionStart ?? 0;
           setCursorIndex(idx);
-          if (suggestionsOpen) {
-            queueMicrotask(() => refreshSuggestions(false));
-          }
+          queueMicrotask(() => refreshSuggestions(false));
         }}
         onClick={(event) => {
           setCursorIndex(event.currentTarget.selectionStart ?? 0);
-          if (suggestionsOpen) queueMicrotask(() => refreshSuggestions(false));
+          queueMicrotask(() => refreshSuggestions(false));
         }}
         onKeyUp={(event) => {
           if (event.key === "ArrowDown" || event.key === "ArrowUp" || event.key === "Escape") return;
           setCursorIndex(event.currentTarget.selectionStart ?? 0);
-          if (suggestionsOpen) queueMicrotask(() => refreshSuggestions(false));
+          queueMicrotask(() => refreshSuggestions(false));
+        }}
+        onFocus={() => {
+          queueMicrotask(() => refreshSuggestions(false));
         }}
         onScroll={() => {
           if (suggestionsOpen) {
@@ -152,8 +154,12 @@ export default function AdvancedEditor({
           }
         }}
         onKeyDown={(event) => {
-          const metaSpace = (event.ctrlKey || event.metaKey) && event.key === " ";
-          if (metaSpace) {
+          const isSpaceKey =
+            event.key === " " || event.key === "Space" || event.key === "Spacebar" || event.code === "Space";
+          const explicitShortcut =
+            (event.ctrlKey || event.metaKey) &&
+            (isSpaceKey || event.key === "/" || event.code === "Slash");
+          if (explicitShortcut) {
             event.preventDefault();
             refreshSuggestions(true);
             return;

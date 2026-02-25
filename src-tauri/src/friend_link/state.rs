@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +100,24 @@ pub struct WriteInstanceConfigFileResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceConfigBackupEntry {
+    pub id: String,
+    pub file_path: String,
+    pub backup_path: String,
+    pub size_bytes: u64,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreInstanceConfigBackupResult {
+    pub path: String,
+    pub restored_backup_id: String,
+    pub size_bytes: u64,
+    pub modified_at: i64,
+    pub message: String,
+}
+
 fn default_content_type() -> String {
     "mods".to_string()
 }
@@ -172,6 +191,8 @@ pub fn instance_dir(instances_dir: &Path, instance_id: &str) -> PathBuf {
 const MAX_COMPONENT_LEN: usize = 255;
 const MAX_FILENAME_LEN: usize = 180;
 const MAX_WORLD_NAME_LEN: usize = 120;
+const MAX_INSTANCE_CONFIG_EDIT_BYTES: u64 = 1_048_576;
+const INSTANCE_CONFIG_BACKUPS_ROOT: &str = ".openjar/config-editor-backups";
 
 fn normalize_relative_path(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim().replace('\\', "/");
@@ -737,6 +758,66 @@ fn infer_file_kind(path: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstanceConfigAccess {
+    ReadWrite,
+    ReadOnly,
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn classify_instance_config_path(raw: &str) -> Result<(String, InstanceConfigAccess), String> {
+    let normalized = safe_rel_path(raw)?;
+    let lower = normalized.to_lowercase();
+    let access = if lower == "options.txt" {
+        InstanceConfigAccess::ReadWrite
+    } else if lower == "servers.dat" {
+        // Keep servers.dat visible but read-only: format varies and is easy to corrupt.
+        InstanceConfigAccess::ReadOnly
+    } else if lower.starts_with("config/") && lower.len() > "config/".len() {
+        InstanceConfigAccess::ReadWrite
+    } else if lower.starts_with("resourcepacks/") && lower.len() > "resourcepacks/".len() {
+        InstanceConfigAccess::ReadOnly
+    } else if lower.starts_with("shaderpacks/") && lower.len() > "shaderpacks/".len() {
+        InstanceConfigAccess::ReadOnly
+    } else {
+        return Err(
+            "Path is outside the config editor allowlist. Allowed: options.txt, config/* (read/write), resourcepacks/* (read-only), shaderpacks/* (read-only).".to_string(),
+        );
+    };
+    Ok((normalized, access))
+}
+
+fn ensure_instance_config_write_access(raw: &str) -> Result<String, String> {
+    let (normalized, access) = classify_instance_config_path(raw)?;
+    if matches!(access, InstanceConfigAccess::ReadOnly) {
+        return Err("This path is read-only in Config Browser.".to_string());
+    }
+    Ok(normalized)
+}
+
+fn readonly_reason_for_size(size_bytes: u64) -> Option<String> {
+    if size_bytes > MAX_INSTANCE_CONFIG_EDIT_BYTES {
+        return Some(format!(
+            "File is too large to edit here ({} bytes). Limit is {} bytes.",
+            size_bytes, MAX_INSTANCE_CONFIG_EDIT_BYTES
+        ));
+    }
+    None
+}
+
+fn readonly_reason_for_access(access: InstanceConfigAccess) -> Option<String> {
+    if matches!(access, InstanceConfigAccess::ReadOnly) {
+        return Some("This path is read-only in Config Browser.".to_string());
+    }
+    None
+}
+
 fn describe_non_editable_reason(path: &Path, sample: &[u8]) -> Option<String> {
     let ext = path
         .extension()
@@ -754,6 +835,81 @@ fn describe_non_editable_reason(path: &Path, sample: &[u8]) -> Option<String> {
     None
 }
 
+fn preview_for_non_editable(reason: &str, sample: &[u8], size_bytes: u64) -> String {
+    if sample.iter().any(|byte| *byte == 0) {
+        return format!(
+            "{reason}\n\nDetected binary content ({size_bytes} bytes). Use Open location for binary files."
+        );
+    }
+    let snippet = String::from_utf8_lossy(sample).to_string();
+    if snippet.trim().is_empty() {
+        return format!("{reason}\n\nNo text preview available.");
+    }
+    format!("{reason}\n\nPreview (truncated):\n{snippet}")
+}
+
+fn instance_config_backup_root(instance_dir: &Path, create_dirs: bool) -> Result<PathBuf, String> {
+    resolve_path_under_root_no_symlink(instance_dir, INSTANCE_CONFIG_BACKUPS_ROOT, create_dirs)
+}
+
+fn instance_config_backup_bucket(
+    instance_dir: &Path,
+    normalized_rel_path: &str,
+    create_dirs: bool,
+) -> Result<PathBuf, String> {
+    let root = instance_config_backup_root(instance_dir, create_dirs)?;
+    resolve_path_under_root_no_symlink(&root, normalized_rel_path, create_dirs)
+}
+
+fn create_instance_config_backup(
+    instance_dir: &Path,
+    normalized_rel_path: &str,
+    bytes: &[u8],
+) -> Result<InstanceConfigBackupEntry, String> {
+    let bucket = instance_config_backup_bucket(instance_dir, normalized_rel_path, true)?;
+    fs::create_dir_all(&bucket).map_err(|e| {
+        format!(
+            "create config backup directory failed for '{}': {e}",
+            bucket.display()
+        )
+    })?;
+    let created_at = now_millis();
+    let backup_id = format!("{}-{}.bak", created_at, Uuid::new_v4());
+    let backup_path = resolve_path_under_root_no_symlink(&bucket, &backup_id, false)?;
+    atomic_replace_file(&backup_path, bytes, "config backup")?;
+    Ok(InstanceConfigBackupEntry {
+        id: backup_id,
+        file_path: normalized_rel_path.to_string(),
+        backup_path: backup_path.display().to_string(),
+        size_bytes: bytes.len() as u64,
+        created_at,
+    })
+}
+
+fn collect_instance_config_candidates(instance_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut candidates = Vec::new();
+
+    for singleton in ["options.txt", "servers.dat"] {
+        let path = safe_join_under(instance_dir, singleton)?;
+        if let Some(meta) = path_metadata_no_symlink(&path)? {
+            if meta.file_type().is_file() {
+                candidates.push(path);
+            }
+        }
+    }
+
+    for root in ["config", "resourcepacks", "shaderpacks"] {
+        let root_path = safe_join_under(instance_dir, root)?;
+        if let Some(meta) = path_metadata_no_symlink(&root_path)? {
+            if meta.file_type().is_dir() {
+                collect_files_recursive(instance_dir, &root_path, &mut candidates)?;
+            }
+        }
+    }
+
+    Ok(candidates)
+}
+
 pub fn list_instance_config_files(
     instances_dir: &Path,
     instance_id: &str,
@@ -761,49 +917,37 @@ pub fn list_instance_config_files(
     let dir = instance_dir(instances_dir, instance_id);
     let mut files = Vec::new();
 
-    let options = safe_join_under(&dir, "options.txt")?;
-    if let Some(meta) = path_metadata_no_symlink(&options)? {
-        if meta.file_type().is_file() {
-            files.push(InstanceConfigFileEntry {
-                path: "options.txt".to_string(),
-                size_bytes: meta.len(),
-                modified_at: modified_millis(&meta),
-                editable: true,
-                kind: "text".to_string(),
-                readonly_reason: None,
-            });
-        }
-    }
+    for path in collect_instance_config_candidates(&dir)? {
+        let Some(rel_path) = normalize_rel_path(&path, &dir) else {
+            continue;
+        };
+        let Ok((normalized, access)) = classify_instance_config_path(&rel_path) else {
+            continue;
+        };
 
-    let config_dir = safe_join_under(&dir, "config")?;
-    if let Some(meta) = path_metadata_no_symlink(&config_dir)? {
-        if meta.file_type().is_dir() {
-            let mut raw = Vec::new();
-            collect_files_recursive(&dir, &config_dir, &mut raw)?;
-            for path in raw {
-                let Some(rel_path) = normalize_rel_path(&path, &dir) else {
-                    continue;
-                };
-                let meta =
-                    fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
-                let mut sample = vec![0u8; 512];
-                let mut file =
-                    fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
-                let read_len = file
-                    .read(&mut sample)
-                    .map_err(|e| format!("read config sample failed: {e}"))?;
-                sample.truncate(read_len);
-                let readonly_reason = describe_non_editable_reason(&path, &sample);
-                files.push(InstanceConfigFileEntry {
-                    path: rel_path.clone(),
-                    size_bytes: meta.len(),
-                    modified_at: modified_millis(&meta),
-                    editable: readonly_reason.is_none(),
-                    kind: infer_file_kind(&rel_path),
-                    readonly_reason,
-                });
-            }
+        let meta = fs::metadata(&path).map_err(|e| format!("read config metadata failed: {e}"))?;
+        if !meta.is_file() {
+            continue;
         }
+        let mut sample = vec![0u8; 1024];
+        let mut file = fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
+        let read_len = file
+            .read(&mut sample)
+            .map_err(|e| format!("read config sample failed: {e}"))?;
+        sample.truncate(read_len);
+
+        let readonly_reason = readonly_reason_for_access(access)
+            .or_else(|| readonly_reason_for_size(meta.len()))
+            .or_else(|| describe_non_editable_reason(&path, &sample));
+
+        files.push(InstanceConfigFileEntry {
+            path: normalized.clone(),
+            size_bytes: meta.len(),
+            modified_at: modified_millis(&meta),
+            editable: readonly_reason.is_none(),
+            kind: infer_file_kind(&normalized),
+            readonly_reason,
+        });
     }
 
     files.sort_by(|a, b| a.path.to_lowercase().cmp(&b.path.to_lowercase()));
@@ -816,31 +960,40 @@ pub fn read_instance_config_file(
     rel_path: &str,
 ) -> Result<ReadInstanceConfigFileResult, String> {
     let dir = instance_dir(instances_dir, instance_id);
-    let path = resolve_instance_file_path(&dir, rel_path)?;
+    let (normalized, access) = classify_instance_config_path(rel_path)?;
+    let path = resolve_instance_file_path(&dir, &normalized)?;
     let meta = path_metadata_no_symlink(&path)?
         .ok_or_else(|| "Requested config path does not exist".to_string())?;
     if !meta.file_type().is_file() {
         return Err("Requested config path is not a file".to_string());
     }
-    let mut sample = vec![0u8; 512];
+
+    let mut sample = vec![0u8; 4096];
     let mut f = fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
     let n = f
         .read(&mut sample)
         .map_err(|e| format!("read config sample failed: {e}"))?;
     sample.truncate(n);
-    let readonly_reason = describe_non_editable_reason(&path, &sample);
-    let normalized = safe_rel_path(rel_path)?;
+    let readonly_reason = readonly_reason_for_access(access)
+        .or_else(|| readonly_reason_for_size(meta.len()))
+        .or_else(|| describe_non_editable_reason(&path, &sample));
 
-    if readonly_reason.is_some() {
+    let kind = infer_file_kind(&normalized);
+    if let Some(reason) = readonly_reason {
+        let preview_kind = if sample.iter().any(|byte| *byte == 0) {
+            "binary"
+        } else {
+            "text"
+        };
         return Ok(ReadInstanceConfigFileResult {
             path: normalized,
             editable: false,
-            kind: infer_file_kind(rel_path),
+            kind,
             size_bytes: meta.len(),
             modified_at: modified_millis(&meta),
-            readonly_reason,
-            content: None,
-            preview: Some("binary".to_string()),
+            readonly_reason: Some(reason.clone()),
+            content: Some(preview_for_non_editable(&reason, &sample, meta.len())),
+            preview: Some(preview_kind.to_string()),
         });
     }
 
@@ -851,7 +1004,7 @@ pub fn read_instance_config_file(
     Ok(ReadInstanceConfigFileResult {
         path: normalized,
         editable: true,
-        kind: infer_file_kind(rel_path),
+        kind,
         size_bytes: meta.len(),
         modified_at: modified_millis(&meta),
         readonly_reason: None,
@@ -868,7 +1021,16 @@ pub fn write_instance_config_file(
     expected_modified_at: Option<i64>,
 ) -> Result<WriteInstanceConfigFileResult, String> {
     let dir = instance_dir(instances_dir, instance_id);
-    let path = resolve_path_under_root_no_symlink(&dir, rel_path, true)?;
+    let normalized = ensure_instance_config_write_access(rel_path)?;
+    let path = resolve_path_under_root_no_symlink(&dir, &normalized, true)?;
+    let content_bytes = content.as_bytes();
+    if (content_bytes.len() as u64) > MAX_INSTANCE_CONFIG_EDIT_BYTES {
+        return Err(format!(
+            "File is too large to save here ({} bytes). Limit is {} bytes.",
+            content_bytes.len(),
+            MAX_INSTANCE_CONFIG_EDIT_BYTES
+        ));
+    }
 
     if let Some(meta) = path_metadata_no_symlink(&path)? {
         if let Some(expected) = expected_modified_at {
@@ -880,9 +1042,12 @@ pub fn write_instance_config_file(
         if !meta.file_type().is_file() {
             return Err("Requested config path is not a file".to_string());
         }
+
+        let existing_bytes = fs::read(&path).map_err(|e| format!("read config file failed: {e}"))?;
+        let _ = create_instance_config_backup(&dir, &normalized, &existing_bytes)?;
     }
 
-    let mut sample = content.as_bytes().to_vec();
+    let mut sample = content_bytes.to_vec();
     if sample.len() > 512 {
         sample.truncate(512);
     }
@@ -890,15 +1055,108 @@ pub fn write_instance_config_file(
         return Err("Binary or unsupported config file cannot be edited.".to_string());
     }
 
-    atomic_replace_file(&path, content.as_bytes(), "config file")?;
+    atomic_replace_file(&path, content_bytes, "config file")?;
 
     let meta = path_metadata_no_symlink(&path)?
         .ok_or_else(|| "config file missing after save".to_string())?;
     Ok(WriteInstanceConfigFileResult {
-        path: safe_rel_path(rel_path)?,
+        path: normalized,
         size_bytes: meta.len(),
         modified_at: modified_millis(&meta),
-        message: "Config file saved.".to_string(),
+        message: "Config file saved with backup.".to_string(),
+    })
+}
+
+pub fn list_instance_config_file_backups(
+    instances_dir: &Path,
+    instance_id: &str,
+    rel_path: &str,
+) -> Result<Vec<InstanceConfigBackupEntry>, String> {
+    let instance_root = instance_dir(instances_dir, instance_id);
+    let normalized = ensure_instance_config_write_access(rel_path)?;
+    let bucket = instance_config_backup_bucket(&instance_root, &normalized, false)?;
+
+    let Some(meta) = path_metadata_no_symlink(&bucket)? else {
+        return Ok(Vec::new());
+    };
+    if !meta.file_type().is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut out = Vec::<InstanceConfigBackupEntry>::new();
+    let entries = fs::read_dir(&bucket).map_err(|e| format!("read backup history failed: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read backup entry failed: {e}"))?;
+        let path = entry.path();
+        let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().to_string()) else {
+            continue;
+        };
+        if !file_name.ends_with(".bak") {
+            continue;
+        }
+        let Some(meta) = path_metadata_no_symlink(&path)? else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+
+        let created_at = file_name
+            .split('-')
+            .next()
+            .and_then(|raw| raw.parse::<i64>().ok())
+            .unwrap_or_else(|| modified_millis(&meta));
+
+        out.push(InstanceConfigBackupEntry {
+            id: file_name,
+            file_path: normalized.clone(),
+            backup_path: path.display().to_string(),
+            size_bytes: meta.len(),
+            created_at,
+        });
+    }
+
+    out.sort_by(|a, b| {
+        b.created_at
+            .cmp(&a.created_at)
+            .then_with(|| b.id.to_lowercase().cmp(&a.id.to_lowercase()))
+    });
+    Ok(out)
+}
+
+pub fn restore_instance_config_file_backup(
+    instances_dir: &Path,
+    instance_id: &str,
+    rel_path: &str,
+    backup_id: &str,
+) -> Result<RestoreInstanceConfigBackupResult, String> {
+    let instance_root = instance_dir(instances_dir, instance_id);
+    let normalized = ensure_instance_config_write_access(rel_path)?;
+    let safe_backup_id = sanitize_single_component(backup_id, "backup id", MAX_FILENAME_LEN)?;
+    let bucket = instance_config_backup_bucket(&instance_root, &normalized, false)?;
+    let backup_path = resolve_path_under_root_no_symlink(&bucket, &safe_backup_id, false)?;
+    let backup_meta = path_metadata_no_symlink(&backup_path)?
+        .ok_or_else(|| "Backup was not found for this file.".to_string())?;
+    if !backup_meta.file_type().is_file() {
+        return Err("Backup path is not a file.".to_string());
+    }
+    let bytes = fs::read(&backup_path).map_err(|e| format!("read backup file failed: {e}"))?;
+    let content =
+        String::from_utf8(bytes).map_err(|_| "Backup is not valid UTF-8 text.".to_string())?;
+    let output = write_instance_config_file(
+        instances_dir,
+        instance_id,
+        &normalized,
+        &content,
+        None,
+    )?;
+
+    Ok(RestoreInstanceConfigBackupResult {
+        path: output.path,
+        restored_backup_id: safe_backup_id,
+        size_bytes: output.size_bytes,
+        modified_at: output.modified_at,
+        message: "Backup restored.".to_string(),
     })
 }
 

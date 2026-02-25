@@ -687,14 +687,41 @@ pub(crate) fn reveal_config_editor_file(
     let scope = args.scope.trim().to_lowercase();
 
     if scope == "instance" {
+        if let Some(path) = args
+            .path
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+        {
+            let read = crate::friend_link::state::read_instance_config_file(
+                &instances_dir,
+                &args.instance_id,
+                &path,
+            )?;
+            let resolved = crate::friend_link::state::resolve_instance_file_path_from_instances_dir(
+                &instances_dir,
+                &args.instance_id,
+                &read.path,
+            )?;
+            let (opened, revealed_file) = reveal_path_in_shell(&resolved, true)?;
+            return Ok(RevealConfigEditorFileResult {
+                opened_path: opened.display().to_string(),
+                revealed_file,
+                virtual_file: false,
+                message: if revealed_file {
+                    "Revealed file in your file manager.".to_string()
+                } else {
+                    "Opened containing folder.".to_string()
+                },
+            });
+        }
+
         let (opened, _) = reveal_path_in_shell(&instance_dir, false)?;
         return Ok(RevealConfigEditorFileResult {
             opened_path: opened.display().to_string(),
             revealed_file: false,
-            virtual_file: true,
-            message:
-                "Instance config files are localStorage-backed. Opened the instance folder instead."
-                    .to_string(),
+            virtual_file: false,
+            message: "Opened the instance folder.".to_string(),
         });
     }
 

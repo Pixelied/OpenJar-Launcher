@@ -61,7 +61,9 @@ import type {
   ModpackImportLocalJarsResult,
   ModpackLocalResolverResult,
   InstanceConfigFileEntry,
+  InstanceConfigFileBackupEntry,
   ReadInstanceConfigFileResult,
+  RestoreInstanceConfigBackupResult,
   UpdateAllContentResult,
   UpdateAllResult,
   WorldConfigFileEntry,
@@ -500,6 +502,21 @@ export function writeInstanceConfigFile(input: {
   expectedModifiedAt?: number;
 }): Promise<WriteInstanceConfigFileResult> {
   return invoke("write_instance_config_file", { args: input });
+}
+
+export function listInstanceConfigFileBackups(input: {
+  instanceId: string;
+  path: string;
+}): Promise<InstanceConfigFileBackupEntry[]> {
+  return invoke("list_instance_config_file_backups", { args: input });
+}
+
+export function restoreInstanceConfigFileBackup(input: {
+  instanceId: string;
+  path: string;
+  backupId: string;
+}): Promise<RestoreInstanceConfigBackupResult> {
+  return invoke("restore_instance_config_file_backup", { args: input });
 }
 
 export function installDiscoverContent(input: {

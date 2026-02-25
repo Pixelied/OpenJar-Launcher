@@ -557,6 +557,22 @@ export type WriteInstanceConfigFileResult = {
   message: string;
 };
 
+export type InstanceConfigFileBackupEntry = {
+  id: string;
+  file_path: string;
+  backup_path: string;
+  size_bytes: number;
+  created_at: number;
+};
+
+export type RestoreInstanceConfigBackupResult = {
+  path: string;
+  restored_backup_id: string;
+  size_bytes: number;
+  modified_at: number;
+  message: string;
+};
+
 export type FriendLinkInvite = {
   invite_code: string;
   group_id: string;

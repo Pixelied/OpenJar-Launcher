@@ -11476,6 +11476,8 @@ fn main() {
             friend_link::list_instance_config_files,
             friend_link::read_instance_config_file,
             friend_link::write_instance_config_file,
+            friend_link::list_instance_config_file_backups,
+            friend_link::restore_instance_config_file_backup,
             commands::get_curseforge_project_detail,
             commands::import_provider_modpack_template,
             commands::export_presets_json,

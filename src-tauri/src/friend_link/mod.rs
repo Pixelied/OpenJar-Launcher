@@ -10,8 +10,9 @@ use crate::friend_link::net::{
 use crate::friend_link::state::{
     app_instances_dir, collect_sync_state, config_file_map, lock_entry_hash, lock_entry_map,
     preview_for_config_file, preview_for_lock_entry, read_lock_entry_bytes, state_manifest,
-    CanonicalLockEntry, ConfigFileState, InstanceConfigFileEntry, ReadInstanceConfigFileResult,
-    SyncState, WriteInstanceConfigFileResult,
+    CanonicalLockEntry, ConfigFileState, InstanceConfigBackupEntry, InstanceConfigFileEntry,
+    ReadInstanceConfigFileResult, RestoreInstanceConfigBackupResult, SyncState,
+    WriteInstanceConfigFileResult,
 };
 use crate::friend_link::store::{
     delete_session_shared_secret, delete_session_signing_private_key, get_session, get_session_mut,
@@ -372,6 +373,22 @@ pub struct WriteInstanceConfigFileArgs {
     pub content: String,
     #[serde(alias = "expectedModifiedAt", default)]
     pub expected_modified_at: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListInstanceConfigFileBackupsArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RestoreInstanceConfigFileBackupArgs {
+    #[serde(alias = "instanceId")]
+    pub instance_id: String,
+    pub path: String,
+    #[serde(alias = "backupId")]
+    pub backup_id: String,
 }
 
 fn now_iso() -> String {
@@ -3320,6 +3337,39 @@ pub fn write_instance_config_file(
     {
         eprintln!(
             "friend-link event write failed for '{}' [config_edit]: {}",
+            args.instance_id, err
+        );
+    }
+    Ok(output)
+}
+
+#[tauri::command]
+pub fn list_instance_config_file_backups(
+    app: tauri::AppHandle,
+    args: ListInstanceConfigFileBackupsArgs,
+) -> Result<Vec<InstanceConfigBackupEntry>, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    state::list_instance_config_file_backups(&instances_dir, &args.instance_id, &args.path)
+}
+
+#[tauri::command]
+pub fn restore_instance_config_file_backup(
+    app: tauri::AppHandle,
+    args: RestoreInstanceConfigFileBackupArgs,
+) -> Result<RestoreInstanceConfigBackupResult, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let output = state::restore_instance_config_file_backup(
+        &instances_dir,
+        &args.instance_id,
+        &args.path,
+        &args.backup_id,
+    )?;
+    let summary = format!("Restored config file '{}' from backup.", output.path);
+    if let Err(err) =
+        crate::run_reports::log_instance_event(&app, &args.instance_id, "config_restore", &summary)
+    {
+        eprintln!(
+            "friend-link event write failed for '{}' [config_restore]: {}",
             args.instance_id, err
         );
     }

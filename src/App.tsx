@@ -11575,7 +11575,9 @@ export default function App() {
       return (
         <div style={{ maxWidth: 1320 }}>
           <div className="h1">Creator Studio</div>
-          <div className="p">Modpack Maker workflow: preview, resolve, apply, rollback, and drift detection.</div>
+          <div className="p">
+            Build and maintain packs in Creator, or edit real instance/world config files in Config Editor. Preview changes before apply with rollback safety.
+          </div>
 
           <div className="topRow" style={{ marginTop: 12 }}>
             <SegmentedControl

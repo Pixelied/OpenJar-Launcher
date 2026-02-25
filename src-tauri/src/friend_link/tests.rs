@@ -413,6 +413,100 @@ fn safe_join_under_refuses_escape_attempts() {
     assert!(state::safe_join_under(&root, "config/ok.toml").is_ok());
 }
 
+#[test]
+fn instance_config_allowlist_blocks_disallowed_paths_and_traversal() {
+    let temp = std::env::temp_dir().join(format!("openjar-config-allowlist-{}", Uuid::new_v4()));
+    let instances_dir = temp.join("instances");
+    let instance_dir = instances_dir.join("inst_1");
+    fs::create_dir_all(instance_dir.join("config")).expect("create config dir");
+    fs::create_dir_all(instance_dir.join("mods")).expect("create mods dir");
+    fs::write(instance_dir.join("config").join("allowed.toml"), "ok = true").expect("seed config");
+    fs::write(instance_dir.join("mods").join("blocked.txt"), "nope").expect("seed blocked path");
+
+    let traversal_err = state::write_instance_config_file(
+        &instances_dir,
+        "inst_1",
+        "../escape.toml",
+        "bad = true",
+        None,
+    )
+    .expect_err("traversal path should be blocked");
+    assert!(traversal_err.to_ascii_lowercase().contains("traversal"));
+
+    let disallowed_err = state::read_instance_config_file(&instances_dir, "inst_1", "mods/blocked.txt")
+        .expect_err("mods path should not be allowlisted for config editing");
+    assert!(disallowed_err.to_ascii_lowercase().contains("allowlist"));
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn instance_config_file_size_limit_marks_large_files_read_only_and_blocks_write() {
+    let temp = std::env::temp_dir().join(format!("openjar-config-size-{}", Uuid::new_v4()));
+    let instances_dir = temp.join("instances");
+    let instance_dir = instances_dir.join("inst_1");
+    fs::create_dir_all(instance_dir.join("config")).expect("create config dir");
+
+    let large_content = "x".repeat(1_048_600);
+    fs::write(instance_dir.join("config").join("huge.toml"), large_content.as_bytes())
+        .expect("seed huge file");
+
+    let files = state::list_instance_config_files(&instances_dir, "inst_1").expect("list files");
+    let huge = files
+        .into_iter()
+        .find(|item| item.path == "config/huge.toml")
+        .expect("huge file entry");
+    assert!(!huge.editable);
+    assert!(
+        huge.readonly_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("too large")
+    );
+
+    let write_err = state::write_instance_config_file(
+        &instances_dir,
+        "inst_1",
+        "config/other.toml",
+        &"a".repeat(1_048_600),
+        None,
+    )
+    .expect_err("oversized write should fail");
+    assert!(write_err.to_ascii_lowercase().contains("too large"));
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
+#[test]
+fn instance_config_write_creates_backup_and_restore_reverts_file() {
+    let temp = std::env::temp_dir().join(format!("openjar-config-backup-{}", Uuid::new_v4()));
+    let instances_dir = temp.join("instances");
+    let instance_dir = instances_dir.join("inst_1");
+    let config_dir = instance_dir.join("config");
+    fs::create_dir_all(&config_dir).expect("create config dir");
+
+    let rel_path = "config/example.toml";
+    fs::write(config_dir.join("example.toml"), "value = 1\n").expect("seed file");
+    state::write_instance_config_file(&instances_dir, "inst_1", rel_path, "value = 2\n", None)
+        .expect("write file with backup");
+
+    let backups = state::list_instance_config_file_backups(&instances_dir, "inst_1", rel_path)
+        .expect("list backups");
+    assert!(!backups.is_empty());
+    let backup = &backups[0];
+    assert!(PathBuf::from(&backup.backup_path).exists());
+    let backed_up_text = fs::read_to_string(&backup.backup_path).expect("read backup");
+    assert_eq!(backed_up_text, "value = 1\n");
+
+    state::restore_instance_config_file_backup(&instances_dir, "inst_1", rel_path, &backup.id)
+        .expect("restore backup");
+    let restored = state::read_instance_config_file(&instances_dir, "inst_1", rel_path)
+        .expect("read restored file");
+    assert_eq!(restored.content.as_deref(), Some("value = 1\n"));
+
+    let _ = fs::remove_dir_all(&temp);
+}
+
 #[cfg(unix)]
 #[test]
 fn write_instance_config_file_refuses_symlink_parent_path() {

@@ -1,10 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Instance, InstanceWorld, WorldConfigFileEntry } from "../types";
+import type {
+  Instance,
+  InstanceConfigFileBackupEntry,
+  InstanceConfigFileEntry,
+  InstanceWorld,
+  WorldConfigFileEntry,
+} from "../types";
 import {
+  listInstanceConfigFileBackups,
+  listInstanceConfigFiles,
   listInstanceWorlds,
   listWorldConfigFiles,
   readWorldConfigFile,
+  readInstanceConfigFile,
   revealConfigEditorFile,
+  restoreInstanceConfigFileBackup,
+  writeInstanceConfigFile,
   writeWorldConfigFile,
 } from "../tauri";
 import AdvancedEditor from "../components/AdvancedEditor";
@@ -25,14 +36,10 @@ import {
   hasUnsavedDraft,
   isJsonFilePath,
   parseJsonWithError,
-  readConfigStore,
-  seedDefaultsForInstance,
   SERVERS_DAT_PATH,
   type ConfigFileRecord,
-  type InstanceConfigStore,
   type JsonParseIssue,
   type JsonPath,
-  writeConfigStore,
 } from "./configEditorHelpers";
 import {
   formatConfigContent,
@@ -76,6 +83,19 @@ function toWorldTypeLabel(item: WorldConfigFileEntry): string {
   return kind.toUpperCase();
 }
 
+function instanceRecordId(instanceId: string, filePath: string) {
+  return `${instanceId}::${filePath}`;
+}
+
+function formatBackupTime(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "Unknown time";
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return "Unknown time";
+  }
+}
+
 export default function ModpacksConfigEditor({
   instances,
   selectedInstanceId,
@@ -90,12 +110,24 @@ export default function ModpacksConfigEditor({
   runningInstanceIds: string[];
 }) {
   const [scope, setScope] = useState<EditorScope>("instance");
-  const [store, setStore] = useState<InstanceConfigStore>(() => readConfigStore());
+  const [instanceFilesByInstance, setInstanceFilesByInstance] = useState<
+    Record<string, InstanceConfigFileEntry[]>
+  >({});
+  const [instanceDrafts, setInstanceDrafts] = useState<Record<string, ConfigFileRecord>>({});
   const [worldDrafts, setWorldDrafts] = useState<Record<string, ConfigFileRecord>>({});
+  const [backupsByFile, setBackupsByFile] = useState<Record<string, InstanceConfigFileBackupEntry[]>>({});
+  const [selectedBackupIdByFile, setSelectedBackupIdByFile] = useState<Record<string, string>>({});
   const [selectedPathByScope, setSelectedPathByScope] = useState<Record<string, string>>({});
   const [selectedWorldByInstance, setSelectedWorldByInstance] = useState<Record<string, string>>({});
   const [worldsByInstance, setWorldsByInstance] = useState<Record<string, InstanceWorld[]>>({});
   const [worldFilesByScope, setWorldFilesByScope] = useState<Record<string, WorldConfigFileEntry[]>>({});
+  const [instanceFilesBusy, setInstanceFilesBusy] = useState(false);
+  const [instanceFilesErr, setInstanceFilesErr] = useState<string | null>(null);
+  const [instanceReadBusyPath, setInstanceReadBusyPath] = useState<string | null>(null);
+  const [instanceReadErr, setInstanceReadErr] = useState<string | null>(null);
+  const [backupsBusy, setBackupsBusy] = useState(false);
+  const [backupsErr, setBackupsErr] = useState<string | null>(null);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [fileQuery, setFileQuery] = useState("");
   const [mode, setMode] = useState<EditorMode>("advanced");
   const [jsonFocusPath, setJsonFocusPath] = useState<JsonPath>([]);
@@ -131,12 +163,32 @@ export default function ModpacksConfigEditor({
 
   useEffect(() => {
     if (!activeInstance) return;
-    setStore((prev) => seedDefaultsForInstance(prev, activeInstance.id));
-  }, [activeInstance]);
-
-  useEffect(() => {
-    writeConfigStore(store);
-  }, [store]);
+    let cancelled = false;
+    setInstanceFilesBusy(true);
+    setInstanceFilesErr(null);
+    listInstanceConfigFiles({ instanceId: activeInstance.id })
+      .then((files) => {
+        if (cancelled) return;
+        setInstanceFilesByInstance((prev) => ({
+          ...prev,
+          [activeInstance.id]: files,
+        }));
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setInstanceFilesByInstance((prev) => ({
+          ...prev,
+          [activeInstance.id]: [],
+        }));
+        setInstanceFilesErr(err?.toString?.() ?? String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setInstanceFilesBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeInstance?.id]);
 
   useEffect(() => {
     if (!activeInstance) return;
@@ -227,27 +279,27 @@ export default function ModpacksConfigEditor({
     };
   }, [scope, activeInstance?.id, activeWorld?.id, activeWorldScope]);
 
-  const instanceFiles = useMemo(() => {
-    if (!activeInstance) return {} as Record<string, ConfigFileRecord>;
-    return store[activeInstance.id] ?? {};
-  }, [activeInstance, store]);
+  const instanceFiles = useMemo(
+    () => (activeInstance ? instanceFilesByInstance[activeInstance.id] ?? [] : []),
+    [activeInstance, instanceFilesByInstance]
+  );
 
   const instanceList = useMemo<ConfigFileListItem[]>(() => {
-    const items: ConfigFileListItem[] = Object.keys(instanceFiles)
-      .sort((a, b) => a.localeCompare(b))
-      .map((path) => ({
-        path,
-        group: fileGroupForPath(path),
-        typeLabel: fileTypeForPath(path),
-        unsaved: hasUnsavedDraft(instanceFiles[path]),
-      }));
-    if (!items.some((item) => item.path === SERVERS_DAT_PATH)) {
-      items.push({
-        path: SERVERS_DAT_PATH,
-        group: "Minecraft",
-        typeLabel: "DAT",
+    if (!activeInstance) return [];
+    const items: ConfigFileListItem[] = instanceFiles
+      .slice()
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .map((file) => {
+        const record = instanceDrafts[instanceRecordId(activeInstance.id, file.path)];
+        return {
+          path: file.path,
+          group: fileGroupForPath(file.path),
+          typeLabel: fileTypeForPath(file.path),
+          editable: file.editable,
+          readonlyReason: file.readonly_reason ?? null,
+          unsaved: hasUnsavedDraft(record),
+        };
       });
-    }
     return items.sort((a, b) => {
       const groupA = a.group === "Minecraft" ? 0 : a.group === "Loader" ? 1 : 2;
       const groupB = b.group === "Minecraft" ? 0 : b.group === "Loader" ? 1 : 2;
@@ -258,7 +310,7 @@ export default function ModpacksConfigEditor({
       if (b.path === "config/modpack.json") return 1;
       return a.path.localeCompare(b.path);
     });
-  }, [instanceFiles]);
+  }, [activeInstance, instanceDrafts, instanceFiles]);
 
   const worldList = useMemo<ConfigFileListItem[]>(() => {
     if (!activeInstance || !activeWorld || !activeWorldScope) return [];
@@ -305,7 +357,9 @@ export default function ModpacksConfigEditor({
     setJsonFocusPath([]);
     setNonJsonInspectorSelection(null);
     setSaveErr(null);
+    setInstanceReadErr(null);
     setWorldReadErr(null);
+    setBackupsErr(null);
     setEditorInfo(null);
     setShowDiff(false);
     setEditorSearch("");
@@ -316,11 +370,11 @@ export default function ModpacksConfigEditor({
   const activeRecord = useMemo(() => {
     if (!activePath || !activeInstance) return undefined;
     if (scope === "instance") {
-      return store[activeInstance.id]?.[activePath];
+      return instanceDrafts[instanceRecordId(activeInstance.id, activePath)];
     }
     if (!activeWorld) return undefined;
     return worldDrafts[worldRecordId(activeInstance.id, activeWorld.id, activePath)];
-  }, [activePath, activeInstance, activeWorld, scope, store, worldDrafts]);
+  }, [activePath, activeInstance, activeWorld, instanceDrafts, scope, worldDrafts]);
 
   const activeRecordKey = useMemo(() => {
     if (!activePath || !activeInstance) return null;
@@ -331,18 +385,34 @@ export default function ModpacksConfigEditor({
 
   useEffect(() => {
     if (scope !== "instance" || !activeInstance || !activePath || activeRecord) return;
-    setStore((prev) => {
-      const instanceMap = { ...(prev[activeInstance.id] ?? {}) };
-      if (instanceMap[activePath]) return prev;
-      instanceMap[activePath] = {
-        content: activePath === SERVERS_DAT_PATH ? asPrettyJson({ servers: [] }) : "",
-        updatedAt: Date.now(),
-      };
-      return {
-        ...prev,
-        [activeInstance.id]: instanceMap,
-      };
-    });
+    let cancelled = false;
+    const recordKey = instanceRecordId(activeInstance.id, activePath);
+    setInstanceReadBusyPath(activePath);
+    setInstanceReadErr(null);
+    readInstanceConfigFile({ instanceId: activeInstance.id, path: activePath })
+      .then((result) => {
+        if (cancelled) return;
+        setInstanceDrafts((prev) => {
+          if (prev[recordKey]) return prev;
+          return {
+            ...prev,
+            [recordKey]: {
+              content: String(result.content ?? result.readonly_reason ?? ""),
+              updatedAt: Number(result.modified_at ?? Date.now()),
+            },
+          };
+        });
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setInstanceReadErr(err?.toString?.() ?? String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setInstanceReadBusyPath(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [scope, activeInstance, activePath, activeRecord]);
 
   useEffect(() => {
@@ -379,6 +449,62 @@ export default function ModpacksConfigEditor({
       cancelled = true;
     };
   }, [scope, activeInstance, activeWorld, activePath, activeFile, worldDrafts]);
+
+  useEffect(() => {
+    if (scope !== "instance" || !activeInstance || !activePath) return;
+    const key = instanceRecordId(activeInstance.id, activePath);
+    if (activeFile?.editable === false) {
+      setBackupsBusy(false);
+      setBackupsErr(null);
+      setBackupsByFile((prev) => ({
+        ...prev,
+        [key]: [],
+      }));
+      setSelectedBackupIdByFile((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+    let cancelled = false;
+    setBackupsBusy(true);
+    setBackupsErr(null);
+    listInstanceConfigFileBackups({ instanceId: activeInstance.id, path: activePath })
+      .then((entries) => {
+        if (cancelled) return;
+        setBackupsByFile((prev) => ({
+          ...prev,
+          [key]: entries,
+        }));
+        setSelectedBackupIdByFile((prev) => {
+          const existing = prev[key];
+          if (existing && entries.some((item) => item.id === existing)) return prev;
+          if (entries[0]?.id) {
+            return { ...prev, [key]: entries[0].id };
+          }
+          if (!(key in prev)) return prev;
+          const next = { ...prev };
+          delete next[key];
+          return next;
+        });
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setBackupsByFile((prev) => ({
+          ...prev,
+          [key]: [],
+        }));
+        setBackupsErr(err?.toString?.() ?? String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setBackupsBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope, activeInstance?.id, activePath, activeFile?.editable, activeRecord?.updatedAt]);
 
   const fileContent = getEffectiveFileContent(activeRecord);
   const savedContent = activeRecord?.content ?? "";
@@ -420,7 +546,7 @@ export default function ModpacksConfigEditor({
   const runningSet = useMemo(() => new Set(runningInstanceIds), [runningInstanceIds]);
   const instanceRunning = Boolean(activeInstance && runningSet.has(activeInstance.id));
   const worldReadOnly = scope === "world" && instanceRunning;
-  const fileReadOnly = worldReadOnly || Boolean(scope === "world" && activeFile?.editable === false);
+  const fileReadOnly = worldReadOnly || Boolean(activeFile?.editable === false);
   const formatterSupport = useMemo(
     () => (activePath ? getFormatterSupport(activePath, fileContent) : null),
     [activePath, fileContent]
@@ -434,25 +560,48 @@ export default function ModpacksConfigEditor({
     [activePath, fileContent]
   );
   const issuesByPath = useMemo(() => groupIssuesByPath(configIssues), [configIssues]);
+  const meaningfulIssueCount = useMemo(
+    () => configIssues.filter((issue) => issue.severity !== "info").length,
+    [configIssues]
+  );
+  const hasAutoFixCandidate = Boolean(
+    safeFixSupport &&
+      !safeFixSupport.blockingError &&
+      (safeFixSupport.changed || meaningfulIssueCount > 0)
+  );
   const canSave = Boolean(activeRecord && unsaved && !saveBlockedByJson && !fileReadOnly && !saveBusy);
   const canReset = Boolean(activeRecord && unsaved && !saveBusy);
   const canFormat = Boolean(formatterSupport?.supported && formatterSupport.canFormat && !fileReadOnly && !saveBusy);
-  const canFixIssues = Boolean(activePath && activeRecord && !saveBusy);
+  const canFixIssues = Boolean(activePath && activeRecord && !saveBusy && !fileReadOnly && hasAutoFixCandidate);
   const historyState = activeRecordKey ? historyByFile[activeRecordKey] : undefined;
   const canUndo = Boolean(historyState && historyState.index > 0);
   const canRedo = Boolean(historyState && historyState.index < historyState.entries.length - 1);
+  const activeInstanceRecordKey =
+    scope === "instance" && activeInstance && activePath
+      ? instanceRecordId(activeInstance.id, activePath)
+      : null;
+  const activeBackups = activeInstanceRecordKey ? backupsByFile[activeInstanceRecordKey] ?? [] : [];
+  const selectedBackupId = activeInstanceRecordKey
+    ? selectedBackupIdByFile[activeInstanceRecordKey] ?? ""
+    : "";
+  const canRestoreBackup = Boolean(
+    scope === "instance" &&
+      activeInstance &&
+      activePath &&
+      selectedBackupId &&
+      !restoreBusy &&
+      !saveBusy &&
+      activeFile?.editable !== false
+  );
 
   function patchActiveRecord(mutator: (current: ConfigFileRecord) => ConfigFileRecord) {
     if (!activeInstance || !activePath || !activeRecord) return;
     if (scope === "instance") {
-      setStore((prev) => {
-        const instanceMap = { ...(prev[activeInstance.id] ?? {}) };
-        instanceMap[activePath] = mutator(instanceMap[activePath]);
-        return {
-          ...prev,
-          [activeInstance.id]: instanceMap,
-        };
-      });
+      const key = instanceRecordId(activeInstance.id, activePath);
+      setInstanceDrafts((prev) => ({
+        ...prev,
+        [key]: mutator(prev[key]),
+      }));
       return;
     }
     if (!activeWorld) return;
@@ -501,13 +650,46 @@ export default function ModpacksConfigEditor({
     if (!canSave || !activeRecord || !activePath || !activeInstance) return;
     setSaveErr(null);
     if (scope === "instance") {
-      patchActiveRecord((current) => ({
-        content: getEffectiveFileContent(current),
-        updatedAt: Date.now(),
-        draft: undefined,
-        draftUpdatedAt: undefined,
-      }));
-      setEditorInfo("Saved instance config draft.");
+      setSaveBusy(true);
+      const nextContent = getEffectiveFileContent(activeRecord);
+      try {
+        const out = await writeInstanceConfigFile({
+          instanceId: activeInstance.id,
+          path: activePath,
+          content: nextContent,
+          expectedModifiedAt: activeRecord.updatedAt,
+        });
+        const recordKey = instanceRecordId(activeInstance.id, activePath);
+        setInstanceDrafts((prev) => ({
+          ...prev,
+          [recordKey]: {
+            content: nextContent,
+            updatedAt: Number(out.modified_at ?? Date.now()),
+            draft: undefined,
+            draftUpdatedAt: undefined,
+          },
+        }));
+        setInstanceFilesByInstance((prev) => {
+          const files = prev[activeInstance.id] ?? [];
+          return {
+            ...prev,
+            [activeInstance.id]: files.map((item) =>
+              item.path === activePath
+                ? {
+                    ...item,
+                    modified_at: Number(out.modified_at ?? item.modified_at),
+                    size_bytes: Number(out.size_bytes ?? item.size_bytes),
+                  }
+                : item
+            ),
+          };
+        });
+        setEditorInfo(out.message || "Instance file saved.");
+      } catch (err: any) {
+        setSaveErr(err?.toString?.() ?? String(err));
+      } finally {
+        setSaveBusy(false);
+      }
       return;
     }
     if (!activeWorld || activeFile?.editable === false || worldReadOnly) return;
@@ -619,6 +801,14 @@ export default function ModpacksConfigEditor({
       setEditorInfo(readOnlyMessage ?? "This file is read-only, so no fixes can be applied.");
       return;
     }
+    if (!safeFixSupport || safeFixSupport.blockingError) {
+      setEditorInfo(safeFixSupport?.blockingError ?? "No safe automatic fixes are available for this file.");
+      return;
+    }
+    if (meaningfulIssueCount === 0 && !safeFixSupport.changed) {
+      setEditorInfo("No fixable issues detected in this file.");
+      return;
+    }
     const result = applySafeFixes(activePath, fileContent);
     if (result.blockingError) {
       setEditorInfo(result.blockingError);
@@ -633,7 +823,19 @@ export default function ModpacksConfigEditor({
     } else if (result.changed) {
       setEditorInfo(unresolved > 0 ? `Applied safe fixes. ${unresolved} issue(s) still need manual edits.` : "Applied safe fixes.");
     } else {
-      setEditorInfo(unresolved > 0 ? `No automatic fix available for ${unresolved} issue(s) in this file.` : "No safe fixes needed.");
+      if (unresolved > 0) {
+        const examples = result.issues
+          .slice(0, 2)
+          .map((issue) => issue.message)
+          .join(" ");
+        setEditorInfo(
+          examples
+            ? `No safe automatic fix available for ${unresolved} issue(s). ${examples}`
+            : `No safe automatic fix available for ${unresolved} issue(s).`
+        );
+      } else {
+        setEditorInfo("No safe fixes needed.");
+      }
     }
     setSaveErr(null);
   }
@@ -657,6 +859,7 @@ export default function ModpacksConfigEditor({
           : await revealConfigEditorFile({
               instanceId: activeInstance.id,
               scope: "instance",
+              path: activePath,
             });
       setEditorInfo(out.message);
     } catch (err: any) {
@@ -664,52 +867,120 @@ export default function ModpacksConfigEditor({
     }
   }
 
-  function onCreateFile(path: string) {
+  async function onCreateFile(path: string) {
     if (!activeInstance || scope !== "instance") return;
-    setStore((prev) => {
-      const instanceMap = { ...(prev[activeInstance.id] ?? {}) };
-      if (instanceMap[path]) return prev;
-      instanceMap[path] = {
-        content: asPrettyJson({}),
-        updatedAt: Date.now(),
-      };
-      return {
+    setSaveErr(null);
+    setSaveBusy(true);
+    const content = asPrettyJson({});
+    try {
+      const out = await writeInstanceConfigFile({
+        instanceId: activeInstance.id,
+        path,
+        content,
+      });
+      const recordKey = instanceRecordId(activeInstance.id, path);
+      setInstanceDrafts((prev) => ({
         ...prev,
-        [activeInstance.id]: instanceMap,
-      };
-    });
-    setSelectedPathByScope((prev) => ({
-      ...prev,
-      [`instance:${activeInstance.id}`]: path,
-    }));
-    setMode("simple");
-    setShowNewFileModal(false);
+        [recordKey]: {
+          content,
+          updatedAt: Number(out.modified_at ?? Date.now()),
+        },
+      }));
+      const refreshed = await listInstanceConfigFiles({ instanceId: activeInstance.id });
+      setInstanceFilesByInstance((prev) => ({
+        ...prev,
+        [activeInstance.id]: refreshed,
+      }));
+      setSelectedPathByScope((prev) => ({
+        ...prev,
+        [`instance:${activeInstance.id}`]: path,
+      }));
+      setMode("simple");
+      setShowNewFileModal(false);
+      setEditorInfo("Created instance config file.");
+    } catch (err: any) {
+      setSaveErr(err?.toString?.() ?? String(err));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  async function onRestoreBackup() {
+    if (!canRestoreBackup || !activeInstance || !activePath || !selectedBackupId) return;
+    setSaveErr(null);
+    setRestoreBusy(true);
+    try {
+      const out = await restoreInstanceConfigFileBackup({
+        instanceId: activeInstance.id,
+        path: activePath,
+        backupId: selectedBackupId,
+      });
+      const latest = await readInstanceConfigFile({
+        instanceId: activeInstance.id,
+        path: activePath,
+      });
+      const recordKey = instanceRecordId(activeInstance.id, activePath);
+      setInstanceDrafts((prev) => ({
+        ...prev,
+        [recordKey]: {
+          content: String(latest.content ?? ""),
+          updatedAt: Number(out.modified_at ?? Date.now()),
+          draft: undefined,
+          draftUpdatedAt: undefined,
+        },
+      }));
+      const refreshedFiles = await listInstanceConfigFiles({ instanceId: activeInstance.id });
+      const refreshedBackups = await listInstanceConfigFileBackups({
+        instanceId: activeInstance.id,
+        path: activePath,
+      });
+      setInstanceFilesByInstance((prev) => ({
+        ...prev,
+        [activeInstance.id]: refreshedFiles,
+      }));
+      setBackupsByFile((prev) => ({
+        ...prev,
+        [recordKey]: refreshedBackups,
+      }));
+      setSelectedBackupIdByFile((prev) => ({
+        ...prev,
+        [recordKey]: refreshedBackups[0]?.id ?? "",
+      }));
+      setEditorInfo(out.message || "Backup restored.");
+    } catch (err: any) {
+      setSaveErr(err?.toString?.() ?? String(err));
+    } finally {
+      setRestoreBusy(false);
+    }
   }
 
   const readOnlyMessage =
     scope === "world" && instanceRunning
       ? "World file editing is read-only while this instance is running."
-      : scope === "world" && activeFile?.editable === false
+      : activeFile?.editable === false
         ? activeFile.readonlyReason ?? "This file type cannot be edited here."
         : null;
-  const virtualFile = scope === "instance";
+  const virtualFile = false;
   const formatTitle = fileReadOnly
     ? readOnlyMessage ?? "This file is read-only."
     : formatterSupport?.reason || "Apply safe formatting for this file type.";
   const openInFinderTitle =
     scope === "instance"
-      ? "This file is localStorage-backed. Opens the instance folder."
+      ? "Reveal this file in your file manager."
       : "Reveal this file in your file manager.";
   const siblingContents = useMemo(() => {
     if (!activeInstance || !activePath) return [];
     if (scope === "instance") {
-      return Object.entries(instanceFiles)
-        .filter(([path]) => path !== activePath)
+      return instanceFiles
+        .filter((item) => item.path !== activePath)
         .slice(0, 20)
-        .map(([path, record]) => ({
-          path,
-          content: getEffectiveFileContent(record),
-        }));
+        .map((item) => {
+          const key = instanceRecordId(activeInstance.id, item.path);
+          return {
+            path: item.path,
+            content: getEffectiveFileContent(instanceDrafts[key]),
+          };
+        });
     }
     if (!activeWorld) return [];
     const worldScope = worldScopeId(activeInstance.id, activeWorld.id);
@@ -731,6 +1002,7 @@ export default function ModpacksConfigEditor({
     activeInstance,
     activePath,
     activeWorld,
+    instanceDrafts,
     instanceFiles,
     scope,
     worldDrafts,
@@ -795,7 +1067,7 @@ export default function ModpacksConfigEditor({
         <div className="configHeaderLeft">
           <div className="settingTitle">Config Editor</div>
           <div className="settingSub">
-            Edit instance config or live world files with Simple + Advanced mode.
+            Choose target, edit, and save. Instance files auto-back up before every write.
           </div>
         </div>
         <div className="configHeaderControls">
@@ -850,8 +1122,8 @@ export default function ModpacksConfigEditor({
               <button className="btn" type="button" onClick={onManageInstances}>
                 Manage instances
               </button>
-              <span className="chip">
-                {activeInstance.name}
+              <span className="chip subtle">
+                {scope === "instance" ? "Editing instance" : "Editing world"} • {activeInstance.name}
                 {scope === "world" && activeWorld ? ` • ${activeWorld.name}` : ""}
               </span>
             </div>
@@ -859,10 +1131,13 @@ export default function ModpacksConfigEditor({
         </div>
       </div>
 
+      {scope === "instance" && instanceFilesErr ? <div className="errorBox">{instanceFilesErr}</div> : null}
       {scope === "world" && worldErr ? <div className="errorBox">{worldErr}</div> : null}
       {scope === "world" && worldFilesErr ? <div className="errorBox">{worldFilesErr}</div> : null}
       {saveErr ? <div className="errorBox">{saveErr}</div> : null}
+      {scope === "instance" && instanceReadErr ? <div className="errorBox">{instanceReadErr}</div> : null}
       {scope === "world" && worldReadErr ? <div className="errorBox">{worldReadErr}</div> : null}
+      {scope === "instance" && backupsErr ? <div className="errorBox">{backupsErr}</div> : null}
       {editorInfo ? <div className="noticeBox">{editorInfo}</div> : null}
 
       <div className="configWorkspaceGrid">
@@ -883,7 +1158,11 @@ export default function ModpacksConfigEditor({
         />
 
         <div className="configWorkspacePanel configEditorPanel">
-          {scope === "world" && worldFilesBusy && files.length === 0 ? (
+          {scope === "instance" && instanceFilesBusy && files.length === 0 ? (
+            <div className="configSimpleEmpty">
+              <div className="settingTitle">Loading instance files…</div>
+            </div>
+          ) : scope === "world" && worldFilesBusy && files.length === 0 ? (
             <div className="configSimpleEmpty">
               <div className="settingTitle">Loading world files…</div>
             </div>
@@ -926,21 +1205,25 @@ export default function ModpacksConfigEditor({
                 </div>
               ) : null}
               <div className="configEditorToolsRow">
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={onFixIssues}
-                  disabled={!canFixIssues}
-                  title={
-                    fileReadOnly
-                      ? readOnlyMessage ?? "This file is read-only."
-                      : safeFixSupport?.blockingError
-                      ? safeFixSupport.blockingError
-                      : "Applies conservative fixes for common config issues."
-                  }
-                >
-                  Fix issues
-                </button>
+                {canFixIssues || meaningfulIssueCount > 0 ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={onFixIssues}
+                    disabled={!canFixIssues}
+                    title={
+                      fileReadOnly
+                        ? readOnlyMessage ?? "This file is read-only."
+                        : safeFixSupport?.blockingError
+                        ? safeFixSupport.blockingError
+                        : meaningfulIssueCount > 0
+                          ? "Applies conservative automatic fixes to known issues."
+                          : "Apply available safe cleanups."
+                    }
+                  >
+                    {meaningfulIssueCount > 0 ? `Fix issues (${meaningfulIssueCount})` : "Auto-fix"}
+                  </button>
+                ) : null}
                 <button
                   className="btn"
                   type="button"
@@ -952,15 +1235,17 @@ export default function ModpacksConfigEditor({
                 >
                   Open location
                 </button>
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => setShowDiff((prev) => !prev)}
-                  disabled={!activePath || !activeRecord}
-                  aria-pressed={showDiff}
-                >
-                  {showDiff ? "Hide diff" : "Preview diff"}
-                </button>
+                {unsaved || showDiff ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => setShowDiff((prev) => !prev)}
+                    disabled={!activePath || !activeRecord}
+                    aria-pressed={showDiff}
+                  >
+                    {showDiff ? "Hide diff" : "Preview diff"}
+                  </button>
+                ) : null}
               </div>
               <div className="configEditorUtilityRow">
                 <div className="configEditorSearchWrap">
@@ -975,6 +1260,46 @@ export default function ModpacksConfigEditor({
                   </span>
                 </div>
               </div>
+              {scope === "instance" ? (
+                <div className="configBackupRow">
+                  <span className="chip subtle">
+                    {backupsBusy ? "Loading backups…" : `${activeBackups.length} backups`}
+                  </span>
+                  <select
+                    className="input configBackupSelect"
+                    value={selectedBackupId}
+                    onChange={(event) => {
+                      if (!activeInstanceRecordKey) return;
+                      const backupId = event.target.value;
+                      setSelectedBackupIdByFile((prev) => ({
+                        ...prev,
+                        [activeInstanceRecordKey]: backupId,
+                      }));
+                    }}
+                    disabled={activeBackups.length === 0 || backupsBusy || restoreBusy}
+                  >
+                    {activeBackups.length === 0 ? (
+                      <option value="">No backups yet</option>
+                    ) : (
+                      activeBackups.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {formatBackupTime(item.created_at)} ({item.size_bytes} bytes)
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => {
+                      void onRestoreBackup();
+                    }}
+                    disabled={!canRestoreBackup}
+                  >
+                    {restoreBusy ? "Restoring…" : "Restore backup"}
+                  </button>
+                </div>
+              ) : null}
               {showDiff ? (
                 <div className="configDiffPanel">
                   <div className="configDiffHead">
@@ -988,16 +1313,20 @@ export default function ModpacksConfigEditor({
                 </div>
               ) : null}
 
-              {scope === "world" && worldReadBusyPath === activePath && !activeRecord ? (
+              {scope === "instance" && instanceReadBusyPath === activePath && !activeRecord ? (
                 <div className="configSimpleEmpty">
                   <div className="settingTitle">Loading file…</div>
                 </div>
-              ) : !activeRecord && scope === "world" && activeFile?.editable === false ? (
+              ) : scope === "world" && worldReadBusyPath === activePath && !activeRecord ? (
+                <div className="configSimpleEmpty">
+                  <div className="settingTitle">Loading file…</div>
+                </div>
+              ) : !activeRecord && activeFile?.editable === false ? (
                 <div className="configSimpleEmpty">
                   <div className="settingTitle">Read-only file</div>
                   <div className="muted">Loading preview…</div>
                 </div>
-              ) : scope === "world" && activeFile?.editable === false ? (
+              ) : activeFile?.editable === false ? (
                 <div className="configReadonlyPreview">
                   <div className="configReadonlyPreviewLabel">
                     {activeFile.readonlyReason ?? "Read-only file"} Preview
@@ -1095,8 +1424,10 @@ export default function ModpacksConfigEditor({
       <NewFileModal
         open={showNewFileModal && scope === "instance"}
         onClose={() => setShowNewFileModal(false)}
-        onCreate={onCreateFile}
-        existingPaths={Object.keys(instanceFiles)}
+        onCreate={(path) => {
+          void onCreateFile(path);
+        }}
+        existingPaths={instanceFiles.map((item) => item.path)}
       />
     </div>
   );

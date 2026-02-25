@@ -255,16 +255,19 @@ A full config editing experience inside the app.
 Core workflow:
 - Instance picker dropdown
 - Optional world picker (lists worlds in `saves/`)
-- Config file browser (lists config files)
+- Unified config browser for **Instance** and **World** scopes
+- Instance scope edits real files on disk (allowlisted paths only: `config/**`, `options.txt`; packs shown read-only)
 - Reveal/open files in your file manager (Finder/Explorer/etc.)
 
 Editing tools:
 - Read and save files
 - Create new config files (New File modal)
+- Automatic timestamped backups before instance file writes
+- Backup history + restore for the currently selected instance file
 - Specialized editors:
   - JSON editor (parsing + friendly error display)
   - Text editor
-  - `servers.dat` editor (edit server list)
+  - `servers.dat` helper view when an editable text representation is available
 - Advanced editor mode
 - Inspector panel (context + suggestions)
 - Helper features (formatting + suggestions)
