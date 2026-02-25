@@ -2703,10 +2703,6 @@ fn install_curseforge_mod_inner(
     let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
     let client = build_http_client()?;
     let root_mod_id = parse_curseforge_project_id(&args.project_id)?;
-    let install_plan =
-        resolve_curseforge_dependency_chain(&client, &api_key, &instance, root_mod_id)?;
-    let total_actions = install_plan.len().max(1);
-
     emit_install_progress(
         &app,
         InstallProgressEvent {
@@ -2714,15 +2710,44 @@ fn install_curseforge_mod_inner(
             project_id: args.project_id.clone(),
             stage: "resolving".to_string(),
             downloaded: 0,
-            total: Some(total_actions as u64),
-            percent: Some(if total_actions == 0 { 100.0 } else { 1.0 }),
-            message: Some(if total_actions > 1 {
-                "Resolving CurseForge dependency chain…".to_string()
-            } else {
-                "Resolving CurseForge file…".to_string()
-            }),
+            total: None,
+            percent: Some(1.0),
+            message: Some("Resolving CurseForge metadata and dependency chain…".to_string()),
         },
     );
+
+    let install_plan = resolve_curseforge_dependency_chain(
+        &client,
+        &api_key,
+        &instance,
+        root_mod_id,
+        |resolved_count, pending_count| {
+            let denom = (resolved_count + pending_count).max(1) as f64;
+            let ratio = resolved_count as f64 / denom;
+            let percent = (1.0 + ratio * 28.0).clamp(1.0, 34.0);
+            let detail = if pending_count > 0 {
+                format!(
+                    "Resolved {} project(s), {} pending…",
+                    resolved_count, pending_count
+                )
+            } else {
+                format!("Resolved {} project(s), preparing downloads…", resolved_count)
+            };
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "resolving".to_string(),
+                    downloaded: resolved_count as u64,
+                    total: Some((resolved_count + pending_count) as u64),
+                    percent: Some(percent),
+                    message: Some(format!("Resolving CurseForge metadata… {detail}")),
+                },
+            );
+        },
+    )?;
+    let total_actions = install_plan.len().max(1);
 
     if let Some(reason) = snapshot_reason {
         let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
@@ -2748,10 +2773,10 @@ fn install_curseforge_mod_inner(
                     .clamp(0.0, 99.0),
                 ),
                 message: Some(if is_root {
-                    "Installing selected CurseForge mod…".to_string()
+                    "Downloading selected CurseForge mod…".to_string()
                 } else {
                     format!(
-                        "Installing required dependency {}/{}…",
+                        "Downloading required dependency {}/{}…",
                         idx + 1,
                         total_actions
                     )
@@ -2792,12 +2817,12 @@ fn install_curseforge_mod_inner(
                         percent: Some(visible_overall.clamp(0.0, 99.4)),
                         message: Some(if is_root {
                             format!(
-                                "Installing selected CurseForge mod… · {}",
+                                "Downloading selected CurseForge mod… · {}",
                                 format_download_meter(downloaded_bytes, total_bytes)
                             )
                         } else {
                             format!(
-                                "Installing required dependency {}/{}… · {}",
+                                "Downloading required dependency {}/{}… · {}",
                                 idx + 1,
                                 total_actions,
                                 format_download_meter(downloaded_bytes, total_bytes)
@@ -2892,7 +2917,7 @@ fn import_local_mod_file_inner(
     args: ImportLocalModFileArgs,
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
-    let _ = find_instance(&instances_dir, &args.instance_id)?;
+    let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let normalized_content_type =
         normalize_lock_content_type(args.content_type.as_deref().unwrap_or("mods"));
@@ -2928,6 +2953,7 @@ fn import_local_mod_file_inner(
 
     let file_bytes = fs::read(&source_path).map_err(|e| format!("read file failed: {e}"))?;
     if normalized_content_type == "mods" {
+        ensure_local_mod_loader_compatible(&instance, &safe_filename, &file_bytes)?;
         let mods_dir = instance_dir.join("mods");
         fs::create_dir_all(&mods_dir).map_err(|e| format!("mkdir mods failed: {e}"))?;
         let disabled_path = mods_dir.join(format!("{safe_filename}.disabled"));
