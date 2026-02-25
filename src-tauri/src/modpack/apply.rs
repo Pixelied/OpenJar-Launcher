@@ -117,12 +117,13 @@ fn apply_single_resolved(
     item: &crate::modpack::types::ResolvedMod,
 ) -> Result<(), String> {
     let content_type = normalize_content_type(&item.content_type);
+    let download_label = format!("{} ({})", item.name, item.source);
     let bytes = if item.source == "modrinth" {
         let download_url = item
             .download_url
             .as_ref()
             .ok_or_else(|| "missing download url in resolution plan".to_string())?;
-        download_bytes(client, download_url)?
+        crate::download_bytes_with_retry(client, download_url, &download_label)?
     } else if item.source == "curseforge" {
         let api_key =
             crate::curseforge_api_key().ok_or_else(crate::missing_curseforge_key_message)?;
@@ -138,7 +139,7 @@ fn apply_single_resolved(
             .ok_or_else(|| format!("CurseForge file {} no longer available", wanted))?;
         let download_url =
             crate::resolve_curseforge_file_download_url(client, &api_key, mod_id, &file)?;
-        download_bytes(client, &download_url)?
+        crate::download_bytes_with_retry(client, &download_url, &download_label)?
     } else {
         return Err("unsupported provider".to_string());
     };
@@ -190,6 +191,7 @@ fn apply_single_resolved(
         pinned_version: None,
         enabled: item.enabled,
         hashes: item.hashes.clone(),
+        provider_candidates: vec![],
     };
 
     if content_type == "mods" && !item.enabled {
@@ -211,21 +213,6 @@ fn apply_single_resolved(
 
     let _ = instance;
     Ok(())
-}
-
-fn download_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("download failed: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!("download failed with status {}", response.status()));
-    }
-    let mut bytes = Vec::new();
-    response
-        .copy_to(&mut bytes)
-        .map_err(|e| format!("download read failed: {e}"))?;
-    Ok(bytes)
 }
 
 pub fn build_lock_snapshot(

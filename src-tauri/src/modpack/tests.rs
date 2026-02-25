@@ -126,6 +126,7 @@ mod modpack_tests {
                 pinned_version: None,
                 enabled: true,
                 hashes: HashMap::new(),
+                provider_candidates: vec![],
             }],
         };
 
@@ -144,6 +145,7 @@ mod modpack_tests {
                 pinned_version: None,
                 enabled: true,
                 hashes: HashMap::new(),
+                provider_candidates: vec![],
             }],
         };
 

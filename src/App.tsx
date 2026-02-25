@@ -57,6 +57,7 @@ import type {
   JavaRuntimeCandidate,
   LaunchResult,
   Loader,
+  ProviderCandidate,
   ModpackSpec,
   SnapshotMeta,
   SupportPerfAction,
@@ -118,6 +119,7 @@ import {
   setLauncherSettings,
   setInstanceIcon,
   setInstalledModEnabled,
+  setInstalledModProvider,
   syncFriendLinkSelected,
   stopRunningInstance,
   resolveLocalModSources,
@@ -307,6 +309,14 @@ type InstanceContentFilters = {
   source: "all" | "modrinth" | "curseforge" | "local" | "other";
   missing: "all" | "missing" | "present";
 };
+
+type InstanceContentSort =
+  | "recently_added"
+  | "name_asc"
+  | "name_desc"
+  | "source"
+  | "enabled_first"
+  | "disabled_first";
 
 type LaunchOutcomeEntry = {
   at: number;
@@ -772,6 +782,90 @@ function installedContentTypeLabel(contentType?: string) {
   return "mod";
 }
 
+function installedContentTypeToDiscover(contentType?: string): DiscoverContentType {
+  const normalized = normalizeCreatorEntryType(contentType);
+  if (normalized === "resourcepacks") return "resourcepacks";
+  if (normalized === "shaderpacks") return "shaderpacks";
+  if (normalized === "datapacks") return "datapacks";
+  if (normalized === "modpacks") return "modpacks";
+  return "mods";
+}
+
+function normalizeProviderSource(value?: string | null): "modrinth" | "curseforge" | "local" | "other" {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "modrinth") return "modrinth";
+  if (normalized === "curseforge") return "curseforge";
+  if (normalized === "local") return "local";
+  return "other";
+}
+
+function providerSourceLabel(value?: string | null): string {
+  const normalized = normalizeProviderSource(value);
+  if (normalized === "modrinth") return "Modrinth";
+  if (normalized === "curseforge") return "CurseForge";
+  if (normalized === "local") return "Local";
+  return String(value ?? "Unknown").trim() || "Unknown";
+}
+
+function parseCurseforgeProjectId(raw?: string | null): string | null {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  if (/^\d+$/.test(value)) return value;
+  const prefixed = value.match(/^cf:(\d+)$/i);
+  if (prefixed?.[1]) return prefixed[1];
+  const trailing = value.match(/(\d+)$/);
+  if (trailing?.[1]) return trailing[1];
+  return null;
+}
+
+function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
+  const raw = Array.isArray(mod.provider_candidates) ? mod.provider_candidates : [];
+  const out: ProviderCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (candidate: ProviderCandidate) => {
+    const source = String(candidate.source ?? "").trim().toLowerCase();
+    const projectId = String(candidate.project_id ?? "").trim();
+    if (!source || !projectId) return;
+    const key = `${source}:${projectId}:${String(candidate.version_id ?? "").trim()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(candidate);
+  };
+  for (const candidate of raw) push(candidate);
+  if (out.length === 0 && mod.project_id) {
+    push({
+      source: mod.source,
+      project_id: mod.project_id,
+      version_id: mod.version_id,
+      name: mod.name,
+      version_number: mod.version_number,
+    });
+  }
+  out.sort((a, b) => {
+    const aPriority = normalizeProviderSource(a.source) === normalizeProviderSource(mod.source) ? 0 : 1;
+    const bPriority = normalizeProviderSource(b.source) === normalizeProviderSource(mod.source) ? 0 : 1;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    return providerSourceLabel(a.source).localeCompare(providerSourceLabel(b.source));
+  });
+  return out;
+}
+
+function preferredProjectIdForProvider(mod: InstalledMod, source: string): string {
+  const candidates = Array.isArray(mod.provider_candidates) ? mod.provider_candidates : [];
+  const normalized = String(source ?? "").trim().toLowerCase();
+  const fromCandidates = candidates.find((candidate) =>
+    String(candidate.source ?? "").trim().toLowerCase() === normalized
+  );
+  if (fromCandidates?.project_id) return fromCandidates.project_id;
+  return mod.project_id;
+}
+
+function installedIconCacheKey(mod: InstalledMod): string {
+  const source = normalizeProviderSource(mod.source);
+  const projectId = preferredProjectIdForProvider(mod, source);
+  return `${source}:${String(projectId ?? "").trim().toLowerCase()}`;
+}
+
 function creatorEntryTypeLabel(input?: string) {
   const normalized = normalizeCreatorEntryType(input);
   if (normalized === "resourcepacks") return "Resourcepacks";
@@ -1178,7 +1272,29 @@ function formatCompact(n: number) {
 
 function formatPercent(n: number | null | undefined) {
   if (n === null || n === undefined || !Number.isFinite(n)) return "";
-  return `${Math.max(0, Math.min(100, n)).toFixed(0)}%`;
+  const clamped = Math.max(0, Math.min(100, n));
+  if (clamped > 0 && clamped < 0.1) return "<0.1%";
+  if (clamped < 10) return `${clamped.toFixed(1)}%`;
+  return `${clamped.toFixed(0)}%`;
+}
+
+function prefersReducedMotion() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function formatBytes(value: number | null | undefined) {
+  const bytes = Number(value ?? 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  const decimals = size >= 100 || index === 0 ? 0 : 1;
+  return `${size.toFixed(decimals)} ${units[index]}`;
 }
 
 function formatDurationMs(ms: number | null | undefined) {
@@ -1255,6 +1371,49 @@ function formatFileSize(bytes: number | null | undefined) {
   return `${value.toFixed(digits)} ${units[idx]}`;
 }
 
+const CUSTOM_TOOLTIP_ATTR = "data-oj-tooltip";
+
+function tooltipText(value: string | null | undefined): string | null {
+  const text = String(value ?? "").trim();
+  if (/^loading(\.\.\.|…)?$/i.test(text)) return null;
+  return text.length > 0 ? text : null;
+}
+
+function promoteElementTitleToCustomTooltip(element: Element) {
+  if (!(element instanceof HTMLElement)) return;
+  const raw = element.getAttribute("title");
+  const text = tooltipText(raw);
+  if (!text) return;
+  if (!element.getAttribute(CUSTOM_TOOLTIP_ATTR)) {
+    element.setAttribute(CUSTOM_TOOLTIP_ATTR, text);
+  }
+  element.removeAttribute("title");
+}
+
+function promoteNativeTitlesInTree(root: ParentNode) {
+  if (root instanceof Element && root.hasAttribute("title")) {
+    promoteElementTitleToCustomTooltip(root);
+  }
+  const titleNodes = root.querySelectorAll("[title]");
+  for (const node of titleNodes) {
+    promoteElementTitleToCustomTooltip(node);
+  }
+}
+
+function resolveCustomTooltipTarget(source: EventTarget | null): HTMLElement | null {
+  if (!(source instanceof Element)) return null;
+  const mapped = source.closest(`[${CUSTOM_TOOLTIP_ATTR}]`);
+  if (mapped instanceof HTMLElement) return mapped;
+  const withTitle = source.closest("[title]");
+  if (withTitle instanceof HTMLElement) {
+    promoteElementTitleToCustomTooltip(withTitle);
+    if (withTitle.getAttribute(CUSTOM_TOOLTIP_ATTR)) {
+      return withTitle;
+    }
+  }
+  return null;
+}
+
 function humanizeToken(value: string | null | undefined) {
   if (!value) return "Unknown";
   return value
@@ -1262,9 +1421,27 @@ function humanizeToken(value: string | null | undefined) {
     .replace(/\b\w/g, (m) => m.toUpperCase());
 }
 
-function formatSnapshotReason(reason?: string | null) {
+function formatSnapshotReason(
+  reason?: string | null,
+  resolveProjectLabel?: (rawId: string, sourceHint?: "modrinth" | "curseforge" | null) => string | null
+) {
   const raw = String(reason ?? "").trim();
   if (!raw) return "Snapshot";
+  const installPrefix = raw.match(/^before-install-(discover|modrinth|curseforge):(.*)$/i);
+  if (installPrefix) {
+    const sourceRaw = String(installPrefix[1] ?? "").trim().toLowerCase();
+    const sourceHint =
+      sourceRaw === "curseforge" ? "curseforge" : sourceRaw === "modrinth" || sourceRaw === "discover" ? "modrinth" : null;
+    const subjectRaw = String(installPrefix[2] ?? "").trim();
+    const subject =
+      resolveProjectLabel?.(subjectRaw, sourceHint) ??
+      subjectRaw;
+    const pretty = subject
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return `Before installing ${pretty || "content"}`;
+  }
   const parsed = raw
     .replace(/^before-install-discover:/i, "Before installing ")
     .replace(/^before-install-modrinth:/i, "Before installing ")
@@ -1277,8 +1454,11 @@ function formatSnapshotReason(reason?: string | null) {
   return parsed ? parsed.charAt(0).toUpperCase() + parsed.slice(1) : "Snapshot";
 }
 
-function formatSnapshotOptionLabel(snapshot: SnapshotMeta) {
-  const reason = formatSnapshotReason(snapshot.reason);
+function formatSnapshotOptionLabel(
+  snapshot: SnapshotMeta,
+  resolveProjectLabel?: (rawId: string, sourceHint?: "modrinth" | "curseforge" | null) => string | null
+) {
+  const reason = formatSnapshotReason(snapshot.reason, resolveProjectLabel);
   const created = formatDateTime(snapshot.created_at, "Unknown time");
   if (created === "Unknown time") {
     return `${reason} • ${snapshot.id}`;
@@ -1380,8 +1560,11 @@ const AUTOPROFILE_APPLIED_KEY = "openjar.autoProfile.appliedHints.v1";
 const AUTOPROFILE_DISMISSED_KEY = "openjar.autoProfile.dismissed.v1";
 const PREFLIGHT_IGNORE_KEY = "openjar.preflightIgnore.v1";
 const SETTINGS_MODE_KEY = "mpm.settings.mode.v1";
+const INSTANCE_SETTINGS_MODE_KEY = "mpm.instance.settings.mode.v1";
+const SUPPORT_BUNDLE_RAW_DEFAULT_KEY = "mpm.support_bundle.include_raw_default.v1";
 const HOME_LAYOUT_KEY = "mpm.home.layout.v1";
 const INSTANCE_CONTENT_FILTERS_KEY = "mpm.instance.content.filters.v1";
+const INSTALLED_ICON_CACHE_KEY = "mpm.instance.icon.cache.v1";
 const APP_MENU_CHECK_FOR_UPDATES_EVENT = "app_menu_check_for_updates";
 const APP_UPDATE_BANNER_AUTO_HIDE_MS = 12000;
 const APP_UPDATE_BANNER_ANIMATION_MS = 320;
@@ -1417,6 +1600,15 @@ function defaultInstanceContentFilters(): InstanceContentFilters {
   };
 }
 
+function sameInstanceContentFilters(a: InstanceContentFilters, b: InstanceContentFilters) {
+  return (
+    a.query === b.query &&
+    a.state === b.state &&
+    a.source === b.source &&
+    a.missing === b.missing
+  );
+}
+
 function isSourceFilterValue(value: string): value is InstanceContentFilters["source"] {
   return value === "all" || value === "modrinth" || value === "curseforge" || value === "local" || value === "other";
 }
@@ -1428,6 +1620,45 @@ function readSettingsMode(): SettingsMode {
     return raw === "advanced" ? "advanced" : "basic";
   } catch {
     return "basic";
+  }
+}
+
+function readInstanceSettingsMode(): SettingsMode {
+  if (typeof window === "undefined") return "basic";
+  try {
+    const raw = localStorage.getItem(INSTANCE_SETTINGS_MODE_KEY);
+    return raw === "advanced" ? "advanced" : "basic";
+  } catch {
+    return "basic";
+  }
+}
+
+function readSupportBundleRawDefault(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return localStorage.getItem(SUPPORT_BUNDLE_RAW_DEFAULT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readInstalledIconCache(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = localStorage.getItem(INSTALLED_ICON_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const cacheKey = String(key ?? "").trim();
+      const cacheValue = String(value ?? "").trim();
+      if (!cacheKey || !cacheValue) continue;
+      out[cacheKey] = cacheValue;
+    }
+    return out;
+  } catch {
+    return {};
   }
 }
 
@@ -1884,7 +2115,8 @@ const DISCOVER_CONTENT_OPTIONS: { value: DiscoverContentType; label: string }[] 
   { value: "mods", label: "Mods" },
   { value: "shaderpacks", label: "Shaderpacks" },
   { value: "resourcepacks", label: "Resourcepacks" },
-  { value: "datapacks", label: "Datapacks + Modpacks" },
+  { value: "datapacks", label: "Datapacks" },
+  { value: "modpacks", label: "Modpacks" },
 ];
 
 const DISCOVER_LOADER_GROUPS: CatGroup[] = [
@@ -2699,6 +2931,273 @@ function Modal({
   return createPortal(modalNode, document.body);
 }
 
+function GlobalTooltipLayer() {
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
+  const activeTargetRef = useRef<HTMLElement | null>(null);
+  const openDelayRef = useRef<number | null>(null);
+  const closeDelayRef = useRef<number | null>(null);
+  const openAnimFrameRef = useRef<number | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const anchorPointRef = useRef({ x: 0, y: 0 });
+  const [tooltip, setTooltip] = useState<{
+    visible: boolean;
+    open: boolean;
+    text: string;
+    left: number;
+    top: number;
+    placement: "above" | "below";
+  }>({
+    visible: false,
+    open: false,
+    text: "",
+    left: 0,
+    top: 0,
+    placement: "below",
+  });
+  const openRef = useRef(false);
+
+  useEffect(() => {
+    openRef.current = tooltip.open;
+  }, [tooltip.open]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    promoteNativeTitlesInTree(document.body);
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const added of mutation.addedNodes) {
+          if (added instanceof Element) {
+            promoteNativeTitlesInTree(added);
+          }
+        }
+      }
+    });
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const clearOpenDelay = () => {
+      if (openDelayRef.current != null) {
+        window.clearTimeout(openDelayRef.current);
+        openDelayRef.current = null;
+      }
+    };
+    const clearCloseDelay = () => {
+      if (closeDelayRef.current != null) {
+        window.clearTimeout(closeDelayRef.current);
+        closeDelayRef.current = null;
+      }
+    };
+    const clearOpenAnimFrame = () => {
+      if (openAnimFrameRef.current != null) {
+        window.cancelAnimationFrame(openAnimFrameRef.current);
+        openAnimFrameRef.current = null;
+      }
+    };
+    const mountAndOpen = (text: string, point: { x: number; y: number }) => {
+      clearOpenAnimFrame();
+      setTooltip({
+        visible: true,
+        open: false,
+        text,
+        left: point.x,
+        top: point.y,
+        placement: "below",
+      });
+      openAnimFrameRef.current = window.requestAnimationFrame(() => {
+        openAnimFrameRef.current = null;
+        setTooltip((prev) => {
+          if (!prev.visible) return prev;
+          return {
+            ...prev,
+            open: true,
+          };
+        });
+        scheduleLayout();
+      });
+    };
+    const hide = () => {
+      clearOpenDelay();
+      clearOpenAnimFrame();
+      clearCloseDelay();
+      activeTargetRef.current = null;
+      if (prefersReducedMotion()) {
+        setTooltip((prev) => (prev.visible ? { ...prev, open: false, visible: false } : prev));
+        return;
+      }
+      setTooltip((prev) => (prev.visible ? { ...prev, open: false } : prev));
+      closeDelayRef.current = window.setTimeout(() => {
+        closeDelayRef.current = null;
+        setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+      }, 170);
+    };
+    const scheduleLayout = () => {
+      if (frameRef.current != null) return;
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        if (!activeTargetRef.current) return;
+        const bubble = bubbleRef.current;
+        const bubbleWidth = bubble?.offsetWidth ?? 240;
+        const bubbleHeight = bubble?.offsetHeight ?? 34;
+        const margin = 10;
+        const { x, y } = anchorPointRef.current;
+
+        let left = Math.max(margin, Math.min(x + 14, window.innerWidth - bubbleWidth - margin));
+        let top = y + 18;
+        let placement: "above" | "below" = "below";
+        if (top + bubbleHeight > window.innerHeight - margin) {
+          top = y - bubbleHeight - 14;
+          placement = "above";
+        }
+        if (top < margin) {
+          top = margin;
+          placement = "below";
+        }
+        if (left < margin) {
+          left = margin;
+        }
+
+        setTooltip((prev) =>
+          prev.open
+            ? {
+                ...prev,
+                left,
+                top,
+                placement,
+              }
+            : prev
+        );
+      });
+    };
+    const activate = (
+      target: HTMLElement,
+      text: string,
+      point: { x: number; y: number },
+      immediate: boolean
+    ) => {
+      clearOpenDelay();
+      clearCloseDelay();
+      activeTargetRef.current = target;
+      anchorPointRef.current = point;
+      const openBubble = () => {
+        if (activeTargetRef.current !== target) return;
+        if (prefersReducedMotion()) {
+          setTooltip({
+            visible: true,
+            open: true,
+            text,
+            left: point.x,
+            top: point.y,
+            placement: "below",
+          });
+          scheduleLayout();
+          return;
+        }
+        mountAndOpen(text, point);
+      };
+      if (immediate || prefersReducedMotion()) {
+        openBubble();
+      } else {
+        const delayMs = openRef.current ? 170 : 320;
+        openDelayRef.current = window.setTimeout(openBubble, delayMs);
+      }
+    };
+
+    const onPointerOver = (event: PointerEvent) => {
+      const target = resolveCustomTooltipTarget(event.target);
+      if (!target) return;
+      const text = tooltipText(target.getAttribute(CUSTOM_TOOLTIP_ATTR));
+      if (!text) return;
+      if (target === activeTargetRef.current) return;
+      activate(target, text, { x: event.clientX, y: event.clientY }, false);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (!activeTargetRef.current) return;
+      anchorPointRef.current = { x: event.clientX, y: event.clientY };
+      if (openRef.current) {
+        scheduleLayout();
+      }
+    };
+    const onPointerOut = (event: PointerEvent) => {
+      if (!activeTargetRef.current) return;
+      const related = resolveCustomTooltipTarget(event.relatedTarget);
+      if (related && related === activeTargetRef.current) return;
+      hide();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      const target = resolveCustomTooltipTarget(event.target);
+      if (!target) return;
+      const text = tooltipText(target.getAttribute(CUSTOM_TOOLTIP_ATTR));
+      if (!text) return;
+      const rect = target.getBoundingClientRect();
+      activate(
+        target,
+        text,
+        {
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        },
+        true
+      );
+    };
+    const onFocusOut = (event: FocusEvent) => {
+      const related = resolveCustomTooltipTarget(event.relatedTarget);
+      if (related && related === activeTargetRef.current) return;
+      hide();
+    };
+    const onViewportChanged = () => {
+      if (!openRef.current) return;
+      scheduleLayout();
+    };
+
+    window.addEventListener("pointerover", onPointerOver, true);
+    window.addEventListener("pointermove", onPointerMove, true);
+    window.addEventListener("pointerout", onPointerOut, true);
+    window.addEventListener("focusin", onFocusIn, true);
+    window.addEventListener("focusout", onFocusOut, true);
+    window.addEventListener("scroll", onViewportChanged, true);
+    window.addEventListener("resize", onViewportChanged);
+
+    return () => {
+      clearOpenDelay();
+      clearCloseDelay();
+      clearOpenAnimFrame();
+      if (frameRef.current != null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      window.removeEventListener("pointerover", onPointerOver, true);
+      window.removeEventListener("pointermove", onPointerMove, true);
+      window.removeEventListener("pointerout", onPointerOut, true);
+      window.removeEventListener("focusin", onFocusIn, true);
+      window.removeEventListener("focusout", onFocusOut, true);
+      window.removeEventListener("scroll", onViewportChanged, true);
+      window.removeEventListener("resize", onViewportChanged);
+    };
+  }, []);
+
+  if (!tooltip.visible || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={bubbleRef}
+      className={`appTooltipBubble ${tooltip.placement} ${tooltip.open ? "open" : ""}`}
+      style={{
+        left: tooltip.left,
+        top: tooltip.top,
+      }}
+      role="tooltip"
+      aria-hidden="true"
+    >
+      {tooltip.text}
+    </div>,
+    document.body
+  );
+}
+
 function SegTabs({
   tabs,
   active,
@@ -3288,12 +3787,105 @@ function SegmentedControl({
   variant?: "default" | "scroll";
   className?: string;
 }) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const stretchResetRef = useRef<number | null>(null);
+  const previousLeftRef = useRef<number | null>(null);
+  const [stretchDirection, setStretchDirection] = useState<"left" | "right" | null>(null);
+  const [indicator, setIndicator] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    ready: boolean;
+  }>({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+    ready: false,
+  });
+
+  useEffect(() => {
+    return () => {
+      if (stretchResetRef.current != null) {
+        window.clearTimeout(stretchResetRef.current);
+        stretchResetRef.current = null;
+      }
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const update = () => {
+      const active = root.querySelector<HTMLButtonElement>(".segBtn[data-active='true']");
+      if (!active) return;
+      let left = active.offsetLeft;
+      let top = active.offsetTop;
+      let width = active.offsetWidth;
+      let height = active.offsetHeight;
+      if (width < 8 || height < 8) {
+        const rootRect = root.getBoundingClientRect();
+        const activeRect = active.getBoundingClientRect();
+        left = activeRect.left - rootRect.left;
+        top = activeRect.top - rootRect.top;
+        width = activeRect.width;
+        height = activeRect.height;
+      }
+      const previousLeft = previousLeftRef.current;
+      previousLeftRef.current = left;
+      if (previousLeft != null && previousLeft !== left) {
+        setStretchDirection(left > previousLeft ? "right" : "left");
+        if (stretchResetRef.current != null) {
+          window.clearTimeout(stretchResetRef.current);
+        }
+        stretchResetRef.current = window.setTimeout(() => {
+          setStretchDirection(null);
+          stretchResetRef.current = null;
+        }, 260);
+      }
+      setIndicator((prev) => {
+        if (
+          prev.left === left &&
+          prev.top === top &&
+          prev.width === width &&
+          prev.height === height &&
+          prev.ready
+        ) {
+          return prev;
+        }
+        return { left, top, width, height, ready: true };
+      });
+    };
+    update();
+    const onResize = () => update();
+    const onScroll = () => update();
+    window.addEventListener("resize", onResize);
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("resize", onResize);
+      root.removeEventListener("scroll", onScroll);
+    };
+  }, [value, options, variant, className]);
+
   return (
-    <div className={`segmented ${variant === "scroll" ? "scroll" : ""} ${className ?? ""}`}>
+    <div className={`segmented ${variant === "scroll" ? "scroll" : ""} ${className ?? ""}`} ref={rootRef}>
+      <span
+        className={`segmentedIndicator ${indicator.ready ? "ready" : ""} ${
+          stretchDirection ? `stretch-${stretchDirection}` : ""
+        }`}
+        style={{
+          width: Math.max(0, indicator.width),
+          height: Math.max(0, indicator.height),
+          transform: `translate(${indicator.left}px, ${indicator.top}px)`,
+        }}
+        aria-hidden="true"
+      />
       {options.map((o) => (
         <button
           key={o.label}
           className={`segBtn ${o.value === value ? "active" : ""}`}
+          data-active={o.value === value ? "true" : "false"}
           onClick={() => onChange(o.value)}
         >
           {o.label}
@@ -3316,6 +3908,60 @@ function LoaderChip({
     <button className={`btn ${active ? "primary" : ""}`} onClick={onClick}>
       {label}
     </button>
+  );
+}
+
+function LazyInstalledModIcon({
+  alt,
+  src,
+  onVisible,
+}: {
+  alt: string;
+  src?: string | null;
+  onVisible: () => void;
+}) {
+  const holderRef = useRef<HTMLDivElement | null>(null);
+  const [inView, setInView] = useState(Boolean(src));
+
+  useEffect(() => {
+    if (src) {
+      setInView(true);
+      return;
+    }
+    if (inView) return;
+    const node = holderRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          setInView(true);
+          observer.disconnect();
+          break;
+        }
+      },
+      {
+        rootMargin: "160px 0px",
+      }
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [inView, src]);
+
+  useEffect(() => {
+    if (!inView || src) return;
+    onVisible();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inView, src]);
+
+  return (
+    <div className="instanceModIcon" ref={holderRef}>
+      {src ? (
+        <img src={src} alt={alt} loading="lazy" decoding="async" />
+      ) : (
+        <Icon name="layers" size={16} />
+      )}
+    </div>
   );
 }
 
@@ -3356,6 +4002,9 @@ export default function App() {
 
   const [route, setRoute] = useState<Route>("home");
   const [settingsMode, setSettingsMode] = useState<SettingsMode>(() => readSettingsMode());
+  const [instanceSettingsMode, setInstanceSettingsMode] = useState<SettingsMode>(() =>
+    readInstanceSettingsMode()
+  );
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [pendingSettingAnchor, setPendingSettingAnchor] = useState<string | null>(null);
   const [homeCustomizeOpen, setHomeCustomizeOpen] = useState(false);
@@ -3386,6 +4035,7 @@ export default function App() {
   const [instanceFilterState, setInstanceFilterState] = useState<InstanceContentFilters["state"]>("all");
   const [instanceFilterSource, setInstanceFilterSource] = useState<InstanceContentFilters["source"]>("all");
   const [instanceFilterMissing, setInstanceFilterMissing] = useState<InstanceContentFilters["missing"]>("all");
+  const [instanceSort, setInstanceSort] = useState<InstanceContentSort>("name_asc");
   const [instanceContentFiltersByScope, setInstanceContentFiltersByScope] = useState<
     Record<string, InstanceContentFilters>
   >(() => readInstanceContentFiltersState());
@@ -3398,17 +4048,27 @@ export default function App() {
   }, [settingsMode]);
   useEffect(() => {
     try {
+      localStorage.setItem(INSTANCE_SETTINGS_MODE_KEY, instanceSettingsMode);
+    } catch {
+      // ignore persistence failures
+    }
+  }, [instanceSettingsMode]);
+  useEffect(() => {
+    try {
       localStorage.setItem(HOME_LAYOUT_KEY, JSON.stringify(homeLayout));
     } catch {
       // ignore persistence failures
     }
   }, [homeLayout]);
   useEffect(() => {
-    try {
-      localStorage.setItem(INSTANCE_CONTENT_FILTERS_KEY, JSON.stringify(instanceContentFiltersByScope));
-    } catch {
-      // ignore persistence failures
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(INSTANCE_CONTENT_FILTERS_KEY, JSON.stringify(instanceContentFiltersByScope));
+      } catch {
+        // ignore persistence failures
+      }
+    }, 160);
+    return () => window.clearTimeout(timer);
   }, [instanceContentFiltersByScope]);
   const [logFilterQuery, setLogFilterQuery] = useState("");
   const [logSeverityFilter, setLogSeverityFilter] = useState<"all" | InstanceLogSeverity>("all");
@@ -3436,6 +4096,10 @@ export default function App() {
   const [logLoadErr, setLogLoadErr] = useState<string | null>(null);
   const [rawLogLinesBySource, setRawLogLinesBySource] = useState<Record<string, ReadInstanceLogsResult>>({});
   const [logWindowBySource, setLogWindowBySource] = useState<Record<string, LogWindowState>>({});
+  const [logAutoFollow, setLogAutoFollow] = useState(true);
+  const [logJumpVisible, setLogJumpVisible] = useState(false);
+  const logViewerRef = useRef<HTMLDivElement | null>(null);
+  const logJumpAnimationFrameRef = useRef<number | null>(null);
   const logLoadRequestSeqRef = useRef(0);
   const [instanceSettingsOpen, setInstanceSettingsOpen] = useState(false);
   const [instanceLinksOpen, setInstanceLinksOpen] = useState(false);
@@ -3539,11 +4203,11 @@ export default function App() {
   }
 
   function openSettingAnchor(anchorId: string, options?: { advanced?: boolean; target?: "global" | "instance" }) {
-    if (options?.advanced && settingsMode !== "advanced") {
-      setSettingsMode("advanced");
-      setInstallNotice("Switched to Advanced mode to open this setting.");
-    }
     if (options?.target === "instance") {
+      if (options?.advanced && instanceSettingsMode !== "advanced") {
+        setInstanceSettingsMode("advanced");
+        setInstallNotice("Switched Instance settings to Advanced mode.");
+      }
       const targetInstanceId = selectedId ?? instances[0]?.id ?? null;
       if (!targetInstanceId) {
         setInstallNotice("Create an instance first to open instance settings.");
@@ -3558,6 +4222,10 @@ export default function App() {
       else if (anchorId.includes("hooks")) setInstanceSettingsSection("content");
       else setInstanceSettingsSection("general");
     } else {
+      if (options?.advanced && settingsMode !== "advanced") {
+        setSettingsMode("advanced");
+        setInstallNotice("Switched to Advanced mode to open this setting.");
+      }
       setRoute("settings");
     }
     setPendingSettingAnchor(anchorId);
@@ -3670,11 +4338,11 @@ export default function App() {
     }
   }, [route]);
   useEffect(() => {
-    if (settingsMode === "advanced") return;
+    if (instanceSettingsMode === "advanced") return;
     if (instanceSettingsSection === "content") {
       setInstanceSettingsSection("general");
     }
-  }, [settingsMode, instanceSettingsSection]);
+  }, [instanceSettingsMode, instanceSettingsSection]);
 
   useEffect(() => {
     const shouldDetect =
@@ -4341,10 +5009,15 @@ export default function App() {
   const [projectErr, setProjectErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Instance | null>(null);
   const [installedMods, setInstalledMods] = useState<InstalledMod[]>([]);
+  const [installedIconCache, setInstalledIconCache] = useState<Record<string, string>>(() =>
+    readInstalledIconCache()
+  );
+  const installedIconFetchesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const [selectedModVersionIds, setSelectedModVersionIds] = useState<string[]>([]);
   const [modsBusy, setModsBusy] = useState(false);
   const [modsErr, setModsErr] = useState<string | null>(null);
   const [toggleBusyVersion, setToggleBusyVersion] = useState<string | null>(null);
+  const [providerSwitchBusyKey, setProviderSwitchBusyKey] = useState<string | null>(null);
   const [installProgress, setInstallProgress] = useState<InstallProgressEvent | null>(null);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
   const [installNotice, setInstallNotice] = useState<string | null>(null);
@@ -4600,7 +5273,9 @@ export default function App() {
   const localResolverBackfillAtRef = useRef<Record<string, number>>({});
   const localResolverBusyRef = useRef<Record<string, boolean>>({});
   const [supportBundleModalInstanceId, setSupportBundleModalInstanceId] = useState<string | null>(null);
-  const [supportBundleIncludeRawLogs, setSupportBundleIncludeRawLogs] = useState(false);
+  const [supportBundleIncludeRawLogs, setSupportBundleIncludeRawLogs] = useState<boolean>(() =>
+    readSupportBundleRawDefault()
+  );
   const [supportBundleBusy, setSupportBundleBusy] = useState(false);
   const [launchMethodPick, setLaunchMethodPick] = useState<LaunchMethod>("native");
   const [updateCheckCadence, setUpdateCheckCadence] = useState<SchedulerCadence>("daily");
@@ -4818,22 +5493,31 @@ export default function App() {
   useEffect(() => {
     if (!instanceFilterScopeKey) return;
     const saved = instanceContentFiltersByScope[instanceFilterScopeKey] ?? defaultInstanceContentFilters();
-    setInstanceQuery(saved.query ?? "");
-    setInstanceFilterState(saved.state ?? "all");
-    setInstanceFilterSource(saved.source ?? "all");
-    setInstanceFilterMissing(saved.missing ?? "all");
+    const nextQuery = saved.query ?? "";
+    const nextState = saved.state ?? "all";
+    const nextSource = saved.source ?? "all";
+    const nextMissing = saved.missing ?? "all";
+    setInstanceQuery((prev) => (prev === nextQuery ? prev : nextQuery));
+    setInstanceFilterState((prev) => (prev === nextState ? prev : nextState));
+    setInstanceFilterSource((prev) => (prev === nextSource ? prev : nextSource));
+    setInstanceFilterMissing((prev) => (prev === nextMissing ? prev : nextMissing));
   }, [instanceFilterScopeKey, instanceContentFiltersByScope]);
   useEffect(() => {
     if (!instanceFilterScopeKey) return;
-    setInstanceContentFiltersByScope((prev) => ({
-      ...prev,
-      [instanceFilterScopeKey]: {
+    setInstanceContentFiltersByScope((prev) => {
+      const nextEntry: InstanceContentFilters = {
         query: instanceQuery,
         state: instanceFilterState,
         source: instanceFilterSource,
         missing: instanceFilterMissing,
-      },
-    }));
+      };
+      const current = prev[instanceFilterScopeKey];
+      if (current && sameInstanceContentFilters(current, nextEntry)) return prev;
+      return {
+        ...prev,
+        [instanceFilterScopeKey]: nextEntry,
+      };
+    });
   }, [instanceFilterScopeKey, instanceQuery, instanceFilterState, instanceFilterSource, instanceFilterMissing]);
   const normalizedInstanceQuery = useMemo(
     () => instanceQuery.trim().toLowerCase(),
@@ -4946,9 +5630,9 @@ export default function App() {
     const shaderpackEntries: InstalledMod[] = [];
     const datapackEntries: InstalledMod[] = [];
     const visibleInstalledMods: InstalledMod[] = [];
-    const selectableVisibleMods: InstalledMod[] = [];
-    let selectedVisibleModCount = 0;
-    let selectedInstalledModCount = 0;
+    const selectableVisibleEntries: InstalledMod[] = [];
+    let selectedVisibleEntryCount = 0;
+    let selectedInstalledEntryCount = 0;
 
     for (const entry of installedMods) {
       const normalized = normalizeCreatorEntryType(entry.content_type);
@@ -4957,8 +5641,8 @@ export default function App() {
       else if (normalized === "shaderpacks") shaderpackEntries.push(entry);
       else if (normalized === "datapacks") datapackEntries.push(entry);
 
-      if (normalized === "mods" && selectedModVersionIdSet.has(entry.version_id)) {
-        selectedInstalledModCount += 1;
+      if (selectedModVersionIdSet.has(entry.version_id)) {
+        selectedInstalledEntryCount += 1;
       }
 
       if (normalizeInstanceContentType(entry.content_type) !== instanceContentType) continue;
@@ -4984,13 +5668,40 @@ export default function App() {
       }
 
       visibleInstalledMods.push(entry);
-      if (normalized === "mods" && entry.file_exists) {
-        selectableVisibleMods.push(entry);
+      if (entry.file_exists) {
+        selectableVisibleEntries.push(entry);
         if (selectedModVersionIdSet.has(entry.version_id)) {
-          selectedVisibleModCount += 1;
+          selectedVisibleEntryCount += 1;
         }
       }
     }
+
+    visibleInstalledMods.sort((a, b) => {
+      const byName = a.name.localeCompare(b.name);
+      if (instanceSort === "recently_added") {
+        const byAddedAt = Number(b.added_at ?? 0) - Number(a.added_at ?? 0);
+        if (byAddedAt !== 0) return byAddedAt;
+        return byName;
+      }
+      if (instanceSort === "name_asc") return byName;
+      if (instanceSort === "name_desc") return b.name.localeCompare(a.name);
+      if (instanceSort === "source") {
+        const sourceCmp = providerSourceLabel(a.source).localeCompare(providerSourceLabel(b.source));
+        if (sourceCmp !== 0) return sourceCmp;
+        return byName;
+      }
+      if (instanceSort === "enabled_first") {
+        const stateCmp = Number(a.enabled === b.enabled ? 0 : a.enabled ? -1 : 1);
+        if (stateCmp !== 0) return stateCmp;
+        return byName;
+      }
+      if (instanceSort === "disabled_first") {
+        const stateCmp = Number(a.enabled === b.enabled ? 0 : a.enabled ? 1 : -1);
+        if (stateCmp !== 0) return stateCmp;
+        return byName;
+      }
+      return byName;
+    });
 
     return {
       modEntries,
@@ -4998,9 +5709,9 @@ export default function App() {
       shaderpackEntries,
       datapackEntries,
       visibleInstalledMods,
-      selectableVisibleMods,
-      selectedVisibleModCount,
-      selectedInstalledModCount,
+      selectableVisibleEntries,
+      selectedVisibleEntryCount,
+      selectedInstalledEntryCount,
     };
   }, [
     installedMods,
@@ -5010,6 +5721,7 @@ export default function App() {
     instanceFilterState,
     instanceFilterSource,
     instanceFilterMissing,
+    instanceSort,
   ]);
   const instanceHealthById = useMemo<Record<string, InstanceHealthScore>>(() => {
     const out: Record<string, InstanceHealthScore> = {};
@@ -5092,6 +5804,10 @@ export default function App() {
   }, [logMaxLines]);
 
   useEffect(() => {
+    localStorage.setItem(INSTALLED_ICON_CACHE_KEY, JSON.stringify(installedIconCache));
+  }, [installedIconCache]);
+
+  useEffect(() => {
     localStorage.setItem(
       "mpm.skinPreview.time_of_day.v1",
       String(normalizeTimeOfDay(previewTimeOfDay))
@@ -5145,6 +5861,12 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(APP_UPDATER_AUTOCHECK_KEY, appUpdaterAutoCheck ? "1" : "0");
   }, [appUpdaterAutoCheck]);
+  useEffect(() => {
+    localStorage.setItem(
+      SUPPORT_BUNDLE_RAW_DEFAULT_KEY,
+      supportBundleIncludeRawLogs ? "1" : "0"
+    );
+  }, [supportBundleIncludeRawLogs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -5658,61 +6380,20 @@ export default function App() {
     setDiscoverErr(null);
     setDiscoverBusy(true);
     try {
-      if (discoverContentType === "datapacks") {
-        const windowLimit = Math.max(limit, newOffset + limit, 30);
-        const [datapacksRes, modpacksRes] = await Promise.all([
-          searchDiscoverContent({
-            query,
-            loaders: [],
-            gameVersion: filterVersion,
-            categories: filterCategories,
-            index,
-            limit: windowLimit,
-            offset: 0,
-            source: discoverSource,
-            contentType: "datapacks",
-          }).catch(() => ({ hits: [], total_hits: 0, offset: 0, limit: windowLimit })),
-          searchDiscoverContent({
-            query,
-            loaders: [],
-            gameVersion: filterVersion,
-            categories: filterCategories,
-            index,
-            limit: windowLimit,
-            offset: 0,
-            source: discoverSource,
-            contentType: "modpacks",
-          }).catch(() => ({ hits: [], total_hits: 0, offset: 0, limit: windowLimit })),
-        ]);
-        const merged = [...datapacksRes.hits, ...modpacksRes.hits];
-        merged.sort((a, b) => {
-          if (index === "downloads") return (b.downloads ?? 0) - (a.downloads ?? 0);
-          if (index === "follows") return (b.follows ?? 0) - (a.follows ?? 0);
-          return String(b.date_modified ?? "").localeCompare(String(a.date_modified ?? ""));
-        });
-        const mergedTotalHits = Math.max(
-          merged.length,
-          (datapacksRes.total_hits ?? 0) + (modpacksRes.total_hits ?? 0)
-        );
-        setHits(merged.slice(newOffset, newOffset + limit));
-        setTotalHits(mergedTotalHits);
-        setOffset(newOffset);
-      } else {
-        const res = await searchDiscoverContent({
-          query,
-          loaders: discoverContentType === "mods" ? filterLoaders : [],
-          gameVersion: filterVersion,
-          categories: filterCategories,
-          index,
-          limit,
-          offset: newOffset,
-          source: discoverSource,
-          contentType: discoverContentType,
-        });
-        setHits(res.hits);
-        setTotalHits(res.total_hits);
-        setOffset(res.offset);
-      }
+      const res = await searchDiscoverContent({
+        query,
+        loaders: discoverContentType === "mods" ? filterLoaders : [],
+        gameVersion: filterVersion,
+        categories: filterCategories,
+        index,
+        limit,
+        offset: newOffset,
+        source: discoverSource,
+        contentType: discoverContentType,
+      });
+      setHits(res.hits);
+      setTotalHits(res.total_hits);
+      setOffset(res.offset);
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       const lower = msg.toLowerCase();
@@ -5985,6 +6666,153 @@ export default function App() {
       setCurseforgeErr(e?.toString?.() ?? String(e));
     } finally {
       setCurseforgeBusy(false);
+    }
+  }
+
+  async function fetchInstalledIconFromProvider(
+    source: string,
+    projectId: string,
+    contentType: DiscoverContentType
+  ): Promise<string | null> {
+    const normalizedSource = normalizeProviderSource(source);
+    if (normalizedSource === "modrinth") {
+      const cleanProjectId = String(projectId ?? "").trim();
+      if (!cleanProjectId) return null;
+      const project = await getProject(cleanProjectId);
+      const icon = String(project?.icon_url ?? "").trim();
+      return icon || null;
+    }
+    if (normalizedSource === "curseforge") {
+      const parsedId = parseCurseforgeProjectId(projectId);
+      if (!parsedId) return null;
+      const detail = await getCurseforgeProjectDetail({ projectId: parsedId, contentType });
+      const icon = String(detail?.icon_url ?? "").trim();
+      return icon || null;
+    }
+    return null;
+  }
+
+  async function resolveInstalledModIcon(mod: InstalledMod): Promise<string | null> {
+    const cacheKey = installedIconCacheKey(mod);
+    const cached = String(installedIconCache[cacheKey] ?? "").trim();
+    if (cached) return cached;
+
+    const inFlight = installedIconFetchesRef.current.get(cacheKey);
+    if (inFlight) return inFlight;
+
+    const task = (async () => {
+      const detailType = installedContentTypeToDiscover(mod.content_type);
+      const candidates = installedProviderCandidates(mod);
+      const orderedTargets: Array<{ source: string; projectId: string }> = [];
+      const seen = new Set<string>();
+      const push = (source: string, projectId: string) => {
+        const normalizedSource = normalizeProviderSource(source);
+        if (normalizedSource !== "modrinth" && normalizedSource !== "curseforge") return;
+        const cleanProjectId = String(projectId ?? "").trim();
+        if (!cleanProjectId) return;
+        const key = `${normalizedSource}:${cleanProjectId}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        orderedTargets.push({ source: normalizedSource, projectId: cleanProjectId });
+      };
+
+      push(mod.source, preferredProjectIdForProvider(mod, mod.source));
+      for (const candidate of candidates) {
+        push(candidate.source, candidate.project_id);
+      }
+
+      for (const target of orderedTargets) {
+        try {
+          const icon = await fetchInstalledIconFromProvider(
+            target.source,
+            target.projectId,
+            detailType
+          );
+          if (!icon) continue;
+          setInstalledIconCache((prev) => {
+            if (prev[cacheKey] === icon) return prev;
+            return {
+              ...prev,
+              [cacheKey]: icon,
+            };
+          });
+          return icon;
+        } catch {
+          // try the next provider candidate
+        }
+      }
+
+      return null;
+    })().finally(() => {
+      installedIconFetchesRef.current.delete(cacheKey);
+    });
+
+    installedIconFetchesRef.current.set(cacheKey, task);
+    return task;
+  }
+
+  function requestInstalledModIcon(mod: InstalledMod) {
+    const cacheKey = installedIconCacheKey(mod);
+    if (installedIconCache[cacheKey]) return;
+    void resolveInstalledModIcon(mod);
+  }
+
+  async function openInstalledModDetails(mod: InstalledMod) {
+    const candidates = installedProviderCandidates(mod);
+    const detailType = installedContentTypeToDiscover(mod.content_type);
+    const currentSource = normalizeProviderSource(mod.source);
+    const order: Array<"modrinth" | "curseforge"> =
+      currentSource === "modrinth"
+        ? ["modrinth", "curseforge"]
+        : currentSource === "curseforge"
+          ? ["curseforge", "modrinth"]
+          : ["modrinth", "curseforge"];
+
+    for (const source of order) {
+      const candidate =
+        candidates.find((item) => normalizeProviderSource(item.source) === source) ?? null;
+      const projectId = String(
+        candidate?.project_id ??
+          (normalizeProviderSource(mod.source) === source ? mod.project_id : "")
+      ).trim();
+      if (!projectId) continue;
+      if (source === "modrinth") {
+        await openProject(projectId, detailType);
+        return;
+      }
+      const parsedCfId = parseCurseforgeProjectId(projectId);
+      if (!parsedCfId) continue;
+      await openCurseforgeProject(parsedCfId, detailType);
+      return;
+    }
+
+    setInstallNotice(
+      `No provider details are available for ${mod.name} yet. Resolve local sources first.`
+    );
+  }
+
+  async function onSetInstalledModProvider(inst: Instance, mod: InstalledMod, source: string) {
+    const normalizedSource = normalizeProviderSource(source);
+    if (normalizedSource !== "modrinth" && normalizedSource !== "curseforge") return;
+    if (normalizeProviderSource(mod.source) === normalizedSource) return;
+    const busyKey = `${mod.version_id}:${normalizedSource}`;
+    setProviderSwitchBusyKey(busyKey);
+    setModsErr(null);
+    try {
+      const updated = await setInstalledModProvider({
+        instanceId: inst.id,
+        versionId: mod.version_id,
+        source: normalizedSource,
+      });
+      setInstalledMods((prev) =>
+        prev.map((entry) => (entry.version_id === updated.version_id ? updated : entry))
+      );
+      requestInstalledModIcon(updated);
+      setInstallNotice(`Set ${mod.name} provider to ${providerSourceLabel(normalizedSource)}.`);
+    } catch (e: any) {
+      setModsErr(e?.toString?.() ?? String(e));
+    } finally {
+      setProviderSwitchBusyKey(null);
     }
   }
 
@@ -6723,7 +7551,7 @@ export default function App() {
       stage: "resolving",
       downloaded: 0,
       total: null,
-      percent: 0,
+      percent: null,
       message: "Resolving compatible version…",
     });
     let installSucceeded = false;
@@ -7102,7 +7930,7 @@ export default function App() {
 
   function onToggleAllVisibleModSelection(mods: InstalledMod[], checked: boolean) {
     const ids = mods
-      .filter((m) => normalizeCreatorEntryType(m.content_type) === "mods" && m.file_exists)
+      .filter((m) => m.file_exists)
       .map((m) => m.version_id);
     if (ids.length === 0) return;
     setSelectedModVersionIds((prev) => {
@@ -7116,18 +7944,17 @@ export default function App() {
   }
 
   async function onBulkToggleSelectedMods(inst: Instance, enabled: boolean) {
-    const candidates = installedMods.filter(
+    const candidates = installedContentSummary.visibleInstalledMods.filter(
       (m) =>
         selectedModVersionIdSet.has(m.version_id) &&
-        normalizeCreatorEntryType(m.content_type) === "mods" &&
         m.file_exists &&
         m.enabled !== enabled
     );
     if (candidates.length === 0) {
       setInstallNotice(
         selectedModVersionIds.length === 0
-          ? "Select one or more mods first."
-          : "No selected mods need changes."
+          ? "Select one or more entries first."
+          : "No selected entries need changes."
       );
       return;
     }
@@ -7150,15 +7977,16 @@ export default function App() {
       }
       await refreshInstalledMods(inst.id);
       if (succeeded.size > 0) {
+        const sectionLabel = instanceContentSectionLabel(instanceContentType);
         setInstallNotice(
-          `${enabled ? "Enabled" : "Disabled"} ${succeeded.size} selected mod${
+          `${enabled ? "Enabled" : "Disabled"} ${succeeded.size} selected ${sectionLabel} entr${
             succeeded.size === 1 ? "" : "s"
           }.`
         );
       }
       if (failedNames.length > 0) {
         setModsErr(
-          `Could not update ${failedNames.length} mod${
+          `Could not update ${failedNames.length} entr${
             failedNames.length === 1 ? "" : "s"
           }: ${failedNames.slice(0, 3).join(", ")}${
             failedNames.length > 3 ? ` (+${failedNames.length - 3} more)` : ""
@@ -8452,13 +9280,12 @@ export default function App() {
 
   useEffect(() => {
     const valid = new Set(
-      installedMods
-        .filter((m) => normalizeCreatorEntryType(m.content_type) === "mods")
-        .map((m) => m.version_id)
+      installedMods.map((m) => m.version_id)
     );
-    setSelectedModVersionIds((prev) =>
-      prev.filter((id) => valid.has(id))
-    );
+    setSelectedModVersionIds((prev) => {
+      const next = prev.filter((id) => valid.has(id));
+      return next.length === prev.length ? prev : next;
+    });
   }, [installedMods]);
 
   useEffect(() => {
@@ -8469,10 +9296,11 @@ export default function App() {
 
       const timingKey = `${payload.instance_id}:${payload.project_id}`;
       const nowPerf = performance.now();
+      const stage = String(payload.stage ?? "").toLowerCase();
       const rawPercent =
         Number.isFinite(payload.percent as number)
           ? Number(payload.percent)
-          : Number(payload.total ?? 0) > 0
+          : stage === "downloading" && Number(payload.total ?? 0) > 0
             ? (Number(payload.downloaded ?? 0) / Number(payload.total)) * 100
             : null;
       const percent = rawPercent == null ? null : Math.max(0, Math.min(100, rawPercent));
@@ -8509,7 +9337,6 @@ export default function App() {
       setInstallProgressElapsedSeconds(elapsedSeconds);
       setInstallProgressEtaSeconds(etaSeconds);
 
-      const stage = String(payload.stage ?? "").toLowerCase();
       if (stage === "completed" || stage === "error") {
         delete installProgressTimingRef.current[timingKey];
       }
@@ -8862,12 +9689,50 @@ export default function App() {
   }, [route]);
 
   useEffect(() => {
+    return () => {
+      if (logJumpAnimationFrameRef.current != null) {
+        window.cancelAnimationFrame(logJumpAnimationFrameRef.current);
+        logJumpAnimationFrameRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     setSelectedCrashSuspect(null);
   }, [
     selectedId,
     logSourceFilter,
     logSeverityFilter,
     logFilterQuery,
+    logQuickFilters.errors,
+    logQuickFilters.warnings,
+    logQuickFilters.suspects,
+    logQuickFilters.crashes,
+  ]);
+
+  useEffect(() => {
+    if (route !== "instance" || instanceTab !== "logs" || logViewMode !== "live") return;
+    setLogAutoFollow(true);
+    setLogJumpVisible(false);
+  }, [route, instanceTab, logViewMode, selectedId, logSourceFilter]);
+
+  useEffect(() => {
+    if (route !== "instance" || instanceTab !== "logs" || logViewMode !== "live") return;
+    if (!logAutoFollow) return;
+    const viewer = logViewerRef.current;
+    if (!viewer) return;
+    viewer.scrollTop = viewer.scrollHeight;
+    setLogJumpVisible(false);
+  }, [
+    route,
+    instanceTab,
+    logViewMode,
+    selectedId,
+    logSourceFilter,
+    logAutoFollow,
+    rawLogLinesBySource,
+    logFilterQuery,
+    logSeverityFilter,
     logQuickFilters.errors,
     logQuickFilters.warnings,
     logQuickFilters.suspects,
@@ -9000,6 +9865,70 @@ export default function App() {
       }));
     }
   };
+
+  function onLogViewerScroll() {
+    const viewer = logViewerRef.current;
+    if (!viewer) return;
+    const distance = viewer.scrollHeight - (viewer.scrollTop + viewer.clientHeight);
+    const atBottom = distance <= 10;
+    setLogJumpVisible((prev) => (prev === !atBottom ? prev : !atBottom));
+    setLogAutoFollow((prev) => {
+      if (atBottom) return true;
+      if (!prev) return prev;
+      return false;
+    });
+  }
+
+  function onJumpLogsToBottom() {
+    const viewer = logViewerRef.current;
+    if (!viewer) return;
+    const useReducedMotion = prefersReducedMotion();
+    if (logJumpAnimationFrameRef.current != null) {
+      window.cancelAnimationFrame(logJumpAnimationFrameRef.current);
+      logJumpAnimationFrameRef.current = null;
+    }
+    const target = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+    if (useReducedMotion) {
+      viewer.scrollTop = target;
+      setLogAutoFollow(true);
+      setLogJumpVisible(false);
+      return;
+    }
+
+    const start = viewer.scrollTop;
+    const distance = target - start;
+    if (Math.abs(distance) < 1) {
+      setLogAutoFollow(true);
+      setLogJumpVisible(false);
+      return;
+    }
+
+    const durationMs = Math.max(420, Math.min(900, 260 + Math.sqrt(Math.abs(distance)) * 22));
+    const startAt = performance.now();
+    const hardStopAt = startAt + durationMs + 320;
+    const easeInOutSine = (t: number) => 0.5 - 0.5 * Math.cos(Math.PI * t);
+    setLogAutoFollow(false);
+
+    const step = (now: number) => {
+      const elapsed = now - startAt;
+      const progress = Math.max(0, Math.min(1, elapsed / durationMs));
+      const dynamicTarget = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+      const eased = easeInOutSine(progress);
+      const commanded = start + (dynamicTarget - start) * eased;
+      // Dampen per-frame movement so the motion stays smooth even as target moves.
+      viewer.scrollTop = viewer.scrollTop + (commanded - viewer.scrollTop) * 0.32;
+      const remaining = Math.abs(dynamicTarget - viewer.scrollTop);
+      if (progress < 1 || (remaining > 0.9 && now < hardStopAt)) {
+        logJumpAnimationFrameRef.current = window.requestAnimationFrame(step);
+        return;
+      }
+      logJumpAnimationFrameRef.current = null;
+      viewer.scrollTop = Math.max(0, viewer.scrollHeight - viewer.clientHeight);
+      setLogAutoFollow(true);
+    };
+    logJumpAnimationFrameRef.current = window.requestAnimationFrame(step);
+    setLogJumpVisible(false);
+  }
 
   useEffect(() => {
     if (!libraryContextMenu) return;
@@ -9892,7 +10821,41 @@ export default function App() {
     }
 
     return items;
-  }, [instances, selectedId, settingsMode, homeCustomizeOpen]);
+  }, [instances, selectedId, settingsMode, instanceSettingsMode, homeCustomizeOpen]);
+
+  const installProgressPercentValue = useMemo(() => {
+    if (!installProgress) return null;
+    const direct = Number(installProgress.percent);
+    if (Number.isFinite(direct)) {
+      return Math.max(0, Math.min(100, direct));
+    }
+    const total = Number(installProgress.total ?? 0);
+    const downloaded = Number(installProgress.downloaded ?? 0);
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(downloaded)) {
+      return Math.max(0, Math.min(100, (downloaded / total) * 100));
+    }
+    return null;
+  }, [installProgress]);
+
+  const installProgressTransferText = useMemo(() => {
+    if (!installProgress) return "";
+    const downloaded = Math.max(0, Number(installProgress.downloaded ?? 0));
+    const total = Number(installProgress.total ?? 0);
+    const stage = String(installProgress.stage ?? "").toLowerCase();
+    if (stage !== "downloading") return "";
+    if (Number.isFinite(total) && total > 0) {
+      if (total <= 200 && downloaded <= 200) {
+        const roundedDownloaded = Math.max(0, Math.floor(downloaded));
+        const roundedTotal = Math.max(1, Math.floor(total));
+        return `${roundedDownloaded}/${roundedTotal} file${roundedTotal === 1 ? "" : "s"}`;
+      }
+      return `${formatBytes(downloaded)} / ${formatBytes(total)}`;
+    }
+    if (downloaded > 0) {
+      return `${formatBytes(downloaded)} downloaded`;
+    }
+    return "";
+  }, [installProgress]);
 
   function renderContent() {
     if (route === "home") {
@@ -10065,11 +11028,18 @@ export default function App() {
       const orderedHomeLayout = [...homeLayout].sort(
         (a, b) => Number(b.pinned) - Number(a.pinned) || a.order - b.order
       );
+      const autoHiddenHomeWidgets = new Set<HomeWidgetId>();
+      if (!homeCustomizeOpen) {
+        if (recentActivity.length === 0) autoHiddenHomeWidgets.add("recent_activity");
+        if (runningInstances.length === 0) autoHiddenHomeWidgets.add("running_sessions");
+        if (topSlowPerfActions.length === 0) autoHiddenHomeWidgets.add("performance_pulse");
+        if (!focusFriendStatus?.linked) autoHiddenHomeWidgets.add("friend_link");
+      }
       const visibleHomeMainWidgets = orderedHomeLayout.filter(
-        (item) => item.visible && item.column === "main"
+        (item) => item.visible && item.column === "main" && !autoHiddenHomeWidgets.has(item.id)
       );
       const visibleHomeSideWidgets = orderedHomeLayout.filter(
-        (item) => item.visible && item.column === "side"
+        (item) => item.visible && item.column === "side" && !autoHiddenHomeWidgets.has(item.id)
       );
       const hiddenHomeWidgetCount = homeLayout.filter((item) => !item.visible).length;
 
@@ -10661,8 +11631,8 @@ export default function App() {
     if (route === "settings") {
       return (
         <div className="settingsPage">
-          <div className="h1">Settings</div>
-          <div className="p">Appearance, account, and launcher behavior.</div>
+          <div className="settingsPageTitle">Settings</div>
+          <div className="settingsPageIntro">Appearance, account, and launcher behavior.</div>
           <div className="row" style={{ marginBottom: 10 }}>
             <SegmentedControl
               value={settingsMode}
@@ -11019,6 +11989,41 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  {settingsMode === "advanced" ? (
+                    <div>
+                      <div className="settingTitle">Power-user defaults</div>
+                      <div className="settingSub">
+                        Extra launcher behavior toggles for advanced workflows.
+                      </div>
+                      <div className="row">
+                        <button
+                          className={`btn ${discoverAddTraySticky ? "primary" : ""}`}
+                          onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
+                        >
+                          Discover add tray pinned: {discoverAddTraySticky ? "On" : "Off"}
+                        </button>
+                        <button
+                          className={`btn ${supportBundleIncludeRawLogs ? "danger" : ""}`}
+                          onClick={() => setSupportBundleIncludeRawLogs((prev) => !prev)}
+                        >
+                          Support bundle raw logs default: {supportBundleIncludeRawLogs ? "On" : "Off"}
+                        </button>
+                      </div>
+                      <div className="row">
+                        <MenuSelect
+                          value={String(logMaxLines)}
+                          labelPrefix="Default log window"
+                          options={LOG_MAX_LINES_OPTIONS}
+                          onChange={(v) => {
+                            const parsed = Number.parseInt(String(v ?? ""), 10);
+                            if (!Number.isFinite(parsed)) return;
+                            setLogMaxLines(Math.max(200, Math.min(12000, parsed)));
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </section>
@@ -11646,7 +12651,9 @@ export default function App() {
           : discoverContentType === "resourcepacks"
             ? "Search resourcepacks…"
             : discoverContentType === "datapacks"
-              ? "Search datapacks and modpacks…"
+              ? "Search datapacks…"
+              : discoverContentType === "modpacks"
+                ? "Search modpacks…"
               : "Search mods…";
 
       return (
@@ -12085,15 +13092,30 @@ export default function App() {
         hasLaunchFailure ||
         launchStage?.status === "starting" ||
         launchStage?.status === "running";
-      const selectableVisibleMods = installedContentSummary.selectableVisibleMods;
-      const selectedVisibleModCount = installedContentSummary.selectedVisibleModCount;
-      const allVisibleModsSelected =
-        selectableVisibleMods.length > 0 &&
-        selectedVisibleModCount === selectableVisibleMods.length;
-      const selectedInstalledModCount = installedContentSummary.selectedInstalledModCount;
+      const selectableVisibleEntries = installedContentSummary.selectableVisibleEntries;
+      const selectedVisibleEntryCount = installedContentSummary.selectedVisibleEntryCount;
+      const allVisibleEntriesSelected =
+        selectableVisibleEntries.length > 0 &&
+        selectedVisibleEntryCount === selectableVisibleEntries.length;
+      const selectedInstalledEntryCount = installedContentSummary.selectedInstalledEntryCount;
       const instanceActivity = instanceActivityById[inst.id] ?? [];
       const selectedSnapshot =
         snapshots.find((s) => s.id === (rollbackSnapshotId ?? snapshots[0]?.id)) ?? snapshots[0] ?? null;
+      const resolveSnapshotProjectLabel = (rawId: string, sourceHint?: "modrinth" | "curseforge" | null) => {
+        const candidate = String(rawId ?? "").trim();
+        if (!candidate) return null;
+        const byProjectId = installedMods.find((mod) => {
+          const projectId = String(mod.project_id ?? "").trim();
+          if (!projectId) return false;
+          if (projectId === candidate) return true;
+          if (sourceHint === "curseforge" && (projectId === `cf:${candidate}` || projectId.endsWith(`:${candidate}`))) {
+            return true;
+          }
+          return false;
+        });
+        if (byProjectId?.name?.trim()) return byProjectId.name.trim();
+        return null;
+      };
       const instanceFriendDrift = friendLinkDriftByInstance[inst.id] ?? null;
       const friendUnsyncedBadge = friendLinkDriftBadge(instanceFriendDrift);
       const friendUnsyncedBadgeTooltip = friendLinkDriftBadgeTooltip(instanceFriendDrift);
@@ -12484,7 +13506,11 @@ export default function App() {
                           Resolve conflicts
                         </button>
                       ) : null}
-                      <button className="btn" title="Open full Links panel with sync policy, trust, and selective sync controls." onClick={() => setInstanceLinksOpen(true)}>
+                      <button
+                        className="btn"
+                        data-oj-tooltip="Open full Links panel with sync policy, trust, and selective sync controls."
+                        onClick={() => setInstanceLinksOpen(true)}
+                      >
                         Open links
                       </button>
                     </div>
@@ -12581,7 +13607,7 @@ export default function App() {
                           })
                         }
                         disabled={Boolean(localResolverBusyRef.current[inst.id])}
-                        title="Try to match local files to Modrinth/CurseForge metadata."
+                        data-oj-tooltip="Try to match local files to Modrinth and CurseForge metadata."
                       >
                         Identify local files
                       </button>
@@ -12621,11 +13647,15 @@ export default function App() {
                       onChange={(e) => setInstanceQuery(e.target.value)}
                       placeholder="Search installed content…"
                     />
-                    {instanceQuery && (
-                      <button className="iconBtn" onClick={() => setInstanceQuery("")} aria-label="Clear">
-                        <Icon name="x" size={18} />
-                      </button>
-                    )}
+                    <button
+                      className={`iconBtn instToolbarClearBtn ${instanceQuery ? "" : "hidden"}`}
+                      onClick={() => setInstanceQuery("")}
+                      aria-label="Clear search"
+                      disabled={!instanceQuery}
+                      data-oj-tooltip="Clear search"
+                    >
+                      <Icon name="x" size={18} />
+                    </button>
                   </div>
                   <div className="instToolbarRight">
                     <MenuSelect
@@ -12663,6 +13693,20 @@ export default function App() {
                       ]}
                       align="start"
                     />
+                    <MenuSelect
+                      value={instanceSort}
+                      labelPrefix="Sort"
+                      onChange={(value) => setInstanceSort((value as InstanceContentSort | null) ?? "name_asc")}
+                      options={[
+                        { value: "recently_added", label: "Recently added" },
+                        { value: "name_asc", label: "Name A-Z" },
+                        { value: "name_desc", label: "Name Z-A" },
+                        { value: "source", label: "Source" },
+                        { value: "enabled_first", label: "Enabled first" },
+                        { value: "disabled_first", label: "Disabled first" },
+                      ]}
+                      align="start"
+                    />
                     <button
                       className="btn"
                       onClick={() => {
@@ -12670,6 +13714,7 @@ export default function App() {
                         setInstanceFilterState("all");
                         setInstanceFilterSource("all");
                         setInstanceFilterMissing("all");
+                        setInstanceSort("name_asc");
                       }}
                     >
                       Clear filters
@@ -12732,7 +13777,7 @@ export default function App() {
                             labelPrefix="Snapshot"
                             options={snapshots.slice(0, 30).map((s) => ({
                               value: s.id,
-                              label: formatSnapshotOptionLabel(s),
+                              label: formatSnapshotOptionLabel(s, resolveSnapshotProjectLabel),
                             }))}
                             align="start"
                             onChange={(v) => setRollbackSnapshotId(v)}
@@ -12743,7 +13788,7 @@ export default function App() {
                             disabled={rollbackBusy}
                             title={
                               selectedSnapshot
-                                ? `Rollback to ${formatSnapshotOptionLabel(selectedSnapshot)}`
+                                ? `Rollback to ${formatSnapshotOptionLabel(selectedSnapshot, resolveSnapshotProjectLabel)}`
                                 : "Rollback to latest snapshot"
                             }
                           >
@@ -12803,123 +13848,204 @@ export default function App() {
                       <div className="instanceModsTable">
                         <div className="instanceModsHeaderRow">
                           <div className="instanceModsHeaderSelect">
-                            {instanceContentType === "mods" ? (
-                              <input
-                                type="checkbox"
-                                className="instanceModsSelectCheck"
-                                checked={allVisibleModsSelected}
-                                onChange={(e) =>
-                                  onToggleAllVisibleModSelection(visibleInstalledMods, e.target.checked)
-                                }
-                                disabled={selectableVisibleMods.length === 0 || toggleBusyVersion === "__bulk__"}
-                                aria-label={
-                                  allVisibleModsSelected ? "Unselect all visible mods" : "Select all visible mods"
-                                }
-                              />
-                            ) : null}
+                            <input
+                              type="checkbox"
+                              className="instanceModsSelectCheck"
+                              checked={allVisibleEntriesSelected}
+                              onChange={(e) =>
+                                onToggleAllVisibleModSelection(visibleInstalledMods, e.target.checked)
+                              }
+                              disabled={selectableVisibleEntries.length === 0 || toggleBusyVersion === "__bulk__"}
+                              aria-label={
+                                allVisibleEntriesSelected ? "Unselect all visible entries" : "Select all visible entries"
+                              }
+                            />
                           </div>
                           <div className="instanceModsHeaderName">Name</div>
                           <div className="instanceModsHeaderUpdated">Updated</div>
                           <div className="instanceModsHeaderAction">Action</div>
                         </div>
-                        {visibleInstalledMods.map((m) => (
-                          <div key={m.version_id} className={`instanceModsRow ${m.enabled ? "" : "disabled"}`}>
-                            <div className="instanceModsSelectCell">
-                              {(m.content_type ?? "mods") === "mods" ? (
+                        {visibleInstalledMods.map((m) => {
+                          const iconKey = installedIconCacheKey(m);
+                          const iconSrc = installedIconCache[iconKey] ?? null;
+                          const providerCandidates = installedProviderCandidates(m);
+                          const switchableProviders = providerCandidates.filter((candidate) => {
+                            const source = normalizeProviderSource(candidate.source);
+                            return source === "modrinth" || source === "curseforge";
+                          });
+                          const addedAtMs = Number(m.added_at ?? 0);
+                          const addedAtLabel =
+                            Number.isFinite(addedAtMs) && addedAtMs > 0
+                              ? new Date(addedAtMs).toLocaleDateString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                })
+                              : null;
+                          const rowMetaParts = [
+                            m.enabled ? "Enabled" : "Disabled",
+                            ...(m.file_exists ? [] : ["Missing file"]),
+                            ...(m.target_worlds?.length ? [`Worlds: ${m.target_worlds.join(", ")}`] : []),
+                          ];
+                          const rightMetaParts = [
+                            (m.version_number ?? "").trim() || "Unknown version",
+                            ...(addedAtLabel ? [`Added ${addedAtLabel}`] : []),
+                          ];
+                          return (
+                            <div
+                              key={m.version_id}
+                              className={`instanceModsRow ${m.enabled ? "" : "disabled"}`}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => void openInstalledModDetails(m)}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter" && event.key !== " ") return;
+                                event.preventDefault();
+                                void openInstalledModDetails(m);
+                              }}
+                              data-oj-tooltip="Open content details"
+                            >
+                              <div className="instanceModsSelectCell">
                                 <input
                                   type="checkbox"
                                   className="instanceModsSelectCheck"
                                   checked={selectedModVersionIdSet.has(m.version_id)}
+                                  onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => onToggleModSelection(m.version_id, e.target.checked)}
                                   disabled={!m.file_exists || toggleBusyVersion === "__bulk__"}
                                   aria-label={`Select ${m.name}`}
                                 />
-                              ) : null}
-                            </div>
-                            <div className="instanceModsNameCell">
-                              <div className="instanceModIcon">
-                                <Icon name="layers" size={16} />
                               </div>
-                              <div className="instanceModsNameText">
-                                <div className="instanceModsNameTitle">
-                                  {m.name}
-                                  {!m.file_exists ? (
-                                    <span className="chip" style={{ color: "rgba(248,113,113,0.95)", borderColor: "rgba(248,113,113,0.28)" }}>
-                                      Missing file
-                                    </span>
-                                  ) : null}
+                              <div className="instanceModsNameCell">
+                                <LazyInstalledModIcon
+                                  alt={`${m.name} icon`}
+                                  src={iconSrc}
+                                  onVisible={() => requestInstalledModIcon(m)}
+                                />
+                                <div className="instanceModsNameText">
+                                  <div className="instanceModsNameTitle">{m.name}</div>
+                                  <div className="instanceModsNameMeta">{rowMetaParts.join(" · ")}</div>
+                                  <div className="instanceModsProviderBadges">
+                                    {providerCandidates.map((candidate) => {
+                                      const source = normalizeProviderSource(candidate.source);
+                                      const label = providerSourceLabel(candidate.source);
+                                      const isActive = source === normalizeProviderSource(m.source);
+                                      const switchKey = `${m.version_id}:${source}`;
+                                      const isBusy = providerSwitchBusyKey === switchKey;
+                                      const canSwitch =
+                                        switchableProviders.length > 1 &&
+                                        (source === "modrinth" || source === "curseforge");
+                                      if (!canSwitch) {
+                                        return (
+                                          <span
+                                            key={`${candidate.source}:${candidate.project_id}:${candidate.version_id}`}
+                                            className={`instanceProviderBadge ${isActive ? "active" : ""}`}
+                                          >
+                                            {label}
+                                          </span>
+                                        );
+                                      }
+                                      return (
+                                        <button
+                                          key={`${candidate.source}:${candidate.project_id}:${candidate.version_id}`}
+                                          className={`instanceProviderBadge ${isActive ? "active" : ""} ${canSwitch ? "clickable" : ""}`}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            void onSetInstalledModProvider(inst, m, source);
+                                          }}
+                                          disabled={
+                                            isBusy ||
+                                            toggleBusyVersion === m.version_id ||
+                                            toggleBusyVersion === "__bulk__"
+                                          }
+                                          data-oj-tooltip={
+                                            isActive
+                                              ? `${label} is currently active for metadata and actions`
+                                              : `Switch to ${label} metadata and actions`
+                                          }
+                                        >
+                                          {isBusy ? "Switching…" : label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
                                 </div>
-                                <div className="instanceModsNameMeta">
-                                  Source: {m.source}
-                                  {m.content_type ? ` · ${m.content_type}` : ""}
-                                  {m.target_worlds?.length ? ` · worlds: ${m.target_worlds.join(", ")}` : ""}
+                              </div>
+
+                              <div className="instanceModsUpdatedCell">
+                                <div className="instanceModsFilenamePrimary" data-oj-tooltip={m.filename}>
+                                  {m.filename}
+                                </div>
+                                <div className="instanceModsVersionMeta">{rightMetaParts.join(" · ")}</div>
+                              </div>
+
+                              <div className="instanceModsActionCell">
+                                <div className="instanceModsActionRow">
+                                  <button
+                                    className={`instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void onToggleInstalledMod(inst, m, !m.enabled);
+                                    }}
+                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
+                                    aria-label={
+                                      m.enabled
+                                        ? `${installedContentTypeLabel(m.content_type)} enabled, click to disable`
+                                        : `${installedContentTypeLabel(m.content_type)} disabled, click to enable`
+                                    }
+                                    data-oj-tooltip={m.enabled ? "Disable this entry" : "Enable this entry"}
+                                  >
+                                    <Icon
+                                      name={toggleBusyVersion === m.version_id ? "sparkles" : m.enabled ? "check_circle" : "slash_circle"}
+                                      size={19}
+                                    />
+                                  </button>
+                                  <button
+                                    className="instanceActionIconBtn instanceActionDeleteBtn"
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      void onDeleteInstalledMod(inst, m);
+                                    }}
+                                    disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__"}
+                                    aria-label={`Delete ${installedContentTypeLabel(m.content_type)}`}
+                                    data-oj-tooltip={`Remove this ${installedContentTypeLabel(m.content_type)} from the instance`}
+                                  >
+                                    <Icon name={toggleBusyVersion === m.version_id ? "sparkles" : "trash"} size={19} />
+                                  </button>
                                 </div>
                               </div>
                             </div>
-
-                            <div className="instanceModsUpdatedCell">
-                              <div className="instanceModsVersion">{m.version_number}</div>
-                              <div className="instanceModsFilename">{m.filename}</div>
-                            </div>
-
-                            <div className="instanceModsActionCell">
-                              <div className="instanceModsActionRow">
-                                <button
-                                  className={`btn subtle instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
-                                  onClick={() => onToggleInstalledMod(inst, m, !m.enabled)}
-                                  disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__" || !m.file_exists}
-                                  aria-label={
-                                    m.enabled
-                                      ? `${installedContentTypeLabel(m.content_type)} enabled, click to disable`
-                                      : `${installedContentTypeLabel(m.content_type)} disabled, click to enable`
-                                  }
-                                  title={m.enabled ? "Enabled · click to disable" : "Disabled · click to enable"}
-                                >
-                                  <Icon
-                                    name={toggleBusyVersion === m.version_id ? "sparkles" : m.enabled ? "check_circle" : "slash_circle"}
-                                    size={15}
-                                  />
-                                </button>
-                                <button
-                                  className="btn subtle instanceActionIconBtn instanceActionDeleteBtn"
-                                  onClick={() => void onDeleteInstalledMod(inst, m)}
-                                  disabled={toggleBusyVersion === m.version_id || toggleBusyVersion === "__bulk__"}
-                                  aria-label={`Delete ${installedContentTypeLabel(m.content_type)}`}
-                                  title={`Delete ${installedContentTypeLabel(m.content_type)}`}
-                                >
-                                  <Icon name={toggleBusyVersion === m.version_id ? "sparkles" : "trash"} size={15} />
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
 
-                    {instanceContentType === "mods" && selectedInstalledModCount > 0 ? (
+                    {selectedInstalledEntryCount > 0 ? (
                       <div className="instanceModsStickyBar">
                         <div className="instanceModsStickyTitle">
-                          Apply to selected mods · {selectedInstalledModCount} selected · {installedContentSummary.visibleInstalledMods.length} visible
+                          Apply to selected {instanceContentSectionLabel(instanceContentType)} · {selectedInstalledEntryCount} selected · {installedContentSummary.visibleInstalledMods.length} visible
                         </div>
                         <div className="instanceModsStickyActions">
                           <button
                             className="btn primary"
                             onClick={() => void onBulkToggleSelectedMods(inst, true)}
-                            disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
+                            disabled={selectedInstalledEntryCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
                             {toggleBusyVersion === "__bulk__" ? "Applying…" : "Enable selected"}
                           </button>
                           <button
                             className="btn danger"
                             onClick={() => void onBulkToggleSelectedMods(inst, false)}
-                            disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
+                            disabled={selectedInstalledEntryCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
                             {toggleBusyVersion === "__bulk__" ? "Applying…" : "Disable selected"}
                           </button>
                           <button
                             className="btn"
                             onClick={() => setSelectedModVersionIds([])}
-                            disabled={selectedInstalledModCount === 0 || toggleBusyVersion === "__bulk__"}
+                            disabled={selectedInstalledEntryCount === 0 || toggleBusyVersion === "__bulk__"}
                           >
                             Clear selection
                           </button>
@@ -13181,7 +14307,11 @@ export default function App() {
                           </div>
                           {logLoadErr ? <div className="instanceLogsInlineErr">{logLoadErr}</div> : null}
 
-                          <div className="instanceLogsViewer">
+                          <div
+                            className="instanceLogsViewer"
+                            ref={logViewerRef}
+                            onScroll={onLogViewerScroll}
+                          >
                             {visibleLogLines.length === 0 ? (
                               <div className="instanceLogsEmpty">
                                 No log lines match your current filters.
@@ -13211,6 +14341,11 @@ export default function App() {
                                 })}
                               </div>
                             )}
+                            {logJumpVisible ? (
+                              <button className="btn instanceLogsJumpBtn" onClick={onJumpLogsToBottom}>
+                                Jump to latest
+                              </button>
+                            ) : null}
                           </div>
                         </div>
 
@@ -13669,7 +14804,7 @@ export default function App() {
                       { id: "java", label: "Java and memory", icon: "cpu", advanced: false },
                       { id: "content", label: "Launch hooks", icon: "layers", advanced: true },
                     ]
-                      .filter((item) => settingsMode === "advanced" || !item.advanced)
+                      .filter((item) => instanceSettingsMode === "advanced" || !item.advanced)
                       .map((s) => (
                     <button
                       key={s.id}
@@ -13702,8 +14837,10 @@ export default function App() {
                   <div className="instSettingsStatusRow">
                     <span className="chip subtle">Auto-save on toggle/change</span>
                     <SegmentedControl
-                      value={settingsMode}
-                      onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
+                      value={instanceSettingsMode}
+                      onChange={(value) =>
+                        setInstanceSettingsMode(((value ?? "basic") as SettingsMode))
+                      }
                       options={[
                         { value: "basic", label: "Basic" },
                         { value: "advanced", label: "Advanced" },
@@ -13886,7 +15023,7 @@ export default function App() {
                       </div>
 
                       <div className="settingGrid">
-                        {settingsMode === "advanced" ? (
+                        {instanceSettingsMode === "advanced" ? (
                           <div className="settingCard" id="setting-anchor-instance:java-runtime">
                             <div className="settingTitle">Java runtime</div>
                             <div className="settingSub">
@@ -14006,7 +15143,7 @@ export default function App() {
                           </div>
                         </div>
 
-                        {settingsMode === "advanced" ? (
+                        {instanceSettingsMode === "advanced" ? (
                           <div className="settingCard" id="setting-anchor-instance:jvm-args">
                             <div className="settingTitle">JVM arguments</div>
                             <div className="settingSub">Advanced users only. Saved per instance.</div>
@@ -14239,7 +15376,7 @@ export default function App() {
                     </>
                   )}
 
-                  {settingsMode === "advanced" && instanceSettingsSection === "content" && (
+                  {instanceSettingsMode === "advanced" && instanceSettingsSection === "content" && (
                     <>
                       <div className="h2 sectionHead" id="setting-anchor-instance:hooks">
                         Launch hooks
@@ -15724,12 +16861,13 @@ export default function App() {
                 <div className="installProgressBar">
                   <div
                     className={`installProgressFill ${installProgress.stage}`}
-                    style={{ width: `${installProgress.percent ?? 0}%` }}
+                    style={{ width: `${installProgressPercentValue ?? 0}%` }}
                   />
                 </div>
                 <div className="installProgressMeta">
-                  <span>{formatPercent(installProgress.percent)}</span>
+                  <span>{formatPercent(installProgressPercentValue) || "Working…"}</span>
                   <span>{installProgress.stage}</span>
+                  {installProgressTransferText ? <span>{installProgressTransferText}</span> : null}
                   {installProgressElapsedSeconds != null ? (
                     <span>Elapsed {formatEtaSeconds(installProgressElapsedSeconds)}</span>
                   ) : null}
@@ -15802,7 +16940,7 @@ export default function App() {
                       >
                         <Icon name="download" />
                         {installingKey === `${inst.id}:${installTarget.source}:${installTarget.contentType}:${installTarget.projectId}`
-                          ? `Installing ${formatPercent(installProgress?.percent) || ""}`.trim()
+                          ? `Installing ${formatPercent(installProgressPercentValue) || ""}`.trim()
                           : "Install"}
                       </button>
                     </div>
@@ -16641,6 +17779,7 @@ export default function App() {
           </div>
         </div>
       ) : null}
+      <GlobalTooltipLayer />
     </div>
   );
 }
