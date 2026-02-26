@@ -14,6 +14,14 @@ function prefersReducedMotion() {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function anchorPointForTarget(target: HTMLElement): { x: number; y: number } {
+  const rect = target.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2,
+  };
+}
+
 function promoteElementTitleToCustomTooltip(element: Element) {
   if (!(element instanceof HTMLElement)) return;
   const raw = element.getAttribute("title");
@@ -38,7 +46,13 @@ function promoteNativeTitlesInTree(root: ParentNode) {
 function resolveCustomTooltipTarget(source: EventTarget | null): HTMLElement | null {
   if (!(source instanceof Element)) return null;
   const mapped = source.closest(`[${CUSTOM_TOOLTIP_ATTR}]`);
-  if (mapped instanceof HTMLElement) return mapped;
+  if (mapped instanceof HTMLElement) {
+    // If both native title and custom tooltip are present, always strip title to prevent overlap.
+    if (mapped.hasAttribute("title")) {
+      promoteElementTitleToCustomTooltip(mapped);
+    }
+    return mapped;
+  }
   const withTitle = source.closest("[title]");
   if (withTitle instanceof HTMLElement) {
     promoteElementTitleToCustomTooltip(withTitle);
@@ -93,6 +107,8 @@ export default function GlobalTooltipLayer() {
     observer.observe(document.body, {
       subtree: true,
       childList: true,
+      attributes: true,
+      attributeFilter: ["title"],
     });
     return () => observer.disconnect();
   }, []);
@@ -116,6 +132,34 @@ export default function GlobalTooltipLayer() {
         openAnimFrameRef.current = null;
       }
     };
+    const resolvePlacement = (point: { x: number; y: number }) => {
+      const bubble = bubbleRef.current;
+      const bubbleWidth = bubble?.offsetWidth ?? 240;
+      const bubbleHeight = bubble?.offsetHeight ?? 34;
+      const margin = 10;
+      const { x, y } = point;
+
+      let left = Math.max(margin, Math.min(x + 14, window.innerWidth - bubbleWidth - margin));
+      let top = y + 18;
+      let placement: "above" | "below" = "below";
+      if (top + bubbleHeight > window.innerHeight - margin) {
+        top = y - bubbleHeight - 14;
+        placement = "above";
+      }
+      if (top < margin) {
+        top = margin;
+        placement = "below";
+      }
+      if (left < margin) {
+        left = margin;
+      }
+
+      return {
+        left: Math.round(left),
+        top: Math.round(top),
+        placement,
+      };
+    };
     const mountAndOpen = (text: string, point: { x: number; y: number }) => {
       clearOpenAnimFrame();
       setTooltip({
@@ -127,15 +171,19 @@ export default function GlobalTooltipLayer() {
         placement: "below",
       });
       openAnimFrameRef.current = window.requestAnimationFrame(() => {
-        openAnimFrameRef.current = null;
-        setTooltip((prev) => {
-          if (!prev.visible) return prev;
-          return {
-            ...prev,
-            open: true,
-          };
+        openAnimFrameRef.current = window.requestAnimationFrame(() => {
+          openAnimFrameRef.current = null;
+          const next = resolvePlacement(point);
+          setTooltip((prev) =>
+            prev.visible
+              ? {
+                  ...prev,
+                  ...next,
+                  open: true,
+                }
+              : prev
+          );
         });
-        scheduleLayout();
       });
     };
     const hide = () => {
@@ -151,68 +199,39 @@ export default function GlobalTooltipLayer() {
       closeDelayRef.current = window.setTimeout(() => {
         closeDelayRef.current = null;
         setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
-      }, 280);
+      }, 260);
     };
     const scheduleLayout = () => {
       if (frameRef.current != null) return;
       frameRef.current = window.requestAnimationFrame(() => {
         frameRef.current = null;
         if (!activeTargetRef.current) return;
-        const bubble = bubbleRef.current;
-        const bubbleWidth = bubble?.offsetWidth ?? 240;
-        const bubbleHeight = bubble?.offsetHeight ?? 34;
-        const margin = 10;
-        const { x, y } = anchorPointRef.current;
-
-        let left = Math.max(margin, Math.min(x + 14, window.innerWidth - bubbleWidth - margin));
-        let top = y + 18;
-        let placement: "above" | "below" = "below";
-        if (top + bubbleHeight > window.innerHeight - margin) {
-          top = y - bubbleHeight - 14;
-          placement = "above";
-        }
-        if (top < margin) {
-          top = margin;
-          placement = "below";
-        }
-        if (left < margin) {
-          left = margin;
-        }
-
-        setTooltip((prev) =>
-          prev.open
-            ? {
-                ...prev,
-                left,
-                top,
-                placement,
-              }
-            : prev
-        );
+        const next = resolvePlacement(anchorPointRef.current);
+        setTooltip((prev) => (prev.visible ? { ...prev, ...next } : prev));
       });
     };
     const activate = (
       target: HTMLElement,
       text: string,
-      point: { x: number; y: number },
       immediate: boolean
     ) => {
       clearOpenDelay();
       clearCloseDelay();
       activeTargetRef.current = target;
+      const point = anchorPointForTarget(target);
       anchorPointRef.current = point;
       const openBubble = () => {
         if (activeTargetRef.current !== target) return;
         if (prefersReducedMotion()) {
+          const next = resolvePlacement(point);
           setTooltip({
             visible: true,
             open: true,
             text,
-            left: point.x,
-            top: point.y,
-            placement: "below",
+            left: next.left,
+            top: next.top,
+            placement: next.placement,
           });
-          scheduleLayout();
           return;
         }
         mountAndOpen(text, point);
@@ -220,7 +239,7 @@ export default function GlobalTooltipLayer() {
       if (immediate || prefersReducedMotion()) {
         openBubble();
       } else {
-        const delayMs = openRef.current ? 260 : 460;
+        const delayMs = openRef.current ? 360 : 620;
         openDelayRef.current = window.setTimeout(openBubble, delayMs);
       }
     };
@@ -231,14 +250,7 @@ export default function GlobalTooltipLayer() {
       const text = tooltipText(target.getAttribute(CUSTOM_TOOLTIP_ATTR));
       if (!text) return;
       if (target === activeTargetRef.current) return;
-      activate(target, text, { x: event.clientX, y: event.clientY }, false);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      if (!activeTargetRef.current) return;
-      anchorPointRef.current = { x: event.clientX, y: event.clientY };
-      if (openRef.current) {
-        scheduleLayout();
-      }
+      activate(target, text, false);
     };
     const onPointerOut = (event: PointerEvent) => {
       if (!activeTargetRef.current) return;
@@ -251,14 +263,9 @@ export default function GlobalTooltipLayer() {
       if (!target) return;
       const text = tooltipText(target.getAttribute(CUSTOM_TOOLTIP_ATTR));
       if (!text) return;
-      const rect = target.getBoundingClientRect();
       activate(
         target,
         text,
-        {
-          x: rect.left + rect.width / 2,
-          y: rect.top + rect.height / 2,
-        },
         true
       );
     };
@@ -269,11 +276,13 @@ export default function GlobalTooltipLayer() {
     };
     const onViewportChanged = () => {
       if (!openRef.current) return;
+      if (activeTargetRef.current) {
+        anchorPointRef.current = anchorPointForTarget(activeTargetRef.current);
+      }
       scheduleLayout();
     };
 
     window.addEventListener("pointerover", onPointerOver, true);
-    window.addEventListener("pointermove", onPointerMove, true);
     window.addEventListener("pointerout", onPointerOut, true);
     window.addEventListener("focusin", onFocusIn, true);
     window.addEventListener("focusout", onFocusOut, true);
@@ -289,7 +298,6 @@ export default function GlobalTooltipLayer() {
         frameRef.current = null;
       }
       window.removeEventListener("pointerover", onPointerOver, true);
-      window.removeEventListener("pointermove", onPointerMove, true);
       window.removeEventListener("pointerout", onPointerOut, true);
       window.removeEventListener("focusin", onFocusIn, true);
       window.removeEventListener("focusout", onFocusOut, true);

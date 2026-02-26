@@ -481,18 +481,11 @@ button, input, select { font-family: inherit; }
   pointer-events: none;
   z-index: var(--z-tooltip);
   opacity: 0;
-  transform: translateY(10px) scale(0.94);
-  will-change: opacity, transform;
-  transition:
-    opacity 220ms cubic-bezier(.22,.8,.2,1),
-    transform 260ms cubic-bezier(.16,.84,.24,1);
-}
-.appTooltipBubble.above{
-  transform: translateY(-10px) scale(0.94);
+  will-change: opacity;
+  transition: opacity 320ms cubic-bezier(.22,.61,.36,1);
 }
 .appTooltipBubble.open{
   opacity: 1;
-  transform: translateY(0) scale(1);
 }
 .appTooltipBubble::after{
   content: none;
@@ -500,7 +493,6 @@ button, input, select { font-family: inherit; }
 @media (prefers-reduced-motion: reduce){
   .appTooltipBubble{
     transition: none;
-    transform: none;
   }
 }
 .navBottom{
@@ -591,6 +583,16 @@ button, input, select { font-family: inherit; }
   align-items: center;
   justify-content: center;
   line-height: 1;
+  white-space: nowrap;
+}
+.chipButton{
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+.chipButton:focus-visible{
+  outline: 2px solid color-mix(in srgb, var(--accent-ring) 74%, transparent);
+  outline-offset: 2px;
 }
 .chip.danger{
   border-color: rgba(248,113,113,0.30);
@@ -6465,7 +6467,7 @@ button.instanceProviderBadge:disabled{
   border-radius: 14px;
 }
 .skinChoiceSavedRef .accountSkinChoiceThumb{
-  min-height: 146px;
+  min-height: 130px;
 }
 .skinChoiceSavedRef{
   min-height: 0;
@@ -6477,10 +6479,12 @@ button.instanceProviderBadge:disabled{
   gap: 6px;
 }
 .skinChoiceCompactRef .accountSkinChoiceThumb{
-  min-height: 146px;
+  min-height: 130px;
 }
 .skinsLibraryRef .accountSkinChoiceThumb img{
-  padding: 3px;
+  padding: 0;
+  transform: scale(1.16);
+  transform-origin: center bottom;
 }
 .skinsLibraryRef .accountSkinChoiceLabel{
   font-size: 15px;

@@ -1411,7 +1411,13 @@ function isMacDesktopPlatform() {
 function micPermissionNeedsAction(item?: LaunchPermissionChecklistItem | null) {
   if (!item?.required) return false;
   const status = String(item.status ?? "").trim().toLowerCase();
-  return ["denied", "not_determined", "unavailable", "unknown"].includes(status);
+  return ["denied", "not_determined"].includes(status);
+}
+
+function micPermissionCheckUnavailable(item?: LaunchPermissionChecklistItem | null) {
+  if (!item?.required) return false;
+  const status = String(item.status ?? "").trim().toLowerCase();
+  return ["unavailable", "unknown"].includes(status);
 }
 
 function permissionStatusLabel(status: string) {
@@ -12327,6 +12333,9 @@ export default function App() {
       const setupNeededPermissions = instancePermissionChecklist.filter((item) =>
         micPermissionNeedsAction(item)
       );
+      const unavailableCheckPermissions = instancePermissionChecklist.filter((item) =>
+        micPermissionCheckUnavailable(item)
+      );
       const grantedPermissions = instancePermissionChecklist.filter(
         (item) => String(item.status ?? "").trim().toLowerCase() === "granted"
       );
@@ -12335,23 +12344,32 @@ export default function App() {
       );
       const permissionStatusTagLabel =
         permissionChecklistBusyByInstance[inst.id]
-          ? "Permissions checking…"
+          ? "Perms checking…"
           : setupNeededPermissions.length > 0
-            ? setupNeededPermissions.length === 1
-              ? `${setupNeededPermissions[0]?.label ?? "Permission"} needs setup`
-              : `${setupNeededPermissions.length} permissions need setup`
+            ? "Setup needed"
+            : unavailableCheckPermissions.length > 0
+              ? unavailableCheckPermissions.some(
+                    (item) => String(item.key ?? "").trim().toLowerCase() === "microphone"
+                  )
+                ? "Mic manual check"
+                : "Manual check"
             : grantedPermissions.length > 0
-              ? "Permissions ready"
+              ? "Perms ready"
               : notRequiredPermissions.length === instancePermissionChecklist.length &&
                   instancePermissionChecklist.length > 0
-                ? "No permissions required"
-                : "Permissions unknown";
+                ? "No perms needed"
+                : "Perms unknown";
       const permissionStatusTagTitle =
         setupNeededPermissions.length > 0
           ? `Needs setup: ${setupNeededPermissions
               .slice(0, 3)
               .map((item) => item.label)
               .join(", ")}. Manage details in Settings > Advanced > Launch permissions.`
+          : unavailableCheckPermissions.length > 0
+            ? `${unavailableCheckPermissions
+                .slice(0, 3)
+                .map((item) => item.label)
+                .join(", ")} auto-check is unavailable on this setup. Open Settings > Advanced > Launch permissions to re-check or open OS privacy settings.`
           : grantedPermissions.length > 0
             ? `Permissions ready: ${grantedPermissions
                 .slice(0, 3)
@@ -12361,6 +12379,9 @@ export default function App() {
                 instancePermissionChecklist.length > 0
               ? "No required launch permissions detected for this instance."
               : "Permission status is not available yet.";
+      const permissionStatusChipIsActionable = Boolean(
+        setupNeededPermissions.length > 0 || unavailableCheckPermissions.length > 0
+      );
       const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
       const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
       const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
@@ -12700,12 +12721,25 @@ export default function App() {
                     <span className={`chip ${instanceLastExitKindRaw === "crashed" ? "danger" : "subtle"}`}>
                       Status {instanceRunStatusLabel}
                     </span>
-                    <span
-                      className={`chip ${setupNeededPermissions.length > 0 ? "danger" : "subtle"}`}
+                    <button
+                      className={`chip chipButton ${setupNeededPermissions.length > 0 ? "danger" : "subtle"}`}
                       title={permissionStatusTagTitle}
+                      onClick={() => {
+                        if (permissionChecklistBusyByInstance[inst.id]) {
+                          setInstallNotice("Permission check already in progress.");
+                          return;
+                        }
+                        if (permissionStatusChipIsActionable) {
+                          setInstallNotice("Opened Launch permissions in Settings.");
+                          openSettingAnchor("global:permissions", { advanced: true, target: "global" });
+                          return;
+                        }
+                        setInstallNotice("Re-checking launch permissions…");
+                        void refreshInstancePermissionChecklist(inst.id, launchMethodPick);
+                      }}
                     >
                       {permissionStatusTagLabel}
-                    </span>
+                    </button>
                   </div>
                   {instanceLastRunReport ? (
                     <div className="instanceRunReportPreview">
@@ -15863,12 +15897,12 @@ export default function App() {
           const micPermissionStatus = String(micPermissionItem?.status ?? "").toLowerCase();
           const showMicPermissionPrompt = Boolean(
             micPermissionItem?.required &&
-              ["denied", "not_determined", "unavailable", "unknown"].includes(micPermissionStatus)
+              ["denied", "not_determined"].includes(micPermissionStatus)
           );
           const canTriggerMicPromptInModal = Boolean(
             isMacDesktopPlatform() &&
               micPermissionItem?.required &&
-              ["denied", "not_determined", "unavailable", "unknown"].includes(micPermissionStatus)
+              ["denied", "not_determined"].includes(micPermissionStatus)
           );
           return (
             <Modal
