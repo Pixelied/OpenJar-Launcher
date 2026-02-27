@@ -1256,7 +1256,13 @@ function groupVersions(items: VersionItem[]) {
 }
 
 function groupAllVersions(items: VersionItem[]) {
-  const sorted = [...items].sort(compareVersionItems);
+  const unique = new Map<string, VersionItem>();
+  for (const item of items) {
+    const id = String(item.id ?? "").trim();
+    if (!id || unique.has(id)) continue;
+    unique.set(id, item);
+  }
+  const sorted = Array.from(unique.values()).sort(compareVersionItems);
   const releases = sorted.filter((v) => v.type === "release");
   const releaseGroups = groupVersions(releases);
 
@@ -1275,6 +1281,38 @@ function groupAllVersions(items: VersionItem[]) {
     (v) => v.type === "snapshot" && !releaseLike.has(v.id)
   );
 
+  const seriesKey = (id: string) => {
+    const match = id.trim().match(/^(\d+\.\d+)/);
+    return match?.[1] ?? "Other";
+  };
+  const compareSeriesDesc = (a: string, b: string) => {
+    const parse = (value: string) => value.split(".").map((n) => Number.parseInt(n, 10) || 0);
+    const pa = parse(a);
+    const pb = parse(b);
+    if ((pa[0] ?? 0) !== (pb[0] ?? 0)) return (pb[0] ?? 0) - (pa[0] ?? 0);
+    return (pb[1] ?? 0) - (pa[1] ?? 0);
+  };
+  const groupByKey = (arr: VersionItem[], keyFn: (id: string) => string) => {
+    const map = new Map<string, VersionItem[]>();
+    for (const item of arr) {
+      const key = keyFn(item.id);
+      const current = map.get(key) ?? [];
+      current.push(item);
+      map.set(key, current);
+    }
+    return map;
+  };
+
+  const rcBySeries = groupByKey(releaseCandidates, (id) => seriesKey(id));
+  const preBySeries = groupByKey(preReleases, (id) => seriesKey(id));
+  const snapshotsByYear = groupByKey(weeklySnapshots, (id) => {
+    const m = id.match(/^(\d{2})w\d{2}[a-z]$/i);
+    if (!m) return "Other";
+    const yy = Number.parseInt(m[1], 10);
+    if (!Number.isFinite(yy)) return "Other";
+    return String(yy >= 70 ? 1900 + yy : 2000 + yy);
+  });
+
   const out: { group: string; items: VersionItem[] }[] = [];
   out.push(
     ...releaseGroups.map((g) => ({
@@ -1282,9 +1320,21 @@ function groupAllVersions(items: VersionItem[]) {
       items: g.items,
     }))
   );
-  if (releaseCandidates.length) out.push({ group: "Release candidates", items: releaseCandidates });
-  if (preReleases.length) out.push({ group: "Pre-releases", items: preReleases });
-  if (weeklySnapshots.length) out.push({ group: "Snapshots", items: weeklySnapshots });
+  for (const key of Array.from(rcBySeries.keys()).sort(compareSeriesDesc)) {
+    const values = (rcBySeries.get(key) ?? []).sort(compareVersionItems);
+    if (!values.length) continue;
+    out.push({ group: `Release candidates • ${key}`, items: values });
+  }
+  for (const key of Array.from(preBySeries.keys()).sort(compareSeriesDesc)) {
+    const values = (preBySeries.get(key) ?? []).sort(compareVersionItems);
+    if (!values.length) continue;
+    out.push({ group: `Pre-releases • ${key}`, items: values });
+  }
+  for (const key of Array.from(snapshotsByYear.keys()).sort((a, b) => Number(b) - Number(a))) {
+    const values = (snapshotsByYear.get(key) ?? []).sort(compareVersionItems);
+    if (!values.length) continue;
+    out.push({ group: `Snapshots • ${key}`, items: values });
+  }
   if (extraSnapshots.length) out.push({ group: "Experimental / dev builds", items: extraSnapshots });
   if (oldBeta.length) out.push({ group: "Old Beta", items: oldBeta });
   if (oldAlpha.length) out.push({ group: "Old Alpha", items: oldAlpha });
