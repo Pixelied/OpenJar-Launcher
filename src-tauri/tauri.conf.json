@@ -32,7 +32,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' http://localhost:5173 ws://localhost:5173 https://api.modrinth.com https://api.curseforge.com https://login.microsoftonline.com https://user.auth.xboxlive.com https://xsts.auth.xboxlive.com https://api.minecraftservices.com https://github.com https://objects.githubusercontent.com https://*.githubusercontent.com https://github-releases.githubusercontent.com; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' http://localhost:5173 ws://localhost:5173 https://api.modrinth.com https://api.curseforge.com https://login.microsoftonline.com https://user.auth.xboxlive.com https://xsts.auth.xboxlive.com https://api.minecraftservices.com https://piston-meta.mojang.com https://mcversions.net https://github.com https://objects.githubusercontent.com https://*.githubusercontent.com https://github-releases.githubusercontent.com; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'"
     },
     "updater": {
       "active": false,
