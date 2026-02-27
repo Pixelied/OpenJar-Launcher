@@ -4056,6 +4056,14 @@ fn provider_match_priority(value: &LocalImportedProviderMatch) -> i32 {
     }
 }
 
+fn provider_source_priority(source: &str) -> i32 {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "modrinth" => 2,
+        "curseforge" => 1,
+        _ => 0,
+    }
+}
+
 fn dedupe_provider_matches(
     mut matches: Vec<LocalImportedProviderMatch>,
 ) -> Vec<LocalImportedProviderMatch> {
@@ -4065,6 +4073,7 @@ fn dedupe_provider_matches(
     matches.sort_by(|a, b| {
         provider_match_priority(b)
             .cmp(&provider_match_priority(a))
+            .then_with(|| provider_source_priority(&b.source).cmp(&provider_source_priority(&a.source)))
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.project_id.cmp(&b.project_id))
     });
@@ -4212,8 +4221,49 @@ fn select_preferred_provider_match<'a>(
     matches.iter().max_by(|a, b| {
         provider_match_priority(a)
             .cmp(&provider_match_priority(b))
+            .then_with(|| provider_source_priority(&a.source).cmp(&provider_source_priority(&b.source)))
             .then_with(|| b.source.cmp(&a.source))
     })
+}
+
+#[cfg(test)]
+mod local_provider_preference_tests {
+    use super::*;
+
+    fn sample_match(source: &str, confidence: &str, project: &str) -> LocalImportedProviderMatch {
+        LocalImportedProviderMatch {
+            source: source.to_string(),
+            project_id: project.to_string(),
+            version_id: "v1".to_string(),
+            name: "Sample".to_string(),
+            version_number: "1.0.0".to_string(),
+            hashes: HashMap::new(),
+            confidence: confidence.to_string(),
+            reason: "test".to_string(),
+        }
+    }
+
+    #[test]
+    fn select_preferred_provider_match_prefers_modrinth_on_tie() {
+        let matches = vec![
+            sample_match("curseforge", "high", "cf:123"),
+            sample_match("modrinth", "high", "mr:abc"),
+        ];
+        let selected = select_preferred_provider_match(&matches, None).expect("selected match");
+        assert_eq!(selected.source, "modrinth");
+    }
+
+    #[test]
+    fn to_provider_candidates_keeps_modrinth_first_on_tie() {
+        let deduped = dedupe_provider_matches(vec![
+            sample_match("curseforge", "high", "cf:123"),
+            sample_match("modrinth", "high", "mr:abc"),
+        ]);
+        let candidates = to_provider_candidates(&deduped);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].source, "modrinth");
+        assert_eq!(candidates[1].source, "curseforge");
+    }
 }
 
 fn to_provider_candidates(matches: &[LocalImportedProviderMatch]) -> Vec<ProviderCandidate> {
