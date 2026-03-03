@@ -3061,6 +3061,11 @@ export default function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() !== "k") return;
       if (!event.metaKey && !event.ctrlKey) return;
+      if (commandPaletteOpen) {
+        event.preventDefault();
+        setCommandPaletteOpen(false);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName?.toLowerCase();
       const isInputLike = Boolean(
@@ -3072,7 +3077,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [commandPaletteOpen]);
 
   useEffect(() => {
     if (!pendingSettingAnchor) return;
