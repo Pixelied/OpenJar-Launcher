@@ -132,9 +132,11 @@ Filters include:
 - GitHub loader/version/category filters are **best-effort** and based on release asset metadata and repository topics.
 - Local import resolver uses strict safety-first evidence for GitHub mapping: checksum/digest and exact asset filename are preferred, and weak/ambiguous matches stay local as non-active candidates.
 - If a local mod cannot be auto-matched, you can manually **Attach GitHub repository** from the instance content row (accepts `owner/repo` or full GitHub URL).
-- GitHub API rate limits can return `403`; set `MPM_GITHUB_TOKEN` (or `GITHUB_TOKEN` / `GH_TOKEN`) to raise limits.
+- GitHub API rate limits can return `403`; configure tokens in **Settings > Advanced > GitHub API** (secure OS keychain storage) or set `MPM_GITHUB_TOKEN` (or `GITHUB_TOKEN` / `GH_TOKEN`) to raise limits.
 - You can also set `MPM_GITHUB_TOKENS` as a comma/semicolon/newline-separated token pool, plus numbered vars like `MPM_GITHUB_TOKEN_1`, `GITHUB_TOKEN_2`, or `GH_TOKEN_3` (up to 200 unique tokens are loaded, hard-capped for predictable memory/perf).
 - OpenJar rotates configured tokens in round-robin order, cools down tokens that hit `401`/rate-limit `403`, and then falls back unauthenticated when needed.
+- Unauthenticated GitHub requests are short-circuited while cooldown is active after a rate-limit response, so refresh/check continues quickly for other providers.
+- OpenJar does not ship embedded GitHub API keys in the app binary/repo; token configuration is user-provided via secure keychain storage and/or environment variables.
 - When no token is configured, OpenJar uses a lower GitHub request budget to reduce rate-limit lockouts; adding a token is still strongly recommended for frequent searching.
 
 ---

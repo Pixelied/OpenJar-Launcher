@@ -43,6 +43,7 @@ const LEGACY_KEYRING_SERVICES: [&str; 5] = [
     "OpenJar",
 ];
 const DEV_CURSEFORGE_KEY_KEYRING_USER: &str = "dev_curseforge_api_key";
+const GITHUB_TOKEN_POOL_KEYRING_USER: &str = "github_api_tokens";
 const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
 const LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE: &str = "tokens_recovery_fallback.json";
 #[cfg(debug_assertions)]
@@ -79,6 +80,7 @@ const INSTANCE_LAST_RUN_METADATA_FILE: &str = "last_run_metadata.v1.json";
 const PLAY_SESSIONS_STORE_FILE: &str = "play_sessions.v1.json";
 const PLAY_SESSIONS_ACTIVE_STORE_FILE: &str = "play_sessions_active.v1.json";
 const MAX_PLAY_SESSION_HISTORY: usize = 500;
+const QUICK_PLAY_SERVERS_FILE: &str = "quick_play_servers.v1.json";
 const RUNTIME_RECONCILE_MARKER_FILE: &str = ".runtime_reconcile.v1.done";
 const RUNTIME_SESSION_ACTIVE_MARKER_FILE: &str = ".active_session.v1";
 const STALE_RUNTIME_SESSION_MAX_AGE_HOURS: u64 = 24;
@@ -101,6 +103,7 @@ const GITHUB_API_CACHE_TTL_SECS: u64 = 120;
 const GITHUB_API_CACHE_MAX_ENTRIES: usize = 256;
 const GITHUB_TOKEN_UNAUTHORIZED_COOLDOWN_SECS: u64 = 30 * 60;
 const GITHUB_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECS: u64 = 90;
+const GITHUB_TOKEN_POOL_CACHE_TTL_SECS: u64 = 60;
 const GITHUB_DISCOVER_MIN_SIMILARITY_WITHOUT_SIGNAL: i64 = 24;
 const GITHUB_UNAUTH_MAX_SEARCH_QUERIES: usize = 3;
 const GITHUB_UNAUTH_MAX_PAGES_PER_QUERY: usize = 1;
@@ -166,11 +169,27 @@ fn github_api_cache_put(url: &str, body: String) {
 struct GithubTokenRotationState {
     next_start_index: usize,
     cooldown_until: HashMap<String, Instant>,
+    unauth_cooldown_until: Option<Instant>,
+    unauth_reset_local: Option<String>,
 }
 
 fn github_token_rotation_state() -> &'static Mutex<GithubTokenRotationState> {
     static STATE: OnceLock<Mutex<GithubTokenRotationState>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(GithubTokenRotationState::default()))
+}
+
+#[derive(Debug, Clone)]
+struct GithubTokenPoolSnapshot {
+    tokens: Vec<String>,
+    env_tokens: usize,
+    keychain_tokens: usize,
+    keychain_error: Option<String>,
+    fetched_at: Instant,
+}
+
+fn github_token_pool_cache() -> &'static Mutex<Option<GithubTokenPoolSnapshot>> {
+    static CACHE: OnceLock<Mutex<Option<GithubTokenPoolSnapshot>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
 }
 
 fn runtime_refresh_token_cache_set(account_id: &str, refresh_token: &str) {
@@ -334,13 +353,109 @@ fn github_api_tokens_from_env_entries(entries: &[(String, String)]) -> Vec<Strin
     tokens
 }
 
-fn github_api_tokens() -> Vec<String> {
+fn github_keyring_error_is_unavailable(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("secure credential storage is unavailable")
+        || lower.contains("no os keyring provider is available")
+}
+
+fn github_invalidate_token_pool_cache() {
+    if let Ok(mut guard) = github_token_pool_cache().lock() {
+        *guard = None;
+    }
+}
+
+fn github_token_pool_snapshot_from_runtime() -> GithubTokenPoolSnapshot {
     let entries: Vec<(String, String)> = std::env::vars().collect();
-    github_api_tokens_from_env_entries(&entries)
+    let env_tokens = github_api_tokens_from_env_entries(&entries);
+    let (keychain_tokens, keychain_error) = match keyring_get_github_token_pool() {
+        Ok(tokens) => (tokens, None),
+        Err(err) => (vec![], Some(err)),
+    };
+
+    let mut merged = Vec::new();
+    for token in &env_tokens {
+        github_append_token_candidate(&mut merged, token);
+    }
+    for token in &keychain_tokens {
+        github_append_token_candidate(&mut merged, token);
+    }
+
+    GithubTokenPoolSnapshot {
+        tokens: merged,
+        env_tokens: env_tokens.len(),
+        keychain_tokens: keychain_tokens.len(),
+        keychain_error,
+        fetched_at: Instant::now(),
+    }
+}
+
+fn github_token_pool_snapshot() -> GithubTokenPoolSnapshot {
+    let ttl = Duration::from_secs(GITHUB_TOKEN_POOL_CACHE_TTL_SECS);
+    if let Ok(mut guard) = github_token_pool_cache().lock() {
+        if let Some(snapshot) = guard.as_ref() {
+            if snapshot.fetched_at.elapsed() <= ttl {
+                return snapshot.clone();
+            }
+        }
+        let next = github_token_pool_snapshot_from_runtime();
+        *guard = Some(next.clone());
+        return next;
+    }
+    github_token_pool_snapshot_from_runtime()
+}
+
+fn github_api_tokens() -> Vec<String> {
+    github_token_pool_snapshot().tokens
 }
 
 pub(crate) fn github_has_configured_tokens() -> bool {
-    !github_api_tokens().is_empty()
+    !github_token_pool_snapshot().tokens.is_empty()
+}
+
+fn github_configured_token_count() -> usize {
+    github_token_pool_snapshot().tokens.len()
+}
+
+pub(crate) fn github_token_pool_status() -> GithubTokenPoolStatus {
+    let snapshot = github_token_pool_snapshot();
+    let total_tokens = snapshot.tokens.len();
+    let keychain_available = snapshot
+        .keychain_error
+        .as_ref()
+        .map(|err| !github_keyring_error_is_unavailable(err))
+        .unwrap_or(true);
+    let (unauth_rate_limited, unauth_rate_limit_reset_at) = github_unauth_cooldown_state();
+
+    let message = if total_tokens > 0 {
+        format!(
+            "Loaded {total_tokens} GitHub token(s): {} from environment, {} from secure keychain.",
+            snapshot.env_tokens, snapshot.keychain_tokens
+        )
+    } else if let Some(err) = snapshot.keychain_error.as_ref() {
+        if github_keyring_error_is_unavailable(err) {
+            "No GitHub tokens configured. Secure keychain is unavailable; configure MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN."
+                .to_string()
+        } else {
+            format!(
+                "No GitHub tokens configured. Secure keychain read warning: {err}. Configure env fallback tokens or retry keychain setup."
+            )
+        }
+    } else {
+        "No GitHub tokens configured. Add tokens in Settings > Advanced > GitHub API, or via MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN."
+            .to_string()
+    };
+
+    GithubTokenPoolStatus {
+        configured: total_tokens > 0,
+        total_tokens,
+        env_tokens: snapshot.env_tokens,
+        keychain_tokens: snapshot.keychain_tokens,
+        keychain_available,
+        unauth_rate_limited,
+        unauth_rate_limit_reset_at,
+        message,
+    }
 }
 
 fn curseforge_api_key() -> Option<String> {
@@ -689,6 +804,21 @@ struct ProviderCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalModAnalysis {
+    #[serde(default)]
+    loader_hints: Vec<String>,
+    #[serde(default)]
+    mod_ids: Vec<String>,
+    #[serde(default)]
+    required_dependencies: Vec<String>,
+    #[serde(default)]
+    warnings: Vec<String>,
+    #[serde(default)]
+    suggestions: Vec<String>,
+    scanned_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LockEntry {
     source: String,
     project_id: String,
@@ -709,6 +839,8 @@ struct LockEntry {
     hashes: HashMap<String, String>,
     #[serde(default)]
     provider_candidates: Vec<ProviderCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_analysis: Option<LocalModAnalysis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -748,6 +880,8 @@ struct InstalledMod {
     hashes: HashMap<String, String>,
     #[serde(default)]
     provider_candidates: Vec<ProviderCandidate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_analysis: Option<LocalModAnalysis>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -816,6 +950,18 @@ struct CurseforgeApiStatus {
     env_var: Option<String>,
     key_hint: Option<String>,
     validated: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GithubTokenPoolStatus {
+    configured: bool,
+    total_tokens: usize,
+    env_tokens: usize,
+    keychain_tokens: usize,
+    keychain_available: bool,
+    unauth_rate_limited: bool,
+    unauth_rate_limit_reset_at: Option<String>,
     message: String,
 }
 
@@ -899,6 +1045,10 @@ struct LaunchInstanceArgs {
     instance_id: String,
     #[serde(default)]
     method: Option<String>,
+    #[serde(alias = "quickPlayHost", default)]
+    quick_play_host: Option<String>,
+    #[serde(alias = "quickPlayPort", default)]
+    quick_play_port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -925,6 +1075,55 @@ struct ResolveLocalModSourcesArgs {
     mode: Option<String>, // missing_only | all
     #[serde(alias = "contentTypes", default)]
     content_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetInstalledModPinArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(alias = "versionId")]
+    version_id: String,
+    #[serde(default)]
+    pin: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListInstanceHistoryEventsArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(alias = "beforeAt", default)]
+    before_at: Option<String>,
+    #[serde(default)]
+    kinds: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UpsertQuickPlayServerArgs {
+    #[serde(default)]
+    id: Option<String>,
+    name: String,
+    host: String,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(alias = "boundInstanceId", default)]
+    bound_instance_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveQuickPlayServerArgs {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LaunchQuickPlayServerArgs {
+    #[serde(alias = "serverId")]
+    server_id: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(alias = "instanceId", default)]
+    instance_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -994,11 +1193,21 @@ struct SetLauncherSettingsArgs {
     auto_identify_local_jars: Option<bool>,
     #[serde(alias = "autoTriggerMicPermissionPrompt", default)]
     auto_trigger_mic_permission_prompt: Option<bool>,
+    #[serde(alias = "discordPresenceEnabled", default)]
+    discord_presence_enabled: Option<bool>,
+    #[serde(alias = "discordPresenceDetailLevel", default)]
+    discord_presence_detail_level: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct SetDevCurseforgeApiKeyArgs {
     key: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetGithubTokenPoolArgs {
+    #[serde(alias = "tokens", alias = "tokenPool", alias = "pool")]
+    tokens: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1717,6 +1926,10 @@ struct ContentUpdateInfo {
     latest_hashes: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     required_dependencies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    compatibility_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    compatibility_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1860,6 +2073,10 @@ struct LauncherSettings {
     auto_identify_local_jars: bool,
     #[serde(default = "default_auto_trigger_mic_permission_prompt")]
     auto_trigger_mic_permission_prompt: bool,
+    #[serde(default = "default_true")]
+    discord_presence_enabled: bool,
+    #[serde(default = "default_discord_presence_detail_level")]
+    discord_presence_detail_level: String,
 }
 
 impl Default for LauncherSettings {
@@ -1874,6 +2091,8 @@ impl Default for LauncherSettings {
             selected_account_id: None,
             auto_identify_local_jars: false,
             auto_trigger_mic_permission_prompt: default_auto_trigger_mic_permission_prompt(),
+            discord_presence_enabled: true,
+            discord_presence_detail_level: default_discord_presence_detail_level(),
         }
     }
 }
@@ -1883,6 +2102,25 @@ struct LauncherAccount {
     id: String,
     username: String,
     added_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct QuickPlayServerEntry {
+    id: String,
+    name: String,
+    host: String,
+    port: u16,
+    #[serde(default)]
+    bound_instance_id: Option<String>,
+    #[serde(default)]
+    last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct QuickPlayServersStore {
+    version: u32,
+    servers: Vec<QuickPlayServerEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2752,6 +2990,10 @@ fn launcher_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join("settings.json"))
 }
 
+fn launcher_quick_play_servers_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(launcher_dir(app)?.join(QUICK_PLAY_SERVERS_FILE))
+}
+
 fn launcher_accounts_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join("accounts.json"))
 }
@@ -2854,6 +3096,8 @@ fn read_launcher_settings(app: &tauri::AppHandle) -> Result<LauncherSettings, St
     settings.update_auto_apply_mode =
         normalize_update_auto_apply_mode(&settings.update_auto_apply_mode);
     settings.update_apply_scope = normalize_update_apply_scope(&settings.update_apply_scope);
+    settings.discord_presence_detail_level =
+        normalize_discord_presence_detail_level(&settings.discord_presence_detail_level);
     Ok(settings)
 }
 
@@ -2890,6 +3134,87 @@ fn write_launcher_accounts(
     let s = serde_json::to_string_pretty(accounts)
         .map_err(|e| format!("serialize launcher accounts failed: {e}"))?;
     fs::write(&p, s).map_err(|e| format!("write launcher accounts failed: {e}"))
+}
+
+fn normalize_quick_play_host(input: &str) -> Option<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let stripped = trimmed
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let host_part = stripped
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('.');
+    if host_part.is_empty() || host_part.contains(' ') {
+        return None;
+    }
+    Some(host_part.to_ascii_lowercase())
+}
+
+fn normalize_quick_play_port(input: Option<u16>) -> u16 {
+    let value = input.unwrap_or(25565);
+    value.clamp(1, u16::MAX)
+}
+
+fn read_quick_play_servers(app: &tauri::AppHandle) -> Result<QuickPlayServersStore, String> {
+    let p = launcher_quick_play_servers_path(app)?;
+    if !p.exists() {
+        return Ok(QuickPlayServersStore {
+            version: 1,
+            servers: vec![],
+        });
+    }
+    let raw = fs::read_to_string(&p).map_err(|e| format!("read quick-play servers failed: {e}"))?;
+    let mut store: QuickPlayServersStore =
+        serde_json::from_str(&raw).map_err(|e| format!("parse quick-play servers failed: {e}"))?;
+    if store.version == 0 {
+        store.version = 1;
+    }
+    store.servers.retain(|entry| !entry.id.trim().is_empty());
+    for entry in &mut store.servers {
+        entry.host = normalize_quick_play_host(&entry.host).unwrap_or_default();
+        entry.port = normalize_quick_play_port(Some(entry.port));
+        entry.name = entry.name.trim().to_string();
+        entry.bound_instance_id = entry
+            .bound_instance_id
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        entry.last_used_at = entry
+            .last_used_at
+            .as_ref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+    }
+    store.servers.retain(|entry| !entry.host.is_empty());
+    store
+        .servers
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(store)
+}
+
+fn write_quick_play_servers(
+    app: &tauri::AppHandle,
+    store: &QuickPlayServersStore,
+) -> Result<(), String> {
+    let p = launcher_quick_play_servers_path(app)?;
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
+    }
+    let mut normalized = store.clone();
+    normalized.version = 1;
+    normalized
+        .servers
+        .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    let s = serde_json::to_string_pretty(&normalized)
+        .map_err(|e| format!("serialize quick-play servers failed: {e}"))?;
+    fs::write(&p, s).map_err(|e| format!("write quick-play servers failed: {e}"))
 }
 
 fn read_token_fallback_store_at_path(path: &Path) -> Result<LauncherTokenFallbackStore, String> {
@@ -3104,7 +3429,11 @@ fn default_graphics_preset() -> String {
 }
 
 fn default_sync_minecraft_settings_target() -> String {
-    "all".to_string()
+    "none".to_string()
+}
+
+fn default_discord_presence_detail_level() -> String {
+    "minimal".to_string()
 }
 
 fn default_world_backup_interval_minutes() -> u32 {
@@ -3165,6 +3494,13 @@ fn normalize_update_apply_scope(input: &str) -> String {
             "scheduled_and_manual".to_string()
         }
         _ => "scheduled_only".to_string(),
+    }
+}
+
+fn normalize_discord_presence_detail_level(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "expanded" | "full" | "instance" => "expanded".to_string(),
+        _ => "minimal".to_string(),
     }
 }
 
@@ -4374,7 +4710,9 @@ fn github_manual_unverified_hint_is_promotable(
         return false;
     }
     lower.contains("verification is unavailable")
+        || lower.contains("verification unavailable")
         || lower.contains("temporarily unavailable")
+        || lower.contains("currently unverifiable")
         || lower.contains("rate limit")
 }
 
@@ -4416,6 +4754,103 @@ pub(crate) fn provider_candidate_is_auto_activatable(candidate: &ProviderCandida
             &candidate.version_id,
             candidate.reason.as_deref().unwrap_or_default(),
         )
+}
+
+fn provider_candidate_confidence_rank(candidate: &ProviderCandidate) -> i32 {
+    match candidate
+        .confidence
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "deterministic" => 5,
+        "high" => 4,
+        "medium" => 3,
+        "manual" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn provider_candidate_version_rank(candidate: &ProviderCandidate) -> i32 {
+    let version_id = candidate.version_id.trim().to_ascii_lowercase();
+    if version_id.starts_with("gh_release:") || version_id.starts_with("cf_file:") {
+        return 3;
+    }
+    if version_id.starts_with("gh_repo_unverified") {
+        return 1;
+    }
+    if !version_id.is_empty() {
+        return 2;
+    }
+    0
+}
+
+fn provider_candidate_dedup_key(candidate: &ProviderCandidate) -> Option<String> {
+    let source = candidate.source.trim().to_ascii_lowercase();
+    let project_id = candidate.project_id.trim().to_ascii_lowercase();
+    if source.is_empty() || project_id.is_empty() {
+        return None;
+    }
+    Some(format!("{source}:{project_id}"))
+}
+
+fn provider_candidate_is_better(
+    candidate: &ProviderCandidate,
+    existing: &ProviderCandidate,
+) -> bool {
+    let candidate_activation = provider_candidate_is_auto_activatable(candidate) as i32;
+    let existing_activation = provider_candidate_is_auto_activatable(existing) as i32;
+    if candidate_activation != existing_activation {
+        return candidate_activation > existing_activation;
+    }
+    let candidate_confidence = provider_candidate_confidence_rank(candidate);
+    let existing_confidence = provider_candidate_confidence_rank(existing);
+    if candidate_confidence != existing_confidence {
+        return candidate_confidence > existing_confidence;
+    }
+    let candidate_version = provider_candidate_version_rank(candidate);
+    let existing_version = provider_candidate_version_rank(existing);
+    if candidate_version != existing_version {
+        return candidate_version > existing_version;
+    }
+    let candidate_reason_len = candidate.reason.as_deref().unwrap_or_default().trim().len();
+    let existing_reason_len = existing.reason.as_deref().unwrap_or_default().trim().len();
+    if candidate_reason_len != existing_reason_len {
+        return candidate_reason_len > existing_reason_len;
+    }
+    candidate.version_id.len() > existing.version_id.len()
+}
+
+pub(crate) fn compact_provider_candidates(
+    candidates: impl IntoIterator<Item = ProviderCandidate>,
+) -> Vec<ProviderCandidate> {
+    let mut dedup: HashMap<String, ProviderCandidate> = HashMap::new();
+    for candidate in candidates {
+        let Some(key) = provider_candidate_dedup_key(&candidate) else {
+            continue;
+        };
+        if let Some(existing) = dedup.get(&key) {
+            if provider_candidate_is_better(&candidate, existing) {
+                dedup.insert(key, candidate);
+            }
+        } else {
+            dedup.insert(key, candidate);
+        }
+    }
+    let mut out = dedup.into_values().collect::<Vec<_>>();
+    out.sort_by(|a, b| {
+        provider_source_priority(&b.source)
+            .cmp(&provider_source_priority(&a.source))
+            .then_with(|| {
+                provider_candidate_confidence_rank(b).cmp(&provider_candidate_confidence_rank(a))
+            })
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.project_id.cmp(&b.project_id))
+    });
+    out
 }
 
 #[derive(Debug, Clone, Default)]
@@ -4646,6 +5081,281 @@ fn ensure_local_mod_loader_compatible(
         loader_label_for_user(&instance_loader),
         accepted_label
     ))
+}
+
+fn normalize_local_mod_id(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' {
+            out.push(ch);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn is_builtin_dependency_id(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "minecraft"
+            | "java"
+            | "forge"
+            | "neoforge"
+            | "fabricloader"
+            | "fabric_loader"
+            | "quilt_loader"
+            | "quilted_fabric_api"
+            | "fabric-api"
+            | "fabric_api"
+            | "fml"
+    )
+}
+
+fn push_unique_string(out: &mut Vec<String>, value: Option<String>) {
+    let Some(v) = value else {
+        return;
+    };
+    if v.trim().is_empty() {
+        return;
+    }
+    if !out.iter().any(|existing| existing.eq_ignore_ascii_case(&v)) {
+        out.push(v);
+    }
+}
+
+fn collect_json_mod_metadata(
+    value: &serde_json::Value,
+    mod_ids: &mut Vec<String>,
+    required_deps: &mut Vec<String>,
+) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, node) in map {
+                let key_lower = key.trim().to_ascii_lowercase();
+                if matches!(key_lower.as_str(), "id" | "modid" | "mod_id") {
+                    if let Some(raw) = node.as_str() {
+                        push_unique_string(mod_ids, normalize_local_mod_id(raw));
+                    }
+                }
+                if matches!(
+                    key_lower.as_str(),
+                    "depends" | "dependencies" | "requires" | "requiredmods" | "required_mods"
+                ) {
+                    match node {
+                        serde_json::Value::Object(dep_map) => {
+                            for (dep_key, dep_value) in dep_map {
+                                let include = dep_value.as_bool().unwrap_or(true)
+                                    || dep_value.is_object()
+                                    || dep_value.is_string()
+                                    || dep_value.is_array();
+                                if !include {
+                                    continue;
+                                }
+                                let normalized = normalize_local_mod_id(dep_key);
+                                if let Some(dep_id) = normalized {
+                                    if !is_builtin_dependency_id(&dep_id) {
+                                        push_unique_string(required_deps, Some(dep_id));
+                                    }
+                                }
+                            }
+                        }
+                        serde_json::Value::Array(items) => {
+                            for item in items {
+                                if let Some(dep_raw) = item.as_str() {
+                                    let normalized = normalize_local_mod_id(dep_raw);
+                                    if let Some(dep_id) = normalized {
+                                        if !is_builtin_dependency_id(&dep_id) {
+                                            push_unique_string(required_deps, Some(dep_id));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        serde_json::Value::String(dep_raw) => {
+                            let normalized = normalize_local_mod_id(dep_raw);
+                            if let Some(dep_id) = normalized {
+                                if !is_builtin_dependency_id(&dep_id) {
+                                    push_unique_string(required_deps, Some(dep_id));
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                collect_json_mod_metadata(node, mod_ids, required_deps);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_mod_metadata(item, mod_ids, required_deps);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_mod_id_from_assignment_line(raw: &str) -> Option<String> {
+    let line = raw.trim();
+    let lower = line.to_ascii_lowercase();
+    if !(lower.starts_with("modid") || lower.starts_with("mod_id")) {
+        return None;
+    }
+    let idx = line.find('=')?;
+    normalize_local_mod_id(
+        line[idx + 1..]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim(),
+    )
+}
+
+fn parse_mods_toml_dependency_ids(raw: &str) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    for line in raw.lines() {
+        if let Some(mod_id) = parse_mod_id_from_assignment_line(line) {
+            if is_builtin_dependency_id(&mod_id) {
+                continue;
+            }
+            push_unique_string(&mut out, Some(mod_id));
+        }
+    }
+    out
+}
+
+fn parse_local_mod_analysis_from_jar(
+    safe_filename: &str,
+    file_bytes: &[u8],
+    instance_loader: Option<&str>,
+    installed_mod_ids: Option<&HashSet<String>>,
+) -> LocalModAnalysis {
+    let mut loader_hints: Vec<String> = detect_mod_loader_hints_from_jar(file_bytes)
+        .into_iter()
+        .collect();
+    if loader_hints.is_empty() {
+        loader_hints = detect_mod_loader_hints_from_filename(safe_filename)
+            .into_iter()
+            .collect();
+    }
+    loader_hints.sort();
+    loader_hints.dedup();
+
+    let mut mod_ids: Vec<String> = Vec::new();
+    let mut required_dependencies: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut suggestions: Vec<String> = Vec::new();
+
+    if let Ok(mut archive) = ZipArchive::new(Cursor::new(file_bytes)) {
+        for path in [
+            "fabric.mod.json",
+            "quilt.mod.json",
+            "META-INF/mods.toml",
+            "META-INF/neoforge.mods.toml",
+            "mcmod.info",
+        ] {
+            let mut file = match archive.by_name(path) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            let mut raw = String::new();
+            if file.read_to_string(&mut raw).is_err() || raw.trim().is_empty() {
+                continue;
+            }
+            if path.ends_with(".json") || path.ends_with("mcmod.info") {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    collect_json_mod_metadata(&value, &mut mod_ids, &mut required_dependencies);
+                }
+            } else {
+                for dep in parse_mods_toml_dependency_ids(&raw) {
+                    push_unique_string(&mut required_dependencies, Some(dep));
+                }
+                if path.ends_with("mods.toml") {
+                    push_unique_string(
+                        &mut mod_ids,
+                        parse_toml_assignment(&raw, "modid")
+                            .and_then(|value| normalize_local_mod_id(&value)),
+                    );
+                }
+            }
+        }
+    }
+
+    mod_ids.sort();
+    mod_ids.dedup();
+    required_dependencies.sort();
+    required_dependencies.dedup();
+
+    if let Some(instance_loader_value) = instance_loader {
+        if !loader_hints.is_empty()
+            && !loader_hints
+                .iter()
+                .any(|hint| instance_loader_accepts_mod_loader(instance_loader_value, hint))
+        {
+            let hinted = loader_hints
+                .iter()
+                .map(|value| loader_label_for_user(value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let expected =
+                supported_mod_loader_labels_for_instance(instance_loader_value).join(", ");
+            warnings.push(format!(
+                "Loader mismatch: this file hints {} but instance loader supports {}.",
+                hinted, expected
+            ));
+            suggestions
+                .push("Move to disabled or install in a matching-loader instance.".to_string());
+        }
+    }
+
+    if let Some(installed) = installed_mod_ids {
+        let mut missing = required_dependencies
+            .iter()
+            .filter(|dep| !installed.contains(*dep))
+            .cloned()
+            .collect::<Vec<_>>();
+        missing.sort();
+        missing.dedup();
+        if !missing.is_empty() {
+            warnings.push(format!(
+                "Missing required dependencies: {}.",
+                missing.join(", ")
+            ));
+            suggestions.push(format!(
+                "Install required dependencies: {}.",
+                missing.join(", ")
+            ));
+        }
+    }
+
+    LocalModAnalysis {
+        loader_hints,
+        mod_ids,
+        required_dependencies,
+        warnings,
+        suggestions,
+        scanned_at: now_iso(),
+    }
+}
+
+pub(crate) fn analyze_local_mod_file(
+    safe_filename: &str,
+    file_bytes: &[u8],
+    instance_loader: Option<&str>,
+    installed_mod_ids: Option<&HashSet<String>>,
+) -> LocalModAnalysis {
+    parse_local_mod_analysis_from_jar(
+        safe_filename,
+        file_bytes,
+        instance_loader,
+        installed_mod_ids,
+    )
 }
 
 fn sha512_hex(bytes: &[u8]) -> String {
@@ -6224,13 +6934,100 @@ mod local_provider_preference_tests {
         };
         assert!(provider_match_is_auto_activatable(&github_manual));
     }
+
+    #[test]
+    fn compact_provider_candidates_dedupes_same_source_project() {
+        let compacted = compact_provider_candidates(vec![
+            ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:example/repo".to_string(),
+                version_id: "gh_repo_unverified".to_string(),
+                name: "Example Repo".to_string(),
+                version_number: "unverified".to_string(),
+                confidence: Some("manual".to_string()),
+                reason: Some("manual".to_string()),
+            },
+            ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:example/repo".to_string(),
+                version_id: "gh_release:42".to_string(),
+                name: "Example Repo".to_string(),
+                version_number: "v1.2.3".to_string(),
+                confidence: Some("high".to_string()),
+                reason: Some("verified".to_string()),
+            },
+        ]);
+        assert_eq!(compacted.len(), 1);
+        assert_eq!(compacted[0].version_id, "gh_release:42");
+    }
+
+    #[test]
+    fn effective_updatable_provider_allows_safe_local_github_candidate() {
+        let entry = LockEntry {
+            source: "local".to_string(),
+            project_id: "local:mods:test.jar".to_string(),
+            version_id: "local_1".to_string(),
+            name: "Test".to_string(),
+            version_number: "local-file".to_string(),
+            filename: "test.jar".to_string(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: HashMap::new(),
+            provider_candidates: vec![ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:example/repo".to_string(),
+                version_id: "gh_release:7".to_string(),
+                name: "Example Repo".to_string(),
+                version_number: "v1.0.0".to_string(),
+                confidence: Some("high".to_string()),
+                reason: Some("verified".to_string()),
+            }],
+            local_analysis: None,
+        };
+        let effective = effective_updatable_provider_for_entry(&entry, UpdateScope::AllContent)
+            .expect("effective provider");
+        assert_eq!(effective.source.to_ascii_lowercase(), "github");
+        assert_eq!(effective.project_id, "gh:example/repo");
+    }
+
+    #[test]
+    fn effective_updatable_provider_blocks_weak_local_github_candidate() {
+        let entry = LockEntry {
+            source: "local".to_string(),
+            project_id: "local:mods:test.jar".to_string(),
+            version_id: "local_1".to_string(),
+            name: "Test".to_string(),
+            version_number: "local-file".to_string(),
+            filename: "test.jar".to_string(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: HashMap::new(),
+            provider_candidates: vec![ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:example/repo".to_string(),
+                version_id: "gh_repo_unverified".to_string(),
+                name: "Example Repo".to_string(),
+                version_number: "unverified".to_string(),
+                confidence: Some("manual".to_string()),
+                reason: Some(
+                    "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
+                        .to_string(),
+                ),
+            }],
+            local_analysis: None,
+        };
+        assert!(effective_updatable_provider_for_entry(&entry, UpdateScope::AllContent).is_none());
+    }
 }
 
 fn to_provider_candidates(matches: &[LocalImportedProviderMatch]) -> Vec<ProviderCandidate> {
-    matches
-        .iter()
-        .map(|item| item.to_provider_candidate())
-        .collect()
+    compact_provider_candidates(matches.iter().map(|item| item.to_provider_candidate()))
 }
 
 fn detect_provider_for_local_mod(
@@ -6433,12 +7230,10 @@ fn entry_file_exists(instance_dir: &Path, entry: &LockEntry) -> bool {
 }
 
 fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
-    if !entry.provider_candidates.is_empty() {
-        return entry.provider_candidates.clone();
-    }
+    let mut candidates = entry.provider_candidates.clone();
     let source = entry.source.trim().to_ascii_lowercase();
     if source == "modrinth" || source == "curseforge" || source == "github" {
-        return vec![ProviderCandidate {
+        candidates.push(ProviderCandidate {
             source: entry.source.clone(),
             project_id: entry.project_id.clone(),
             version_id: entry.version_id.clone(),
@@ -6446,9 +7241,9 @@ fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
             version_number: entry.version_number.clone(),
             confidence: None,
             reason: None,
-        }];
+        });
     }
-    vec![]
+    compact_provider_candidates(candidates)
 }
 
 fn lock_entry_to_installed(instance_dir: &Path, entry: &LockEntry) -> InstalledMod {
@@ -6476,6 +7271,7 @@ fn lock_entry_to_installed(instance_dir: &Path, entry: &LockEntry) -> InstalledM
         added_at,
         hashes: entry.hashes.clone(),
         provider_candidates: lock_entry_provider_candidates(entry),
+        local_analysis: entry.local_analysis.clone(),
     }
 }
 
@@ -6712,12 +7508,30 @@ pub(crate) fn github_error_is_auth_or_rate_limit(text: &str) -> bool {
         || lower.contains("rate limit")
 }
 
+fn github_error_is_rate_limit(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("rate limit")
+}
+
+fn github_rate_limit_reset_hint_from_error(text: &str) -> Option<String> {
+    let marker = "resets around ";
+    let lower = text.to_ascii_lowercase();
+    let start = lower.find(marker)?;
+    let rest = &text[start + marker.len()..];
+    let hint = rest
+        .split('.')
+        .next()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    Some(hint)
+}
+
 pub(crate) fn github_reason_is_transient_verification_failure(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     github_error_is_auth_or_rate_limit(text)
         || lower.contains("verification is unavailable")
         || lower.contains("verification unavailable")
         || lower.contains("temporarily unavailable")
+        || lower.contains("currently unverifiable")
 }
 
 pub(crate) fn download_bytes_with_retry(
@@ -7942,6 +8756,104 @@ fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
         {
             eprintln!(
                 "legacy dev curseforge key mirror delete failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
+    }
+    Ok(())
+}
+
+fn keyring_get_github_token_pool() -> Result<Vec<String>, String> {
+    let services = keyring_service_candidates();
+    let mut canonical_read_err: Option<String> = None;
+    for service in services {
+        let value = match token_keyring_get_secret(service, GITHUB_TOKEN_POOL_KEYRING_USER) {
+            Ok(value) => value,
+            Err(err) => {
+                if service == KEYRING_SERVICE {
+                    if canonical_read_err.is_none() {
+                        canonical_read_err = Some(err);
+                    }
+                } else {
+                    eprintln!(
+                        "legacy github token pool read failed in service '{}': {}",
+                        service, err
+                    );
+                }
+                continue;
+            }
+        };
+        let Some(value) = value else {
+            continue;
+        };
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let mut parsed = Vec::new();
+        github_parse_token_pool(&trimmed, &mut parsed);
+        if parsed.is_empty() {
+            continue;
+        }
+        if service != KEYRING_SERVICE {
+            let canonical = parsed.join("\n");
+            if let Err(err) = token_keyring_set_secret(
+                KEYRING_SERVICE,
+                GITHUB_TOKEN_POOL_KEYRING_USER,
+                &canonical,
+            ) {
+                eprintln!(
+                    "github token pool canonical mirror write failed from service '{}': {}",
+                    service, err
+                );
+            }
+        }
+        return Ok(parsed);
+    }
+    if let Some(err) = canonical_read_err {
+        return Err(err);
+    }
+    Ok(vec![])
+}
+
+fn keyring_set_github_token_pool(raw: &str) -> Result<usize, String> {
+    let mut parsed = Vec::new();
+    github_parse_token_pool(raw, &mut parsed);
+    if parsed.is_empty() {
+        return Err(
+            "GitHub token pool is empty. Paste one or more tokens separated by comma, semicolon, or newline."
+                .to_string(),
+        );
+    }
+    let canonical = parsed.join("\n");
+    token_keyring_set_secret(KEYRING_SERVICE, GITHUB_TOKEN_POOL_KEYRING_USER, &canonical)?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) =
+            token_keyring_set_secret(legacy_service, GITHUB_TOKEN_POOL_KEYRING_USER, &canonical)
+        {
+            eprintln!(
+                "legacy github token pool mirror write failed in service '{}': {}",
+                legacy_service, err
+            );
+        }
+    }
+    Ok(parsed.len())
+}
+
+fn keyring_delete_github_token_pool() -> Result<(), String> {
+    token_keyring_delete_secret(KEYRING_SERVICE, GITHUB_TOKEN_POOL_KEYRING_USER)?;
+    for legacy_service in LEGACY_KEYRING_SERVICES {
+        if legacy_service == KEYRING_SERVICE {
+            continue;
+        }
+        if let Err(err) =
+            token_keyring_delete_secret(legacy_service, GITHUB_TOKEN_POOL_KEYRING_USER)
+        {
+            eprintln!(
+                "legacy github token pool mirror delete failed in service '{}': {}",
                 legacy_service, err
             );
         }
@@ -9502,18 +10414,79 @@ fn normalize_update_content_type_filter(requested: Option<&[String]>) -> Option<
     }
 }
 
-fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool {
-    let source = entry.source.trim().to_lowercase();
-    let content_type = normalize_lock_content_type(&entry.content_type);
-    if !is_updatable_content_type(&content_type) {
-        return false;
-    }
+fn update_scope_allows_source(scope: UpdateScope, source: &str, content_type: &str) -> bool {
     match scope {
         UpdateScope::AllContent => {
             source == "modrinth" || source == "curseforge" || source == "github"
         }
         UpdateScope::ModrinthModsOnly => source == "modrinth" && content_type == "mods",
     }
+}
+
+fn effective_updatable_provider_for_entry(
+    entry: &LockEntry,
+    scope: UpdateScope,
+) -> Option<ProviderCandidate> {
+    let content_type = normalize_lock_content_type(&entry.content_type);
+    if !is_updatable_content_type(&content_type) {
+        return None;
+    }
+
+    let active_source = entry.source.trim().to_ascii_lowercase();
+    if update_scope_allows_source(scope, &active_source, &content_type) {
+        let active_candidate = ProviderCandidate {
+            source: entry.source.clone(),
+            project_id: entry.project_id.clone(),
+            version_id: entry.version_id.clone(),
+            name: entry.name.clone(),
+            version_number: entry.version_number.clone(),
+            confidence: None,
+            reason: None,
+        };
+        if active_source != "github"
+            || parse_github_project_id(&active_candidate.project_id).is_ok()
+        {
+            return Some(active_candidate);
+        }
+    }
+
+    let mut candidates = lock_entry_provider_candidates(entry)
+        .into_iter()
+        .filter(|candidate| {
+            let source = candidate.source.trim().to_ascii_lowercase();
+            if !update_scope_allows_source(scope, &source, &content_type) {
+                return false;
+            }
+            if source == "github" {
+                return parse_github_project_id(&candidate.project_id).is_ok()
+                    && provider_candidate_is_auto_activatable(candidate);
+            }
+            !candidate.project_id.trim().is_empty()
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| {
+        provider_candidate_confidence_rank(b)
+            .cmp(&provider_candidate_confidence_rank(a))
+            .then_with(|| {
+                provider_candidate_version_rank(b).cmp(&provider_candidate_version_rank(a))
+            })
+            .then_with(|| {
+                provider_source_priority(&b.source).cmp(&provider_source_priority(&a.source))
+            })
+            .then_with(|| a.project_id.cmp(&b.project_id))
+    });
+    candidates.into_iter().next()
+}
+
+fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool {
+    let content_type = normalize_lock_content_type(&entry.content_type);
+    if !is_updatable_content_type(&content_type) {
+        return false;
+    }
+    effective_updatable_provider_for_entry(entry, scope).is_some()
 }
 
 fn entry_allowed_in_content_type_filter(
@@ -9535,6 +10508,7 @@ fn check_single_content_update_entry(
     instance: &Instance,
     entry: &LockEntry,
     cf_key: Option<&str>,
+    scope: UpdateScope,
 ) -> Result<(Option<ContentUpdateInfo>, Vec<String>), String> {
     let mut warnings: Vec<String> = Vec::new();
 
@@ -9551,20 +10525,54 @@ fn check_single_content_update_entry(
         return Ok((None, warnings));
     }
 
-    let source = entry.source.trim().to_lowercase();
+    let Some(effective_provider) = effective_updatable_provider_for_entry(entry, scope) else {
+        return Ok((None, warnings));
+    };
+    let source = effective_provider.source.trim().to_ascii_lowercase();
     let content_type = normalize_lock_content_type(&entry.content_type);
+    let project_id = effective_provider.project_id.trim().to_string();
+    let current_version_id = if effective_provider.version_id.trim().is_empty() {
+        entry.version_id.clone()
+    } else {
+        effective_provider.version_id.clone()
+    };
+    let current_version_number = if effective_provider.version_number.trim().is_empty() {
+        entry.version_number.clone()
+    } else {
+        effective_provider.version_number.clone()
+    };
+    let display_name = if effective_provider.name.trim().is_empty() {
+        entry.name.clone()
+    } else {
+        effective_provider.name.clone()
+    };
 
     if source == "modrinth" {
-        let versions = fetch_project_versions(client, &entry.project_id)?;
+        let versions = fetch_project_versions(client, &project_id)?;
+        let latest_any = versions
+            .iter()
+            .max_by(|a, b| a.date_published.cmp(&b.date_published))
+            .cloned();
         let Some(latest) = pick_compatible_version_for_content(versions, instance, &content_type)
         else {
-            warnings.push(format!(
-                "No compatible Modrinth update found for '{}' ({})",
-                entry.name, entry.project_id
-            ));
+            if let Some(incompatible_latest) = latest_any {
+                warnings.push(format!(
+                    "No compatible Modrinth update found for '{}' ({}). Latest release '{}' targets MC [{}] loaders [{}].",
+                    display_name,
+                    project_id,
+                    incompatible_latest.version_number,
+                    incompatible_latest.game_versions.join(", "),
+                    incompatible_latest.loaders.join(", "),
+                ));
+            } else {
+                warnings.push(format!(
+                    "No compatible Modrinth update found for '{}' ({})",
+                    display_name, project_id
+                ));
+            }
             return Ok((None, warnings));
         };
-        if latest.id == entry.version_id {
+        if latest.id == current_version_id {
             return Ok((None, warnings));
         }
         let latest_file = latest
@@ -9578,16 +10586,30 @@ fn check_single_content_update_entry(
             .filter(|dep| dep.dependency_type.eq_ignore_ascii_case("required"))
             .filter_map(|dep| dep.project_id.as_ref())
             .map(|project_id| project_id.trim().to_string())
-            .filter(|project_id| !project_id.is_empty() && project_id != &entry.project_id)
+            .filter(|dependency_project_id| {
+                !dependency_project_id.is_empty() && dependency_project_id != &project_id
+            })
             .collect::<Vec<_>>();
+        let mut compatibility_notes: Vec<String> = Vec::new();
+        if let Some(incompatible_latest) = latest_any {
+            if incompatible_latest.id != latest.id {
+                compatibility_notes.push(format!(
+                    "Newest release '{}' is not compatible with this instance ({} / {}); selected latest compatible '{}'.",
+                    incompatible_latest.version_number,
+                    instance.loader,
+                    instance.mc_version,
+                    latest.version_number
+                ));
+            }
+        }
         return Ok((
             Some(ContentUpdateInfo {
                 source: "modrinth".to_string(),
                 content_type,
-                project_id: entry.project_id.clone(),
-                name: entry.name.clone(),
-                current_version_id: entry.version_id.clone(),
-                current_version_number: entry.version_number.clone(),
+                project_id: project_id.clone(),
+                name: display_name.clone(),
+                current_version_id,
+                current_version_number,
                 latest_version_id: latest.id,
                 latest_version_number: latest.version_number,
                 enabled: entry.enabled,
@@ -9596,6 +10618,8 @@ fn check_single_content_update_entry(
                 latest_download_url: latest_file.map(|f| f.url.clone()),
                 latest_hashes: latest_file.map(|f| f.hashes.clone()).unwrap_or_default(),
                 required_dependencies,
+                compatibility_status: Some("compatible".to_string()),
+                compatibility_notes,
             }),
             warnings,
         ));
@@ -9605,22 +10629,40 @@ fn check_single_content_update_entry(
         let Some(api_key) = cf_key else {
             return Ok((None, warnings));
         };
-        let mod_id = parse_curseforge_project_id(&entry.project_id)?;
+        let mod_id = parse_curseforge_project_id(&project_id)?;
         let mut files = fetch_curseforge_files(client, api_key, mod_id)?;
+        let latest_any = files
+            .iter()
+            .max_by(|a, b| a.file_date.cmp(&b.file_date))
+            .cloned();
         files.retain(|f| {
             !f.file_name.trim().is_empty()
                 && file_looks_compatible_with_instance(f, instance, &content_type)
         });
         files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
         let Some(latest) = files.into_iter().next() else {
-            warnings.push(format!(
-                "No compatible CurseForge update found for '{}' ({})",
-                entry.name, entry.project_id
-            ));
+            if let Some(incompatible_latest) = latest_any {
+                warnings.push(format!(
+                    "No compatible CurseForge update found for '{}' ({}). Latest file '{}' supports [{}].",
+                    display_name,
+                    project_id,
+                    if incompatible_latest.display_name.trim().is_empty() {
+                        incompatible_latest.file_name.clone()
+                    } else {
+                        incompatible_latest.display_name.clone()
+                    },
+                    incompatible_latest.game_versions.join(", "),
+                ));
+            } else {
+                warnings.push(format!(
+                    "No compatible CurseForge update found for '{}' ({})",
+                    display_name, project_id
+                ));
+            }
             return Ok((None, warnings));
         };
         let latest_version_id = format!("cf_file:{}", latest.id);
-        if latest_version_id == entry.version_id {
+        if latest_version_id == current_version_id {
             return Ok((None, warnings));
         }
         let latest_version_number = if latest.display_name.trim().is_empty() {
@@ -9640,25 +10682,39 @@ fn check_single_content_update_entry(
                     if error_mentions_forbidden(&err) {
                         warnings.push(format!(
                             "Skipped CurseForge update '{}' ({}): provider blocked automated download URL (403).",
-                            entry.name, entry.project_id
+                            display_name, project_id
                         ));
                         return Ok((None, warnings));
                     }
                     warnings.push(format!(
                         "Could not resolve download url for CurseForge update '{}' ({}): {}",
-                        entry.name, entry.project_id, err
+                        display_name, project_id, err
                     ));
                 }
+            }
+        }
+        let mut compatibility_notes: Vec<String> = Vec::new();
+        if let Some(incompatible_latest) = latest_any {
+            if incompatible_latest.id != latest.id {
+                let latest_label = if incompatible_latest.display_name.trim().is_empty() {
+                    incompatible_latest.file_name
+                } else {
+                    incompatible_latest.display_name
+                };
+                compatibility_notes.push(format!(
+                    "Newest file '{}' is not compatible with this instance ({} / {}).",
+                    latest_label, instance.loader, instance.mc_version
+                ));
             }
         }
         return Ok((
             Some(ContentUpdateInfo {
                 source: "curseforge".to_string(),
                 content_type,
-                project_id: entry.project_id.clone(),
-                name: entry.name.clone(),
-                current_version_id: entry.version_id.clone(),
-                current_version_number: entry.version_number.clone(),
+                project_id: project_id.clone(),
+                name: display_name.clone(),
+                current_version_id,
+                current_version_number,
                 latest_version_id,
                 latest_version_number,
                 enabled: entry.enabled,
@@ -9673,8 +10729,10 @@ fn check_single_content_update_entry(
                         dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type)
                     })
                     .map(|dep| format!("cf:{}", dep.mod_id))
-                    .filter(|project_id| project_id != &entry.project_id)
+                    .filter(|dependency_project_id| dependency_project_id != &project_id)
                     .collect(),
+                compatibility_status: Some("compatible".to_string()),
+                compatibility_notes,
             }),
             warnings,
         ));
@@ -9684,36 +10742,54 @@ fn check_single_content_update_entry(
         if content_type != "mods" {
             return Ok((None, warnings));
         }
-        let (owner, repo_name) = parse_github_project_id(&entry.project_id)?;
+        let (owner, repo_name) = parse_github_project_id(&project_id)?;
         let repo = fetch_github_repo(client, &owner, &repo_name)?;
         if let Some(reason) = github_repo_policy_rejection_reason(&repo) {
             warnings.push(format!(
                 "Skipped GitHub update '{}' ({}): {}.",
-                entry.name, entry.project_id, reason
+                display_name, project_id, reason
             ));
             return Ok((None, warnings));
         }
         let releases = fetch_github_releases(client, &owner, &repo_name)?;
-        let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
-        let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
-            None
-        } else {
-            Some(&repo_loader_hints)
-        };
         let query_hint = if entry.name.trim().is_empty() {
             repo.name.as_str()
         } else {
             entry.name.as_str()
         };
-        let Some(selection) = select_github_release_with_asset(
+        let mut repo_loader_hints: HashSet<String> = HashSet::new();
+        let mut selection = select_github_release_with_asset(
             &repo,
             &releases,
             query_hint,
             Some(&instance.mc_version),
             Some(&instance.loader),
             None,
-            repo_loader_hints_opt,
-        ) else {
+            None,
+        );
+        if selection.is_none() {
+            repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
+            let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+                None
+            } else {
+                Some(&repo_loader_hints)
+            };
+            selection = select_github_release_with_asset(
+                &repo,
+                &releases,
+                query_hint,
+                Some(&instance.mc_version),
+                Some(&instance.loader),
+                None,
+                repo_loader_hints_opt,
+            );
+        }
+        let Some(selection) = selection else {
+            let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+                None
+            } else {
+                Some(&repo_loader_hints)
+            };
             let has_any_release = select_github_release_with_asset(
                 &repo,
                 &releases,
@@ -9727,19 +10803,19 @@ fn check_single_content_update_entry(
             if has_any_release {
                 warnings.push(format!(
                     "No compatible GitHub update found for '{}' ({}) on {} + {}.",
-                    entry.name, entry.project_id, instance.loader, instance.mc_version
+                    display_name, project_id, instance.loader, instance.mc_version
                 ));
             } else {
                 warnings.push(format!(
                     "No acceptable GitHub release with .jar asset found for '{}' ({})",
-                    entry.name, entry.project_id
+                    display_name, project_id
                 ));
             }
             return Ok((None, warnings));
         };
 
         let latest_version_id = format!("gh_release:{}", selection.release.id);
-        if latest_version_id == entry.version_id.trim() {
+        if latest_version_id == current_version_id.trim() {
             return Ok((None, warnings));
         }
         let mut latest_hashes = extract_github_asset_digest(&selection.asset);
@@ -9753,17 +10829,17 @@ fn check_single_content_update_entry(
                 source: "github".to_string(),
                 content_type,
                 project_id: github_project_key(&owner, &repo_name),
-                name: if entry.name.trim().is_empty() {
+                name: if display_name.trim().is_empty() {
                     if repo.full_name.trim().is_empty() {
                         format!("{owner}/{repo_name}")
                     } else {
                         repo.full_name.clone()
                     }
                 } else {
-                    entry.name.clone()
+                    display_name
                 },
-                current_version_id: entry.version_id.clone(),
-                current_version_number: entry.version_number.clone(),
+                current_version_id,
+                current_version_number,
                 latest_version_id,
                 latest_version_number: github_release_version_label(&selection.release),
                 enabled: entry.enabled,
@@ -9772,12 +10848,54 @@ fn check_single_content_update_entry(
                 latest_download_url: Some(selection.asset.browser_download_url.clone()),
                 latest_hashes,
                 required_dependencies: vec![],
+                compatibility_status: Some("compatible".to_string()),
+                compatibility_notes: vec![],
             }),
             warnings,
         ));
     }
 
     Ok((None, warnings))
+}
+
+fn update_check_entry_context(entry: &LockEntry, scope: UpdateScope) -> (String, String, String) {
+    if let Some(provider) = effective_updatable_provider_for_entry(entry, scope) {
+        let source = provider.source.trim().to_ascii_lowercase();
+        let project_id = if provider.project_id.trim().is_empty() {
+            entry.project_id.trim().to_string()
+        } else {
+            provider.project_id.trim().to_string()
+        };
+        let name = if provider.name.trim().is_empty() {
+            entry.name.trim().to_string()
+        } else {
+            provider.name.trim().to_string()
+        };
+        return (source, project_id, name);
+    }
+    (
+        entry.source.trim().to_ascii_lowercase(),
+        entry.project_id.trim().to_string(),
+        entry.name.trim().to_string(),
+    )
+}
+
+fn update_check_entry_failure_warning(
+    entry: &LockEntry,
+    scope: UpdateScope,
+    err: &str,
+) -> (String, String, String, String) {
+    let (source, project_id, name) = update_check_entry_context(entry, scope);
+    let label = if name.trim().is_empty() {
+        entry.filename.clone()
+    } else {
+        name
+    };
+    let warning = format!(
+        "Skipped update check for '{}' [{}:{}]: {}",
+        label, source, project_id, err
+    );
+    (warning, source, project_id, label)
 }
 
 fn check_instance_content_updates_inner(
@@ -9789,6 +10907,8 @@ fn check_instance_content_updates_inner(
 ) -> Result<ContentUpdateCheckResult, String> {
     let mut updates: Vec<ContentUpdateInfo> = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut github_rate_limit_skipped_entries = 0usize;
+    let mut github_rate_limit_reset_hint: Option<String> = None;
     let candidate_entries: Vec<LockEntry> = lock
         .entries
         .iter()
@@ -9800,9 +10920,11 @@ fn check_instance_content_updates_inner(
         .collect();
     let checked_entries = candidate_entries.len();
 
-    let has_cf_entries = candidate_entries
-        .iter()
-        .any(|e| e.source.eq_ignore_ascii_case("curseforge"));
+    let has_cf_entries = candidate_entries.iter().any(|entry| {
+        effective_updatable_provider_for_entry(entry, scope)
+            .map(|provider| provider.source.trim().eq_ignore_ascii_case("curseforge"))
+            .unwrap_or(false)
+    });
     let cf_key = curseforge_api_key();
     if has_cf_entries && cf_key.is_none() {
         warnings.push(
@@ -9831,12 +10953,33 @@ fn check_instance_content_updates_inner(
 
     if parallelism <= 1 {
         for entry in &candidate_entries {
-            let (maybe_update, mut local_warnings) =
-                check_single_content_update_entry(client, instance, entry, cf_key.as_deref())?;
-            if let Some(update) = maybe_update {
-                updates.push(update);
+            match check_single_content_update_entry(
+                client,
+                instance,
+                entry,
+                cf_key.as_deref(),
+                scope,
+            ) {
+                Ok((maybe_update, mut local_warnings)) => {
+                    if let Some(update) = maybe_update {
+                        updates.push(update);
+                    }
+                    warnings.append(&mut local_warnings);
+                }
+                Err(err) => {
+                    let (warning, source, _, _) =
+                        update_check_entry_failure_warning(entry, scope, &err);
+                    if source.eq_ignore_ascii_case("github") && github_error_is_rate_limit(&err) {
+                        github_rate_limit_skipped_entries += 1;
+                        if github_rate_limit_reset_hint.is_none() {
+                            github_rate_limit_reset_hint =
+                                github_rate_limit_reset_hint_from_error(&err);
+                        }
+                    } else {
+                        warnings.push(warning);
+                    }
+                }
             }
-            warnings.append(&mut local_warnings);
         }
     } else {
         let mut partitions: Vec<Vec<LockEntry>> = vec![Vec::new(); parallelism];
@@ -9853,23 +10996,48 @@ fn check_instance_content_updates_inner(
                 let instance_local = instance_snapshot.clone();
                 let cf_key_local = cf_key_snapshot.clone();
                 handles.push(scope_ctx.spawn(
-                    move || -> Result<(Vec<ContentUpdateInfo>, Vec<String>), String> {
+                    move || -> Result<(Vec<ContentUpdateInfo>, Vec<String>, usize, Option<String>), String> {
                         let mut local_updates = Vec::new();
                         let mut local_warnings = Vec::new();
+                        let mut local_github_rate_limit_skips = 0usize;
+                        let mut local_github_rate_limit_reset: Option<String> = None;
                         for entry in &chunk {
-                            let (maybe_update, mut warnings_for_entry) =
-                                check_single_content_update_entry(
-                                    &client_local,
-                                    &instance_local,
-                                    entry,
-                                    cf_key_local.as_deref(),
-                                )?;
-                            if let Some(update) = maybe_update {
-                                local_updates.push(update);
+                            match check_single_content_update_entry(
+                                &client_local,
+                                &instance_local,
+                                entry,
+                                cf_key_local.as_deref(),
+                                scope,
+                            ) {
+                                Ok((maybe_update, mut warnings_for_entry)) => {
+                                    if let Some(update) = maybe_update {
+                                        local_updates.push(update);
+                                    }
+                                    local_warnings.append(&mut warnings_for_entry);
+                                }
+                                Err(err) => {
+                                    let (warning, source, _, _) =
+                                        update_check_entry_failure_warning(entry, scope, &err);
+                                    if source.eq_ignore_ascii_case("github")
+                                        && github_error_is_rate_limit(&err)
+                                    {
+                                        local_github_rate_limit_skips += 1;
+                                        if local_github_rate_limit_reset.is_none() {
+                                            local_github_rate_limit_reset =
+                                                github_rate_limit_reset_hint_from_error(&err);
+                                        }
+                                    } else {
+                                        local_warnings.push(warning);
+                                    }
+                                }
                             }
-                            local_warnings.append(&mut warnings_for_entry);
                         }
-                        Ok((local_updates, local_warnings))
+                        Ok((
+                            local_updates,
+                            local_warnings,
+                            local_github_rate_limit_skips,
+                            local_github_rate_limit_reset,
+                        ))
                     },
                 ));
             }
@@ -9878,12 +11046,36 @@ fn check_instance_content_updates_inner(
                 let joined = handle
                     .join()
                     .map_err(|_| "update-check worker thread panicked".to_string())?;
-                let (mut local_updates, mut local_warnings) = joined?;
+                let (
+                    mut local_updates,
+                    mut local_warnings,
+                    local_github_rate_limit_skips,
+                    local_github_rate_limit_reset,
+                ) = joined?;
                 updates.append(&mut local_updates);
                 warnings.append(&mut local_warnings);
+                github_rate_limit_skipped_entries += local_github_rate_limit_skips;
+                if github_rate_limit_reset_hint.is_none() {
+                    github_rate_limit_reset_hint = local_github_rate_limit_reset;
+                }
             }
             Ok(())
         })?;
+    }
+
+    if github_rate_limit_skipped_entries > 0 {
+        warnings.push(format!(
+            "GitHub checks paused due to rate limit; skipped {} GitHub entr{} this run.{}",
+            github_rate_limit_skipped_entries,
+            if github_rate_limit_skipped_entries == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            github_rate_limit_reset_hint
+                .map(|value| format!(" Resets around {value}."))
+                .unwrap_or_default()
+        ));
     }
 
     updates.sort_by(|a, b| {
@@ -10004,6 +11196,59 @@ fn parse_curseforge_file_id(version_id: &str) -> Option<i64> {
         return raw.trim().parse::<i64>().ok().filter(|id| *id > 0);
     }
     trimmed.parse::<i64>().ok().filter(|id| *id > 0)
+}
+
+fn carried_pinned_version_for_update(
+    lock: &Lockfile,
+    update: &ContentUpdateInfo,
+) -> Option<String> {
+    let update_source = update.source.trim().to_ascii_lowercase();
+    let update_content_type = normalize_lock_content_type(&update.content_type);
+    let update_project_id = update.project_id.trim();
+    for entry in &lock.entries {
+        if normalize_lock_content_type(&entry.content_type) != update_content_type {
+            continue;
+        }
+        if !entry.source.trim().eq_ignore_ascii_case(&update_source) {
+            continue;
+        }
+        let entry_pin = entry
+            .pinned_version
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        if entry_pin.is_none() {
+            continue;
+        }
+        if !update.current_version_id.trim().is_empty()
+            && entry.version_id.trim() == update.current_version_id.trim()
+        {
+            return entry_pin;
+        }
+        if update_source == "modrinth"
+            && entry
+                .project_id
+                .trim()
+                .eq_ignore_ascii_case(update_project_id)
+        {
+            return entry_pin;
+        }
+        if update_source == "curseforge" {
+            let update_mod_id = parse_curseforge_project_id(update_project_id).ok();
+            let entry_mod_id = parse_curseforge_project_id(&entry.project_id).ok();
+            if update_mod_id.is_some() && entry_mod_id.is_some() && update_mod_id == entry_mod_id {
+                return entry_pin;
+            }
+        }
+        if update_source == "github" {
+            let update_repo = parse_github_project_id(update_project_id).ok();
+            let entry_repo = parse_github_project_id(&entry.project_id).ok();
+            if update_repo.is_some() && entry_repo.is_some() && update_repo == entry_repo {
+                return entry_pin;
+            }
+        }
+    }
+    None
 }
 
 fn disable_mod_file(instance_dir: &Path, filename: &str) -> Result<(), String> {
@@ -10192,6 +11437,7 @@ fn try_fast_install_content_update(
 
     let instance_dir = instance_dir_for_id(instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(instances_dir, &args.instance_id)?;
+    let carried_pin = carried_pinned_version_for_update(&lock, update);
 
     if source == "modrinth" {
         let latest_version_id = update.latest_version_id.trim();
@@ -10300,7 +11546,7 @@ fn try_fast_install_content_update(
                 "instance".to_string()
             },
             target_worlds: worlds,
-            pinned_version: None,
+            pinned_version: carried_pin.clone(),
             enabled: update.enabled,
             hashes: latest_hashes,
             provider_candidates: vec![ProviderCandidate {
@@ -10316,6 +11562,7 @@ fn try_fast_install_content_update(
                 confidence: None,
                 reason: None,
             }],
+            local_analysis: None,
         };
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
@@ -10436,7 +11683,7 @@ fn try_fast_install_content_update(
                 "instance".to_string()
             },
             target_worlds: worlds,
-            pinned_version: None,
+            pinned_version: carried_pin.clone(),
             enabled: update.enabled,
             hashes: latest_hashes,
             provider_candidates: vec![ProviderCandidate {
@@ -10452,6 +11699,7 @@ fn try_fast_install_content_update(
                 confidence: None,
                 reason: None,
             }],
+            local_analysis: None,
         };
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
@@ -10468,10 +11716,7 @@ fn try_fast_install_content_update(
             return Ok(None);
         }
         let (owner, repo_name) = parse_github_project_id(&update.project_id)?;
-        let repo = fetch_github_repo(client, &owner, &repo_name)?;
-        if github_repo_policy_rejection_reason(&repo).is_some() {
-            return Ok(None);
-        }
+        let mut repo_full_name_hint: Option<String> = None;
         let mut latest_release_id = parse_github_release_id(&update.latest_version_id);
         let mut latest_file_name = update
             .latest_file_name
@@ -10487,27 +11732,44 @@ fn try_fast_install_content_update(
         let mut latest_version_number = update.latest_version_number.clone();
 
         if latest_release_id.is_none() || latest_file_name.is_none() || download_url.is_none() {
+            let repo = fetch_github_repo(client, &owner, &repo_name)?;
+            if github_repo_policy_rejection_reason(&repo).is_some() {
+                return Ok(None);
+            }
+            repo_full_name_hint = Some(repo.full_name.clone());
             let releases = fetch_github_releases(client, &owner, &repo_name)?;
-            let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
-            let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
-                None
-            } else {
-                Some(&repo_loader_hints)
-            };
             let query_hint = if update.name.trim().is_empty() {
                 repo.name.as_str()
             } else {
                 update.name.as_str()
             };
-            let Some(selection) = select_github_release_with_asset(
+            let mut selection = select_github_release_with_asset(
                 &repo,
                 &releases,
                 query_hint,
                 Some(&instance.mc_version),
                 Some(&instance.loader),
                 None,
-                repo_loader_hints_opt,
-            ) else {
+                None,
+            );
+            if selection.is_none() {
+                let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
+                let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+                    None
+                } else {
+                    Some(&repo_loader_hints)
+                };
+                selection = select_github_release_with_asset(
+                    &repo,
+                    &releases,
+                    query_hint,
+                    Some(&instance.mc_version),
+                    Some(&instance.loader),
+                    None,
+                    repo_loader_hints_opt,
+                );
+            }
+            let Some(selection) = selection else {
                 return Ok(None);
             };
             latest_release_id = Some(selection.release.id);
@@ -10569,10 +11831,16 @@ fn try_fast_install_content_update(
             )?;
         }
         let fallback_name = if update.name.trim().is_empty() {
-            if repo.full_name.trim().is_empty() {
+            if repo_full_name_hint
+                .as_ref()
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+            {
                 format!("{owner}/{repo_name}")
             } else {
-                repo.full_name.clone()
+                repo_full_name_hint
+                    .clone()
+                    .unwrap_or_else(|| format!("{owner}/{repo_name}"))
             }
         } else {
             update.name.clone()
@@ -10592,7 +11860,7 @@ fn try_fast_install_content_update(
             content_type: normalized.clone(),
             target_scope: "instance".to_string(),
             target_worlds: vec![],
-            pinned_version: None,
+            pinned_version: carried_pin,
             enabled: update.enabled,
             hashes: latest_hashes,
             provider_candidates: vec![ProviderCandidate {
@@ -10612,6 +11880,7 @@ fn try_fast_install_content_update(
                 confidence: None,
                 reason: None,
             }],
+            local_analysis: None,
         };
         if !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
@@ -10749,6 +12018,61 @@ fn github_is_rate_limited_from_headers(
         .unwrap_or(false)
 }
 
+fn github_mark_unauth_cooldown(headers: &reqwest::header::HeaderMap) {
+    let until = github_rate_limit_reset_instant(headers).unwrap_or_else(|| {
+        Instant::now() + Duration::from_secs(GITHUB_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECS)
+    });
+    if let Ok(mut guard) = github_token_rotation_state().lock() {
+        guard.unauth_cooldown_until = Some(until);
+        guard.unauth_reset_local = github_rate_limit_reset_local(headers);
+    }
+}
+
+fn github_unauth_cooldown_state() -> (bool, Option<String>) {
+    let now = Instant::now();
+    if let Ok(mut guard) = github_token_rotation_state().lock() {
+        if let Some(until) = guard.unauth_cooldown_until {
+            if until > now {
+                return (true, guard.unauth_reset_local.clone());
+            }
+            guard.unauth_cooldown_until = None;
+            guard.unauth_reset_local = None;
+        }
+    }
+    (false, None)
+}
+
+fn github_clear_unauth_cooldown() {
+    if let Ok(mut guard) = github_token_rotation_state().lock() {
+        guard.unauth_cooldown_until = None;
+        guard.unauth_reset_local = None;
+    }
+}
+
+fn github_unauth_rate_limit_message(
+    configured_token_count: usize,
+    reset_local: Option<String>,
+) -> String {
+    let reset = reset_local
+        .map(|value| format!(" Resets around {value}."))
+        .unwrap_or_default();
+    let token_diag = if configured_token_count == 0 {
+        " No GitHub tokens are configured.".to_string()
+    } else {
+        format!(" Detected {configured_token_count} configured GitHub token(s).")
+    };
+    format!(
+        "GitHub API rate limit reached (403 Forbidden). Unauthenticated GitHub requests are temporarily paused.{}{} Configure GitHub API auth in Settings > Advanced > GitHub API, or via MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN (including numbered variants like *_TOKEN_1).{}",
+        token_diag,
+        if configured_token_count > 0 {
+            " Authenticated requests will keep rotating configured token(s)."
+        } else {
+            ""
+        },
+        reset
+    )
+}
+
 fn github_mark_token_cooldown(
     token: &str,
     status: reqwest::StatusCode,
@@ -10814,6 +12138,7 @@ fn github_http_error_message(
     headers: &reqwest::header::HeaderMap,
     body: &str,
     token_attempts: usize,
+    configured_token_count: usize,
     retried_without_token: bool,
 ) -> String {
     if status == reqwest::StatusCode::FORBIDDEN {
@@ -10830,8 +12155,13 @@ fn github_http_error_message(
             let reset = github_rate_limit_reset_local(headers)
                 .map(|value| format!(" Resets around {value}."))
                 .unwrap_or_default();
+            let token_diag = if configured_token_count == 0 {
+                " No GitHub tokens are configured.".to_string()
+            } else {
+                format!(" Detected {configured_token_count} configured GitHub token(s).")
+            };
             return format!(
-                "GitHub API rate limit reached (403 Forbidden).{} Configure MPM_GITHUB_TOKENS (or MPM_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN, including numbered variants like *_TOKEN_1) to raise limits (unauthenticated GitHub traffic is heavily limited). {}",
+                "GitHub API rate limit reached (403 Forbidden).{}{} Configure GitHub API auth in Settings > Advanced > GitHub API, or use MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN (including numbered variants like *_TOKEN_1). {}",
                 if token_attempts > 1 {
                     " All configured GitHub tokens are rate-limited."
                 } else if token_attempts == 1 {
@@ -10839,6 +12169,7 @@ fn github_http_error_message(
                 } else {
                     ""
                 },
+                token_diag,
                 reset
             );
         }
@@ -10851,7 +12182,7 @@ fn github_http_error_message(
     }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return if token_attempts > 0 {
-            "GitHub request failed with status 401 Unauthorized for the configured token(s). Check MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN."
+            "GitHub request failed with status 401 Unauthorized for the configured token(s). Check GitHub API auth in Settings > Advanced > GitHub API, or MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN."
                 .to_string()
         } else {
             "GitHub request failed with status 401 Unauthorized.".to_string()
@@ -10873,11 +12204,26 @@ fn github_get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> 
     }
 
     let all_tokens = github_api_tokens();
+    if all_tokens.is_empty() {
+        let (rate_limited, reset_local) = github_unauth_cooldown_state();
+        if rate_limited {
+            return Err(github_unauth_rate_limit_message(
+                github_configured_token_count(),
+                reset_local,
+            ));
+        }
+    }
     let tokens = github_tokens_in_request_order(&all_tokens);
     let mut token_attempts = 0usize;
     let mut retried_without_token = false;
     let mut response = if tokens.is_empty() {
-        github_request(client, url, None)?
+        let resp = github_request(client, url, None)?;
+        if resp.status().is_success() {
+            github_clear_unauth_cooldown();
+        } else if github_is_rate_limited_from_headers(resp.status(), resp.headers()) {
+            github_mark_unauth_cooldown(resp.headers());
+        }
+        resp
     } else {
         let mut selected: Option<Response> = None;
         for token in tokens.iter() {
@@ -10908,8 +12254,20 @@ fn github_get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> 
         && (response.status() == reqwest::StatusCode::FORBIDDEN
             || response.status() == reqwest::StatusCode::UNAUTHORIZED)
     {
+        let (unauth_rate_limited, reset_local) = github_unauth_cooldown_state();
+        if unauth_rate_limited {
+            return Err(github_unauth_rate_limit_message(
+                github_configured_token_count(),
+                reset_local,
+            ));
+        }
         retried_without_token = true;
         response = github_request(client, url, None)?;
+        if response.status().is_success() {
+            github_clear_unauth_cooldown();
+        } else if github_is_rate_limited_from_headers(response.status(), response.headers()) {
+            github_mark_unauth_cooldown(response.headers());
+        }
     }
 
     if !response.status().is_success() {
@@ -10921,6 +12279,7 @@ fn github_get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> 
             &headers,
             &body,
             token_attempts,
+            all_tokens.len(),
             retried_without_token,
         ));
     }
@@ -13533,6 +14892,7 @@ where
             confidence: None,
             reason: None,
         }],
+        local_analysis: None,
     };
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
@@ -13669,6 +15029,7 @@ where
             confidence: None,
             reason: None,
         }],
+        local_analysis: None,
     };
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
@@ -13830,6 +15191,7 @@ where
             confidence: None,
             reason: Some("GitHub release asset (policy-filtered)".to_string()),
         }],
+        local_analysis: None,
     };
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
@@ -15932,85 +17294,64 @@ fn upsert_launcher_account(
     write_launcher_accounts(app, &accounts)
 }
 
-fn launch_prism_instance(prism_root: &Path, prism_instance_id: &str) -> Result<(), String> {
+fn launch_prism_instance(
+    prism_root: &Path,
+    prism_instance_id: &str,
+    quick_play_host: Option<&str>,
+    quick_play_port: Option<u16>,
+) -> Result<(), String> {
     let mut attempts: Vec<(OsString, Vec<OsString>)> = Vec::new();
     let root = OsString::from(prism_root.as_os_str());
     let launch_arg = OsString::from(prism_instance_id);
+    let quick_play_args = if let Some(host) = quick_play_host {
+        let mut args = vec![OsString::from("--server"), OsString::from(host)];
+        if let Some(port) = quick_play_port {
+            args.push(OsString::from("--port"));
+            args.push(OsString::from(port.to_string()));
+        }
+        args
+    } else {
+        vec![]
+    };
+
+    let build_prism_args = || {
+        let mut args = vec![
+            OsString::from("--dir"),
+            root.clone(),
+            OsString::from("--launch"),
+            launch_arg.clone(),
+        ];
+        args.extend(quick_play_args.clone());
+        args
+    };
 
     if let Ok(bin) = std::env::var("MPM_PRISM_BIN") {
         let trimmed = bin.trim();
         if !trimmed.is_empty() {
-            attempts.push((
-                OsString::from(trimmed),
-                vec![
-                    OsString::from("--dir"),
-                    root.clone(),
-                    OsString::from("--launch"),
-                    launch_arg.clone(),
-                ],
-            ));
+            attempts.push((OsString::from(trimmed), build_prism_args()));
         }
     }
 
     if cfg!(target_os = "macos") {
         attempts.push((
             OsString::from("/Applications/Prism Launcher.app/Contents/MacOS/prismlauncher"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
+            build_prism_args(),
         ));
         attempts.push((
             OsString::from("/Applications/Prism Launcher.app/Contents/MacOS/PrismLauncher"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
+            build_prism_args(),
         ));
-        attempts.push((
-            OsString::from("open"),
-            vec![
-                OsString::from("-a"),
-                OsString::from("Prism Launcher"),
-                OsString::from("--args"),
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
+        let mut open_args = vec![
+            OsString::from("-a"),
+            OsString::from("Prism Launcher"),
+            OsString::from("--args"),
+        ];
+        open_args.extend(build_prism_args());
+        attempts.push((OsString::from("open"), open_args));
     } else if cfg!(target_os = "windows") {
-        attempts.push((
-            OsString::from("prismlauncher.exe"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
-        attempts.push((
-            OsString::from("PrismLauncher.exe"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
-        attempts.push((
-            OsString::from("prismlauncher"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
+        attempts.push((OsString::from("prismlauncher.exe"), build_prism_args()));
+        attempts.push((OsString::from("PrismLauncher.exe"), build_prism_args()));
+        attempts.push((OsString::from("prismlauncher"), build_prism_args()));
         for env_key in ["LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"] {
             if let Some(base) = std::env::var_os(env_key) {
                 let base = PathBuf::from(base);
@@ -16020,55 +17361,24 @@ fn launch_prism_instance(prism_root: &Path, prism_instance_id: &str) -> Result<(
                             .join("PrismLauncher")
                             .join(exe)
                             .into_os_string(),
-                        vec![
-                            OsString::from("--dir"),
-                            root.clone(),
-                            OsString::from("--launch"),
-                            launch_arg.clone(),
-                        ],
+                        build_prism_args(),
                     ));
                     attempts.push((
                         base.join("PrismLauncher").join(exe).into_os_string(),
-                        vec![
-                            OsString::from("--dir"),
-                            root.clone(),
-                            OsString::from("--launch"),
-                            launch_arg.clone(),
-                        ],
+                        build_prism_args(),
                     ));
                 }
             }
         }
     } else {
-        attempts.push((
-            OsString::from("prismlauncher"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
-        attempts.push((
-            OsString::from("PrismLauncher"),
-            vec![
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
-        attempts.push((
-            OsString::from("flatpak"),
-            vec![
-                OsString::from("run"),
-                OsString::from("org.prismlauncher.PrismLauncher"),
-                OsString::from("--dir"),
-                root.clone(),
-                OsString::from("--launch"),
-                launch_arg.clone(),
-            ],
-        ));
+        attempts.push((OsString::from("prismlauncher"), build_prism_args()));
+        attempts.push((OsString::from("PrismLauncher"), build_prism_args()));
+        let mut flatpak_args = vec![
+            OsString::from("run"),
+            OsString::from("org.prismlauncher.PrismLauncher"),
+        ];
+        flatpak_args.extend(build_prism_args());
+        attempts.push((OsString::from("flatpak"), flatpak_args));
     }
 
     let mut errs: Vec<String> = Vec::new();
@@ -16232,6 +17542,7 @@ fn main() {
             commands::prune_missing_installed_entries,
             commands::list_installed_mods,
             commands::set_installed_mod_enabled,
+            commands::set_installed_mod_pin,
             commands::set_installed_mod_provider,
             commands::attach_installed_mod_github_repo,
             commands::remove_installed_mod,
@@ -16244,6 +17555,9 @@ fn main() {
             commands::set_dev_curseforge_api_key,
             commands::clear_dev_curseforge_api_key,
             commands::get_curseforge_api_status,
+            commands::get_github_token_pool_status,
+            commands::set_github_token_pool,
+            commands::clear_github_token_pool,
             commands::set_launcher_settings,
             commands::list_launcher_accounts,
             commands::select_launcher_account,
@@ -16260,6 +17574,7 @@ fn main() {
             commands::get_instance_last_run_metadata,
             commands::get_instance_last_run_report,
             commands::list_instance_run_reports,
+            commands::list_instance_history_events,
             commands::reset_instance_config_files_with_backup,
             commands::list_world_config_files,
             commands::read_world_config_file,
@@ -16319,6 +17634,10 @@ fn main() {
             commands::apply_selected_account_appearance,
             commands::open_instance_path,
             commands::reveal_config_editor_file,
+            commands::list_quick_play_servers,
+            commands::upsert_quick_play_server,
+            commands::remove_quick_play_server,
+            commands::launch_quick_play_server,
             commands::export_instance_mods_zip,
             commands::export_instance_support_bundle
         ])
@@ -16876,6 +18195,9 @@ mod github_provider_tests {
         assert!(github_reason_is_transient_verification_failure(
             "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached)."
         ));
+        assert!(github_reason_is_transient_verification_failure(
+            "GitHub local identify manual candidate: direct metadata repo hint found, but release evidence is currently unverifiable."
+        ));
         assert!(!github_reason_is_transient_verification_failure(
             "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
         ));
@@ -17309,6 +18631,195 @@ mod github_provider_tests {
             reason: Some("invalid".to_string()),
         };
         assert!(!provider_candidate_is_auto_activatable(&invalid_candidate));
+    }
+}
+
+#[cfg(test)]
+mod update_check_resilience_tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn github_test_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("github test mutex lock")
+    }
+
+    fn clear_and_capture_github_env() -> Vec<(String, String)> {
+        let mut captured = Vec::new();
+        let keys = std::env::vars()
+            .map(|(key, _)| key)
+            .filter(|key| {
+                key == "MPM_GITHUB_TOKENS"
+                    || key == "MPM_GITHUB_TOKEN"
+                    || key == "GITHUB_TOKEN"
+                    || key == "GH_TOKEN"
+                    || key.starts_with("MPM_GITHUB_TOKEN_")
+                    || key.starts_with("GITHUB_TOKEN_")
+                    || key.starts_with("GH_TOKEN_")
+            })
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Ok(value) = std::env::var(&key) {
+                captured.push((key.clone(), value));
+            }
+            std::env::remove_var(&key);
+        }
+        captured
+    }
+
+    fn restore_github_env(previous: Vec<(String, String)>) {
+        for (key, value) in previous {
+            std::env::set_var(key, value);
+        }
+    }
+
+    fn reset_github_rotation_state() {
+        if let Ok(mut guard) = github_token_rotation_state().lock() {
+            guard.next_start_index = 0;
+            guard.cooldown_until.clear();
+            guard.unauth_cooldown_until = None;
+            guard.unauth_reset_local = None;
+        }
+    }
+
+    fn mark_unauth_rate_limit_for_tests() {
+        let mut headers = HeaderMap::new();
+        let reset_epoch = (Utc::now().timestamp() + 120).to_string();
+        headers.insert(
+            "x-ratelimit-reset",
+            HeaderValue::from_str(&reset_epoch).expect("valid reset epoch"),
+        );
+        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
+        github_mark_unauth_cooldown(&headers);
+    }
+
+    fn make_instance(loader: &str, mc_version: &str) -> Instance {
+        Instance {
+            id: "inst_resilience".to_string(),
+            name: "Resilience".to_string(),
+            folder_name: None,
+            mc_version: mc_version.to_string(),
+            loader: loader.to_string(),
+            created_at: "now".to_string(),
+            icon_path: None,
+            settings: InstanceSettings::default(),
+        }
+    }
+
+    fn make_github_lock_entry(name: &str, project_id: &str, version_id: &str) -> LockEntry {
+        LockEntry {
+            source: "github".to_string(),
+            project_id: project_id.to_string(),
+            version_id: version_id.to_string(),
+            name: name.to_string(),
+            version_number: "1.0.0".to_string(),
+            filename: format!("{name}.jar"),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: HashMap::new(),
+            provider_candidates: vec![],
+            local_analysis: None,
+        }
+    }
+
+    #[test]
+    fn update_check_keeps_running_and_compacts_github_rate_limit_warnings() {
+        let _guard = github_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
+        let previous_env = clear_and_capture_github_env();
+
+        mark_unauth_rate_limit_for_tests();
+
+        let lock = Lockfile {
+            version: 2,
+            entries: vec![
+                make_github_lock_entry("mod-one", "gh:example/repo-one", "gh_release:1"),
+                make_github_lock_entry("mod-two", "gh:example/repo-two", "gh_release:2"),
+            ],
+        };
+        let client = build_http_client().expect("http client");
+        let instance = make_instance("fabric", "1.21.1");
+        let result = check_instance_content_updates_inner(
+            &client,
+            &instance,
+            &lock,
+            UpdateScope::AllContent,
+            None,
+        )
+        .expect("update check should not fail hard");
+
+        assert_eq!(result.checked_entries, 2);
+        assert_eq!(result.update_count, 0);
+        assert!(result.warnings.iter().any(|warning| {
+            warning.contains("GitHub checks paused due to rate limit; skipped 2 GitHub entries")
+        }));
+
+        restore_github_env(previous_env);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
+    }
+
+    #[test]
+    fn github_get_json_short_circuits_when_unauth_cooldown_active() {
+        let _guard = github_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
+        let previous_env = clear_and_capture_github_env();
+
+        mark_unauth_rate_limit_for_tests();
+        let client = build_http_client().expect("http client");
+        let err = github_get_json::<serde_json::Value>(
+            &client,
+            "https://api.github.com/repos/octocat/Hello-World",
+        )
+        .expect_err("should fail fast while unauth cooldown is active");
+        assert!(err.contains("Unauthenticated GitHub requests are temporarily paused"));
+
+        restore_github_env(previous_env);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
+    }
+
+    #[test]
+    fn github_token_pool_status_merges_env_and_keychain_tokens() {
+        let _guard = github_test_guard();
+        clear_test_token_keyring_store();
+        set_test_token_keyring_available(true);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
+        let previous_env = clear_and_capture_github_env();
+
+        std::env::set_var("MPM_GITHUB_TOKENS", "envA,dup");
+        keyring_set_github_token_pool("keyA\ndup").expect("store keychain pool");
+        github_invalidate_token_pool_cache();
+
+        let status = github_token_pool_status();
+        assert_eq!(status.total_tokens, 3);
+        assert_eq!(status.env_tokens, 2);
+        assert_eq!(status.keychain_tokens, 2);
+        assert!(status.configured);
+
+        restore_github_env(previous_env);
+        let _ = keyring_delete_github_token_pool();
+        github_invalidate_token_pool_cache();
+        reset_github_rotation_state();
     }
 }
 

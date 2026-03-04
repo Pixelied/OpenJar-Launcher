@@ -6,6 +6,7 @@ import type {
   CreatorPreset,
   CurseforgeApiStatus,
   CurseforgeProjectDetail,
+  GithubTokenPoolStatus,
   GithubProjectDetail,
   DiscoverContentType,
   DiscoverSearchResult,
@@ -20,6 +21,7 @@ import type {
   InstanceWorld,
   InstallPlanPreview,
   Instance,
+  InstanceHistoryEvent,
   JavaRuntimeCandidate,
   LauncherImportSource,
   InstalledMod,
@@ -40,6 +42,7 @@ import type {
   PresetApplyPreview,
   PresetApplyResult,
   PresetsJsonIoResult,
+  QuickPlayServerEntry,
   RollbackResult,
   ResetConfigFilesResult,
   ReadInstanceLogsResult,
@@ -170,6 +173,14 @@ export function setInstalledModEnabled(input: {
   return invoke("set_installed_mod_enabled", { args: input });
 }
 
+export function setInstalledModPin(input: {
+  instanceId: string;
+  versionId: string;
+  pin?: string | null;
+}): Promise<InstalledMod> {
+  return invoke("set_installed_mod_pin", { args: input });
+}
+
 export function setInstalledModProvider(input: {
   instanceId: string;
   versionId: string;
@@ -273,6 +284,8 @@ export function getGithubProjectDetail(input: {
 export function launchInstance(input: {
   instanceId: string;
   method?: LaunchMethod;
+  quickPlayHost?: string;
+  quickPlayPort?: number;
 }): Promise<LaunchResult> {
   return invoke("launch_instance", { args: input });
 }
@@ -317,6 +330,20 @@ export function getCurseforgeApiStatus(): Promise<CurseforgeApiStatus> {
   return invoke("get_curseforge_api_status");
 }
 
+export function getGithubTokenPoolStatus(): Promise<GithubTokenPoolStatus> {
+  return invoke("get_github_token_pool_status");
+}
+
+export function setGithubTokenPool(input: {
+  tokens: string;
+}): Promise<GithubTokenPoolStatus> {
+  return invoke("set_github_token_pool", { args: input });
+}
+
+export function clearGithubTokenPool(): Promise<GithubTokenPoolStatus> {
+  return invoke("clear_github_token_pool");
+}
+
 export function setLauncherSettings(input: {
   defaultLaunchMethod?: LaunchMethod;
   javaPath?: string;
@@ -326,8 +353,47 @@ export function setLauncherSettings(input: {
   updateApplyScope?: "scheduled_only" | "scheduled_and_manual";
   autoIdentifyLocalJars?: boolean;
   autoTriggerMicPermissionPrompt?: boolean;
+  discordPresenceEnabled?: boolean;
+  discordPresenceDetailLevel?: "minimal" | "expanded";
 }): Promise<LauncherSettings> {
   return invoke("set_launcher_settings", { args: input });
+}
+
+export function listInstanceHistoryEvents(input: {
+  instanceId: string;
+  limit?: number;
+  beforeAt?: string;
+  kinds?: string[];
+}): Promise<InstanceHistoryEvent[]> {
+  return invoke("list_instance_history_events", { args: input });
+}
+
+export function listQuickPlayServers(): Promise<QuickPlayServerEntry[]> {
+  return invoke("list_quick_play_servers");
+}
+
+export function upsertQuickPlayServer(input: {
+  id?: string;
+  name: string;
+  host: string;
+  port?: number;
+  boundInstanceId?: string | null;
+}): Promise<QuickPlayServerEntry[]> {
+  return invoke("upsert_quick_play_server", { args: input });
+}
+
+export function removeQuickPlayServer(input: {
+  id: string;
+}): Promise<QuickPlayServerEntry[]> {
+  return invoke("remove_quick_play_server", { args: input });
+}
+
+export function launchQuickPlayServer(input: {
+  serverId: string;
+  method?: LaunchMethod;
+  instanceId?: string;
+}): Promise<LaunchResult> {
+  return invoke("launch_quick_play_server", { args: input });
 }
 
 export function listLauncherAccounts(): Promise<LauncherAccount[]> {

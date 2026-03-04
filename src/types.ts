@@ -47,6 +47,16 @@ export type InstalledMod = {
   added_at?: number;
   hashes?: Record<string, string>;
   provider_candidates?: ProviderCandidate[];
+  local_analysis?: LocalModAnalysis | null;
+};
+
+export type LocalModAnalysis = {
+  loader_hints: string[];
+  mod_ids: string[];
+  required_dependencies: string[];
+  warnings: string[];
+  suggestions: string[];
+  scanned_at: string;
 };
 
 export type ProviderCandidate = {
@@ -110,6 +120,8 @@ export type ContentUpdateInfo = {
   latest_download_url?: string;
   latest_hashes?: Record<string, string>;
   required_dependencies?: string[];
+  compatibility_status?: "compatible" | "incompatible" | "unknown" | string;
+  compatibility_notes?: string[];
 };
 
 export type ContentUpdateCheckResult = {
@@ -310,6 +322,17 @@ export type LauncherSettings = {
   selected_account_id?: string | null;
   auto_identify_local_jars?: boolean;
   auto_trigger_mic_permission_prompt?: boolean;
+  discord_presence_enabled?: boolean;
+  discord_presence_detail_level?: "minimal" | "expanded" | string;
+};
+
+export type QuickPlayServerEntry = {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  bound_instance_id?: string | null;
+  last_used_at?: string | null;
 };
 
 export type LauncherAccount = {
@@ -361,6 +384,17 @@ export type CurseforgeApiStatus = {
   env_var?: string | null;
   key_hint?: string | null;
   validated: boolean;
+  message: string;
+};
+
+export type GithubTokenPoolStatus = {
+  configured: boolean;
+  total_tokens: number;
+  env_tokens: number;
+  keychain_tokens: number;
+  keychain_available: boolean;
+  unauth_rate_limited: boolean;
+  unauth_rate_limit_reset_at?: string | null;
   message: string;
 };
 

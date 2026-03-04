@@ -192,6 +192,7 @@ fn apply_single_resolved(
         enabled: item.enabled,
         hashes: item.hashes.clone(),
         provider_candidates: vec![],
+        local_analysis: None,
     };
 
     if content_type == "mods" && !item.enabled {

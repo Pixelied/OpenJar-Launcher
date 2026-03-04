@@ -789,6 +789,7 @@ mod tests {
             enabled,
             hashes: HashMap::new(),
             provider_candidates: Vec::new(),
+            local_analysis: None,
         }
     }
 

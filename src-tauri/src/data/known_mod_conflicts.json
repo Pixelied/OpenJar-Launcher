@@ -1,0 +1,17 @@
+[
+  {
+    "id": "fabric-api-optifine",
+    "mods": ["fabric-api", "optifine"],
+    "message": "Fabric API and OptiFine are generally incompatible together."
+  },
+  {
+    "id": "sodium-optifine",
+    "mods": ["sodium", "optifine"],
+    "message": "Sodium and OptiFine should not be enabled together."
+  },
+  {
+    "id": "embeddium-sodium",
+    "mods": ["embeddium", "sodium"],
+    "message": "Embeddium and Sodium are alternative render optimization mods and should not be mixed."
+  }
+]

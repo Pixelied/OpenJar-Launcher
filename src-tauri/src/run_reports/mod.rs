@@ -459,6 +459,38 @@ pub(crate) fn log_instance_event(
     record_instance_event(&instances_dir, instance_id, kind, summary)
 }
 
+pub(crate) fn list_instance_history_events(
+    app: &tauri::AppHandle,
+    instance_id: &str,
+    limit: usize,
+    before_at: Option<&str>,
+    kinds: Option<&[String]>,
+) -> Result<Vec<InstanceHistoryEvent>, String> {
+    let instances_dir = app_instances_dir(app)?;
+    let instance_dir = instance_dir_for_id(&instances_dir, instance_id)?;
+    let mut events = read_instance_events_store(&instance_dir).events;
+    if let Some(before) = before_at {
+        let before_trimmed = before.trim();
+        if !before_trimmed.is_empty() {
+            events.retain(|item| item.at.as_str() < before_trimmed);
+        }
+    }
+    if let Some(filter) = kinds {
+        let wanted = filter
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        if !wanted.is_empty() {
+            events.retain(|item| wanted.contains(&item.kind.to_ascii_lowercase()));
+        }
+    }
+    events.sort_by(|a, b| b.at.cmp(&a.at));
+    let cap = limit.clamp(1, MAX_INSTANCE_EVENTS);
+    events.truncate(cap);
+    Ok(events)
+}
+
 pub(crate) fn capture_and_store_run_report(
     app: &tauri::AppHandle,
     input: CaptureRunReportInput,

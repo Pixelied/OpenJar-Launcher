@@ -28,6 +28,7 @@ import type {
   CreatorPresetEntry,
   CreatorPresetSettings,
   CurseforgeApiStatus,
+  GithubTokenPoolStatus,
   CurseforgeProjectDetail,
   GithubProjectDetail,
   DiscoverContentType,
@@ -36,6 +37,7 @@ import type {
   InstanceLastRunMetadata,
   InstancePlaytimeSummary,
   InstanceRunReport,
+  InstanceHistoryEvent,
   InstanceWorld,
   LaunchMethod,
   LauncherAccount,
@@ -73,6 +75,7 @@ import type {
   LaunchResult,
   Loader,
   ProviderCandidate,
+  QuickPlayServerEntry,
   ModpackSpec,
   SnapshotMeta,
   SupportPerfAction,
@@ -91,6 +94,7 @@ import {
   exportInstanceSupportBundle,
   getDevModeState,
   getCurseforgeApiStatus,
+  getGithubTokenPoolStatus,
   getCurseforgeProjectDetail,
   getGithubProjectDetail,
   getSelectedAccountDiagnostics,
@@ -139,9 +143,11 @@ import {
   searchDiscoverContent,
   selectLauncherAccount,
   setDevCurseforgeApiKey,
+  setGithubTokenPool,
   setLauncherSettings,
   setInstanceIcon,
   setInstalledModEnabled,
+  setInstalledModPin,
   setInstalledModProvider,
   resetInstanceConfigFilesWithBackup,
   syncFriendLinkSelected,
@@ -152,6 +158,12 @@ import {
   detectJavaRuntimes,
   updateAllInstanceContent,
   updateInstance,
+  listInstanceHistoryEvents,
+  listQuickPlayServers,
+  upsertQuickPlayServer,
+  removeQuickPlayServer,
+  launchQuickPlayServer,
+  clearGithubTokenPool,
 } from "./tauri";
 import {
   getProject,
@@ -626,6 +638,13 @@ function summarizeWarnings(warnings: string[], maxItems = 3): string {
   return extra > 0 ? `${preview.join(" | ")} | +${extra} more` : preview.join(" | ");
 }
 
+function hasGithubRateLimitWarning(warnings: string[]): boolean {
+  return warnings.some((warning) => {
+    const text = String(warning ?? "").toLowerCase();
+    return text.includes("github") && text.includes("rate limit");
+  });
+}
+
 type MicrosoftCodePrompt = {
   code: string;
   verificationUrl: string;
@@ -696,7 +715,7 @@ function defaultInstanceSettings(): InstanceSettings {
     close_launcher_on_game_exit: false,
     notes: "",
     sync_minecraft_settings: true,
-    sync_minecraft_settings_target: "all",
+    sync_minecraft_settings_target: "none",
     auto_update_installed_content: false,
     prefer_release_builds: true,
     java_path: "",
@@ -743,8 +762,8 @@ function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): In
   const snapshotMaxAgeDays = Number.isFinite(Number(merged.snapshot_max_age_days))
     ? Math.max(1, Math.min(90, Math.round(Number(merged.snapshot_max_age_days))))
     : 14;
-  const syncTargetRaw = String(merged.sync_minecraft_settings_target ?? "all").trim();
-  const syncTarget = syncTargetRaw.length > 0 ? syncTargetRaw : "all";
+  const syncTargetRaw = String(merged.sync_minecraft_settings_target ?? "none").trim();
+  const syncTarget = syncTargetRaw.length > 0 ? syncTargetRaw : "none";
   return {
     ...merged,
     notes: String(merged.notes ?? ""),
@@ -1023,6 +1042,53 @@ function parseGithubProjectId(raw?: string | null): string | null {
   return `${owner}/${repo}`;
 }
 
+function providerSourceRank(value?: string | null): number {
+  const normalized = normalizeProviderSource(value);
+  if (normalized === "modrinth") return 3;
+  if (normalized === "curseforge") return 2;
+  if (normalized === "github") return 1;
+  return 0;
+}
+
+function providerCandidateConfidenceRank(candidate: ProviderCandidate): number {
+  const confidence = String(candidate.confidence ?? "").trim().toLowerCase();
+  if (confidence === "deterministic") return 5;
+  if (confidence === "high") return 4;
+  if (confidence === "medium") return 3;
+  if (confidence === "manual") return 2;
+  if (confidence === "low") return 1;
+  return 0;
+}
+
+function githubManualUnverifiedHintIsPromotableCandidate(candidate: ProviderCandidate): boolean {
+  const confidence = String(candidate.confidence ?? "").trim().toLowerCase();
+  if (confidence !== "manual") return false;
+  if (!String(candidate.version_id ?? "").trim().toLowerCase().startsWith("gh_repo_unverified")) {
+    return false;
+  }
+  const reason = String(candidate.reason ?? "").trim().toLowerCase();
+  if (!reason.includes("direct metadata repo hint")) return false;
+  return (
+    reason.includes("verification is unavailable") ||
+    reason.includes("verification unavailable") ||
+    reason.includes("temporarily unavailable") ||
+    reason.includes("currently unverifiable") ||
+    reason.includes("rate limit")
+  );
+}
+
+function providerCandidateIsAutoActivatable(candidate: ProviderCandidate): boolean {
+  const source = normalizeProviderSource(candidate.source);
+  if (source !== "github") return true;
+  if (!parseGithubProjectId(candidate.project_id)) return false;
+  const confidence = String(candidate.confidence ?? "").trim().toLowerCase();
+  return (
+    confidence === "deterministic" ||
+    confidence === "high" ||
+    githubManualUnverifiedHintIsPromotableCandidate(candidate)
+  );
+}
+
 function eventTargetsInteractiveControl(
   event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>
 ): boolean {
@@ -1105,16 +1171,40 @@ function GithubReadmeMarkdown({
 
 function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
   const raw = Array.isArray(mod.provider_candidates) ? mod.provider_candidates : [];
-  const out: ProviderCandidate[] = [];
-  const seen = new Set<string>();
+  const byKey = new Map<string, ProviderCandidate>();
+  const isBetter = (candidate: ProviderCandidate, existing: ProviderCandidate) => {
+    const candidateActivatable = Number(providerCandidateIsAutoActivatable(candidate));
+    const existingActivatable = Number(providerCandidateIsAutoActivatable(existing));
+    if (candidateActivatable !== existingActivatable) {
+      return candidateActivatable > existingActivatable;
+    }
+    const candidateConfidence = providerCandidateConfidenceRank(candidate);
+    const existingConfidence = providerCandidateConfidenceRank(existing);
+    if (candidateConfidence !== existingConfidence) {
+      return candidateConfidence > existingConfidence;
+    }
+    const candidateVersion = String(candidate.version_id ?? "").trim().toLowerCase();
+    const existingVersion = String(existing.version_id ?? "").trim().toLowerCase();
+    const candidateReleaseVersion = Number(
+      candidateVersion.startsWith("gh_release:") || candidateVersion.startsWith("cf_file:")
+    );
+    const existingReleaseVersion = Number(
+      existingVersion.startsWith("gh_release:") || existingVersion.startsWith("cf_file:")
+    );
+    if (candidateReleaseVersion !== existingReleaseVersion) {
+      return candidateReleaseVersion > existingReleaseVersion;
+    }
+    return candidateVersion.length > existingVersion.length;
+  };
   const push = (candidate: ProviderCandidate) => {
     const source = String(candidate.source ?? "").trim().toLowerCase();
     const projectId = String(candidate.project_id ?? "").trim();
     if (!source || !projectId) return;
-    const key = `${source}:${projectId}:${String(candidate.version_id ?? "").trim()}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push(candidate);
+    const key = `${source}:${projectId.toLowerCase()}`;
+    const existing = byKey.get(key);
+    if (!existing || isBetter(candidate, existing)) {
+      byKey.set(key, candidate);
+    }
   };
   if (mod.project_id) {
     push({
@@ -1126,10 +1216,13 @@ function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
     });
   }
   for (const candidate of raw) push(candidate);
+  const out = Array.from(byKey.values());
   out.sort((a, b) => {
     const aPriority = normalizeProviderSource(a.source) === normalizeProviderSource(mod.source) ? 0 : 1;
     const bPriority = normalizeProviderSource(b.source) === normalizeProviderSource(mod.source) ? 0 : 1;
     if (aPriority !== bPriority) return aPriority - bPriority;
+    const confidenceCmp = providerCandidateConfidenceRank(b) - providerCandidateConfidenceRank(a);
+    if (confidenceCmp !== 0) return confidenceCmp;
     return providerSourceLabel(a.source).localeCompare(providerSourceLabel(b.source));
   });
   return out;
@@ -1149,17 +1242,41 @@ function installedProviderBadgeCandidates(mod: InstalledMod): ProviderCandidate[
 }
 
 function preferredProjectIdForProvider(mod: InstalledMod, source: string): string {
-  const candidates = Array.isArray(mod.provider_candidates) ? mod.provider_candidates : [];
-  const normalized = String(source ?? "").trim().toLowerCase();
-  const fromCandidates = candidates.find((candidate) =>
-    String(candidate.source ?? "").trim().toLowerCase() === normalized
+  const normalized = normalizeProviderSource(source);
+  const fromCandidates = installedProviderCandidates(mod).find(
+    (candidate) => normalizeProviderSource(candidate.source) === normalized
   );
   if (fromCandidates?.project_id) return fromCandidates.project_id;
   return mod.project_id;
 }
 
+function effectiveInstalledProviderSource(mod: InstalledMod): ReturnType<typeof normalizeProviderSource> {
+  const active = normalizeProviderSource(mod.source);
+  if (active === "modrinth" || active === "curseforge" || active === "github") return active;
+  if (active !== "local") return active;
+  const candidates = installedProviderCandidates(mod).filter((candidate) => {
+    const source = normalizeProviderSource(candidate.source);
+    if (source !== "modrinth" && source !== "curseforge" && source !== "github") {
+      return false;
+    }
+    if (source === "github") {
+      return providerCandidateIsAutoActivatable(candidate);
+    }
+    return true;
+  });
+  if (candidates.length === 0) return active;
+  candidates.sort((a, b) => {
+    const confidenceCmp = providerCandidateConfidenceRank(b) - providerCandidateConfidenceRank(a);
+    if (confidenceCmp !== 0) return confidenceCmp;
+    const sourceCmp = providerSourceRank(b.source) - providerSourceRank(a.source);
+    if (sourceCmp !== 0) return sourceCmp;
+    return String(a.project_id ?? "").localeCompare(String(b.project_id ?? ""));
+  });
+  return normalizeProviderSource(candidates[0]?.source);
+}
+
 function installedIconCacheKey(mod: InstalledMod): string {
-  const source = normalizeProviderSource(mod.source);
+  const source = effectiveInstalledProviderSource(mod);
   const projectId = preferredProjectIdForProvider(mod, source);
   return `${source}:${String(projectId ?? "").trim().toLowerCase()}`;
 }
@@ -4157,6 +4274,7 @@ export default function App() {
   const [cleanMissingBusyInstanceId, setCleanMissingBusyInstanceId] = useState<string | null>(null);
   const [toggleBusyVersion, setToggleBusyVersion] = useState<string | null>(null);
   const [providerSwitchBusyKey, setProviderSwitchBusyKey] = useState<string | null>(null);
+  const [pinBusyVersion, setPinBusyVersion] = useState<string | null>(null);
   const [githubAttachBusyVersion, setGithubAttachBusyVersion] = useState<string | null>(null);
   const [githubAttachTarget, setGithubAttachTarget] = useState<GithubAttachModalTarget | null>(null);
   const [githubAttachInput, setGithubAttachInput] = useState("");
@@ -4481,6 +4599,23 @@ export default function App() {
   const [devCurseforgeNoticeIsError, setDevCurseforgeNoticeIsError] = useState(false);
   const [curseforgeApiStatus, setCurseforgeApiStatus] = useState<CurseforgeApiStatus | null>(null);
   const [curseforgeApiBusy, setCurseforgeApiBusy] = useState(false);
+  const [githubTokenPoolStatus, setGithubTokenPoolStatus] = useState<GithubTokenPoolStatus | null>(null);
+  const [githubTokenPoolDraft, setGithubTokenPoolDraft] = useState("");
+  const [githubTokenPoolBusy, setGithubTokenPoolBusy] = useState(false);
+  const [githubTokenPoolNotice, setGithubTokenPoolNotice] = useState<string | null>(null);
+  const [githubTokenPoolNoticeIsError, setGithubTokenPoolNoticeIsError] = useState(false);
+  const [discordPresenceBusy, setDiscordPresenceBusy] = useState(false);
+  const [quickPlayServers, setQuickPlayServers] = useState<QuickPlayServerEntry[]>([]);
+  const [quickPlayBusy, setQuickPlayBusy] = useState(false);
+  const [quickPlayErr, setQuickPlayErr] = useState<string | null>(null);
+  const [quickPlayDraftName, setQuickPlayDraftName] = useState("");
+  const [quickPlayDraftHost, setQuickPlayDraftHost] = useState("");
+  const [quickPlayDraftPort, setQuickPlayDraftPort] = useState("25565");
+  const [quickPlayDraftBoundInstanceId, setQuickPlayDraftBoundInstanceId] = useState("none");
+  const [instanceHistoryById, setInstanceHistoryById] = useState<Record<string, InstanceHistoryEvent[]>>({});
+  const [instanceHistoryBusyById, setInstanceHistoryBusyById] = useState<Record<string, boolean>>({});
+  const [timelineClearedAtByInstance, setTimelineClearedAtByInstance] = useState<Record<string, number>>({});
+  const instanceHistoryRefreshInFlightRef = useRef<Record<string, boolean>>({});
   const [oauthClientIdDraft, setOauthClientIdDraft] = useState("");
   const [accountDiagnostics, setAccountDiagnostics] = useState<AccountDiagnostics | null>(() =>
     readCachedAccountDiagnostics()
@@ -4604,6 +4739,12 @@ export default function App() {
             enabled: item.enabled !== false,
             target_worlds: Array.isArray(item.target_worlds)
               ? item.target_worlds.map((w: any) => String(w ?? "")).filter(Boolean)
+              : [],
+            compatibility_status: item.compatibility_status
+              ? String(item.compatibility_status)
+              : undefined,
+            compatibility_notes: Array.isArray(item.compatibility_notes)
+              ? item.compatibility_notes.map((note: any) => String(note ?? "")).filter(Boolean)
               : [],
           }))
           .filter((item) => Boolean(item.project_id));
@@ -4817,7 +4958,7 @@ export default function App() {
       if (instanceFilterMissing === "missing" && entry.file_exists) continue;
       if (instanceFilterMissing === "present" && !entry.file_exists) continue;
       if (instanceFilterSource !== "all") {
-        const source = String(entry.source ?? "").trim().toLowerCase();
+        const source = effectiveInstalledProviderSource(entry);
         if (instanceFilterSource === "other") {
           if (
             source === "modrinth" ||
@@ -4859,7 +5000,9 @@ export default function App() {
       if (instanceSort === "name_asc") return byName;
       if (instanceSort === "name_desc") return b.name.localeCompare(a.name);
       if (instanceSort === "source") {
-        const sourceCmp = providerSourceLabel(a.source).localeCompare(providerSourceLabel(b.source));
+        const sourceCmp = providerSourceLabel(effectiveInstalledProviderSource(a)).localeCompare(
+          providerSourceLabel(effectiveInstalledProviderSource(b))
+        );
         if (sourceCmp !== 0) return sourceCmp;
         return byName;
       }
@@ -5204,6 +5347,21 @@ export default function App() {
     }
   }
 
+  async function refreshGithubTokenPoolStatus() {
+    setGithubTokenPoolBusy(true);
+    setLauncherErr(null);
+    try {
+      const status = await getGithubTokenPoolStatus();
+      setGithubTokenPoolStatus(status);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setGithubTokenPoolStatus(null);
+    } finally {
+      setGithubTokenPoolBusy(false);
+    }
+  }
+
   async function onSaveDevCurseforgeKey() {
     const key = devCurseforgeKeyDraft.trim();
     if (!key) {
@@ -5253,10 +5411,68 @@ export default function App() {
     }
   }
 
+  async function onSaveGithubTokenPool() {
+    const tokens = githubTokenPoolDraft.trim();
+    if (!tokens) {
+      setLauncherErr("Paste one or more GitHub tokens first.");
+      setGithubTokenPoolNotice("Paste one or more GitHub tokens first.");
+      setGithubTokenPoolNoticeIsError(true);
+      return;
+    }
+    setGithubTokenPoolBusy(true);
+    setLauncherErr(null);
+    setGithubTokenPoolNotice(null);
+    try {
+      const status = await setGithubTokenPool({ tokens });
+      setGithubTokenPoolStatus(status);
+      setGithubTokenPoolDraft("");
+      setGithubTokenPoolNotice(
+        `Saved ${status.total_tokens} GitHub token${status.total_tokens === 1 ? "" : "s"} in secure keychain storage.`
+      );
+      setGithubTokenPoolNoticeIsError(false);
+      setInstallNotice(status.message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setGithubTokenPoolNotice(msg);
+      setGithubTokenPoolNoticeIsError(true);
+    } finally {
+      setGithubTokenPoolBusy(false);
+    }
+  }
+
+  async function onClearGithubTokenPool() {
+    setGithubTokenPoolBusy(true);
+    setLauncherErr(null);
+    setGithubTokenPoolNotice(null);
+    try {
+      const status = await clearGithubTokenPool();
+      setGithubTokenPoolStatus(status);
+      setGithubTokenPoolDraft("");
+      setGithubTokenPoolNotice("Cleared GitHub token pool from secure keychain storage.");
+      setGithubTokenPoolNoticeIsError(false);
+      setInstallNotice(status.message);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setGithubTokenPoolNotice(msg);
+      setGithubTokenPoolNoticeIsError(true);
+    } finally {
+      setGithubTokenPoolBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (route !== "dev") return;
     if (curseforgeApiStatus || curseforgeApiBusy) return;
     refreshCurseforgeApiStatus().catch(() => null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route]);
+
+  useEffect(() => {
+    if (route !== "settings" && route !== "dev") return;
+    if (githubTokenPoolStatus || githubTokenPoolBusy) return;
+    refreshGithubTokenPoolStatus().catch(() => null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route]);
 
@@ -6203,6 +6419,155 @@ export default function App() {
       setModsErr(e?.toString?.() ?? String(e));
     } finally {
       setProviderSwitchBusyKey(null);
+    }
+  }
+
+  async function onToggleInstalledModPin(inst: Instance, mod: InstalledMod) {
+    if (pinBusyVersion) return;
+    setPinBusyVersion(mod.version_id);
+    setModsErr(null);
+    try {
+      const updated = await setInstalledModPin({
+        instanceId: inst.id,
+        versionId: mod.version_id,
+        pin: mod.pinned_version ? "" : undefined,
+      });
+      setInstalledMods((prev) =>
+        prev.map((entry) => (entry.version_id === mod.version_id ? updated : entry))
+      );
+      setInstallNotice(
+        updated.pinned_version
+          ? `Pinned ${updated.name} to ${updated.pinned_version}.`
+          : `Unpinned ${updated.name}.`
+      );
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setModsErr(msg);
+      setError(msg);
+    } finally {
+      setPinBusyVersion(null);
+    }
+  }
+
+  async function refreshInstanceHistory(instanceId: string, options?: { silent?: boolean }) {
+    if (!instanceId) return;
+    if (instanceHistoryRefreshInFlightRef.current[instanceId]) return;
+    instanceHistoryRefreshInFlightRef.current[instanceId] = true;
+    setInstanceHistoryBusyById((prev) => ({ ...prev, [instanceId]: true }));
+    if (!options?.silent) {
+      setLauncherErr(null);
+    }
+    try {
+      const events = await listInstanceHistoryEvents({
+        instanceId,
+        limit: 80,
+      });
+      setInstanceHistoryById((prev) => ({ ...prev, [instanceId]: events ?? [] }));
+    } catch (e: any) {
+      if (!options?.silent) {
+        setLauncherErr(e?.toString?.() ?? String(e));
+      }
+    } finally {
+      setInstanceHistoryBusyById((prev) => ({ ...prev, [instanceId]: false }));
+      delete instanceHistoryRefreshInFlightRef.current[instanceId];
+    }
+  }
+
+  async function refreshQuickPlayServers(options?: { silent?: boolean }) {
+    setQuickPlayBusy(true);
+    if (!options?.silent) {
+      setQuickPlayErr(null);
+    }
+    try {
+      const rows = await listQuickPlayServers();
+      setQuickPlayServers(Array.isArray(rows) ? rows : []);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setQuickPlayErr(msg);
+      if (!options?.silent) setError(msg);
+    } finally {
+      setQuickPlayBusy(false);
+    }
+  }
+
+  async function onSaveQuickPlayServer(currentInstance?: Instance | null) {
+    const name = quickPlayDraftName.trim();
+    const host = quickPlayDraftHost.trim();
+    if (!name || !host) {
+      setQuickPlayErr("Quick Play needs a server name and host.");
+      return;
+    }
+    const parsedPort = Number.parseInt(quickPlayDraftPort.trim() || "25565", 10);
+    if (!Number.isFinite(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      setQuickPlayErr("Quick Play port must be between 1 and 65535.");
+      return;
+    }
+    setQuickPlayBusy(true);
+    setQuickPlayErr(null);
+    try {
+      const boundInstanceId =
+        quickPlayDraftBoundInstanceId === "none"
+          ? currentInstance?.id ?? null
+          : quickPlayDraftBoundInstanceId;
+      const rows = await upsertQuickPlayServer({
+        name,
+        host,
+        port: parsedPort,
+        boundInstanceId: boundInstanceId || null,
+      });
+      setQuickPlayServers(Array.isArray(rows) ? rows : []);
+      setQuickPlayDraftName("");
+      setQuickPlayDraftHost("");
+      setQuickPlayDraftPort("25565");
+      setInstallNotice("Quick Play server saved.");
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setQuickPlayErr(msg);
+      setError(msg);
+    } finally {
+      setQuickPlayBusy(false);
+    }
+  }
+
+  async function onRemoveQuickPlayServer(serverId: string) {
+    setQuickPlayBusy(true);
+    setQuickPlayErr(null);
+    try {
+      const rows = await removeQuickPlayServer({ id: serverId });
+      setQuickPlayServers(Array.isArray(rows) ? rows : []);
+      setInstallNotice("Quick Play server removed.");
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setQuickPlayErr(msg);
+      setError(msg);
+    } finally {
+      setQuickPlayBusy(false);
+    }
+  }
+
+  async function onLaunchQuickPlayServer(server: QuickPlayServerEntry, currentInstance?: Instance | null) {
+    setLauncherErr(null);
+    setQuickPlayErr(null);
+    const targetInstanceId = currentInstance?.id ?? server.bound_instance_id ?? undefined;
+    if (!targetInstanceId) {
+      setQuickPlayErr("Bind this server to an instance first.");
+      return;
+    }
+    try {
+      const result = await launchQuickPlayServer({
+        serverId: server.id,
+        instanceId: targetInstanceId,
+        method: launchMethodPick,
+      });
+      setInstallNotice(result.message);
+      const running = await listRunningInstances();
+      const runningSafe = normalizeRunningInstancesPayload(running);
+      setRunningInstances((prev) => (sameRunningInstances(prev, runningSafe) ? prev : runningSafe));
+      void refreshQuickPlayServers({ silent: true });
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setQuickPlayErr(msg);
+      setError(msg);
     }
   }
 
@@ -7162,6 +7527,9 @@ export default function App() {
           silent: true,
           refreshListAfterResolve: true,
         });
+      }
+      if (route === "instance" && selectedId === instanceId) {
+        void refreshInstanceHistory(instanceId, { silent: true });
       }
     } catch (e: any) {
       setModsErr(e?.toString?.() ?? String(e));
@@ -8301,6 +8669,43 @@ export default function App() {
     }
   }
 
+  async function onToggleDiscordPresenceEnabled() {
+    const nextEnabled = !(launcherSettings?.discord_presence_enabled ?? true);
+    setDiscordPresenceBusy(true);
+    setLauncherErr(null);
+    try {
+      const next = await setLauncherSettings({
+        discordPresenceEnabled: nextEnabled,
+      });
+      setLauncherSettingsState(next);
+      setInstallNotice(`Discord presence ${nextEnabled ? "enabled" : "disabled"}.`);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setDiscordPresenceBusy(false);
+    }
+  }
+
+  async function onSetDiscordPresenceDetailLevel(level: "minimal" | "expanded") {
+    setDiscordPresenceBusy(true);
+    setLauncherErr(null);
+    try {
+      const next = await setLauncherSettings({
+        discordPresenceDetailLevel: level,
+      });
+      setLauncherSettingsState(next);
+      setInstallNotice(`Discord presence detail updated to ${level}.`);
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setDiscordPresenceBusy(false);
+    }
+  }
+
   async function onCheckAppUpdate(options?: { silent?: boolean }) {
     const silent = options?.silent === true;
     setAppUpdaterBusy(true);
@@ -8752,7 +9157,14 @@ export default function App() {
         }
       } else if (!options?.quietSuccessNotice) {
         if (res.update_count === 0) {
-          setInstallNotice("All tracked content is up to date.");
+          if ((res.warnings?.length ?? 0) > 0) {
+            const warningSummary = summarizeWarnings(res.warnings ?? [], 2);
+            setInstallNotice(
+              `Checked ${res.checked_entries} entr${res.checked_entries === 1 ? "y" : "ies"}; all up to date with ${res.warnings.length} warning${res.warnings.length === 1 ? "" : "s"}: ${warningSummary}`
+            );
+          } else {
+            setInstallNotice("All tracked content is up to date.");
+          }
         } else if (options?.autoApplyIfConfigured && !shouldAutoApplyManualChecksForInstance(inst)) {
           setInstallNotice(
             `${res.update_count} update${res.update_count === 1 ? "" : "s"} found. Auto-apply for manual checks is disabled for this instance.`
@@ -8811,11 +9223,16 @@ export default function App() {
       if (selectedId === inst.id) {
         void refreshInstalledMods(inst.id);
       }
-      void onCheckUpdates(inst, {
-        quietSuccessNotice: true,
-        contentTypes,
-        persistScheduledCache: false,
-      });
+      const shouldSkipImmediateRecheck = hasGithubRateLimitWarning(res.warnings ?? []);
+      if (!shouldSkipImmediateRecheck) {
+        window.setTimeout(() => {
+          void onCheckUpdates(inst, {
+            quietSuccessNotice: true,
+            contentTypes,
+            persistScheduledCache: false,
+          });
+        }, 650);
+      }
       if (res.warnings.length > 0) {
         const warningSummary = summarizeWarnings(res.warnings, 3);
         setInstallNotice(
@@ -8961,6 +9378,30 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [route, selectedId, instanceLinksOpen, friendConflictResult]);
+
+  useEffect(() => {
+    void refreshQuickPlayServers({ silent: true });
+  }, []);
+
+  useEffect(() => {
+    if (selectedId) {
+      setQuickPlayDraftBoundInstanceId(selectedId);
+    }
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (route !== "instance" || !selectedId) return;
+    void refreshInstanceHistory(selectedId, { silent: true });
+  }, [route, selectedId]);
+
+  useEffect(() => {
+    if (route !== "instance" || !selectedId) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void refreshInstanceHistory(selectedId, { silent: true });
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, [route, selectedId]);
 
   useEffect(() => {
     const targetIds = new Set<string>();
@@ -10725,6 +11166,7 @@ export default function App() {
       { id: "global:launch-method", label: "Settings: Default launch method", target: "global", keywords: ["prism", "native"] },
       { id: "global:java-path", label: "Settings: Java executable", target: "global", advanced: true, keywords: ["java"] },
       { id: "global:permissions", label: "Settings: Launch permissions", target: "global", advanced: true, keywords: ["microphone", "voice"] },
+      { id: "global:github-api", label: "Settings: GitHub API auth", target: "global", advanced: true, keywords: ["github", "token", "rate limit"] },
       { id: "global:oauth-client", label: "Settings: OAuth client override", target: "global", advanced: true, keywords: ["oauth", "client id"] },
       { id: "global:account", label: "Settings: Microsoft account", target: "global", keywords: ["login"] },
       { id: "global:app-updates", label: "Settings: App updates", target: "global", keywords: ["update"] },
@@ -11924,6 +12366,39 @@ export default function App() {
                       </button>
                     </div>
                   </div>
+
+                  <div id="setting-anchor-global:discord-presence">
+                    <div className="settingTitle">Discord Rich Presence</div>
+                    <div className="settingSub">
+                      Optional status sharing. Never includes server IP, username, world name, or file paths.
+                    </div>
+                    <div className="row">
+                      <button
+                        className={`btn ${(launcherSettings?.discord_presence_enabled ?? true) ? "primary" : ""}`}
+                        onClick={() => void onToggleDiscordPresenceEnabled()}
+                        disabled={discordPresenceBusy}
+                      >
+                        {discordPresenceBusy
+                          ? "Saving…"
+                          : (launcherSettings?.discord_presence_enabled ?? true)
+                            ? "Enabled"
+                            : "Disabled"}
+                      </button>
+                      <MenuSelect
+                        value={String(launcherSettings?.discord_presence_detail_level ?? "minimal")}
+                        labelPrefix="Detail"
+                        options={[
+                          { value: "minimal", label: "Minimal" },
+                          { value: "expanded", label: "Expanded" },
+                        ]}
+                        onChange={(value) =>
+                          void onSetDiscordPresenceDetailLevel(
+                            String(value ?? "minimal") === "expanded" ? "expanded" : "minimal"
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -12030,6 +12505,67 @@ export default function App() {
                           No permission report yet for the selected instance. Click Re-check selected instance.
                         </div>
                       )}
+                    </div>
+
+                    <div id="setting-anchor-global:github-api">
+                      <div className="settingTitle">GitHub API authentication</div>
+                      <div className="settingSub">
+                        Save personal access tokens to secure OS keychain storage for higher GitHub rate limits. Tokens are not stored in launcher settings files.
+                      </div>
+                      <textarea
+                        className="input"
+                        value={githubTokenPoolDraft}
+                        onChange={(e) => setGithubTokenPoolDraft(e.target.value)}
+                        placeholder="Paste one token per line (or comma/semicolon separated)"
+                        rows={4}
+                        style={{ marginTop: 8, resize: "vertical", minHeight: 96 }}
+                      />
+                      <div className="row" style={{ marginTop: 8 }}>
+                        <button
+                          className="btn primary"
+                          onClick={() => void onSaveGithubTokenPool()}
+                          disabled={githubTokenPoolBusy}
+                        >
+                          {githubTokenPoolBusy ? "Saving…" : "Save GitHub tokens"}
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => void onClearGithubTokenPool()}
+                          disabled={githubTokenPoolBusy}
+                        >
+                          Clear saved tokens
+                        </button>
+                        <button
+                          className="btn"
+                          onClick={() => void refreshGithubTokenPoolStatus()}
+                          disabled={githubTokenPoolBusy}
+                        >
+                          {githubTokenPoolBusy ? "Checking…" : "Refresh status"}
+                        </button>
+                      </div>
+                      {githubTokenPoolStatus ? (
+                        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                          <div className={`chip ${githubTokenPoolStatus.configured ? "" : "subtle"}`}>
+                            {githubTokenPoolStatus.configured
+                              ? `${githubTokenPoolStatus.total_tokens} token${githubTokenPoolStatus.total_tokens === 1 ? "" : "s"} configured`
+                              : "No tokens configured"}
+                          </div>
+                          <div className={githubTokenPoolStatus.keychain_available ? "noticeBox" : "warningBox"}>
+                            {githubTokenPoolStatus.message}
+                          </div>
+                          <div className="muted">
+                            Sources: env {githubTokenPoolStatus.env_tokens} · keychain {githubTokenPoolStatus.keychain_tokens}
+                            {githubTokenPoolStatus.unauth_rate_limited
+                              ? ` · unauth rate-limited${githubTokenPoolStatus.unauth_rate_limit_reset_at ? ` until ${githubTokenPoolStatus.unauth_rate_limit_reset_at}` : ""}`
+                              : ""}
+                          </div>
+                        </div>
+                      ) : null}
+                      {githubTokenPoolNotice ? (
+                        <div className={githubTokenPoolNoticeIsError ? "errorBox" : "noticeBox"} style={{ marginTop: 10 }}>
+                          {githubTokenPoolNotice}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -12349,6 +12885,11 @@ export default function App() {
                             </div>
                             <div className="updatesListMeta">
                               {u.current_version_number} → {u.latest_version_number}
+                              {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
+                                <div className="muted" style={{ marginTop: 4 }}>
+                                  {u.compatibility_notes[0]}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         ))}
@@ -13276,6 +13817,33 @@ export default function App() {
         selectedVisibleEntryCount === selectableVisibleEntries.length;
       const selectedInstalledEntryCount = installedContentSummary.selectedInstalledEntryCount;
       const instanceActivity = instanceActivityById[inst.id] ?? [];
+      const instanceHistory = instanceHistoryById[inst.id] ?? [];
+      const timelineCutoffMs = Number(timelineClearedAtByInstance[inst.id] ?? 0);
+      const timelineEntries = [
+        ...instanceActivity
+          .filter((entry) => Number(entry.at) > timelineCutoffMs)
+          .map((entry) => ({
+          id: `activity:${entry.id}`,
+          atMs: Number(entry.at) || 0,
+          tone: entry.tone,
+          message: entry.message,
+          meta: `${new Date(entry.at).toLocaleTimeString([], {
+            hour: "numeric",
+            minute: "2-digit",
+          })} · Live activity`,
+        })),
+        ...instanceHistory
+          .filter((event) => (parseDateLike(event.at)?.getTime() ?? 0) > timelineCutoffMs)
+          .map((event) => ({
+          id: `history:${event.id}`,
+          atMs: parseDateLike(event.at)?.getTime() ?? 0,
+          tone: inferActivityTone(`${event.kind} ${event.summary}`),
+          message: event.summary,
+          meta: `${formatDateTime(event.at, "Unknown time")} · ${humanizeToken(event.kind)}`,
+        })),
+      ]
+        .sort((a, b) => b.atMs - a.atMs)
+        .slice(0, 12);
       const selectedSnapshot =
         snapshots.find((s) => s.id === (rollbackSnapshotId ?? snapshots[0]?.id)) ?? snapshots[0] ?? null;
       const resolveSnapshotProjectLabel = (rawId: string, sourceHint?: "modrinth" | "curseforge" | null) => {
@@ -14102,6 +14670,11 @@ export default function App() {
                                 </div>
                                 <div className="updatesListMeta">
                                   {u.current_version_number} → {u.latest_version_number}
+                                  {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
+                                    <div className="muted" style={{ marginTop: 4 }}>
+                                      {u.compatibility_notes[0]}
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
                             ))}
@@ -14167,6 +14740,7 @@ export default function App() {
                               : null;
                           const rowMetaParts = [
                             m.enabled ? "Enabled" : "Disabled",
+                            ...(m.pinned_version ? ["Pinned"] : []),
                             ...(m.file_exists ? [] : ["Missing file"]),
                             ...(m.target_worlds?.length ? [`Worlds: ${m.target_worlds.join(", ")}`] : []),
                           ];
@@ -14218,6 +14792,15 @@ export default function App() {
                                   <div className="instanceModsProviderBadges">
                                     {!m.file_exists ? (
                                       <span className="instanceProviderBadge missing">Missing on disk</span>
+                                    ) : null}
+                                    {Array.isArray(m.local_analysis?.warnings) &&
+                                    m.local_analysis!.warnings.length > 0 ? (
+                                      <span
+                                        className="instanceProviderBadge missing"
+                                        data-oj-tooltip={m.local_analysis!.warnings.join(" | ")}
+                                      >
+                                        Dependency warning
+                                      </span>
                                     ) : null}
                                     {providerBadgeCandidates.map((candidate) => {
                                       const source = normalizeProviderSource(candidate.source);
@@ -14272,6 +14855,31 @@ export default function App() {
                                         </button>
                                       );
                                     })}
+                                    <button
+                                      className={`instanceProviderBadge clickable ${
+                                        m.pinned_version ? "active" : ""
+                                      }`}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        void onToggleInstalledModPin(inst, m);
+                                      }}
+                                      disabled={
+                                        pinBusyVersion === m.version_id ||
+                                        toggleBusyVersion === m.version_id ||
+                                        toggleBusyVersion === "__bulk__"
+                                      }
+                                      data-oj-tooltip={
+                                        m.pinned_version
+                                          ? `Pinned to ${m.pinned_version}. Click to unpin.`
+                                          : "Pin this entry to current version (skips update-all)."
+                                      }
+                                    >
+                                      {pinBusyVersion === m.version_id
+                                        ? "Saving…"
+                                        : m.pinned_version
+                                          ? "Pinned"
+                                          : "Pin"}
+                                    </button>
                                     {normalizeCreatorEntryType(m.content_type) === "mods" &&
                                     (activeProviderSource === "local" ||
                                       activeProviderSource === "github") ? (
@@ -14970,38 +15578,46 @@ export default function App() {
             <aside className="instanceSidePane">
               <div className="card instanceSideCard instanceActivityCard">
                 <div className="instanceActivityHead">
-                  <div className="librarySideTitle">Activity</div>
+                  <div className="librarySideTitle">Timeline</div>
                   <div className="instanceActivityActions">
-                    {instanceActivity.length > 0 ? (
+                    {timelineEntries.length > 0 ? (
                       <button
                         className="btn"
-                        onClick={() =>
+                        onClick={() => {
+                          const now = Date.now();
                           setInstanceActivityById((prev) => ({
                             ...prev,
                             [inst.id]: [],
-                          }))
-                        }
+                          }));
+                          setInstanceHistoryById((prev) => ({
+                            ...prev,
+                            [inst.id]: [],
+                          }));
+                          setTimelineClearedAtByInstance((prev) => ({
+                            ...prev,
+                            [inst.id]: now,
+                          }));
+                        }}
                       >
-                        Clear
+                        Clear timeline
                       </button>
                     ) : null}
                   </div>
                 </div>
-                {instanceActivity.length === 0 ? (
-                  <div className="muted">Launch, install, and maintenance updates appear here.</div>
+                {timelineEntries.length === 0 ? (
+                  <div className="muted">
+                    {instanceHistoryBusyById[inst.id]
+                      ? "Loading recent events…"
+                      : "Launch, install, and maintenance updates appear here."}
+                  </div>
                 ) : (
                   <div className="instanceActivityList">
-                    {instanceActivity.slice(0, 10).map((entry) => (
+                    {timelineEntries.map((entry) => (
                       <div key={entry.id} className={`instanceActivityItem ${entry.tone}`}>
                         <span className="instanceActivityDot" />
                         <div className="instanceActivityContent">
                           <div className="instanceActivityMessage">{entry.message}</div>
-                          <div className="instanceActivityTime">
-                            {new Date(entry.at).toLocaleTimeString([], {
-                              hour: "numeric",
-                              minute: "2-digit",
-                            })}
-                          </div>
+                          <div className="instanceActivityTime">{entry.meta}</div>
                         </div>
                       </div>
                     ))}
@@ -15047,6 +15663,101 @@ export default function App() {
                     Export support bundle
                   </button>
                 </div>
+              </div>
+              <div className="card instanceSideCard">
+                <div className="librarySideTitle">Quick play</div>
+                <div className="muted" style={{ marginBottom: 8 }}>
+                  Launch straight into a server with this instance.
+                </div>
+                <div className="settingStack">
+                  <input
+                    className="input"
+                    placeholder="Server name"
+                    value={quickPlayDraftName}
+                    onChange={(e) => setQuickPlayDraftName(e.target.value)}
+                    disabled={quickPlayBusy}
+                  />
+                  <input
+                    className="input"
+                    placeholder="Host (example.org)"
+                    value={quickPlayDraftHost}
+                    onChange={(e) => setQuickPlayDraftHost(e.target.value)}
+                    disabled={quickPlayBusy}
+                  />
+                  <div className="row">
+                    <input
+                      className="input"
+                      placeholder="Port"
+                      value={quickPlayDraftPort}
+                      onChange={(e) => setQuickPlayDraftPort(e.target.value)}
+                      disabled={quickPlayBusy}
+                      style={{ maxWidth: 120 }}
+                    />
+                    <MenuSelect
+                      value={quickPlayDraftBoundInstanceId}
+                      labelPrefix="Bind"
+                      options={[
+                        { value: "none", label: "Current instance" },
+                        ...instances.map((entry) => ({
+                          value: entry.id,
+                          label: entry.name || entry.id,
+                        })),
+                      ]}
+                      onChange={(value) => setQuickPlayDraftBoundInstanceId(String(value ?? "none"))}
+                    />
+                  </div>
+                  <div className="row">
+                    <button
+                      className="btn"
+                      onClick={() => void onSaveQuickPlayServer(inst)}
+                      disabled={quickPlayBusy}
+                    >
+                      {quickPlayBusy ? "Saving…" : "Save server"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => void refreshQuickPlayServers()}
+                      disabled={quickPlayBusy}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+                {quickPlayErr ? <div className="errorBox" style={{ marginTop: 8 }}>{quickPlayErr}</div> : null}
+                {quickPlayServers.length > 0 ? (
+                  <div className="settingListMini" style={{ marginTop: 10 }}>
+                    {quickPlayServers
+                      .filter((server) => (server.bound_instance_id ?? inst.id) === inst.id)
+                      .map((server) => (
+                        <div key={server.id} className="settingListMiniRow">
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 900 }}>{server.name}</div>
+                            <div className="muted">
+                              {server.host}:{server.port}
+                            </div>
+                          </div>
+                          <div className="row">
+                            <button
+                              className="btn"
+                              onClick={() => void onLaunchQuickPlayServer(server, inst)}
+                              disabled={quickPlayBusy}
+                            >
+                              Play
+                            </button>
+                            <button
+                              className="btn danger"
+                              onClick={() => void onRemoveQuickPlayServer(server.id)}
+                              disabled={quickPlayBusy}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <div className="muted" style={{ marginTop: 8 }}>No quick-play servers bound yet.</div>
+                )}
               </div>
             </aside>
           </div>
@@ -15370,38 +16081,46 @@ export default function App() {
 	                          </label>
 	                          {instSettings.sync_minecraft_settings ? (
 	                            <>
-	                              {instances.filter((item) => item.id !== inst.id).length > 0 ? (
-	                                <MenuSelect
-	                                  value={
-	                                    instSettings.sync_minecraft_settings_target === "all" ||
-	                                    instances.some((item) => item.id === instSettings.sync_minecraft_settings_target)
-	                                      ? instSettings.sync_minecraft_settings_target
-	                                      : "all"
-	                                  }
-	                                  labelPrefix="Sync target"
-	                                  onChange={(v) =>
-	                                    void persistInstanceChanges(
-	                                      inst,
-	                                      { settings: { sync_minecraft_settings_target: String(v ?? "all") } },
-	                                      `Minecraft settings sync target updated.`
-	                                    )
-	                                  }
-	                                  options={[
-	                                    { value: "all", label: "All instances" },
-	                                    ...instances
-	                                      .filter((item) => item.id !== inst.id)
-	                                      .map((item) => ({
-	                                        value: item.id,
-	                                        label: `Only ${item.name || item.id}`,
-	                                      })),
-	                                  ]}
-	                                />
-	                              ) : null}
-		                              <div className="muted" style={{ marginTop: 8 }}>
-		                                {instances.filter((item) => item.id !== inst.id).length === 0
-		                                  ? "Add another instance to choose a sync target."
-		                                  : "Syncs options files (options.txt, optionsof.txt, optionsshaders.txt, servers.dat) right before launch."}
-		                              </div>
+                              {instances.filter((item) => item.id !== inst.id).length > 0 ? (
+                                <MenuSelect
+                                  value={
+                                    instSettings.sync_minecraft_settings_target === "none" ||
+                                    instSettings.sync_minecraft_settings_target === "all" ||
+                                    instances.some((item) => item.id === instSettings.sync_minecraft_settings_target)
+                                      ? instSettings.sync_minecraft_settings_target
+                                      : "none"
+                                  }
+                                  labelPrefix="Sync target"
+                                  onChange={(v) =>
+                                    void persistInstanceChanges(
+                                      inst,
+                                      { settings: { sync_minecraft_settings_target: String(v ?? "none") } },
+                                      `Minecraft settings sync target updated.`
+                                    )
+                                  }
+                                  options={[
+                                    { value: "none", label: "No target selected" },
+                                    ...instances
+                                      .filter((item) => item.id !== inst.id)
+                                      .map((item) => ({
+                                        value: item.id,
+                                        label: `Only ${item.name || item.id}`,
+                                      })),
+                                    ...(instanceSettingsMode === "advanced"
+                                      ? [{ value: "all", label: "All instances (advanced)" }]
+                                      : []),
+                                  ]}
+                                />
+                              ) : null}
+			                              <div className="muted" style={{ marginTop: 8 }}>
+			                                {instances.filter((item) => item.id !== inst.id).length === 0
+			                                  ? "Add another instance to choose a sync target."
+			                                  : instSettings.sync_minecraft_settings_target === "all"
+                                      ? "Advanced mode fan-out: syncs options files to every other instance."
+                                      : instSettings.sync_minecraft_settings_target === "none"
+                                        ? "Choose one target instance to avoid accidental fan-out overwrites."
+			                                  : "Syncs options files (options.txt, optionsof.txt, optionsshaders.txt, servers.dat) right before launch."}
+			                              </div>
 		                            </>
 		                          ) : null}
 	                        </div>

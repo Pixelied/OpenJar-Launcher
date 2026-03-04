@@ -774,6 +774,7 @@ mod tests {
             enabled,
             hashes: HashMap::new(),
             provider_candidates: vec![],
+            local_analysis: None,
         }
     }
 

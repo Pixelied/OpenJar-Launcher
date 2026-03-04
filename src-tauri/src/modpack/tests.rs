@@ -127,6 +127,7 @@ mod modpack_tests {
                 enabled: true,
                 hashes: HashMap::new(),
                 provider_candidates: vec![],
+                local_analysis: None,
             }],
         };
 
@@ -146,6 +147,7 @@ mod modpack_tests {
                 enabled: true,
                 hashes: HashMap::new(),
                 provider_candidates: vec![],
+                local_analysis: None,
             }],
         };
 

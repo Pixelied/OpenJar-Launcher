@@ -1,12 +1,13 @@
 use crate::*;
 use chrono::Local;
 use reqwest::blocking::Client;
-use std::collections::{HashMap, HashSet};
+use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
@@ -24,6 +25,38 @@ fn log_instance_event_best_effort(
             "instance history event write failed for '{}' [{}]: {}",
             instance_id, kind, err
         );
+    }
+}
+
+fn create_instance_snapshot_with_event_best_effort(
+    app: &tauri::AppHandle,
+    instances_dir: &Path,
+    instance_id: &str,
+    reason: &str,
+) {
+    match create_instance_snapshot(instances_dir, instance_id, reason) {
+        Ok(meta) => {
+            log_instance_event_best_effort(
+                app,
+                instance_id,
+                "snapshot_created",
+                format!(
+                    "Created snapshot '{}' (reason: {}).",
+                    meta.id,
+                    if meta.reason.trim().is_empty() {
+                        "manual"
+                    } else {
+                        meta.reason.trim()
+                    }
+                ),
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "snapshot creation failed for '{}' (reason '{}'): {}",
+                instance_id, reason, err
+            );
+        }
     }
 }
 
@@ -94,22 +127,23 @@ fn sync_instance_minecraft_settings_before_launch(
     let source_dir = instance_dir_for_instance(instances_dir, source_instance);
     let source_target = source_settings.sync_minecraft_settings_target.trim();
     let index = read_index(instances_dir)?;
-    let target_ids: Vec<String> =
-        if source_target.eq_ignore_ascii_case("all") || source_target.is_empty() {
-            index
-                .instances
-                .iter()
-                .filter(|item| item.id != source_instance.id)
-                .map(|item| item.id.clone())
-                .collect()
-        } else {
-            index
-                .instances
-                .iter()
-                .find(|item| item.id == source_target && item.id != source_instance.id)
-                .map(|item| vec![item.id.clone()])
-                .unwrap_or_default()
-        };
+    let target_ids: Vec<String> = if source_target.eq_ignore_ascii_case("all") {
+        index
+            .instances
+            .iter()
+            .filter(|item| item.id != source_instance.id)
+            .map(|item| item.id.clone())
+            .collect()
+    } else if source_target.eq_ignore_ascii_case("none") || source_target.is_empty() {
+        Vec::new()
+    } else {
+        index
+            .instances
+            .iter()
+            .find(|item| item.id == source_target && item.id != source_instance.id)
+            .map(|item| vec![item.id.clone()])
+            .unwrap_or_default()
+    };
     if target_ids.is_empty() {
         return Ok(0);
     }
@@ -209,6 +243,24 @@ fn hydrate_instance_settings_from_prism(
         let target = app_instance_dir.join(filename);
         copy_file_atomic(&prism_file, &target)?;
         copied += 1;
+    }
+    Ok(copied)
+}
+
+fn reconcile_runtime_session_minecraft_settings(
+    runtime_session_dir: &Path,
+    app_instance_dir: &Path,
+) -> Result<usize, String> {
+    let mut copied = 0usize;
+    for filename in MINECRAFT_SETTINGS_SYNC_FILES {
+        let Some(source_file) =
+            resolve_minecraft_settings_source_file(runtime_session_dir, filename)
+        else {
+            continue;
+        };
+        let (file_copied, _) =
+            copy_minecraft_settings_file_to_target_dirs(&source_file, app_instance_dir, filename)?;
+        copied += file_copied;
     }
     Ok(copied)
 }
@@ -607,6 +659,27 @@ pub(crate) fn get_curseforge_api_status() -> Result<CurseforgeApiStatus, String>
 }
 
 #[tauri::command]
+pub(crate) fn get_github_token_pool_status() -> Result<GithubTokenPoolStatus, String> {
+    Ok(github_token_pool_status())
+}
+
+#[tauri::command]
+pub(crate) fn set_github_token_pool(
+    args: SetGithubTokenPoolArgs,
+) -> Result<GithubTokenPoolStatus, String> {
+    keyring_set_github_token_pool(&args.tokens)?;
+    github_invalidate_token_pool_cache();
+    Ok(github_token_pool_status())
+}
+
+#[tauri::command]
+pub(crate) fn clear_github_token_pool() -> Result<GithubTokenPoolStatus, String> {
+    keyring_delete_github_token_pool()?;
+    github_invalidate_token_pool_cache();
+    Ok(github_token_pool_status())
+}
+
+#[tauri::command]
 pub(crate) fn set_launcher_settings(
     app: tauri::AppHandle,
     args: SetLauncherSettingsArgs,
@@ -637,6 +710,12 @@ pub(crate) fn set_launcher_settings(
     }
     if let Some(auto_trigger_prompt) = args.auto_trigger_mic_permission_prompt {
         settings.auto_trigger_mic_permission_prompt = auto_trigger_prompt;
+    }
+    if let Some(enabled) = args.discord_presence_enabled {
+        settings.discord_presence_enabled = enabled;
+    }
+    if let Some(level) = args.discord_presence_detail_level {
+        settings.discord_presence_detail_level = normalize_discord_presence_detail_level(&level);
     }
     write_launcher_settings(&app, &settings)?;
     Ok(settings)
@@ -1533,6 +1612,23 @@ pub(crate) async fn list_instance_run_reports(
     .await
 }
 
+#[tauri::command]
+pub(crate) async fn list_instance_history_events(
+    app: tauri::AppHandle,
+    args: ListInstanceHistoryEventsArgs,
+) -> Result<Vec<crate::run_reports::InstanceHistoryEvent>, String> {
+    run_blocking_task("list instance history events", move || {
+        crate::run_reports::list_instance_history_events(
+            &app,
+            &args.instance_id,
+            args.limit.unwrap_or(50),
+            args.before_at.as_deref(),
+            args.kinds.as_deref(),
+        )
+    })
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ResetInstanceConfigFilesArgs {
     #[serde(alias = "instanceId")]
@@ -1869,7 +1965,12 @@ fn install_discover_content_inner(
             );
 
             if let Some(reason) = snapshot_reason {
-                let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
+                create_instance_snapshot_with_event_best_effort(
+                    &app,
+                    &instances_dir,
+                    &args.instance_id,
+                    reason,
+                );
             }
 
             emit_install_progress(
@@ -1995,7 +2096,12 @@ fn install_discover_content_inner(
     );
 
     if let Some(reason) = snapshot_reason {
-        let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
+        create_instance_snapshot_with_event_best_effort(
+            &app,
+            &instances_dir,
+            &args.instance_id,
+            reason,
+        );
     }
 
     emit_install_progress(
@@ -3484,7 +3590,8 @@ pub(crate) fn update_instance(
         .iter()
         .position(|x| x.id == args.instance_id)
         .ok_or_else(|| "instance not found".to_string())?;
-    let mut inst = idx.instances[pos].clone();
+    let prev_inst = idx.instances[pos].clone();
+    let mut inst = prev_inst.clone();
     let prev_dir = instance_dir_for_instance(&dir, &inst);
     let mut folder_name_override: Option<String> = None;
 
@@ -3547,6 +3654,108 @@ pub(crate) fn update_instance(
     write_instance_meta(&inst_dir, &inst)?;
     idx.instances[pos] = inst.clone();
     write_index(&dir, &idx)?;
+
+    if prev_inst.name != inst.name
+        || prev_inst.mc_version != inst.mc_version
+        || prev_inst.loader != inst.loader
+    {
+        let mut changes: Vec<String> = Vec::new();
+        if prev_inst.name != inst.name {
+            changes.push(format!("name '{}' -> '{}'", prev_inst.name, inst.name));
+        }
+        if prev_inst.mc_version != inst.mc_version {
+            changes.push(format!(
+                "Minecraft {} -> {}",
+                prev_inst.mc_version, inst.mc_version
+            ));
+        }
+        if prev_inst.loader != inst.loader {
+            changes.push(format!("loader {} -> {}", prev_inst.loader, inst.loader));
+        }
+        log_instance_event_best_effort(
+            &app,
+            &inst.id,
+            "instance_updated",
+            format!("Updated instance profile: {}.", changes.join(", ")),
+        );
+    }
+
+    let java_changed = prev_inst.settings.java_path.trim() != inst.settings.java_path.trim();
+    if java_changed {
+        let previous = if prev_inst.settings.java_path.trim().is_empty() {
+            "default".to_string()
+        } else {
+            prev_inst.settings.java_path.trim().to_string()
+        };
+        let next = if inst.settings.java_path.trim().is_empty() {
+            "default".to_string()
+        } else {
+            inst.settings.java_path.trim().to_string()
+        };
+        log_instance_event_best_effort(
+            &app,
+            &inst.id,
+            "java_changed",
+            format!("Java runtime changed: {} -> {}.", previous, next),
+        );
+    }
+
+    let mut settings_changes: Vec<&str> = Vec::new();
+    if prev_inst.settings.keep_launcher_open_while_playing
+        != inst.settings.keep_launcher_open_while_playing
+    {
+        settings_changes.push("keep-launcher-open");
+    }
+    if prev_inst.settings.close_launcher_on_game_exit != inst.settings.close_launcher_on_game_exit {
+        settings_changes.push("close-on-exit");
+    }
+    if prev_inst.settings.sync_minecraft_settings != inst.settings.sync_minecraft_settings
+        || prev_inst.settings.sync_minecraft_settings_target
+            != inst.settings.sync_minecraft_settings_target
+    {
+        settings_changes.push("settings-sync");
+    }
+    if prev_inst.settings.auto_update_installed_content
+        != inst.settings.auto_update_installed_content
+        || prev_inst.settings.prefer_release_builds != inst.settings.prefer_release_builds
+    {
+        settings_changes.push("update-policy");
+    }
+    if prev_inst.settings.memory_mb != inst.settings.memory_mb
+        || prev_inst.settings.jvm_args != inst.settings.jvm_args
+    {
+        settings_changes.push("java-runtime-flags");
+    }
+    if prev_inst.settings.notes != inst.settings.notes {
+        settings_changes.push("notes");
+    }
+    if prev_inst.settings.graphics_preset != inst.settings.graphics_preset
+        || prev_inst.settings.enable_shaders != inst.settings.enable_shaders
+        || prev_inst.settings.force_vsync != inst.settings.force_vsync
+    {
+        settings_changes.push("display");
+    }
+    if prev_inst.settings.world_backup_interval_minutes
+        != inst.settings.world_backup_interval_minutes
+        || prev_inst.settings.world_backup_retention_count
+            != inst.settings.world_backup_retention_count
+        || prev_inst.settings.snapshot_retention_count != inst.settings.snapshot_retention_count
+        || prev_inst.settings.snapshot_max_age_days != inst.settings.snapshot_max_age_days
+    {
+        settings_changes.push("retention");
+    }
+    if !settings_changes.is_empty() {
+        log_instance_event_best_effort(
+            &app,
+            &inst.id,
+            "settings_changed",
+            format!(
+                "Updated instance settings: {}.",
+                settings_changes.join(", ")
+            ),
+        );
+    }
+
     Ok(inst)
 }
 
@@ -3690,7 +3899,12 @@ fn install_modrinth_mod_inner(
 
     if total_actions > 0 {
         if let Some(reason) = snapshot_reason {
-            let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
+            create_instance_snapshot_with_event_best_effort(
+                &app,
+                &instances_dir,
+                &args.instance_id,
+                reason,
+            );
         }
     }
 
@@ -3864,6 +4078,7 @@ fn install_modrinth_mod_inner(
                 confidence: None,
                 reason: None,
             }],
+            local_analysis: None,
         };
 
         lock.entries.push(new_entry.clone());
@@ -4030,7 +4245,12 @@ fn install_curseforge_mod_inner(
     let total_actions = install_plan.len().max(1);
 
     if let Some(reason) = snapshot_reason {
-        let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
+        create_instance_snapshot_with_event_best_effort(
+            &app,
+            &instances_dir,
+            &args.instance_id,
+            reason,
+        );
     }
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let mut root_entry: Option<LockEntry> = None;
@@ -4306,6 +4526,39 @@ fn import_local_mod_file_inner(
         &file_bytes,
     )?;
 
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let previous_pin = lock
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.filename == safe_filename
+                && normalize_lock_content_type(&entry.content_type) == normalized_content_type
+        })
+        .and_then(|entry| entry.pinned_version.clone());
+    let known_mod_ids = lock
+        .entries
+        .iter()
+        .filter(|entry| entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods")
+        .flat_map(|entry| {
+            entry
+                .local_analysis
+                .as_ref()
+                .map(|analysis| analysis.mod_ids.clone())
+                .unwrap_or_default()
+                .into_iter()
+        })
+        .collect::<HashSet<_>>();
+    let local_analysis = if normalized_content_type == "mods" {
+        Some(analyze_local_mod_file(
+            &safe_filename,
+            &file_bytes,
+            Some(&instance.loader),
+            Some(&known_mod_ids),
+        ))
+    } else {
+        None
+    };
+
     let detected_provider_matches = Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(2))
@@ -4329,8 +4582,6 @@ fn import_local_mod_file_inner(
         .as_ref()
         .filter(|found| provider_match_is_auto_activatable(found))
         .cloned();
-
-    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| {
         !(e.filename == safe_filename
             && normalize_lock_content_type(&e.content_type) == normalized_content_type)
@@ -4360,10 +4611,11 @@ fn import_local_mod_file_inner(
                 "instance".to_string()
             },
             target_worlds: worlds.clone(),
-            pinned_version: None,
+            pinned_version: previous_pin.clone(),
             enabled: true,
             hashes: found.hashes,
             provider_candidates: detected_provider_candidates,
+            local_analysis: local_analysis.clone(),
         }
     } else {
         let project_id = format!(
@@ -4389,10 +4641,11 @@ fn import_local_mod_file_inner(
                 "instance".to_string()
             },
             target_worlds: worlds,
-            pinned_version: None,
+            pinned_version: previous_pin,
             enabled: true,
             hashes: HashMap::new(),
             provider_candidates: detected_provider_candidates,
+            local_analysis,
         }
     };
 
@@ -4441,7 +4694,7 @@ fn resolve_local_mod_sources_inner(
     requested_content_types: Option<&[String]>,
 ) -> Result<LocalResolverResult, String> {
     let instances_dir = app_instances_dir(app)?;
-    let _ = find_instance(&instances_dir, instance_id)?;
+    let instance = find_instance(&instances_dir, instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, instance_id)?;
     let mut lock = read_lockfile(&instances_dir, instance_id)?;
     let strict_local_only = mode.trim().to_ascii_lowercase() != "all";
@@ -4527,6 +4780,34 @@ fn resolve_local_mod_sources_inner(
                 continue;
             }
         };
+        if entry_content_type == "mods" {
+            let known_mod_ids = lock
+                .entries
+                .iter()
+                .filter(|entry| {
+                    entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods"
+                })
+                .flat_map(|entry| {
+                    entry
+                        .local_analysis
+                        .as_ref()
+                        .map(|analysis| analysis.mod_ids.clone())
+                        .unwrap_or_default()
+                        .into_iter()
+                })
+                .collect::<HashSet<_>>();
+            let analysis = analyze_local_mod_file(
+                &filename,
+                &file_bytes,
+                Some(&instance.loader),
+                Some(&known_mod_ids),
+            );
+            let had_analysis = lock.entries[idx].local_analysis.is_some();
+            lock.entries[idx].local_analysis = Some(analysis);
+            if !had_analysis {
+                changed = true;
+            }
+        }
         let found_matches = detect_provider_matches_for_local_mod(
             &client,
             &file_bytes,
@@ -4550,41 +4831,17 @@ fn resolve_local_mod_sources_inner(
         let preferred_is_activatable = preferred_match
             .map(|item| provider_match_is_auto_activatable(item))
             .unwrap_or(false);
-        let no_viable_match = preferred_match.is_none()
-            || (should_repair_existing_github_mapping && !preferred_is_activatable);
         let key_before = local_entry_key(&lock.entries[idx]);
         let from_source = lock.entries[idx].source.clone();
         let existing_project_id = lock.entries[idx].project_id.clone();
         let existing_project_id_valid = parse_github_project_id(&existing_project_id).is_ok();
 
-        if no_viable_match {
-            if should_repair_existing_github_mapping {
-                if should_revalidate_github_in_all && existing_project_id_valid {
-                    if let Some(transient_reason) = github_verification_unavailable {
-                        warnings.push(format!(
-                            "Kept existing GitHub mapping for '{}': release verification is temporarily unavailable ({}).",
-                            filename, transient_reason
-                        ));
-                        continue;
-                    }
-                }
-                let revert_reason = if !existing_project_id_valid {
-                    format!(
-                        "Existing GitHub mapping has invalid repository ID '{}'.",
-                        existing_project_id.trim()
-                    )
-                } else if let Some(found) = preferred_match {
-                    format!(
-                        "Existing GitHub mapping is not safely auto-activatable ({} confidence): {}",
-                        found.confidence, found.reason
-                    )
-                } else if should_revalidate_untrusted_github {
-                    "Existing GitHub mapping is untrusted and could not be safely re-verified against local file evidence."
-                        .to_string()
-                } else {
-                    "Existing GitHub mapping could not be verified against local file evidence."
-                        .to_string()
-                };
+        if should_repair_existing_github_mapping {
+            if !existing_project_id_valid {
+                let revert_reason = format!(
+                    "Existing GitHub mapping has invalid repository ID '{}'.",
+                    existing_project_id.trim()
+                );
                 lock.entries[idx].source = "local".to_string();
                 lock.entries[idx].project_id =
                     format!("local:{}", sanitize_filename(&lock.entries[idx].filename));
@@ -4610,8 +4867,32 @@ fn resolve_local_mod_sources_inner(
                     confidence: "manual".to_string(),
                     reason: revert_reason,
                 });
+                continue;
             }
-            continue;
+
+            if let Some(transient_reason) = github_verification_unavailable {
+                if preferred_match.is_some() && preferred_is_activatable {
+                    // A strong activatable match exists, so we can safely switch despite transient API issues.
+                } else {
+                    warnings.push(format!(
+                        "Kept existing GitHub mapping for '{}': repository/release verification is temporarily unavailable ({}).",
+                        filename, transient_reason
+                    ));
+                }
+            } else if preferred_match.is_none() {
+                warnings.push(format!(
+                    "Kept existing GitHub mapping for '{}': no hard contradictory evidence was found during revalidation.",
+                    filename
+                ));
+                continue;
+            } else if !preferred_is_activatable {
+                if let Some(found) = preferred_match {
+                    warnings.push(format!(
+                        "Kept existing GitHub mapping for '{}': detected match is {} confidence and remains non-active ({})",
+                        filename, found.confidence, found.reason
+                    ));
+                }
+            }
         }
         let Some(found) = preferred_match else {
             continue;
@@ -4769,6 +5050,169 @@ fn check_instance_content_updates_command_inner(
     )
 }
 
+fn canonical_curseforge_dependency_id(raw: &str) -> Option<String> {
+    parse_curseforge_project_id(raw)
+        .ok()
+        .filter(|value| *value > 0)
+        .map(|value| format!("cf:{value}"))
+}
+
+fn canonical_update_project_key(source: &str, project_id: &str) -> Option<String> {
+    let normalized_source = source.trim().to_ascii_lowercase();
+    let normalized_project = project_id.trim();
+    if normalized_project.is_empty() {
+        return None;
+    }
+    if normalized_source == "modrinth" {
+        return Some(format!(
+            "modrinth:{}",
+            normalized_project.to_ascii_lowercase()
+        ));
+    }
+    if normalized_source == "curseforge" {
+        return canonical_curseforge_dependency_id(normalized_project)
+            .map(|value| format!("curseforge:{value}"));
+    }
+    Some(format!(
+        "{}:{}",
+        normalized_source,
+        normalized_project.to_ascii_lowercase()
+    ))
+}
+
+fn canonical_update_project_key_for_item(update: &ContentUpdateInfo) -> Option<String> {
+    canonical_update_project_key(&update.source, &update.project_id)
+}
+
+fn canonical_dependency_project_key_for_update(
+    update: &ContentUpdateInfo,
+    dependency: &str,
+) -> Option<String> {
+    let normalized_source = update.source.trim().to_ascii_lowercase();
+    if normalized_source == "modrinth" {
+        return canonical_update_project_key("modrinth", dependency);
+    }
+    if normalized_source == "curseforge" {
+        return canonical_update_project_key("curseforge", dependency);
+    }
+    None
+}
+
+fn order_updates_by_required_dependencies(
+    updates: &[ContentUpdateInfo],
+) -> (Vec<usize>, Vec<String>) {
+    if updates.len() <= 1 {
+        return ((0..updates.len()).collect(), vec![]);
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut key_to_index: HashMap<String, usize> = HashMap::new();
+    for (idx, update) in updates.iter().enumerate() {
+        if let Some(key) = canonical_update_project_key_for_item(update) {
+            key_to_index.entry(key).or_insert(idx);
+        }
+    }
+
+    let mut edges: Vec<Vec<usize>> = vec![vec![]; updates.len()];
+    let mut indegree: Vec<usize> = vec![0; updates.len()];
+    for (idx, update) in updates.iter().enumerate() {
+        let self_key = canonical_update_project_key_for_item(update);
+        let mut seen_deps: HashSet<usize> = HashSet::new();
+        for dependency in &update.required_dependencies {
+            let Some(dep_key) = canonical_dependency_project_key_for_update(update, dependency)
+            else {
+                continue;
+            };
+            if self_key
+                .as_ref()
+                .map(|value| value == &dep_key)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(dep_idx) = key_to_index.get(&dep_key).copied() else {
+                continue;
+            };
+            if seen_deps.insert(dep_idx) {
+                edges[dep_idx].push(idx);
+                indegree[idx] += 1;
+            }
+        }
+    }
+
+    let mut ready: BTreeSet<usize> = BTreeSet::new();
+    for (idx, degree) in indegree.iter().enumerate() {
+        if *degree == 0 {
+            ready.insert(idx);
+        }
+    }
+
+    let mut ordered: Vec<usize> = Vec::with_capacity(updates.len());
+    while let Some(next) = ready.first().copied() {
+        ready.remove(&next);
+        ordered.push(next);
+        for dependent in edges[next].iter().copied() {
+            if indegree[dependent] == 0 {
+                continue;
+            }
+            indegree[dependent] -= 1;
+            if indegree[dependent] == 0 {
+                ready.insert(dependent);
+            }
+        }
+    }
+
+    if ordered.len() < updates.len() {
+        let mut remaining = (0..updates.len())
+            .filter(|idx| !ordered.contains(idx))
+            .collect::<Vec<_>>();
+        remaining.sort_unstable();
+        warnings.push(format!(
+            "Update dependency cycle detected across {} entr{}; continuing with deterministic fallback order.",
+            remaining.len(),
+            if remaining.len() == 1 { "y" } else { "ies" }
+        ));
+        ordered.extend(remaining);
+    }
+
+    (ordered, warnings)
+}
+
+fn missing_required_dependencies_for_update(
+    lock: &Lockfile,
+    update: &ContentUpdateInfo,
+) -> Vec<String> {
+    if normalize_lock_content_type(&update.content_type) != "mods" {
+        return vec![];
+    }
+    let source = update.source.trim().to_ascii_lowercase();
+    if source != "modrinth" && source != "curseforge" {
+        return vec![];
+    }
+    let mut missing: Vec<String> = Vec::new();
+    for dependency in &update.required_dependencies {
+        if source == "modrinth" {
+            let project_id = dependency.trim();
+            if project_id.is_empty() {
+                continue;
+            }
+            if !lock_has_enabled_modrinth_mod(lock, project_id) {
+                missing.push(project_id.to_string());
+            }
+            continue;
+        }
+        let Some(mod_id) = parse_curseforge_project_id(dependency).ok() else {
+            continue;
+        };
+        if mod_id > 0 && !lock_has_enabled_curseforge_mod(lock, mod_id) {
+            missing.push(format!("cf:{mod_id}"));
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    missing
+}
+
 fn update_all_instance_content_inner(
     app: tauri::AppHandle,
     args: CheckUpdatesArgs,
@@ -4787,18 +5231,41 @@ fn update_all_instance_content_inner(
     )?;
 
     if !check.updates.is_empty() {
-        let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
+        create_instance_snapshot_with_event_best_effort(
+            &app,
+            &instances_dir,
+            &args.instance_id,
+            "before-update-all",
+        );
     }
     let mut updated_entries = 0usize;
     let mut warnings = check.warnings.clone();
     let mut by_source: HashMap<String, usize> = HashMap::new();
     let mut by_content_type: HashMap<String, usize> = HashMap::new();
+    let (ordered_indexes, mut ordering_warnings) =
+        order_updates_by_required_dependencies(&check.updates);
+    warnings.append(&mut ordering_warnings);
+    let ordered_updates = ordered_indexes
+        .into_iter()
+        .filter_map(|idx| check.updates.get(idx).cloned())
+        .collect::<Vec<_>>();
     let cf_key = curseforge_api_key();
-    let prefetch_worker_cap = adaptive_update_prefetch_worker_cap(&check.updates);
+    let prefetch_worker_cap = adaptive_update_prefetch_worker_cap(&ordered_updates);
     let prefetched_downloads =
-        prefetch_update_downloads(&client, &check.updates, prefetch_worker_cap);
+        prefetch_update_downloads(&client, &ordered_updates, prefetch_worker_cap);
 
-    for (idx, update) in check.updates.iter().enumerate() {
+    for (idx, update) in ordered_updates.iter().enumerate() {
+        let current_lock = read_lockfile(&instances_dir, &args.instance_id)?;
+        let missing_dependencies = missing_required_dependencies_for_update(&current_lock, update);
+        if !missing_dependencies.is_empty() {
+            warnings.push(format!(
+                "Skipped update '{}' ({}): missing required dependencies [{}].",
+                update.name,
+                update.project_id,
+                missing_dependencies.join(", ")
+            ));
+            continue;
+        }
         let mut used_fast_path = false;
         let install_result = match try_fast_install_content_update(
             &instances_dir,
@@ -4983,10 +5450,26 @@ fn update_all_modrinth_mods_inner(
         None,
     )?;
     if !check.updates.is_empty() {
-        let _ = create_instance_snapshot(&instances_dir, &args.instance_id, "before-update-all");
+        create_instance_snapshot_with_event_best_effort(
+            &app,
+            &instances_dir,
+            &args.instance_id,
+            "before-update-all",
+        );
     }
     let mut updated_mods = 0usize;
-    for update in &check.updates {
+    let mut update_indexes = order_updates_by_required_dependencies(&check.updates).0;
+    if update_indexes.is_empty() {
+        update_indexes = (0..check.updates.len()).collect();
+    }
+    for idx in update_indexes {
+        let Some(update) = check.updates.get(idx) else {
+            continue;
+        };
+        let current_lock = read_lockfile(&instances_dir, &args.instance_id)?;
+        if !missing_required_dependencies_for_update(&current_lock, update).is_empty() {
+            continue;
+        }
         match install_discover_content_inner(
             app.clone(),
             &InstallDiscoverContentArgs {
@@ -5018,6 +5501,123 @@ fn update_all_modrinth_mods_inner(
 }
 
 #[tauri::command]
+pub(crate) fn list_quick_play_servers(
+    app: tauri::AppHandle,
+) -> Result<Vec<QuickPlayServerEntry>, String> {
+    let store = read_quick_play_servers(&app)?;
+    Ok(store.servers)
+}
+
+#[tauri::command]
+pub(crate) fn upsert_quick_play_server(
+    app: tauri::AppHandle,
+    args: UpsertQuickPlayServerArgs,
+) -> Result<Vec<QuickPlayServerEntry>, String> {
+    let mut store = read_quick_play_servers(&app)?;
+    let name = args.name.trim().to_string();
+    if name.is_empty() {
+        return Err("Server name is required.".to_string());
+    }
+    let host = normalize_quick_play_host(&args.host)
+        .ok_or_else(|| "Server host is invalid.".to_string())?;
+    let port = normalize_quick_play_port(args.port);
+    let bound_instance_id = args
+        .bound_instance_id
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(instance_id) = bound_instance_id.as_ref() {
+        let instances_dir = app_instances_dir(&app)?;
+        let _ = find_instance(&instances_dir, instance_id)?;
+    }
+    let target_id = args
+        .id
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("qps_{}", Uuid::new_v4().simple()));
+    if let Some(existing) = store.servers.iter_mut().find(|entry| entry.id == target_id) {
+        existing.name = name;
+        existing.host = host;
+        existing.port = port;
+        existing.bound_instance_id = bound_instance_id;
+    } else {
+        store.servers.push(QuickPlayServerEntry {
+            id: target_id,
+            name,
+            host,
+            port,
+            bound_instance_id,
+            last_used_at: None,
+        });
+    }
+    write_quick_play_servers(&app, &store)?;
+    let refreshed = read_quick_play_servers(&app)?;
+    Ok(refreshed.servers)
+}
+
+#[tauri::command]
+pub(crate) fn remove_quick_play_server(
+    app: tauri::AppHandle,
+    args: RemoveQuickPlayServerArgs,
+) -> Result<Vec<QuickPlayServerEntry>, String> {
+    let mut store = read_quick_play_servers(&app)?;
+    let before = store.servers.len();
+    store.servers.retain(|entry| entry.id != args.id);
+    if store.servers.len() == before {
+        return Err("Quick play server not found.".to_string());
+    }
+    write_quick_play_servers(&app, &store)?;
+    let refreshed = read_quick_play_servers(&app)?;
+    Ok(refreshed.servers)
+}
+
+#[tauri::command]
+pub(crate) async fn launch_quick_play_server(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    args: LaunchQuickPlayServerArgs,
+) -> Result<LaunchResult, String> {
+    let mut store = read_quick_play_servers(&app)?;
+    let idx = store
+        .servers
+        .iter()
+        .position(|entry| entry.id == args.server_id)
+        .ok_or_else(|| "Quick play server not found.".to_string())?;
+    let server = store.servers[idx].clone();
+    let instance_id = if let Some(override_id) = args.instance_id.as_ref() {
+        let trimmed = override_id.trim();
+        if trimmed.is_empty() {
+            return Err("Instance override is empty.".to_string());
+        }
+        trimmed.to_string()
+    } else if let Some(bound) = server.bound_instance_id.as_ref() {
+        bound.clone()
+    } else {
+        return Err("No instance is bound to this server. Choose an instance first.".to_string());
+    };
+
+    let result = launch_instance(
+        app.clone(),
+        state,
+        LaunchInstanceArgs {
+            instance_id: instance_id.clone(),
+            method: args.method.clone(),
+            quick_play_host: Some(server.host.clone()),
+            quick_play_port: Some(server.port),
+        },
+    )
+    .await?;
+
+    store.servers[idx].last_used_at = Some(now_iso());
+    if store.servers[idx].bound_instance_id.is_none() {
+        store.servers[idx].bound_instance_id = Some(instance_id);
+    }
+    let _ = write_quick_play_servers(&app, &store);
+    Ok(result)
+}
+
+#[tauri::command]
 pub(crate) async fn launch_instance(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -5033,6 +5633,15 @@ pub(crate) async fn launch_instance(
     } else {
         settings.default_launch_method.clone()
     };
+    let quick_play_host = match args.quick_play_host.as_ref() {
+        Some(value) => Some(
+            normalize_quick_play_host(value)
+                .ok_or_else(|| "Quick play host is invalid.".to_string())?,
+        ),
+        None => None,
+    };
+    let quick_play_port = normalize_quick_play_port(args.quick_play_port);
+    let quick_play_active = quick_play_host.is_some();
     clear_launch_cancel_request(&state, &instance.id)?;
     if let Err(err) = mark_instance_launch_triggered(&instances_dir, &instance.id) {
         eprintln!(
@@ -5109,7 +5718,16 @@ pub(crate) async fn launch_instance(
                 clear_launch_cancel_request(&state, &instance.id)?;
                 return Err("Launch cancelled by user.".to_string());
             }
-            launch_prism_instance(&prism_root, &prism_instance_id)?;
+            launch_prism_instance(
+                &prism_root,
+                &prism_instance_id,
+                quick_play_host.as_deref(),
+                if quick_play_active {
+                    Some(quick_play_port)
+                } else {
+                    None
+                },
+            )?;
             clear_launch_cancel_request(&state, &instance.id)?;
 
             Ok(LaunchResult {
@@ -5118,7 +5736,14 @@ pub(crate) async fn launch_instance(
                 pid: None,
                 prism_instance_id: Some(prism_instance_id),
                 prism_root: Some(prism_root.display().to_string()),
-                message: "Synced mods/config to Prism instance and launched it.".into(),
+                message: if let Some(host) = quick_play_host.as_ref() {
+                    format!(
+                        "Synced mods/config to Prism instance and launched it (quick join {}:{}).",
+                        host, quick_play_port
+                    )
+                } else {
+                    "Synced mods/config to Prism instance and launched it.".into()
+                },
             })
         }
         LaunchMethod::Native => {
@@ -5446,6 +6071,10 @@ pub(crate) async fn launch_instance(
             let mut command = launcher
                 .command()
                 .map_err(|e| format!("native launch command build failed: {e}"))?;
+            if let Some(host) = quick_play_host.as_ref() {
+                command.arg("--server").arg(host);
+                command.arg("--port").arg(quick_play_port.to_string());
+            }
             command.stdout(Stdio::from(launch_log_file));
             command.stderr(Stdio::from(launch_log_file_err));
             let mut child = command
@@ -5560,6 +6189,7 @@ pub(crate) async fn launch_instance(
             let world_backup_retention_count_for_thread = world_backup_retention_count;
             let run_world_backups_for_thread = !use_isolated_runtime_session;
             let runtime_session_cleanup_for_thread = runtime_session_cleanup_dir.clone();
+            let app_instance_dir_for_thread = app_instance_dir.clone();
             let java_executable_for_thread = java_executable.clone();
             let java_major_for_thread = Some(java_major);
             let launch_log_path_for_thread = launch_log_path.clone();
@@ -5657,6 +6287,28 @@ pub(crate) async fn launch_instance(
                     },
                 );
                 if let Some(path) = runtime_session_cleanup_for_thread {
+                    match reconcile_runtime_session_minecraft_settings(
+                        &path,
+                        &app_instance_dir_for_thread,
+                    ) {
+                        Ok(copied) if copied > 0 => {
+                            eprintln!(
+                                "native runtime session '{}' copied {} Minecraft settings file(s) back to '{}'",
+                                path.display(),
+                                copied,
+                                app_instance_dir_for_thread.display()
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            eprintln!(
+                                "native runtime session settings reconciliation failed for '{}' -> '{}': {}",
+                                path.display(),
+                                app_instance_dir_for_thread.display(),
+                                err
+                            );
+                        }
+                    }
                     let _ = remove_path_if_exists(&path);
                 }
                 emit_launch_state(
@@ -5687,6 +6339,11 @@ pub(crate) async fn launch_instance(
                 prism_root: None,
                 message: if use_isolated_runtime_session {
                     "Native launch started in isolated concurrent mode. This run uses temporary saves/config and will auto-clean on exit.".to_string()
+                } else if let Some(host) = quick_play_host.as_ref() {
+                    format!(
+                        "Native launch started (quick join {}:{}).",
+                        host, quick_play_port
+                    )
                 } else {
                     "Native launch started.".to_string()
                 },
@@ -5726,6 +6383,23 @@ pub(crate) async fn launch_instance(
             } else {
                 "crashed"
             };
+            let short_reason = if lower.contains("java") {
+                "java_runtime"
+            } else if lower.contains("cancel") {
+                "cancelled"
+            } else if lower.contains("auth") || lower.contains("microsoft") {
+                "auth"
+            } else if lower.contains("preflight") || lower.contains("blocked") {
+                "compatibility"
+            } else {
+                "unknown"
+            };
+            log_instance_event_best_effort(
+                &app,
+                &instance.id,
+                "launch_failed",
+                format!("Launch failed ({short_reason}): {err}"),
+            );
             if let Err(mark_err) =
                 mark_instance_launch_exit(&instances_dir, &instance.id, exit_kind)
             {
@@ -5915,6 +6589,169 @@ fn detect_duplicate_enabled_mod_filenames(
     out
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct KnownModConflictRule {
+    id: String,
+    mods: Vec<String>,
+    message: String,
+}
+
+fn known_mod_conflict_rules() -> &'static Vec<KnownModConflictRule> {
+    static RULES: OnceLock<Vec<KnownModConflictRule>> = OnceLock::new();
+    RULES.get_or_init(|| {
+        serde_json::from_str(include_str!("../data/known_mod_conflicts.json")).unwrap_or_else(
+            |err| {
+                eprintln!("parse known mod conflicts failed: {err}");
+                vec![]
+            },
+        )
+    })
+}
+
+fn instance_loader_accepts_mod_loader_hint(instance_loader: &str, mod_loader_hint: &str) -> bool {
+    let loader = instance_loader.trim().to_ascii_lowercase();
+    let hint = mod_loader_hint.trim().to_ascii_lowercase();
+    if loader.is_empty() || hint.is_empty() {
+        return true;
+    }
+    match loader.as_str() {
+        "fabric" => hint == "fabric" || hint == "quilt",
+        "quilt" => hint == "quilt" || hint == "fabric",
+        "forge" => hint == "forge",
+        "neoforge" => hint == "neoforge",
+        "vanilla" => hint == "vanilla",
+        _ => loader == hint,
+    }
+}
+
+fn collect_enabled_mod_analyses(
+    lock: &Lockfile,
+    instance_dir: &Path,
+    instance_loader: &str,
+) -> Vec<(String, LocalModAnalysis)> {
+    let mut out: Vec<(String, LocalModAnalysis)> = Vec::new();
+    for entry in &lock.entries {
+        if !entry.enabled || normalize_lock_content_type(&entry.content_type) != "mods" {
+            continue;
+        }
+        let (enabled_path, _) = mod_paths(instance_dir, &entry.filename);
+        if !enabled_path.exists() {
+            continue;
+        }
+        let analysis = if let Some(existing) = entry.local_analysis.clone() {
+            existing
+        } else {
+            match fs::read(&enabled_path) {
+                Ok(bytes) => {
+                    analyze_local_mod_file(&entry.filename, &bytes, Some(instance_loader), None)
+                }
+                Err(_) => continue,
+            }
+        };
+        out.push((entry.name.clone(), analysis));
+    }
+    out
+}
+
+fn detect_duplicate_enabled_mod_ids(
+    analyses: &[(String, LocalModAnalysis)],
+) -> Vec<(String, usize)> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for (_, analysis) in analyses {
+        let unique_for_entry = analysis
+            .mod_ids
+            .iter()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<HashSet<_>>();
+        for mod_id in unique_for_entry {
+            *counts.entry(mod_id).or_insert(0) += 1;
+        }
+    }
+    let mut out = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn detect_wrong_loader_enabled_mods(
+    analyses: &[(String, LocalModAnalysis)],
+    instance_loader: &str,
+) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (entry_name, analysis) in analyses {
+        if analysis.loader_hints.is_empty() {
+            continue;
+        }
+        if analysis
+            .loader_hints
+            .iter()
+            .any(|hint| instance_loader_accepts_mod_loader_hint(instance_loader, hint))
+        {
+            continue;
+        }
+        out.push((entry_name.clone(), analysis.loader_hints.clone()));
+    }
+    out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    out
+}
+
+fn detect_missing_required_enabled_mod_dependencies(
+    analyses: &[(String, LocalModAnalysis)],
+) -> Vec<(String, Vec<String>)> {
+    let installed_ids = analyses
+        .iter()
+        .flat_map(|(_, analysis)| analysis.mod_ids.iter())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (entry_name, analysis) in analyses {
+        let mut missing = analysis
+            .required_dependencies
+            .iter()
+            .filter_map(|dep| normalize_local_mod_id(dep))
+            .filter(|dep| !installed_ids.contains(dep))
+            .collect::<Vec<_>>();
+        missing.sort();
+        missing.dedup();
+        if !missing.is_empty() {
+            out.push((entry_name.clone(), missing));
+        }
+    }
+    out.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    out
+}
+
+fn detect_known_enabled_mod_conflicts(
+    analyses: &[(String, LocalModAnalysis)],
+) -> Vec<(String, String, Vec<String>)> {
+    let installed_ids = analyses
+        .iter()
+        .flat_map(|(_, analysis)| analysis.mod_ids.iter())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
+    let mut out: Vec<(String, String, Vec<String>)> = Vec::new();
+    for rule in known_mod_conflict_rules() {
+        let required = rule
+            .mods
+            .iter()
+            .filter_map(|value| normalize_local_mod_id(value))
+            .collect::<Vec<_>>();
+        if required.len() < 2 {
+            continue;
+        }
+        if required.iter().all(|value| installed_ids.contains(value)) {
+            out.push((rule.id.clone(), rule.message.clone(), required));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
 #[tauri::command]
 pub(crate) async fn trigger_instance_microphone_permission_prompt(
     app: tauri::AppHandle,
@@ -6071,6 +6908,86 @@ pub(crate) fn preflight_launch_compatibility(
             title: "Possible duplicate enabled mods".to_string(),
             message: format!(
                 "Detected duplicate enabled mod filenames: {preview}. This can cause odd behavior, but may still launch."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    let enabled_mod_analyses = collect_enabled_mod_analyses(&lock, &instance_dir, &instance.loader);
+    let duplicate_mod_ids = detect_duplicate_enabled_mod_ids(&enabled_mod_analyses);
+    if !duplicate_mod_ids.is_empty() {
+        let preview = duplicate_mod_ids
+            .iter()
+            .take(4)
+            .map(|(mod_id, count)| format!("{mod_id} ({count})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        items.push(LaunchCompatibilityItem {
+            code: "DUPLICATE_MOD_IDS".to_string(),
+            title: "Duplicate mod IDs detected".to_string(),
+            message: format!(
+                "Multiple enabled mods declare the same mod ID: {preview}. Disable duplicates to avoid undefined behavior."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    let wrong_loader_mods =
+        detect_wrong_loader_enabled_mods(&enabled_mod_analyses, &instance.loader);
+    if !wrong_loader_mods.is_empty() {
+        let preview = wrong_loader_mods
+            .iter()
+            .take(4)
+            .map(|(entry, hints)| format!("{entry} [{}]", hints.join(", ")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        items.push(LaunchCompatibilityItem {
+            code: "WRONG_LOADER_MODS".to_string(),
+            title: "Enabled mods target a different loader".to_string(),
+            message: format!(
+                "Some enabled mods do not match instance loader '{}': {preview}.",
+                instance.loader
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    let missing_required_mod_deps =
+        detect_missing_required_enabled_mod_dependencies(&enabled_mod_analyses);
+    if !missing_required_mod_deps.is_empty() {
+        let preview = missing_required_mod_deps
+            .iter()
+            .take(3)
+            .map(|(entry, deps)| format!("{entry} -> {}", deps.join(", ")))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        items.push(LaunchCompatibilityItem {
+            code: "MISSING_REQUIRED_MOD_DEPENDENCIES".to_string(),
+            title: "Required mod dependencies are missing".to_string(),
+            message: format!(
+                "One or more enabled mods are missing required dependencies: {preview}. Install the missing dependencies or disable the mod."
+            ),
+            severity: "warning".to_string(),
+            blocking: false,
+        });
+    }
+
+    let known_conflicts = detect_known_enabled_mod_conflicts(&enabled_mod_analyses);
+    if !known_conflicts.is_empty() {
+        let preview = known_conflicts
+            .iter()
+            .take(3)
+            .map(|(_, message, mods)| format!("{} [{}]", message, mods.join(", ")))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        items.push(LaunchCompatibilityItem {
+            code: "KNOWN_MOD_CONFLICTS".to_string(),
+            title: "Known mod conflict combinations detected".to_string(),
+            message: format!(
+                "Detected known mod conflicts among enabled mods: {preview}. Review compatibility notes before launching."
             ),
             severity: "warning".to_string(),
             blocking: false,
@@ -6550,6 +7467,56 @@ pub(crate) fn set_installed_mod_enabled(
 }
 
 #[tauri::command]
+pub(crate) fn set_installed_mod_pin(
+    app: tauri::AppHandle,
+    args: SetInstalledModPinArgs,
+) -> Result<InstalledMod, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let _ = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+
+    let idx = lock
+        .entries
+        .iter()
+        .position(|e| e.version_id == args.version_id)
+        .ok_or_else(|| "installed mod entry not found".to_string())?;
+
+    let entry = &mut lock.entries[idx];
+    let next_pin = match args.pin.as_ref() {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) => Some(value.trim().to_string()),
+        None => Some(entry.version_id.clone()),
+    };
+    let changed = entry.pinned_version != next_pin;
+    entry.pinned_version = next_pin;
+    if changed {
+        write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "content_pin",
+            format!(
+                "{} pin for '{}'.",
+                if lock.entries[idx]
+                    .pinned_version
+                    .as_deref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+                {
+                    "Set"
+                } else {
+                    "Cleared"
+                },
+                lock.entries[idx].name
+            ),
+        );
+    }
+
+    Ok(lock_entry_to_installed(&instance_dir, &lock.entries[idx]))
+}
+
+#[tauri::command]
 pub(crate) fn set_installed_mod_provider(
     app: tauri::AppHandle,
     args: SetInstalledModProviderArgs,
@@ -6579,6 +7546,7 @@ pub(crate) fn set_installed_mod_provider(
     validate_provider_switch(entry, &requested_source, &candidate)?;
 
     apply_provider_candidate_to_lock_entry(entry, &candidate);
+    entry.provider_candidates = compact_provider_candidates(entry.provider_candidates.clone());
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
 
     let updated = lock.entries[idx].clone();
@@ -6677,10 +7645,9 @@ fn validate_provider_switch(
 
 fn provider_candidate_identity_key(candidate: &ProviderCandidate) -> String {
     format!(
-        "{}:{}:{}",
+        "{}:{}",
         candidate.source.trim().to_ascii_lowercase(),
-        candidate.project_id.trim().to_ascii_lowercase(),
-        candidate.version_id.trim().to_ascii_lowercase()
+        candidate.project_id.trim().to_ascii_lowercase()
     )
 }
 
@@ -6700,13 +7667,7 @@ fn upsert_provider_candidate(entry: &mut LockEntry, candidate: ProviderCandidate
     if !replaced {
         entry.provider_candidates.push(candidate);
     }
-    entry.provider_candidates.sort_by(|a, b| {
-        provider_source_priority(&b.source)
-            .cmp(&provider_source_priority(&a.source))
-            .then_with(|| a.source.cmp(&b.source))
-            .then_with(|| a.project_id.cmp(&b.project_id))
-            .then_with(|| a.version_id.cmp(&b.version_id))
-    });
+    entry.provider_candidates = compact_provider_candidates(entry.provider_candidates.clone());
 }
 
 fn local_hash_match_confidence(digest_match: Option<bool>, exact_filename_match: bool) -> String {
@@ -7028,6 +7989,7 @@ mod tests {
             enabled,
             hashes: HashMap::new(),
             provider_candidates: vec![],
+            local_analysis: None,
         }
     }
 
@@ -7077,6 +8039,27 @@ mod tests {
         }
     }
 
+    fn sample_update(source: &str, project_id: &str, dependencies: Vec<&str>) -> ContentUpdateInfo {
+        ContentUpdateInfo {
+            source: source.to_string(),
+            content_type: "mods".to_string(),
+            project_id: project_id.to_string(),
+            name: project_id.to_string(),
+            current_version_id: "current".to_string(),
+            current_version_number: "1.0.0".to_string(),
+            latest_version_id: "latest".to_string(),
+            latest_version_number: "2.0.0".to_string(),
+            enabled: true,
+            target_worlds: vec![],
+            latest_file_name: None,
+            latest_download_url: None,
+            latest_hashes: HashMap::new(),
+            required_dependencies: dependencies.into_iter().map(str::to_string).collect(),
+            compatibility_status: Some("compatible".to_string()),
+            compatibility_notes: vec![],
+        }
+    }
+
     #[test]
     fn transient_github_verification_issue_detected_from_manual_candidate_reason() {
         let matches = vec![sample_provider_match(
@@ -7097,6 +8080,17 @@ mod tests {
         )];
         let reason = provider_matches_have_transient_github_verification_issue(&matches);
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn transient_github_verification_issue_detected_for_currently_unverifiable_reason() {
+        let matches = vec![sample_provider_match(
+            "github",
+            "manual",
+            "GitHub local identify manual candidate: direct metadata repo hint found, but release evidence is currently unverifiable.",
+        )];
+        let reason = provider_matches_have_transient_github_verification_issue(&matches);
+        assert!(reason.is_some());
     }
 
     #[test]
@@ -7223,6 +8217,93 @@ mod tests {
             mod_filename_identity_key("geckolib-forge-1.20.1-4.8.3.jar"),
             Some("geckolib".to_string())
         );
+    }
+
+    #[test]
+    fn update_dependency_order_prefers_required_dependencies_first() {
+        let updates = vec![
+            sample_update("modrinth", "mod-a", vec!["mod-b"]),
+            sample_update("modrinth", "mod-b", vec![]),
+            sample_update("modrinth", "mod-c", vec!["mod-b"]),
+        ];
+        let (order, warnings) = order_updates_by_required_dependencies(&updates);
+        assert!(warnings.is_empty());
+        let ordered_ids = order
+            .into_iter()
+            .filter_map(|idx| updates.get(idx))
+            .map(|update| update.project_id.clone())
+            .collect::<Vec<_>>();
+        let pos_a = ordered_ids
+            .iter()
+            .position(|id| id == "mod-a")
+            .expect("mod-a");
+        let pos_b = ordered_ids
+            .iter()
+            .position(|id| id == "mod-b")
+            .expect("mod-b");
+        let pos_c = ordered_ids
+            .iter()
+            .position(|id| id == "mod-c")
+            .expect("mod-c");
+        assert!(pos_b < pos_a);
+        assert!(pos_b < pos_c);
+    }
+
+    #[test]
+    fn update_dependency_cycle_adds_warning_and_keeps_deterministic_fallback() {
+        let updates = vec![
+            sample_update("modrinth", "mod-a", vec!["mod-b"]),
+            sample_update("modrinth", "mod-b", vec!["mod-a"]),
+        ];
+        let (order, warnings) = order_updates_by_required_dependencies(&updates);
+        assert_eq!(order, vec![0, 1]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("dependency cycle"));
+    }
+
+    #[test]
+    fn missing_required_dependencies_for_update_reports_missing_ids() {
+        let lock = Lockfile {
+            version: 2,
+            entries: vec![sample_entry("modrinth", "mod-a.jar", true)],
+        };
+        let update = sample_update("modrinth", "mod-a", vec!["dep-one", "dep-two"]);
+        let missing = missing_required_dependencies_for_update(&lock, &update);
+        assert_eq!(missing, vec!["dep-one".to_string(), "dep-two".to_string()]);
+    }
+
+    #[test]
+    fn known_mod_conflicts_detect_matching_rules() {
+        let analyses = vec![
+            (
+                "OptiFine".to_string(),
+                LocalModAnalysis {
+                    loader_hints: vec!["forge".to_string()],
+                    mod_ids: vec!["optifine".to_string()],
+                    required_dependencies: vec![],
+                    warnings: vec![],
+                    suggestions: vec![],
+                    scanned_at: now_iso(),
+                },
+            ),
+            (
+                "Sodium".to_string(),
+                LocalModAnalysis {
+                    loader_hints: vec!["fabric".to_string()],
+                    mod_ids: vec!["sodium".to_string()],
+                    required_dependencies: vec![],
+                    warnings: vec![],
+                    suggestions: vec![],
+                    scanned_at: now_iso(),
+                },
+            ),
+        ];
+        let conflicts = detect_known_enabled_mod_conflicts(&analyses);
+        assert!(!conflicts.is_empty());
+        assert!(conflicts
+            .iter()
+            .any(|(_, _, mods)| mods.contains(&"optifine".to_string())
+                && mods.contains(&"sodium".to_string())));
     }
 
     #[test]
@@ -7444,6 +8525,46 @@ mod tests {
             fs::read_to_string(target_dir.join(".minecraft").join("options.txt"))
                 .expect("read target dot minecraft options"),
             "new-dot-minecraft"
+        );
+
+        let _ = fs::remove_dir_all(&instances_dir);
+    }
+
+    #[test]
+    fn reconcile_runtime_session_minecraft_settings_copies_back_latest_files() {
+        let instances_dir = temp_path("runtime-session-settings-reconcile");
+        let app_instance_dir = instances_dir.join("app-instance");
+        let runtime_session_dir = instances_dir.join("runtime-session");
+        fs::create_dir_all(app_instance_dir.join(".minecraft")).expect("create app .minecraft");
+        fs::create_dir_all(runtime_session_dir.join(".minecraft"))
+            .expect("create runtime .minecraft");
+
+        fs::write(app_instance_dir.join("options.txt"), b"app-old").expect("write app options");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        fs::write(runtime_session_dir.join("options.txt"), b"runtime-new")
+            .expect("write runtime options");
+        fs::write(
+            runtime_session_dir.join(".minecraft").join("servers.dat"),
+            b"runtime-servers",
+        )
+        .expect("write runtime servers");
+
+        let copied =
+            reconcile_runtime_session_minecraft_settings(&runtime_session_dir, &app_instance_dir)
+                .expect("reconcile runtime settings");
+        assert_eq!(copied, 4);
+        assert_eq!(
+            fs::read_to_string(app_instance_dir.join("options.txt")).expect("read app options"),
+            "runtime-new"
+        );
+        assert_eq!(
+            fs::read_to_string(app_instance_dir.join(".minecraft").join("options.txt"))
+                .expect("read mirrored app options"),
+            "runtime-new"
+        );
+        assert_eq!(
+            fs::read_to_string(app_instance_dir.join("servers.dat")).expect("read app servers"),
+            "runtime-servers"
         );
 
         let _ = fs::remove_dir_all(&instances_dir);
