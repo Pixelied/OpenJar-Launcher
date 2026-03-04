@@ -7,7 +7,7 @@ use keyring::{Entry as KeyringEntry, Error as KeyringError};
 use open_launcher::{auth as ol_auth, version as ol_version, Launcher as OpenLauncher};
 use reqwest::blocking::{multipart, Client, Response};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -18,16 +18,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
 use tauri::{CustomMenuItem, Menu, MenuItem, Submenu};
 use uuid::Uuid;
 use zip::write::FileOptions;
 use zip::ZipArchive;
 
+mod commands;
 mod friend_link;
 mod modpack;
-mod commands;
 mod permissions;
 pub(crate) mod run_reports;
 pub(crate) use commands::import_provider_modpack_template;
@@ -50,6 +50,8 @@ const LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE: &str = "tokens_debug_fallback.json";
 const MS_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const MS_DEVICE_CODE_URL: &str =
     "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
+const GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_API_VERSION: &str = "2022-11-28";
 const XBL_AUTH_URL: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH_URL: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_AUTH_URL: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
@@ -74,10 +76,101 @@ const UPDATE_PREFETCH_WORKERS_MAX_ENV: &str = "MPM_UPDATE_PREFETCH_WORKERS_MAX";
 const CURSEFORGE_RESOLVE_WORKERS_MAX_ENV: &str = "MPM_CURSEFORGE_RESOLVE_WORKERS_MAX";
 pub(crate) const LOCAL_JAR_IMPORT_WORKERS_MAX_ENV: &str = "MPM_LOCAL_JAR_IMPORT_WORKERS_MAX";
 const INSTANCE_LAST_RUN_METADATA_FILE: &str = "last_run_metadata.v1.json";
+const PLAY_SESSIONS_STORE_FILE: &str = "play_sessions.v1.json";
+const PLAY_SESSIONS_ACTIVE_STORE_FILE: &str = "play_sessions_active.v1.json";
+const MAX_PLAY_SESSION_HISTORY: usize = 500;
+const RUNTIME_RECONCILE_MARKER_FILE: &str = ".runtime_reconcile.v1.done";
+const RUNTIME_SESSION_ACTIVE_MARKER_FILE: &str = ".active_session.v1";
+const STALE_RUNTIME_SESSION_MAX_AGE_HOURS: u64 = 24;
+const GITHUB_DISCOVER_LOW_HITS_THRESHOLD: usize = 4;
+const GITHUB_DISCOVER_MAX_REPO_CANDIDATES: usize = 12;
+const GITHUB_DISCOVER_SOURCE_MAX_REPO_CANDIDATES: usize = 180;
+const GITHUB_DISCOVER_RESULTS_BUFFER: usize = 8;
+const GITHUB_DISCOVER_MIN_RESULT_POOL: usize = 60;
+const GITHUB_DISCOVER_MAX_RELEASE_FETCHES: usize = 36;
+const GITHUB_DISCOVER_NONSTRICT_RELEASE_FETCHES: usize = 18;
+const GITHUB_REPO_SEARCH_MAX_PAGES_PER_QUERY: usize = 4;
+const GITHUB_REPO_SEARCH_PER_PAGE_MAX: usize = 30;
+const GITHUB_RELEASES_PER_PAGE: usize = 25;
+const GITHUB_REPO_TREE_PATH_SCAN_LIMIT: usize = 4500;
+const GITHUB_LOCAL_IDENTIFY_MAX_QUERY_HINTS: usize = 6;
+const GITHUB_LOCAL_IDENTIFY_MAX_REPO_CANDIDATES: usize = 28;
+const GITHUB_LOCAL_IDENTIFY_MAX_RELEASE_FETCHES: usize = 10;
+const GITHUB_LOCAL_IDENTIFY_UNAUTH_MAX_RELEASE_FETCHES: usize = 4;
+const GITHUB_API_CACHE_TTL_SECS: u64 = 120;
+const GITHUB_API_CACHE_MAX_ENTRIES: usize = 256;
+const GITHUB_TOKEN_UNAUTHORIZED_COOLDOWN_SECS: u64 = 30 * 60;
+const GITHUB_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECS: u64 = 90;
+const GITHUB_DISCOVER_MIN_SIMILARITY_WITHOUT_SIGNAL: i64 = 24;
+const GITHUB_UNAUTH_MAX_SEARCH_QUERIES: usize = 3;
+const GITHUB_UNAUTH_MAX_PAGES_PER_QUERY: usize = 1;
+const GITHUB_UNAUTH_NONSTRICT_RELEASE_FETCH_BUDGET: usize = 0;
+const GITHUB_UNAUTH_STRICT_RELEASE_FETCH_BUDGET: usize = 2;
+// Hard cap is intentionally high enough for team token pools, but bounded to avoid
+// unbounded env parsing/rotation overhead and accidental gigantic env payloads.
+const GITHUB_API_TOKENS_MAX: usize = 200;
+const GITHUB_LOW_SIGNAL_HIGH_SIMILARITY_THRESHOLD: i64 = 34;
 
 fn runtime_refresh_token_cache() -> &'static Mutex<HashMap<String, String>> {
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[derive(Debug, Clone)]
+struct GithubApiCacheEntry {
+    body: String,
+    fetched_at: Instant,
+}
+
+fn github_api_response_cache() -> &'static Mutex<HashMap<String, GithubApiCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, GithubApiCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn github_api_cache_get(url: &str) -> Option<String> {
+    let ttl = Duration::from_secs(GITHUB_API_CACHE_TTL_SECS);
+    let mut guard = github_api_response_cache().lock().ok()?;
+    let entry = guard.get(url)?.clone();
+    if entry.fetched_at.elapsed() > ttl {
+        guard.remove(url);
+        return None;
+    }
+    Some(entry.body)
+}
+
+fn github_api_cache_put(url: &str, body: String) {
+    if body.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut guard) = github_api_response_cache().lock() {
+        if guard.len() >= GITHUB_API_CACHE_MAX_ENTRIES {
+            if let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, entry)| entry.fetched_at)
+                .map(|(key, _)| key.clone())
+            {
+                guard.remove(&oldest_key);
+            }
+        }
+        guard.insert(
+            url.to_string(),
+            GithubApiCacheEntry {
+                body,
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+}
+
+#[derive(Debug, Default)]
+struct GithubTokenRotationState {
+    next_start_index: usize,
+    cooldown_until: HashMap<String, Instant>,
+}
+
+fn github_token_rotation_state() -> &'static Mutex<GithubTokenRotationState> {
+    static STATE: OnceLock<Mutex<GithubTokenRotationState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(GithubTokenRotationState::default()))
 }
 
 fn runtime_refresh_token_cache_set(account_id: &str, refresh_token: &str) {
@@ -189,6 +282,67 @@ fn modrinth_api_base() -> String {
         .unwrap_or_else(|| "https://api.modrinth.com/v2".to_string())
 }
 
+fn github_append_token_candidate(tokens: &mut Vec<String>, candidate: &str) {
+    if tokens.len() >= GITHUB_API_TOKENS_MAX {
+        return;
+    }
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !tokens.iter().any(|existing| existing == trimmed) {
+        tokens.push(trimmed.to_string());
+    }
+}
+
+fn github_parse_token_pool(raw: &str, tokens: &mut Vec<String>) {
+    for candidate in raw
+        .split(|ch| ch == ',' || ch == ';' || ch == '\n')
+        .map(|part| part.trim())
+    {
+        github_append_token_candidate(tokens, candidate);
+    }
+}
+
+fn github_api_tokens_from_env_entries(entries: &[(String, String)]) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    if let Some((_, raw)) = entries.iter().find(|(key, _)| key == "MPM_GITHUB_TOKENS") {
+        github_parse_token_pool(raw, &mut tokens);
+    }
+
+    let mut numbered_tokens: Vec<(u32, String, String)> = Vec::new();
+    let numbered_prefixes = ["MPM_GITHUB_TOKEN_", "GITHUB_TOKEN_", "GH_TOKEN_"];
+    for (key, value) in entries.iter() {
+        for prefix in numbered_prefixes {
+            if let Some(suffix) = key.strip_prefix(prefix) {
+                let order = suffix.trim().parse::<u32>().unwrap_or(u32::MAX);
+                numbered_tokens.push((order, key.clone(), value.clone()));
+                break;
+            }
+        }
+    }
+    numbered_tokens.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    for (_, _, value) in numbered_tokens.into_iter() {
+        github_append_token_candidate(&mut tokens, &value);
+    }
+
+    for key in ["MPM_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] {
+        if let Some((_, value)) = entries.iter().find(|(candidate, _)| candidate == key) {
+            github_append_token_candidate(&mut tokens, value);
+        }
+    }
+    tokens
+}
+
+fn github_api_tokens() -> Vec<String> {
+    let entries: Vec<(String, String)> = std::env::vars().collect();
+    github_api_tokens_from_env_entries(&entries)
+}
+
+pub(crate) fn github_has_configured_tokens() -> bool {
+    !github_api_tokens().is_empty()
+}
+
 fn curseforge_api_key() -> Option<String> {
     curseforge_api_key_with_source().map(|(key, _)| key)
 }
@@ -289,6 +443,154 @@ fn parse_curseforge_project_id(raw: &str) -> Result<i64, String> {
     normalized
         .parse::<i64>()
         .map_err(|_| format!("Invalid CurseForge project ID: {}", raw))
+}
+
+fn github_owner_segment_is_valid(owner: &str) -> bool {
+    let trimmed = owner.trim();
+    if trimmed.is_empty() || trimmed.len() > 39 {
+        return false;
+    }
+    let bytes = trimmed.as_bytes();
+    if !bytes
+        .first()
+        .map(|value| value.is_ascii_alphanumeric())
+        .unwrap_or(false)
+        || !bytes
+            .last()
+            .map(|value| value.is_ascii_alphanumeric())
+            .unwrap_or(false)
+    {
+        return false;
+    }
+    let mut previous_hyphen = false;
+    for byte in bytes {
+        if byte.is_ascii_alphanumeric() {
+            previous_hyphen = false;
+            continue;
+        }
+        if *byte == b'-' {
+            if previous_hyphen {
+                return false;
+            }
+            previous_hyphen = true;
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn github_repo_segment_is_valid(repo: &str) -> bool {
+    let trimmed = repo.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." || trimmed.len() > 100 {
+        return false;
+    }
+    trimmed
+        .as_bytes()
+        .iter()
+        .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_' || *byte == b'.')
+}
+
+fn parse_github_project_id(raw: &str) -> Result<(String, String), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("GitHub project ID is required".to_string());
+    }
+    let mut normalized = trimmed
+        .trim_start_matches("gh:")
+        .trim_start_matches("github:")
+        .trim()
+        .to_string();
+    let mut is_github_url = false;
+    let normalized_lower = normalized.to_ascii_lowercase();
+    if normalized_lower.starts_with("https://") || normalized_lower.starts_with("http://") {
+        let scheme_len = if normalized_lower.starts_with("https://") {
+            "https://".len()
+        } else {
+            "http://".len()
+        };
+        let after_scheme = &normalized[scheme_len..];
+        let host_end = after_scheme
+            .find(['/', '?', '#'])
+            .unwrap_or(after_scheme.len());
+        let host_port = after_scheme[..host_end].trim();
+        let host = host_port
+            .rsplit('@')
+            .next()
+            .unwrap_or(host_port)
+            .split(':')
+            .next()
+            .unwrap_or(host_port)
+            .trim()
+            .to_ascii_lowercase();
+        if host != "github.com" && host != "www.github.com" {
+            return Err(format!(
+                "Invalid GitHub project ID '{}'. Expected 'owner/repo'.",
+                raw
+            ));
+        }
+        is_github_url = true;
+        normalized = after_scheme[host_end..].to_string();
+    } else {
+        let lowered = normalized.to_ascii_lowercase();
+        for prefix in ["github.com/", "www.github.com/"] {
+            if lowered.starts_with(prefix) {
+                normalized = normalized[prefix.len()..].to_string();
+                is_github_url = true;
+                break;
+            }
+        }
+        if lowered.contains("://") {
+            return Err(format!(
+                "Invalid GitHub project ID '{}'. Expected 'owner/repo'.",
+                raw
+            ));
+        }
+    }
+    normalized = normalized
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    normalized = normalized
+        .trim_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+    let parts = normalized
+        .split('/')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| part.trim().to_string())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 || (!is_github_url && parts.len() != 2) {
+        return Err(format!(
+            "Invalid GitHub project ID '{}'. Expected 'owner/repo'.",
+            raw
+        ));
+    }
+    let owner = parts[0].trim().to_string();
+    let repo = parts[1].trim().to_string();
+    if !github_owner_segment_is_valid(&owner) || !github_repo_segment_is_valid(&repo) {
+        return Err(format!(
+            "Invalid GitHub project ID '{}'. Expected 'owner/repo'.",
+            raw
+        ));
+    }
+    Ok((owner, repo))
+}
+
+fn github_project_key(owner: &str, repo: &str) -> String {
+    format!("gh:{}/{}", owner.trim(), repo.trim())
+}
+
+fn parse_github_release_id(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("gh_release:") {
+        return rest.trim().parse::<u64>().ok().filter(|value| *value > 0);
+    }
+    trimmed.parse::<u64>().ok().filter(|value| *value > 0)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,6 +854,18 @@ struct SetInstalledModProviderArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct AttachInstalledModGithubRepoArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+    #[serde(alias = "versionId")]
+    version_id: String,
+    #[serde(alias = "githubRepo", alias = "repo", alias = "projectId")]
+    github_repo: String,
+    #[serde(default)]
+    activate: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RemoveInstalledModArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
@@ -609,6 +923,14 @@ struct ResolveLocalModSourcesArgs {
     instance_id: String,
     #[serde(default)]
     mode: Option<String>, // missing_only | all
+    #[serde(alias = "contentTypes", default)]
+    content_types: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PruneMissingInstalledEntriesArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
     #[serde(alias = "contentTypes", default)]
     content_types: Option<Vec<String>>,
 }
@@ -810,6 +1132,12 @@ struct GetInstanceLastRunMetadataArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct GetInstancePlaytimeArgs {
+    #[serde(alias = "instanceId")]
+    instance_id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct ListWorldConfigFilesArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
@@ -942,6 +1270,12 @@ struct GetCurseforgeProjectArgs {
     project_id: String,
     #[serde(alias = "contentType", default)]
     content_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetGithubProjectArgs {
+    #[serde(alias = "projectId")]
+    project_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1181,6 +1515,130 @@ struct CurseforgeFileDependency {
     relation_type: i64,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GithubOwner {
+    #[serde(default)]
+    login: String,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    owner_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRepository {
+    #[serde(default)]
+    full_name: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    stargazers_count: u64,
+    #[serde(default)]
+    forks_count: u64,
+    #[serde(default)]
+    archived: bool,
+    #[serde(default)]
+    fork: bool,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    homepage: Option<String>,
+    #[serde(default)]
+    watchers_count: u64,
+    #[serde(default)]
+    open_issues_count: u64,
+    #[serde(default)]
+    pushed_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    topics: Vec<String>,
+    #[serde(default)]
+    default_branch: String,
+    #[serde(default)]
+    owner: GithubOwner,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRepoSearchResponse {
+    #[serde(default)]
+    items: Vec<GithubRepository>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubTreeNode {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    node_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubTreeResponse {
+    #[serde(default)]
+    tree: Vec<GithubTreeNode>,
+    #[serde(default, rename = "truncated")]
+    _truncated: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubReleaseAsset {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    browser_download_url: String,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    size: u64,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRelease {
+    id: u64,
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    assets: Vec<GithubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubReadmeResponse {
+    #[serde(default)]
+    html_url: String,
+    #[serde(default)]
+    download_url: String,
+    #[serde(default)]
+    encoding: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Clone)]
+struct GithubReleaseSelection {
+    release: GithubRelease,
+    asset: GithubReleaseAsset,
+    has_checksum_sidecar: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct ModrinthModpackIndex {
     #[serde(default)]
@@ -1340,6 +1798,14 @@ struct LocalResolverResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct PruneMissingInstalledEntriesResult {
+    instance_id: String,
+    removed_count: usize,
+    remaining_count: usize,
+    removed_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct SupportBundleResult {
     output_path: String,
     files_count: usize,
@@ -1483,7 +1949,7 @@ struct SnapshotMeta {
 
 #[derive(Debug, Clone, Serialize)]
 struct DiscoverSearchHit {
-    source: String, // modrinth | curseforge
+    source: String, // modrinth | curseforge | github
     project_id: String,
     title: String,
     description: String,
@@ -1497,6 +1963,14 @@ struct DiscoverSearchHit {
     content_type: String, // mods | shaderpacks | resourcepacks | datapacks | modpacks
     slug: Option<String>,
     external_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_supported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1536,6 +2010,63 @@ struct CurseforgeProjectDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     external_url: Option<String>,
     files: Vec<CurseforgeProjectFileDetail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GithubProjectReleaseAssetDetail {
+    name: String,
+    download_url: String,
+    size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GithubProjectReleaseDetail {
+    id: String,
+    tag_name: String,
+    name: String,
+    published_at: String,
+    prerelease: bool,
+    draft: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    external_url: Option<String>,
+    assets: Vec<GithubProjectReleaseAssetDetail>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GithubProjectDetail {
+    source: String, // github
+    project_id: String,
+    title: String,
+    owner: String,
+    summary: String,
+    description: String,
+    stars: u64,
+    forks: u64,
+    watchers: u64,
+    open_issues: u64,
+    categories: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon_url: Option<String>,
+    date_modified: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    external_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    releases_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issues_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readme_markdown: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readme_html_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    readme_source_url: Option<String>,
+    releases: Vec<GithubProjectReleaseDetail>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1605,6 +2136,78 @@ struct InstanceLastRunMetadata {
     last_exit_kind: Option<String>,
     #[serde(default)]
     last_exit_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlaySessionRecord {
+    id: String,
+    launch_id: String,
+    instance_id: String,
+    method: String,
+    isolated: bool,
+    pid: u32,
+    started_at: String,
+    ended_at: String,
+    duration_seconds: u64,
+    exit_kind: String,
+    recovered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct PlaySessionsStoreV1 {
+    version: u32,
+    total_seconds: u64,
+    sessions: Vec<PlaySessionRecord>,
+}
+
+impl Default for PlaySessionsStoreV1 {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            total_seconds: 0,
+            sessions: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ActivePlaySessionRecord {
+    launch_id: String,
+    instance_id: String,
+    method: String,
+    isolated: bool,
+    pid: u32,
+    started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct ActivePlaySessionsStoreV1 {
+    version: u32,
+    active: Vec<ActivePlaySessionRecord>,
+}
+
+impl Default for ActivePlaySessionsStoreV1 {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            active: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstancePlaytimeSummary {
+    total_seconds: u64,
+    sessions_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_session_seconds: Option<u64>,
+    currently_running: bool,
+    tracking_scope: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1873,6 +2476,227 @@ fn mark_instance_launch_exit(
     meta.last_exit_kind = Some(next_kind);
     meta.last_exit_at = Some(now_iso());
     write_instance_last_run_metadata_to_dir(&instance_dir, &meta)
+}
+
+fn play_sessions_store_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(PLAY_SESSIONS_STORE_FILE)
+}
+
+fn play_sessions_active_store_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(PLAY_SESSIONS_ACTIVE_STORE_FILE)
+}
+
+fn read_play_sessions_store(instance_dir: &Path) -> PlaySessionsStoreV1 {
+    let path = play_sessions_store_path(instance_dir);
+    if !path.exists() {
+        return PlaySessionsStoreV1::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<PlaySessionsStoreV1>(&raw).unwrap_or_default(),
+        Err(_) => PlaySessionsStoreV1::default(),
+    }
+}
+
+fn write_play_sessions_store(
+    instance_dir: &Path,
+    mut store: PlaySessionsStoreV1,
+) -> Result<(), String> {
+    store.version = 1;
+    if store.sessions.len() > MAX_PLAY_SESSION_HISTORY {
+        store.sessions.truncate(MAX_PLAY_SESSION_HISTORY);
+    }
+    let raw = serde_json::to_string_pretty(&store)
+        .map_err(|e| format!("serialize play sessions store failed: {e}"))?;
+    fs::write(play_sessions_store_path(instance_dir), raw)
+        .map_err(|e| format!("write play sessions store failed: {e}"))
+}
+
+fn read_active_play_sessions_store(instance_dir: &Path) -> ActivePlaySessionsStoreV1 {
+    let path = play_sessions_active_store_path(instance_dir);
+    if !path.exists() {
+        return ActivePlaySessionsStoreV1::default();
+    }
+    match fs::read_to_string(&path) {
+        Ok(raw) => serde_json::from_str::<ActivePlaySessionsStoreV1>(&raw).unwrap_or_default(),
+        Err(_) => ActivePlaySessionsStoreV1::default(),
+    }
+}
+
+fn write_active_play_sessions_store(
+    instance_dir: &Path,
+    mut store: ActivePlaySessionsStoreV1,
+) -> Result<(), String> {
+    store.version = 1;
+    let raw = serde_json::to_string_pretty(&store)
+        .map_err(|e| format!("serialize active play sessions store failed: {e}"))?;
+    fs::write(play_sessions_active_store_path(instance_dir), raw)
+        .map_err(|e| format!("write active play sessions store failed: {e}"))
+}
+
+#[cfg(target_os = "windows")]
+fn process_pid_is_running(pid: u32) -> bool {
+    let filter = format!("PID eq {}", pid);
+    let output = Command::new("tasklist")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            text.contains(&format!(",\"{}\"", pid))
+                || text.contains(&format!(",{}", pid))
+                || text.contains(&pid.to_string())
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_pid_is_running(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn register_native_play_session_start(
+    instances_dir: &Path,
+    instance_id: &str,
+    launch_id: &str,
+    pid: u32,
+    isolated: bool,
+) -> Result<(), String> {
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    let mut active = read_active_play_sessions_store(&instance_dir);
+    active.active.retain(|entry| entry.launch_id != launch_id);
+    active.active.push(ActivePlaySessionRecord {
+        launch_id: launch_id.to_string(),
+        instance_id: instance_id.to_string(),
+        method: "native".to_string(),
+        isolated,
+        pid,
+        started_at: now_iso(),
+    });
+    write_active_play_sessions_store(&instance_dir, active)
+}
+
+fn finalize_native_play_session(
+    instances_dir: &Path,
+    instance_id: &str,
+    launch_id: &str,
+    exit_kind: &str,
+    recovered: bool,
+) -> Result<Option<PlaySessionRecord>, String> {
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    let mut active = read_active_play_sessions_store(&instance_dir);
+    let Some(pos) = active
+        .active
+        .iter()
+        .position(|entry| entry.launch_id == launch_id)
+    else {
+        return Ok(None);
+    };
+    let entry = active.active.remove(pos);
+    write_active_play_sessions_store(&instance_dir, active)?;
+
+    let ended_at = now_iso();
+    let start_secs = created_at_sort_key(&entry.started_at);
+    let end_secs = created_at_sort_key(&ended_at);
+    let duration_seconds = if start_secs > 0 && end_secs >= start_secs {
+        (end_secs - start_secs) as u64
+    } else {
+        0
+    };
+    let record = PlaySessionRecord {
+        id: format!("ps_{}_{}", now_millis(), launch_id.replace(':', "_")),
+        launch_id: entry.launch_id,
+        instance_id: entry.instance_id,
+        method: entry.method,
+        isolated: entry.isolated,
+        pid: entry.pid,
+        started_at: entry.started_at,
+        ended_at,
+        duration_seconds,
+        exit_kind: exit_kind.trim().to_lowercase(),
+        recovered,
+    };
+
+    let mut store = read_play_sessions_store(&instance_dir);
+    store.total_seconds = store.total_seconds.saturating_add(record.duration_seconds);
+    store.sessions.insert(0, record.clone());
+    write_play_sessions_store(&instance_dir, store)?;
+    Ok(Some(record))
+}
+
+fn instance_playtime_summary(
+    instances_dir: &Path,
+    instance_id: &str,
+) -> Result<InstancePlaytimeSummary, String> {
+    let instance_dir = instance_dir_for_id(instances_dir, instance_id)?;
+    let store = read_play_sessions_store(&instance_dir);
+    let active = read_active_play_sessions_store(&instance_dir);
+    let currently_running = active.active.iter().any(|entry| {
+        entry.method.eq_ignore_ascii_case("native") && process_pid_is_running(entry.pid)
+    });
+    Ok(InstancePlaytimeSummary {
+        total_seconds: store.total_seconds,
+        sessions_count: store.sessions.len(),
+        last_session_seconds: store.sessions.first().map(|item| item.duration_seconds),
+        currently_running,
+        tracking_scope: "native_only".to_string(),
+    })
+}
+
+fn recover_native_play_sessions_startup(app: &tauri::AppHandle) -> Result<(), String> {
+    let instances_dir = app_instances_dir(app)?;
+    let idx = read_index(&instances_dir)?;
+    for instance in idx.instances {
+        let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
+        if !instance_dir.exists() {
+            continue;
+        }
+        let active_store = read_active_play_sessions_store(&instance_dir);
+        for active in active_store.active {
+            if !active.method.eq_ignore_ascii_case("native") {
+                let _ = finalize_native_play_session(
+                    &instances_dir,
+                    &active.instance_id,
+                    &active.launch_id,
+                    "unknown",
+                    true,
+                );
+                continue;
+            }
+            if process_pid_is_running(active.pid) {
+                let instances_dir_for_thread = instances_dir.clone();
+                let instance_id_for_thread = active.instance_id.clone();
+                let launch_id_for_thread = active.launch_id.clone();
+                thread::spawn(move || loop {
+                    if !process_pid_is_running(active.pid) {
+                        let _ = finalize_native_play_session(
+                            &instances_dir_for_thread,
+                            &instance_id_for_thread,
+                            &launch_id_for_thread,
+                            "unknown",
+                            true,
+                        );
+                        break;
+                    }
+                    thread::sleep(Duration::from_secs(3));
+                });
+            } else {
+                let _ = finalize_native_play_session(
+                    &instances_dir,
+                    &active.instance_id,
+                    &active.launch_id,
+                    "unknown",
+                    true,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn dir_total_size_bytes(path: &Path) -> u64 {
@@ -2363,6 +3187,42 @@ fn normalize_lock_content_type(input: &str) -> String {
     }
 }
 
+fn core_mod_name_from_filename(filename: &str) -> Option<String> {
+    let trimmed = filename.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_disabled = trimmed.strip_suffix(".disabled").unwrap_or(trimmed);
+    let stem = Path::new(without_disabled).file_stem()?.to_str()?.trim();
+    if stem.is_empty() {
+        None
+    } else {
+        Some(stem.to_string())
+    }
+}
+
+fn canonical_lock_entry_name(content_type: &str, filename: &str, fallback_name: &str) -> String {
+    let normalized = normalize_lock_content_type(content_type);
+    if normalized == "mods" {
+        if let Some(core_name) = core_mod_name_from_filename(filename) {
+            return core_name;
+        }
+        let trimmed_filename = filename.trim();
+        if !trimmed_filename.is_empty() {
+            return trimmed_filename.to_string();
+        }
+    }
+    let fallback = fallback_name.trim();
+    if !fallback.is_empty() {
+        return fallback.to_string();
+    }
+    if normalized == "mods" {
+        "mod".to_string()
+    } else {
+        "content".to_string()
+    }
+}
+
 fn content_type_display_name(content_type: &str) -> &'static str {
     match normalize_lock_content_type(content_type).as_str() {
         "resourcepacks" => "resourcepack",
@@ -2402,6 +3262,7 @@ fn read_lockfile(instances_dir: &Path, instance_id: &str) -> Result<Lockfile, St
     for entry in &mut lock.entries {
         entry.content_type = normalize_lock_content_type(&entry.content_type);
         entry.target_scope = normalize_target_scope(&entry.target_scope);
+        entry.name = canonical_lock_entry_name(&entry.content_type, &entry.filename, &entry.name);
         if entry.content_type != "datapacks" {
             entry.target_worlds.clear();
             if entry.target_scope == "world" {
@@ -2423,6 +3284,7 @@ fn write_lockfile(instances_dir: &Path, instance_id: &str, lock: &Lockfile) -> R
     for entry in &mut normalized.entries {
         entry.content_type = normalize_lock_content_type(&entry.content_type);
         entry.target_scope = normalize_target_scope(&entry.target_scope);
+        entry.name = canonical_lock_entry_name(&entry.content_type, &entry.filename, &entry.name);
         if entry.content_type != "datapacks" {
             entry.target_worlds.clear();
             if entry.target_scope == "world" {
@@ -3496,10 +4358,106 @@ impl LocalImportedProviderMatch {
     }
 }
 
+fn github_manual_unverified_hint_is_promotable(
+    confidence: &str,
+    version_id: &str,
+    reason: &str,
+) -> bool {
+    if !confidence.trim().eq_ignore_ascii_case("manual") {
+        return false;
+    }
+    if !version_id.trim().eq_ignore_ascii_case("gh_repo_unverified") {
+        return false;
+    }
+    let lower = reason.trim().to_ascii_lowercase();
+    if !lower.contains("direct metadata repo hint") {
+        return false;
+    }
+    lower.contains("verification is unavailable")
+        || lower.contains("temporarily unavailable")
+        || lower.contains("rate limit")
+}
+
+pub(crate) fn provider_match_is_auto_activatable(found: &LocalImportedProviderMatch) -> bool {
+    let source = found.source.trim().to_ascii_lowercase();
+    if source != "github" {
+        return true;
+    }
+    if parse_github_project_id(&found.project_id).is_err() {
+        return false;
+    }
+    matches!(
+        found.confidence.trim().to_ascii_lowercase().as_str(),
+        "deterministic" | "high"
+    ) || github_manual_unverified_hint_is_promotable(
+        &found.confidence,
+        &found.version_id,
+        &found.reason,
+    )
+}
+
+pub(crate) fn provider_candidate_is_auto_activatable(candidate: &ProviderCandidate) -> bool {
+    let source = candidate.source.trim().to_ascii_lowercase();
+    if source != "github" {
+        return true;
+    }
+    if parse_github_project_id(&candidate.project_id).is_err() {
+        return false;
+    }
+    let confidence = candidate
+        .confidence
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    matches!(confidence.as_str(), "deterministic" | "high")
+        || github_manual_unverified_hint_is_promotable(
+            confidence.as_str(),
+            &candidate.version_id,
+            candidate.reason.as_deref().unwrap_or_default(),
+        )
+}
+
 #[derive(Debug, Clone, Default)]
 struct LocalMetadataHint {
     project_hint: Option<String>,
     display_name_hint: Option<String>,
+    github_repo_hint: Option<String>,
+}
+
+fn extract_github_repo_slug(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok((owner, repo)) = parse_github_project_id(trimmed) {
+        return Some(format!("{owner}/{repo}"));
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    let marker = "github.com/";
+    let marker_idx = lower.find(marker)?;
+    let tail = &trimmed[marker_idx + marker.len()..];
+    let mut slug = String::new();
+    for ch in tail.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '/' || ch == '.' {
+            slug.push(ch);
+            continue;
+        }
+        break;
+    }
+    if slug.is_empty() {
+        return None;
+    }
+    let cleaned = slug.trim_matches('/').trim_end_matches(".git").to_string();
+    let mut parts = cleaned
+        .split('/')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| part.trim().to_string());
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    parse_github_project_id(&format!("{owner}/{repo}"))
+        .ok()
+        .map(|(normalized_owner, normalized_repo)| format!("{normalized_owner}/{normalized_repo}"))
 }
 
 fn normalize_loader_hint_token(raw: &str) -> Option<String> {
@@ -3630,9 +4588,7 @@ fn instance_loader_accepts_mod_loader(instance_loader: &str, mod_loader_hint: &s
     }
     matches!(
         (instance_loader.as_str(), mod_loader.as_str()),
-        ("quilt", "fabric")
-            | ("forge", "forge_family")
-            | ("neoforge", "forge_family")
+        ("quilt", "fabric") | ("forge", "forge_family") | ("neoforge", "forge_family")
     )
 }
 
@@ -3869,13 +4825,19 @@ fn normalize_hint_token(input: &str) -> String {
 }
 
 fn parse_toml_assignment(text: &str, key: &str) -> Option<String> {
+    let key_lower = key.trim().to_ascii_lowercase();
+    if key_lower.is_empty() {
+        return None;
+    }
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
         let lower = line.to_ascii_lowercase();
-        if !lower.starts_with(&format!("{key}=")) && !lower.starts_with(&format!("{key} =")) {
+        if !lower.starts_with(&format!("{key_lower}="))
+            && !lower.starts_with(&format!("{key_lower} ="))
+        {
             continue;
         }
         let idx = line.find('=')?;
@@ -3919,6 +4881,21 @@ fn parse_json_hint(raw: &str, id_keys: &[&str], name_keys: &[&str]) -> LocalMeta
                             }
                         }
                     }
+                    if hint.github_repo_hint.is_none() {
+                        if let Some(s) = v.as_str() {
+                            if key == "source"
+                                || key == "repository"
+                                || key == "repo"
+                                || key == "homepage"
+                                || key == "url"
+                                || key == "issues"
+                                || key == "github"
+                                || s.to_ascii_lowercase().contains("github.com/")
+                            {
+                                hint.github_repo_hint = extract_github_repo_slug(s);
+                            }
+                        }
+                    }
                     stack.push(v);
                 }
             }
@@ -3927,9 +4904,17 @@ fn parse_json_hint(raw: &str, id_keys: &[&str], name_keys: &[&str]) -> LocalMeta
                     stack.push(item);
                 }
             }
+            serde_json::Value::String(value) => {
+                if hint.github_repo_hint.is_none() {
+                    hint.github_repo_hint = extract_github_repo_slug(value);
+                }
+            }
             _ => {}
         }
-        if hint.project_hint.is_some() && hint.display_name_hint.is_some() {
+        if hint.project_hint.is_some()
+            && hint.display_name_hint.is_some()
+            && hint.github_repo_hint.is_some()
+        {
             break;
         }
     }
@@ -3962,12 +4947,21 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
                 &["id", "modid", "slug", "project_id", "projectid"],
                 &["name", "displayname", "title"],
             )
+        } else if path.ends_with("mcmod.info") {
+            parse_json_hint(
+                &raw,
+                &["modid", "id", "slug", "project_id", "projectid"],
+                &["name", "displayname", "title"],
+            )
         } else if path.ends_with("mods.toml") {
             LocalMetadataHint {
                 project_hint: parse_toml_assignment(&raw, "modid")
                     .map(|v| normalize_hint_token(&v))
                     .filter(|v| !v.is_empty()),
                 display_name_hint: parse_toml_assignment(&raw, "displayName"),
+                github_repo_hint: parse_toml_assignment(&raw, "displayurl")
+                    .and_then(|value| extract_github_repo_slug(&value))
+                    .or_else(|| extract_github_repo_slug(&raw)),
             }
         } else {
             LocalMetadataHint::default()
@@ -3978,12 +4972,21 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
         if merged.display_name_hint.is_none() {
             merged.display_name_hint = hint.display_name_hint;
         }
-        if merged.project_hint.is_some() && merged.display_name_hint.is_some() {
+        if merged.github_repo_hint.is_none() {
+            merged.github_repo_hint = hint.github_repo_hint;
+        }
+        if merged.project_hint.is_some()
+            && merged.display_name_hint.is_some()
+            && merged.github_repo_hint.is_some()
+        {
             break;
         }
     }
 
-    if merged.project_hint.is_none() && merged.display_name_hint.is_none() {
+    if merged.project_hint.is_none()
+        && merged.display_name_hint.is_none()
+        && merged.github_repo_hint.is_none()
+    {
         None
     } else {
         Some(merged)
@@ -4047,6 +5050,898 @@ fn detect_provider_from_metadata_hint(
     vec![]
 }
 
+fn normalize_github_lookup_hint(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_ext = trimmed
+        .trim_end_matches(".jar")
+        .trim_end_matches(".disabled")
+        .trim();
+    if without_ext.is_empty() {
+        return None;
+    }
+    let normalized = without_ext
+        .replace(['_', '-'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn github_lookup_token_is_version_noise(token: &str) -> bool {
+    let normalized = token.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return true;
+    }
+    if normalized.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    if matches!(
+        normalized.as_str(),
+        "alpha" | "beta" | "snapshot" | "release" | "final"
+    ) {
+        return true;
+    }
+    if let Some(rest) = normalized.strip_prefix("rc") {
+        if !rest.is_empty() && rest.chars().all(|ch| ch.is_ascii_digit()) {
+            return true;
+        }
+    }
+    if let Some(rest) = normalized.strip_prefix('v') {
+        if !rest.is_empty()
+            && rest
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == '_')
+        {
+            return true;
+        }
+    }
+    if let Some(rest) = normalized.strip_prefix("mc") {
+        if !rest.is_empty()
+            && rest
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || ch == '.' || ch == '_')
+        {
+            return true;
+        }
+    }
+    let dotted = normalized.replace('_', ".");
+    if dotted.contains('.')
+        && dotted.chars().any(|ch| ch.is_ascii_digit())
+        && dotted.chars().all(|ch| ch.is_ascii_digit() || ch == '.')
+    {
+        return true;
+    }
+    false
+}
+
+fn normalize_github_lookup_hint_without_versions(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_ext = trimmed
+        .trim_end_matches(".jar")
+        .trim_end_matches(".disabled")
+        .trim();
+    if without_ext.is_empty() {
+        return None;
+    }
+    let mut tokens: Vec<String> = without_ext
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| token.len() > 1)
+        .filter(|token| !github_lookup_token_is_version_noise(token))
+        .collect();
+    tokens.dedup();
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(tokens.join(" "))
+}
+
+fn push_github_lookup_query(
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    candidate: Option<String>,
+) {
+    let Some(value) = candidate else {
+        return;
+    };
+    let key = value.trim().to_ascii_lowercase();
+    if !key.is_empty() && seen.insert(key) {
+        out.push(value);
+    }
+}
+
+fn append_github_lookup_query_variants(
+    out: &mut Vec<String>,
+    seen: &mut HashSet<String>,
+    raw: &str,
+) {
+    push_github_lookup_query(
+        out,
+        seen,
+        normalize_github_lookup_hint_without_versions(raw),
+    );
+    push_github_lookup_query(out, seen, normalize_github_lookup_hint(raw));
+}
+
+fn github_lookup_queries_for_local_mod(
+    safe_filename: &str,
+    metadata: Option<&LocalMetadataHint>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    if let Some(meta) = metadata {
+        if let Some(candidate) = meta.github_repo_hint.clone() {
+            if let Ok((owner, repo)) = parse_github_project_id(&candidate) {
+                let normalized = format!("{owner}/{repo}");
+                let repo_key = format!("repo:{}", normalized.to_ascii_lowercase());
+                if seen.insert(repo_key) {
+                    out.push(normalized);
+                }
+            }
+        }
+        append_github_lookup_query_variants(
+            &mut out,
+            &mut seen,
+            meta.display_name_hint.as_deref().unwrap_or_default(),
+        );
+        append_github_lookup_query_variants(
+            &mut out,
+            &mut seen,
+            meta.project_hint.as_deref().unwrap_or_default(),
+        );
+    }
+    append_github_lookup_query_variants(
+        &mut out,
+        &mut seen,
+        &core_mod_name_from_filename(safe_filename).unwrap_or_default(),
+    );
+    append_github_lookup_query_variants(&mut out, &mut seen, &infer_local_name(safe_filename));
+    if out.len() > GITHUB_LOCAL_IDENTIFY_MAX_QUERY_HINTS {
+        out.truncate(GITHUB_LOCAL_IDENTIFY_MAX_QUERY_HINTS);
+    }
+    out
+}
+
+fn github_local_asset_identity_tokens(raw: &str) -> Vec<String> {
+    const NOISE: &[&str] = &[
+        "mc",
+        "minecraft",
+        "forge",
+        "fabric",
+        "quilt",
+        "neoforge",
+        "neo",
+        "loader",
+        "mod",
+        "mods",
+        "jar",
+        "server",
+        "api",
+        "release",
+        "build",
+        "snapshot",
+        "beta",
+        "alpha",
+    ];
+    let without_ext = raw
+        .trim()
+        .trim_end_matches(".jar")
+        .trim_end_matches(".disabled")
+        .trim();
+    if without_ext.is_empty() {
+        return vec![];
+    }
+    without_ext
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| {
+            if token.is_empty() {
+                return false;
+            }
+            if NOISE.contains(&token.as_str()) {
+                return false;
+            }
+            if token.chars().all(|ch| ch.is_ascii_digit()) {
+                return false;
+            }
+            token.len() > 1
+        })
+        .take(6)
+        .collect()
+}
+
+fn github_local_asset_identity_key(raw: &str) -> String {
+    github_local_asset_identity_tokens(raw).join("_")
+}
+
+fn github_local_asset_token_overlap_count(left: &str, right: &str) -> usize {
+    let left_tokens = github_local_asset_identity_tokens(left);
+    let right_tokens = github_local_asset_identity_tokens(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0;
+    }
+    let right_set: HashSet<&str> = right_tokens.iter().map(String::as_str).collect();
+    left_tokens
+        .iter()
+        .filter(|token| right_set.contains(token.as_str()))
+        .count()
+}
+
+fn github_local_asset_key_overlap(left: &str, right: &str) -> bool {
+    github_local_asset_token_overlap_count(left, right) >= 2
+}
+
+fn github_metadata_project_hint_matches_repo(
+    metadata: Option<&LocalMetadataHint>,
+    repo: &GithubRepository,
+) -> bool {
+    let Some(project_hint) = metadata.and_then(|value| value.project_hint.as_ref()) else {
+        return false;
+    };
+    let normalized_hint = normalize_provider_match_key(project_hint);
+    if normalized_hint.is_empty() {
+        return false;
+    }
+    let repo_name = normalize_provider_match_key(&repo.name);
+    let repo_full_name = normalize_provider_match_key(&repo.full_name);
+    (!repo_name.is_empty()
+        && (repo_name == normalized_hint || repo_name.contains(&normalized_hint)))
+        || (!repo_full_name.is_empty()
+            && (repo_full_name == normalized_hint || repo_full_name.contains(&normalized_hint)))
+}
+
+fn github_local_hint_texts(
+    safe_filename: &str,
+    query_hint: &str,
+    metadata: Option<&LocalMetadataHint>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let push = |raw: &str, out: &mut Vec<String>| {
+        let normalized = normalize_provider_match_key(raw);
+        if normalized.is_empty() {
+            return;
+        }
+        if !out.iter().any(|existing| existing == &normalized) {
+            out.push(normalized);
+        }
+    };
+
+    push(safe_filename, &mut out);
+    push(
+        &core_mod_name_from_filename(safe_filename).unwrap_or_default(),
+        &mut out,
+    );
+    push(&infer_local_name(safe_filename), &mut out);
+    push(query_hint, &mut out);
+    if let Some(meta) = metadata {
+        push(meta.project_hint.as_deref().unwrap_or_default(), &mut out);
+        push(
+            meta.display_name_hint.as_deref().unwrap_or_default(),
+            &mut out,
+        );
+    }
+    out
+}
+
+fn github_local_hint_contains_any(hints: &[String], aliases: &[&str]) -> bool {
+    aliases.iter().any(|alias| {
+        let normalized_alias = normalize_provider_match_key(alias);
+        if normalized_alias.is_empty() {
+            return false;
+        }
+        let compact_alias = normalized_alias.replace(' ', "");
+        hints.iter().any(|hint| {
+            if hint.contains(&normalized_alias) {
+                return true;
+            }
+            let compact_hint = hint.replace(' ', "");
+            !compact_alias.is_empty() && compact_hint.contains(&compact_alias)
+        })
+    })
+}
+
+fn github_local_known_repo_boost(
+    repo: &GithubRepository,
+    safe_filename: &str,
+    query_hint: &str,
+    metadata: Option<&LocalMetadataHint>,
+) -> (i64, Option<&'static str>) {
+    let repo_key = if !repo.full_name.trim().is_empty() {
+        repo.full_name.trim().to_ascii_lowercase()
+    } else {
+        format!("{}/{}", repo.owner.login.trim(), repo.name.trim()).to_ascii_lowercase()
+    };
+    let hints = github_local_hint_texts(safe_filename, query_hint, metadata);
+    if github_local_hint_contains_any(&hints, &["meteor", "meteor client", "meteorclient"])
+        && repo_key == "meteordevelopment/meteor-client"
+    {
+        return (58, Some("Meteor Client ecosystem canonical repo"));
+    }
+    if github_local_hint_contains_any(&hints, &["baritone"]) && repo_key == "cabaletta/baritone" {
+        return (56, Some("Baritone ecosystem canonical repo"));
+    }
+    if github_local_hint_contains_any(
+        &hints,
+        &["trouser streak", "trouserstreak", "trouser", "streak"],
+    ) && (repo_key == "etianl/trouser-streak" || repo_key == "babbaj/trouser-streak")
+    {
+        return (54, Some("Trouser Streak ecosystem canonical repo"));
+    }
+    (0, None)
+}
+
+fn github_local_match_confidence_and_reason(
+    repo: &GithubRepository,
+    selection: &GithubReleaseSelection,
+    safe_filename: &str,
+    query_hint: &str,
+    metadata: Option<&LocalMetadataHint>,
+    has_direct_repo_hint: bool,
+    canonical_repo_boost: i64,
+    canonical_repo_reason: Option<&'static str>,
+    digest_match: Option<bool>,
+) -> Result<(String, String), String> {
+    if digest_match == Some(false) {
+        return Err("GitHub release digest mismatched local file checksum.".to_string());
+    }
+
+    let expected = sanitize_filename(safe_filename);
+    if expected.is_empty() {
+        return Err("Local filename is empty after sanitization.".to_string());
+    }
+    let sanitized_asset = sanitize_filename(&selection.asset.name);
+    let expected_key = github_local_asset_identity_key(&expected);
+    let asset_key = github_local_asset_identity_key(&selection.asset.name);
+    let expected_tokens = github_local_asset_identity_tokens(&expected);
+    let exact_filename_match = sanitized_asset.eq_ignore_ascii_case(&expected);
+    let key_match = !expected_key.is_empty() && !asset_key.is_empty() && asset_key == expected_key;
+    let overlap_count = github_local_asset_token_overlap_count(&selection.asset.name, &expected);
+    let metadata_project_hint_match = github_metadata_project_hint_matches_repo(metadata, repo);
+    let minecraft_signal = github_repo_minecraft_signal_score(repo);
+    let ecosystem_signal = github_repo_mod_ecosystem_signal_score(repo);
+    let repo_similarity = github_repo_query_similarity(repo, query_hint);
+    let asset_similarity = github_name_similarity_score(&selection.asset.name, query_hint).max(
+        github_name_similarity_score(&selection.asset.name, &expected),
+    );
+    let ambiguous_single_token = expected_tokens.len() <= 1;
+    let strong_repo_signal = minecraft_signal >= 2
+        || ecosystem_signal >= 2
+        || repo.stargazers_count >= 500
+        || canonical_repo_boost >= 40;
+
+    if minecraft_signal <= 0
+        && ecosystem_signal <= 0
+        && !has_direct_repo_hint
+        && canonical_repo_boost <= 0
+    {
+        return Err("Repository lacks strong Minecraft/mod ecosystem signals.".to_string());
+    }
+    if repo_similarity < 10
+        && asset_similarity < 18
+        && !has_direct_repo_hint
+        && !metadata_project_hint_match
+        && canonical_repo_boost <= 0
+    {
+        return Err(
+            "Repository/name similarity is too weak for safe local identification.".to_string(),
+        );
+    }
+
+    let mut hard_evidence = digest_match == Some(true)
+        || exact_filename_match
+        || key_match
+        || has_direct_repo_hint
+        || metadata_project_hint_match;
+    if !hard_evidence && overlap_count >= 2 && strong_repo_signal {
+        hard_evidence = true;
+    }
+    if !hard_evidence {
+        return Err(
+            "Only weak query/name similarity evidence was found (hard evidence required)."
+                .to_string(),
+        );
+    }
+
+    if ambiguous_single_token && digest_match != Some(true) {
+        let trusted_ambiguous = has_direct_repo_hint
+            || canonical_repo_boost >= 40
+            || (repo.stargazers_count >= 1500
+                && minecraft_signal >= 3
+                && repo_similarity >= 34
+                && exact_filename_match);
+        if !trusted_ambiguous {
+            return Err(
+                "Blocked ambiguous one-token local filename match without trusted repo evidence."
+                    .to_string(),
+            );
+        }
+    }
+
+    if repo.stargazers_count < 40
+        && digest_match != Some(true)
+        && !has_direct_repo_hint
+        && canonical_repo_boost <= 0
+    {
+        let low_star_is_strong =
+            exact_filename_match && repo_similarity >= 28 && minecraft_signal >= 2;
+        if !low_star_is_strong {
+            return Err(
+                "Low-star repository requires stronger filename/metadata evidence.".to_string(),
+            );
+        }
+    }
+
+    let confidence = if digest_match == Some(true) {
+        "deterministic".to_string()
+    } else if exact_filename_match
+        && (has_direct_repo_hint
+            || metadata_project_hint_match
+            || canonical_repo_boost > 0
+            || (strong_repo_signal && repo_similarity >= 22)
+            || key_match)
+    {
+        "high".to_string()
+    } else if key_match
+        && (has_direct_repo_hint
+            || metadata_project_hint_match
+            || canonical_repo_boost > 0
+            || (overlap_count >= 2 && strong_repo_signal && repo_similarity >= 28))
+    {
+        "high".to_string()
+    } else if has_direct_repo_hint && (exact_filename_match || key_match || overlap_count >= 2) {
+        "high".to_string()
+    } else {
+        "medium".to_string()
+    };
+
+    let mut evidence: Vec<String> = Vec::new();
+    if digest_match == Some(true) {
+        evidence.push("asset digest match".to_string());
+    }
+    if exact_filename_match {
+        evidence.push("exact asset filename match".to_string());
+    } else if key_match {
+        evidence.push("asset identity-key match".to_string());
+    } else if overlap_count >= 2 {
+        evidence.push(format!("{overlap_count} shared filename tokens"));
+    }
+    if has_direct_repo_hint {
+        evidence.push("direct GitHub repo hint from jar metadata".to_string());
+    } else if metadata_project_hint_match {
+        evidence.push("jar metadata project hint matches repository".to_string());
+    }
+    if canonical_repo_boost > 0 {
+        if let Some(label) = canonical_repo_reason {
+            evidence.push(label.to_string());
+        } else {
+            evidence.push("known canonical ecosystem repo".to_string());
+        }
+    }
+    if evidence.is_empty() {
+        evidence.push("strict safety gate passed".to_string());
+    }
+    Ok((
+        confidence.clone(),
+        format!(
+            "GitHub local identify {} confidence: {}.",
+            confidence,
+            evidence.join("; ")
+        ),
+    ))
+}
+
+fn select_github_release_for_local_file(
+    repo: &GithubRepository,
+    releases: &[GithubRelease],
+    safe_filename: &str,
+    query_hint: &str,
+) -> Option<GithubReleaseSelection> {
+    let expected = sanitize_filename(safe_filename);
+    if expected.is_empty() {
+        return None;
+    }
+    let expected_key = github_local_asset_identity_key(&expected);
+
+    let mut best: Option<(bool, i64, i64, GithubReleaseSelection)> = None;
+    for release in releases {
+        if release.draft {
+            continue;
+        }
+        let release_sort = github_release_sort_key(release);
+        for asset in &release.assets {
+            if github_release_asset_is_checksum_sidecar(&asset.name)
+                || !github_release_asset_looks_like_mod_jar(&asset.name)
+            {
+                continue;
+            }
+            let sanitized_asset = sanitize_filename(&asset.name);
+            let exact_filename_match = sanitized_asset.eq_ignore_ascii_case(&expected);
+            let asset_key = github_local_asset_identity_key(&asset.name);
+            let key_match =
+                !expected_key.is_empty() && !asset_key.is_empty() && asset_key == expected_key;
+            let key_overlap = github_local_asset_key_overlap(&asset.name, &expected);
+            let query_similarity = github_name_similarity_score(&asset.name, query_hint)
+                .max(github_name_similarity_score(&asset.name, &expected));
+            if !exact_filename_match && !key_match && !key_overlap && query_similarity < 18 {
+                continue;
+            }
+            let mut score = query_similarity
+                + github_name_similarity_score(&repo.full_name, query_hint) / 2
+                + (repo.stargazers_count.min(5000) / 125) as i64;
+            if exact_filename_match {
+                score += 220;
+            } else if key_match {
+                score += 120;
+            } else if key_overlap {
+                score += 55;
+            }
+            let candidate = (
+                release.prerelease,
+                score,
+                release_sort,
+                GithubReleaseSelection {
+                    release: release.clone(),
+                    asset: asset.clone(),
+                    has_checksum_sidecar: release
+                        .assets
+                        .iter()
+                        .any(|value| github_release_asset_is_checksum_sidecar(&value.name)),
+                },
+            );
+            let replace = if let Some(existing) = best.as_ref() {
+                if existing.0 != candidate.0 {
+                    !candidate.0
+                } else if existing.1 != candidate.1 {
+                    candidate.1 > existing.1
+                } else {
+                    candidate.2 > existing.2
+                }
+            } else {
+                true
+            };
+            if replace {
+                best = Some(candidate);
+            }
+        }
+    }
+
+    best.map(|item| item.3)
+}
+
+fn github_asset_digest_matches_local_hashes(
+    digests: &HashMap<String, String>,
+    sha256: &str,
+    sha512: &str,
+) -> Option<bool> {
+    if digests.is_empty() {
+        return None;
+    }
+    let mut matched_any = false;
+    if let Some(remote) = digests.get("sha256").map(|value| value.trim()) {
+        if remote.is_empty() || !remote.eq_ignore_ascii_case(sha256) {
+            return Some(false);
+        }
+        matched_any = true;
+    }
+    if let Some(remote) = digests.get("sha512").map(|value| value.trim()) {
+        if remote.is_empty() || !remote.eq_ignore_ascii_case(sha512) {
+            return Some(false);
+        }
+        matched_any = true;
+    }
+    Some(matched_any)
+}
+
+fn github_unverified_manual_candidate(
+    owner: &str,
+    repo_name: &str,
+    name: &str,
+    sha256: &str,
+    sha512: &str,
+    reason: String,
+) -> LocalImportedProviderMatch {
+    let mut hashes = HashMap::new();
+    hashes.insert("sha256".to_string(), sha256.to_string());
+    hashes.insert("sha512".to_string(), sha512.to_string());
+    LocalImportedProviderMatch {
+        source: "github".to_string(),
+        project_id: github_project_key(owner, repo_name),
+        version_id: "gh_repo_unverified".to_string(),
+        name: name.to_string(),
+        version_number: "unverified".to_string(),
+        hashes,
+        confidence: "manual".to_string(),
+        reason,
+    }
+}
+
+fn detect_provider_from_github_release_assets(
+    client: &Client,
+    safe_filename: &str,
+    sha256: &str,
+    sha512: &str,
+    metadata: Option<&LocalMetadataHint>,
+) -> Vec<LocalImportedProviderMatch> {
+    let lookup_queries = github_lookup_queries_for_local_mod(safe_filename, metadata);
+    if lookup_queries.is_empty() {
+        return vec![];
+    }
+    let query_hint = lookup_queries
+        .first()
+        .cloned()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            core_mod_name_from_filename(safe_filename)
+                .unwrap_or_else(|| infer_local_name(safe_filename))
+        });
+    let direct_repo_hint_key = metadata
+        .and_then(|hint| hint.github_repo_hint.as_ref())
+        .and_then(|value| parse_github_project_id(value).ok())
+        .map(|(owner, repo)| format!("{owner}/{repo}").to_ascii_lowercase());
+    let mut github_transient_issue: Option<String> = None;
+
+    let push_repo = |repo: GithubRepository,
+                     repos: &mut Vec<GithubRepository>,
+                     seen_repo_keys: &mut HashSet<String>| {
+        let key = repo.full_name.trim().to_ascii_lowercase();
+        if key.is_empty() || !seen_repo_keys.insert(key) {
+            return;
+        }
+        repos.push(repo);
+    };
+    let mut repos: Vec<GithubRepository> = Vec::new();
+    let mut seen_repo_keys: HashSet<String> = HashSet::new();
+
+    for query in &lookup_queries {
+        if repos.len() >= GITHUB_LOCAL_IDENTIFY_MAX_REPO_CANDIDATES {
+            break;
+        }
+        if let Some((owner, repo_name)) = parse_github_repo_query_candidate(query) {
+            match fetch_github_repo(client, &owner, &repo_name) {
+                Ok(direct_repo) => {
+                    push_repo(direct_repo, &mut repos, &mut seen_repo_keys);
+                }
+                Err(err) => {
+                    if github_error_is_auth_or_rate_limit(&err) && github_transient_issue.is_none()
+                    {
+                        github_transient_issue = Some(err);
+                    }
+                }
+            }
+        }
+        let remaining = GITHUB_LOCAL_IDENTIFY_MAX_REPO_CANDIDATES.saturating_sub(repos.len());
+        if remaining == 0 {
+            break;
+        }
+        match search_github_repositories(client, query, remaining) {
+            Ok(mut found) => {
+                found.truncate(remaining);
+                for repo in found {
+                    push_repo(repo, &mut repos, &mut seen_repo_keys);
+                }
+            }
+            Err(err) => {
+                if github_error_is_auth_or_rate_limit(&err) && github_transient_issue.is_none() {
+                    github_transient_issue = Some(err);
+                }
+            }
+        }
+    }
+
+    repos.sort_by(|a, b| {
+        let a_key = if !a.full_name.trim().is_empty() {
+            a.full_name.trim().to_ascii_lowercase()
+        } else {
+            format!("{}/{}", a.owner.login.trim(), a.name.trim()).to_ascii_lowercase()
+        };
+        let b_key = if !b.full_name.trim().is_empty() {
+            b.full_name.trim().to_ascii_lowercase()
+        } else {
+            format!("{}/{}", b.owner.login.trim(), b.name.trim()).to_ascii_lowercase()
+        };
+        let a_direct = direct_repo_hint_key
+            .as_ref()
+            .map(|value| value == &a_key)
+            .unwrap_or(false);
+        let b_direct = direct_repo_hint_key
+            .as_ref()
+            .map(|value| value == &b_key)
+            .unwrap_or(false);
+        let (a_boost, _) = github_local_known_repo_boost(a, safe_filename, &query_hint, metadata);
+        let (b_boost, _) = github_local_known_repo_boost(b, safe_filename, &query_hint, metadata);
+        b_direct
+            .cmp(&a_direct)
+            .then_with(|| b_boost.cmp(&a_boost))
+            .then_with(|| {
+                github_repo_minecraft_signal_score(b).cmp(&github_repo_minecraft_signal_score(a))
+            })
+            .then_with(|| {
+                github_repo_query_similarity(b, &query_hint)
+                    .cmp(&github_repo_query_similarity(a, &query_hint))
+            })
+            .then_with(|| b.stargazers_count.cmp(&a.stargazers_count))
+            .then_with(|| b.updated_at.cmp(&a.updated_at))
+    });
+
+    let has_configured_auth_tokens = github_has_configured_tokens();
+    let release_fetch_budget = if has_configured_auth_tokens {
+        GITHUB_LOCAL_IDENTIFY_MAX_RELEASE_FETCHES
+    } else {
+        GITHUB_LOCAL_IDENTIFY_UNAUTH_MAX_RELEASE_FETCHES
+    };
+    let mut release_fetches = 0usize;
+    let mut matches: Vec<LocalImportedProviderMatch> = Vec::new();
+    let mut direct_hint_repo_seen = false;
+    for repo in repos {
+        if github_repo_policy_rejection_reason(&repo).is_some() {
+            continue;
+        }
+        let repo_identity_key = if !repo.full_name.trim().is_empty() {
+            repo.full_name.trim().to_ascii_lowercase()
+        } else {
+            format!("{}/{}", repo.owner.login.trim(), repo.name.trim()).to_ascii_lowercase()
+        };
+        let has_direct_repo_hint = direct_repo_hint_key
+            .as_ref()
+            .map(|value| value == &repo_identity_key)
+            .unwrap_or(false);
+        if has_direct_repo_hint {
+            direct_hint_repo_seen = true;
+        }
+        let (canonical_repo_boost, canonical_repo_reason) =
+            github_local_known_repo_boost(&repo, safe_filename, &query_hint, metadata);
+        let similarity = github_repo_query_similarity(&repo, &query_hint);
+        let minecraft_signal = github_repo_minecraft_signal_score(&repo);
+        let ecosystem_signal = github_repo_mod_ecosystem_signal_score(&repo);
+        let ambiguous_filename = github_local_asset_identity_tokens(safe_filename).len() <= 1;
+        if !has_direct_repo_hint && canonical_repo_boost <= 0 {
+            if minecraft_signal <= 0 && ecosystem_signal <= 0 {
+                continue;
+            }
+            if similarity < 12 && repo.stargazers_count < 120 {
+                continue;
+            }
+        }
+        if ambiguous_filename
+            && !has_direct_repo_hint
+            && canonical_repo_boost <= 0
+            && (repo.stargazers_count < 1500 || minecraft_signal < 3 || similarity < 34)
+        {
+            continue;
+        }
+        let (owner, repo_name) = if !repo.full_name.trim().is_empty() {
+            match parse_github_project_id(&repo.full_name) {
+                Ok(value) => value,
+                Err(_) => continue,
+            }
+        } else {
+            (repo.owner.login.clone(), repo.name.clone())
+        };
+        if release_fetches >= release_fetch_budget && !has_direct_repo_hint {
+            continue;
+        }
+        release_fetches = release_fetches.saturating_add(1);
+        let releases = match fetch_github_releases(client, &owner, &repo_name) {
+            Ok(value) => value,
+            Err(err) => {
+                if github_error_is_auth_or_rate_limit(&err) {
+                    if github_transient_issue.is_none() {
+                        github_transient_issue = Some(err.clone());
+                    }
+                    if has_direct_repo_hint {
+                        matches.push(github_unverified_manual_candidate(
+                            &owner,
+                            &repo_name,
+                            &github_repo_title(&repo),
+                            sha256,
+                            sha512,
+                            format!(
+                                "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable ({err})."
+                            ),
+                        ));
+                    }
+                    break;
+                }
+                continue;
+            }
+        };
+        let Some(selection) =
+            select_github_release_for_local_file(&repo, &releases, safe_filename, &query_hint)
+        else {
+            if has_direct_repo_hint {
+                matches.push(github_unverified_manual_candidate(
+                    &owner,
+                    &repo_name,
+                    &github_repo_title(&repo),
+                    sha256,
+                    sha512,
+                    "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
+                        .to_string(),
+                ));
+            }
+            continue;
+        };
+
+        let mut hashes = extract_github_asset_digest(&selection.asset);
+        let digest_match = github_asset_digest_matches_local_hashes(&hashes, sha256, sha512);
+        let (confidence, reason) = match github_local_match_confidence_and_reason(
+            &repo,
+            &selection,
+            safe_filename,
+            &query_hint,
+            metadata,
+            has_direct_repo_hint,
+            canonical_repo_boost,
+            canonical_repo_reason,
+            digest_match,
+        ) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        hashes
+            .entry("sha256".to_string())
+            .or_insert_with(|| sha256.to_string());
+        hashes
+            .entry("sha512".to_string())
+            .or_insert_with(|| sha512.to_string());
+        matches.push(LocalImportedProviderMatch {
+            source: "github".to_string(),
+            project_id: github_project_key(&owner, &repo_name),
+            version_id: format!("gh_release:{}", selection.release.id),
+            name: github_repo_title(&repo),
+            version_number: github_release_version_label(&selection.release),
+            hashes,
+            confidence,
+            reason,
+        });
+    }
+
+    if let Some(repo_key) = direct_repo_hint_key.as_ref() {
+        let hinted_project = format!("gh:{repo_key}");
+        let already_has_direct_hint_candidate = matches
+            .iter()
+            .any(|item| item.project_id.trim().eq_ignore_ascii_case(&hinted_project));
+        if !already_has_direct_hint_candidate {
+            if let Ok((owner, repo_name)) = parse_github_project_id(repo_key) {
+                if let Some(issue) = github_transient_issue.as_ref() {
+                    matches.push(github_unverified_manual_candidate(
+                        &owner,
+                        &repo_name,
+                        &format!("{owner}/{repo_name}"),
+                        sha256,
+                        sha512,
+                        format!(
+                            "GitHub local identify manual candidate: direct metadata repo hint found, but repository verification is unavailable ({issue})."
+                        ),
+                    ));
+                } else if direct_hint_repo_seen {
+                    matches.push(github_unverified_manual_candidate(
+                        &owner,
+                        &repo_name,
+                        &format!("{owner}/{repo_name}"),
+                        sha256,
+                        sha512,
+                        "GitHub local identify manual candidate: direct metadata repo hint found, but release evidence is currently unverifiable."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    matches
+}
+
 fn provider_match_priority(value: &LocalImportedProviderMatch) -> i32 {
     match value.confidence.trim().to_ascii_lowercase().as_str() {
         "deterministic" => 3,
@@ -4058,8 +5953,9 @@ fn provider_match_priority(value: &LocalImportedProviderMatch) -> i32 {
 
 fn provider_source_priority(source: &str) -> i32 {
     match source.trim().to_ascii_lowercase().as_str() {
-        "modrinth" => 2,
-        "curseforge" => 1,
+        "modrinth" => 3,
+        "curseforge" => 2,
+        "github" => 1,
         _ => 0,
     }
 }
@@ -4073,7 +5969,9 @@ fn dedupe_provider_matches(
     matches.sort_by(|a, b| {
         provider_match_priority(b)
             .cmp(&provider_match_priority(a))
-            .then_with(|| provider_source_priority(&b.source).cmp(&provider_source_priority(&a.source)))
+            .then_with(|| {
+                provider_source_priority(&b.source).cmp(&provider_source_priority(&a.source))
+            })
             .then_with(|| a.source.cmp(&b.source))
             .then_with(|| a.project_id.cmp(&b.project_id))
     });
@@ -4098,8 +5996,33 @@ fn detect_provider_matches_for_local_mod(
     file_bytes: &[u8],
     safe_filename: &str,
     include_metadata_fallback: bool,
+    forced_github_repo_hint: Option<&str>,
 ) -> Vec<LocalImportedProviderMatch> {
     let sha512 = sha512_hex(file_bytes);
+    let sha256 = sha256_bytes_hex(file_bytes);
+    let mut metadata_hint = if include_metadata_fallback {
+        parse_mod_metadata_hint_from_jar(file_bytes)
+    } else {
+        None
+    };
+    if include_metadata_fallback {
+        if let Some(forced_hint) = forced_github_repo_hint {
+            if let Some(slug) = extract_github_repo_slug(forced_hint).or_else(|| {
+                parse_github_project_id(forced_hint)
+                    .ok()
+                    .map(|(owner, repo)| format!("{owner}/{repo}"))
+            }) {
+                if metadata_hint.is_none() {
+                    metadata_hint = Some(LocalMetadataHint::default());
+                }
+                if let Some(metadata) = metadata_hint.as_mut() {
+                    if metadata.github_repo_hint.is_none() {
+                        metadata.github_repo_hint = Some(slug);
+                    }
+                }
+            }
+        }
+    }
     let mut matches: Vec<LocalImportedProviderMatch> = Vec::new();
     if let Some(api_key) = curseforge_api_key() {
         let fingerprints = curseforge_fingerprint_candidates(file_bytes);
@@ -4187,11 +6110,21 @@ fn detect_provider_matches_for_local_mod(
     }
 
     if include_metadata_fallback {
-        if let Some(metadata) = parse_mod_metadata_hint_from_jar(file_bytes) {
+        matches.extend(detect_provider_from_github_release_assets(
+            client,
+            safe_filename,
+            &sha256,
+            &sha512,
+            metadata_hint.as_ref(),
+        ));
+    }
+
+    if include_metadata_fallback {
+        if let Some(metadata) = metadata_hint.as_ref() {
             matches.extend(detect_provider_from_metadata_hint(
                 client,
                 safe_filename,
-                &metadata,
+                metadata,
                 &sha512,
             ));
         }
@@ -4221,7 +6154,9 @@ fn select_preferred_provider_match<'a>(
     matches.iter().max_by(|a, b| {
         provider_match_priority(a)
             .cmp(&provider_match_priority(b))
-            .then_with(|| provider_source_priority(&a.source).cmp(&provider_source_priority(&b.source)))
+            .then_with(|| {
+                provider_source_priority(&a.source).cmp(&provider_source_priority(&b.source))
+            })
             .then_with(|| b.source.cmp(&a.source))
     })
 }
@@ -4264,10 +6199,38 @@ mod local_provider_preference_tests {
         assert_eq!(candidates[0].source, "modrinth");
         assert_eq!(candidates[1].source, "curseforge");
     }
+
+    #[test]
+    fn provider_match_auto_activation_blocks_medium_github() {
+        let github_medium = sample_match("github", "medium", "owner/repo");
+        let github_high = sample_match("github", "high", "owner/repo");
+        let modrinth_high = sample_match("modrinth", "high", "mr:test");
+        assert!(!provider_match_is_auto_activatable(&github_medium));
+        assert!(provider_match_is_auto_activatable(&github_high));
+        assert!(provider_match_is_auto_activatable(&modrinth_high));
+    }
+
+    #[test]
+    fn provider_match_auto_activation_allows_manual_unverified_direct_repo_hint() {
+        let github_manual = LocalImportedProviderMatch {
+            source: "github".to_string(),
+            project_id: "gh:example/repo".to_string(),
+            version_id: "gh_repo_unverified".to_string(),
+            name: "Example".to_string(),
+            version_number: "unverified".to_string(),
+            hashes: HashMap::new(),
+            confidence: "manual".to_string(),
+            reason: "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached).".to_string(),
+        };
+        assert!(provider_match_is_auto_activatable(&github_manual));
+    }
 }
 
 fn to_provider_candidates(matches: &[LocalImportedProviderMatch]) -> Vec<ProviderCandidate> {
-    matches.iter().map(|item| item.to_provider_candidate()).collect()
+    matches
+        .iter()
+        .map(|item| item.to_provider_candidate())
+        .collect()
 }
 
 fn detect_provider_for_local_mod(
@@ -4281,8 +6244,14 @@ fn detect_provider_for_local_mod(
         file_bytes,
         safe_filename,
         include_metadata_fallback,
+        None,
     );
-    select_preferred_provider_match(&matches, None).cloned()
+    let preferred = select_preferred_provider_match(&matches, None)?;
+    if provider_match_is_auto_activatable(preferred) {
+        Some(preferred.clone())
+    } else {
+        None
+    }
 }
 
 fn local_entry_key(entry: &LockEntry) -> String {
@@ -4298,7 +6267,7 @@ fn apply_provider_match_to_lock_entry(entry: &mut LockEntry, found: &LocalImport
     entry.source = found.source.clone();
     entry.project_id = found.project_id.clone();
     entry.version_id = found.version_id.clone();
-    entry.name = found.name.clone();
+    entry.name = canonical_lock_entry_name(&entry.content_type, &entry.filename, &found.name);
     entry.version_number = found.version_number.clone();
     entry.hashes = found.hashes.clone();
     if entry.provider_candidates.is_empty() {
@@ -4310,7 +6279,7 @@ fn apply_provider_candidate_to_lock_entry(entry: &mut LockEntry, candidate: &Pro
     entry.source = candidate.source.clone();
     entry.project_id = candidate.project_id.clone();
     entry.version_id = candidate.version_id.clone();
-    entry.name = candidate.name.clone();
+    entry.name = canonical_lock_entry_name(&entry.content_type, &entry.filename, &candidate.name);
     entry.version_number = candidate.version_number.clone();
 }
 
@@ -4468,7 +6437,7 @@ fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
         return entry.provider_candidates.clone();
     }
     let source = entry.source.trim().to_ascii_lowercase();
-    if source == "modrinth" || source == "curseforge" {
+    if source == "modrinth" || source == "curseforge" || source == "github" {
         return vec![ProviderCandidate {
             source: entry.source.clone(),
             project_id: entry.project_id.clone(),
@@ -4495,7 +6464,7 @@ fn lock_entry_to_installed(instance_dir: &Path, entry: &LockEntry) -> InstalledM
         source: entry.source.clone(),
         project_id: entry.project_id.clone(),
         version_id: entry.version_id.clone(),
-        name: entry.name.clone(),
+        name: canonical_lock_entry_name(&entry.content_type, &entry.filename, &entry.name),
         version_number: entry.version_number.clone(),
         filename: entry.filename.clone(),
         content_type: normalize_lock_content_type(&entry.content_type),
@@ -4674,7 +6643,12 @@ fn env_usize_override(key: &str) -> Option<usize> {
         .and_then(|value| value.trim().parse::<usize>().ok())
 }
 
-pub(crate) fn env_worker_cap_or_default(key: &str, default: usize, min: usize, max: usize) -> usize {
+pub(crate) fn env_worker_cap_or_default(
+    key: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> usize {
     env_usize_override(key).unwrap_or(default).clamp(min, max)
 }
 
@@ -4728,6 +6702,22 @@ fn should_retry_http_status(status: reqwest::StatusCode) -> bool {
 fn error_mentions_forbidden(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     lower.contains("403") || lower.contains("forbidden")
+}
+
+pub(crate) fn github_error_is_auth_or_rate_limit(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    error_mentions_forbidden(text)
+        || lower.contains("401")
+        || lower.contains("unauthorized")
+        || lower.contains("rate limit")
+}
+
+pub(crate) fn github_reason_is_transient_verification_failure(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    github_error_is_auth_or_rate_limit(text)
+        || lower.contains("verification is unavailable")
+        || lower.contains("verification unavailable")
+        || lower.contains("temporarily unavailable")
 }
 
 pub(crate) fn download_bytes_with_retry(
@@ -4880,8 +6870,8 @@ where
 
         let total_bytes = response.content_length();
         on_progress(0, total_bytes);
-        let mut out =
-            File::create(temp_path).map_err(|e| format!("create temp file failed for {label}: {e}"))?;
+        let mut out = File::create(temp_path)
+            .map_err(|e| format!("create temp file failed for {label}: {e}"))?;
         let mut hasher = Sha512::new();
         let mut downloaded_bytes: u64 = 0;
         let mut buf = vec![0_u8; 1024 * 1024];
@@ -4917,7 +6907,11 @@ where
         let disk_commit_ms = disk_commit_started.elapsed().as_millis();
 
         let time_to_first_byte_ms = first_byte_at
-            .map(|ts| ts.duration_since(request_started).as_millis().saturating_sub(connect_tls_ms))
+            .map(|ts| {
+                ts.duration_since(request_started)
+                    .as_millis()
+                    .saturating_sub(connect_tls_ms)
+            })
             .unwrap_or(0);
         let transfer_ms = first_byte_at
             .map(|ts| Instant::now().duration_since(ts).as_millis())
@@ -4938,10 +6932,7 @@ where
             bytes_downloaded: downloaded_bytes,
             content_length: total_bytes,
         };
-        return Ok(StreamDownloadResult {
-            sha512,
-            profile,
-        });
+        return Ok(StreamDownloadResult { sha512, profile });
     }
 }
 
@@ -5928,11 +7919,9 @@ fn keyring_set_dev_curseforge_key(value: &str) -> Result<(), String> {
         if legacy_service == KEYRING_SERVICE {
             continue;
         }
-        if let Err(err) = token_keyring_set_secret(
-            legacy_service,
-            DEV_CURSEFORGE_KEY_KEYRING_USER,
-            value,
-        ) {
+        if let Err(err) =
+            token_keyring_set_secret(legacy_service, DEV_CURSEFORGE_KEY_KEYRING_USER, value)
+        {
             eprintln!(
                 "legacy dev curseforge key mirror write failed in service '{}': {}",
                 legacy_service, err
@@ -5948,7 +7937,8 @@ fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
         if legacy_service == KEYRING_SERVICE {
             continue;
         }
-        if let Err(err) = token_keyring_delete_secret(legacy_service, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        if let Err(err) =
+            token_keyring_delete_secret(legacy_service, DEV_CURSEFORGE_KEY_KEYRING_USER)
         {
             eprintln!(
                 "legacy dev curseforge key mirror delete failed in service '{}': {}",
@@ -7519,7 +9509,9 @@ fn entry_allowed_in_update_scope(entry: &LockEntry, scope: UpdateScope) -> bool 
         return false;
     }
     match scope {
-        UpdateScope::AllContent => source == "modrinth" || source == "curseforge",
+        UpdateScope::AllContent => {
+            source == "modrinth" || source == "curseforge" || source == "github"
+        }
         UpdateScope::ModrinthModsOnly => source == "modrinth" && content_type == "mods",
     }
 }
@@ -7683,6 +9675,103 @@ fn check_single_content_update_entry(
                     .map(|dep| format!("cf:{}", dep.mod_id))
                     .filter(|project_id| project_id != &entry.project_id)
                     .collect(),
+            }),
+            warnings,
+        ));
+    }
+
+    if source == "github" {
+        if content_type != "mods" {
+            return Ok((None, warnings));
+        }
+        let (owner, repo_name) = parse_github_project_id(&entry.project_id)?;
+        let repo = fetch_github_repo(client, &owner, &repo_name)?;
+        if let Some(reason) = github_repo_policy_rejection_reason(&repo) {
+            warnings.push(format!(
+                "Skipped GitHub update '{}' ({}): {}.",
+                entry.name, entry.project_id, reason
+            ));
+            return Ok((None, warnings));
+        }
+        let releases = fetch_github_releases(client, &owner, &repo_name)?;
+        let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
+        let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+            None
+        } else {
+            Some(&repo_loader_hints)
+        };
+        let query_hint = if entry.name.trim().is_empty() {
+            repo.name.as_str()
+        } else {
+            entry.name.as_str()
+        };
+        let Some(selection) = select_github_release_with_asset(
+            &repo,
+            &releases,
+            query_hint,
+            Some(&instance.mc_version),
+            Some(&instance.loader),
+            None,
+            repo_loader_hints_opt,
+        ) else {
+            let has_any_release = select_github_release_with_asset(
+                &repo,
+                &releases,
+                query_hint,
+                None,
+                None,
+                None,
+                repo_loader_hints_opt,
+            )
+            .is_some();
+            if has_any_release {
+                warnings.push(format!(
+                    "No compatible GitHub update found for '{}' ({}) on {} + {}.",
+                    entry.name, entry.project_id, instance.loader, instance.mc_version
+                ));
+            } else {
+                warnings.push(format!(
+                    "No acceptable GitHub release with .jar asset found for '{}' ({})",
+                    entry.name, entry.project_id
+                ));
+            }
+            return Ok((None, warnings));
+        };
+
+        let latest_version_id = format!("gh_release:{}", selection.release.id);
+        if latest_version_id == entry.version_id.trim() {
+            return Ok((None, warnings));
+        }
+        let mut latest_hashes = extract_github_asset_digest(&selection.asset);
+        if selection.has_checksum_sidecar {
+            latest_hashes
+                .entry("checksum_sidecar".to_string())
+                .or_insert_with(|| "present".to_string());
+        }
+        return Ok((
+            Some(ContentUpdateInfo {
+                source: "github".to_string(),
+                content_type,
+                project_id: github_project_key(&owner, &repo_name),
+                name: if entry.name.trim().is_empty() {
+                    if repo.full_name.trim().is_empty() {
+                        format!("{owner}/{repo_name}")
+                    } else {
+                        repo.full_name.clone()
+                    }
+                } else {
+                    entry.name.clone()
+                },
+                current_version_id: entry.version_id.clone(),
+                current_version_number: entry.version_number.clone(),
+                latest_version_id,
+                latest_version_number: github_release_version_label(&selection.release),
+                enabled: entry.enabled,
+                target_worlds: entry.target_worlds.clone(),
+                latest_file_name: Some(selection.asset.name.clone()),
+                latest_download_url: Some(selection.asset.browser_download_url.clone()),
+                latest_hashes,
+                required_dependencies: vec![],
             }),
             warnings,
         ));
@@ -8010,7 +10099,7 @@ fn prefetch_update_downloads(
             continue;
         }
         let source = update.source.trim().to_lowercase();
-        if source != "modrinth" && source != "curseforge" {
+        if source != "modrinth" && source != "curseforge" && source != "github" {
             continue;
         }
         let Some(download_url) = update
@@ -8193,11 +10282,15 @@ fn try_fast_install_content_update(
             source: "modrinth".to_string(),
             project_id: update.project_id.clone(),
             version_id: latest_version_id.to_string(),
-            name: if update.name.trim().is_empty() {
-                update.project_id.clone()
-            } else {
-                update.name.clone()
-            },
+            name: canonical_lock_entry_name(
+                &normalized,
+                &safe_filename,
+                if update.name.trim().is_empty() {
+                    &update.project_id
+                } else {
+                    &update.name
+                },
+            ),
             version_number: latest_version_number.clone(),
             filename: safe_filename,
             content_type: normalized.clone(),
@@ -8323,16 +10416,17 @@ fn try_fast_install_content_update(
         )?;
         let project_key = format!("cf:{mod_id}");
         remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
+        let fallback_name = if update.name.trim().is_empty() {
+            format!("CurseForge {mod_id}")
+        } else {
+            update.name.clone()
+        };
 
         let new_entry = LockEntry {
             source: "curseforge".to_string(),
             project_id: project_key,
             version_id: format!("cf_file:{}", latest_file_id),
-            name: if update.name.trim().is_empty() {
-                format!("CurseForge {mod_id}")
-            } else {
-                update.name.clone()
-            },
+            name: canonical_lock_entry_name(&normalized, &safe_filename, &fallback_name),
             version_number: latest_version_number.clone(),
             filename: safe_filename,
             content_type: normalized.clone(),
@@ -8360,6 +10454,166 @@ fn try_fast_install_content_update(
             }],
         };
         if normalized == "mods" && !new_entry.enabled {
+            disable_mod_file(&instance_dir, &new_entry.filename)?;
+        }
+        lock.entries.push(new_entry.clone());
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(instances_dir, &args.instance_id, &lock)?;
+        return Ok(Some(lock_entry_to_installed(&instance_dir, &new_entry)));
+    }
+
+    if source == "github" {
+        if normalized != "mods" {
+            return Ok(None);
+        }
+        let (owner, repo_name) = parse_github_project_id(&update.project_id)?;
+        let repo = fetch_github_repo(client, &owner, &repo_name)?;
+        if github_repo_policy_rejection_reason(&repo).is_some() {
+            return Ok(None);
+        }
+        let mut latest_release_id = parse_github_release_id(&update.latest_version_id);
+        let mut latest_file_name = update
+            .latest_file_name
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut download_url = update
+            .latest_download_url
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let mut latest_hashes = update.latest_hashes.clone();
+        let mut latest_version_number = update.latest_version_number.clone();
+
+        if latest_release_id.is_none() || latest_file_name.is_none() || download_url.is_none() {
+            let releases = fetch_github_releases(client, &owner, &repo_name)?;
+            let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
+            let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+                None
+            } else {
+                Some(&repo_loader_hints)
+            };
+            let query_hint = if update.name.trim().is_empty() {
+                repo.name.as_str()
+            } else {
+                update.name.as_str()
+            };
+            let Some(selection) = select_github_release_with_asset(
+                &repo,
+                &releases,
+                query_hint,
+                Some(&instance.mc_version),
+                Some(&instance.loader),
+                None,
+                repo_loader_hints_opt,
+            ) else {
+                return Ok(None);
+            };
+            latest_release_id = Some(selection.release.id);
+            latest_file_name = Some(selection.asset.name.clone());
+            download_url = Some(selection.asset.browser_download_url.clone());
+            latest_version_number = github_release_version_label(&selection.release);
+            let digests = extract_github_asset_digest(&selection.asset);
+            for (algo, value) in digests {
+                latest_hashes.insert(algo, value);
+            }
+            if selection.has_checksum_sidecar {
+                latest_hashes
+                    .entry("checksum_sidecar".to_string())
+                    .or_insert_with(|| "present".to_string());
+            }
+        }
+
+        let latest_release_id = match latest_release_id {
+            Some(id) if id > 0 => id,
+            _ => return Ok(None),
+        };
+        let latest_file_name =
+            latest_file_name.ok_or_else(|| "Missing GitHub release filename".to_string())?;
+        let download_url =
+            download_url.ok_or_else(|| "Missing GitHub release download URL".to_string())?;
+        let safe_filename = sanitize_filename(&latest_file_name);
+        if safe_filename.is_empty() {
+            return Err("Resolved GitHub filename is invalid".to_string());
+        }
+
+        let bytes = if let Some(prefetched) = prefetched_download {
+            match prefetched {
+                PrefetchedDownload::Ready(bytes) => bytes.clone(),
+                PrefetchedDownload::Failed(err) => {
+                    return Err(format!("prefetch download failed: {err}"));
+                }
+            }
+        } else {
+            download_bytes_with_retry(
+                client,
+                &download_url,
+                &format!("gh:{owner}/{repo_name}:{latest_release_id}"),
+            )?
+        };
+
+        latest_hashes
+            .entry("sha256".to_string())
+            .or_insert_with(|| sha256_bytes_hex(&bytes));
+
+        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &[], &bytes)?;
+        let project_key = github_project_key(&owner, &repo_name);
+        remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
+        if update.project_id.trim() != project_key {
+            remove_replaced_entries_for_content(
+                &mut lock,
+                &instance_dir,
+                &update.project_id,
+                &normalized,
+            )?;
+        }
+        let fallback_name = if update.name.trim().is_empty() {
+            if repo.full_name.trim().is_empty() {
+                format!("{owner}/{repo_name}")
+            } else {
+                repo.full_name.clone()
+            }
+        } else {
+            update.name.clone()
+        };
+
+        let new_entry = LockEntry {
+            source: "github".to_string(),
+            project_id: project_key.clone(),
+            version_id: format!("gh_release:{latest_release_id}"),
+            name: canonical_lock_entry_name(&normalized, &safe_filename, &fallback_name),
+            version_number: if latest_version_number.trim().is_empty() {
+                format!("release-{latest_release_id}")
+            } else {
+                latest_version_number.clone()
+            },
+            filename: safe_filename,
+            content_type: normalized.clone(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: update.enabled,
+            hashes: latest_hashes,
+            provider_candidates: vec![ProviderCandidate {
+                source: "github".to_string(),
+                project_id: project_key,
+                version_id: format!("gh_release:{latest_release_id}"),
+                name: if update.name.trim().is_empty() {
+                    format!("{owner}/{repo_name}")
+                } else {
+                    update.name.clone()
+                },
+                version_number: if latest_version_number.trim().is_empty() {
+                    format!("release-{latest_release_id}")
+                } else {
+                    latest_version_number
+                },
+                confidence: None,
+                reason: None,
+            }],
+        };
+        if !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
         }
         lock.entries.push(new_entry.clone());
@@ -8437,6 +10691,1977 @@ fn discover_index_sort_field(index: &str) -> i64 {
         "follows" => 2,
         _ => 1,
     }
+}
+
+fn github_request(client: &Client, url: &str, token: Option<&str>) -> Result<Response, String> {
+    let mut req = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", GITHUB_API_VERSION);
+    if let Some(value) = token {
+        req = req.bearer_auth(value);
+    }
+    req.send()
+        .map_err(|e| format!("GitHub request failed: {e}"))
+}
+
+fn github_error_message_from_body(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let message = value.get("message").and_then(|v| v.as_str())?.trim();
+    if message.is_empty() {
+        None
+    } else {
+        Some(message.to_string())
+    }
+}
+
+fn github_rate_limit_reset_local(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    let raw = headers.get("x-ratelimit-reset")?.to_str().ok()?;
+    let epoch = raw.trim().parse::<i64>().ok()?;
+    let dt_utc = DateTime::<Utc>::from_timestamp(epoch, 0)?;
+    let dt_local = dt_utc.with_timezone(&Local);
+    Some(dt_local.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+}
+
+fn github_rate_limit_reset_instant(headers: &reqwest::header::HeaderMap) -> Option<Instant> {
+    let raw = headers.get("x-ratelimit-reset")?.to_str().ok()?;
+    let epoch = raw.trim().parse::<i64>().ok()?;
+    let now_epoch = Utc::now().timestamp();
+    let wait_secs = if epoch > now_epoch {
+        (epoch - now_epoch) as u64
+    } else {
+        1
+    };
+    Some(Instant::now() + Duration::from_secs(wait_secs.saturating_add(1)))
+}
+
+fn github_is_rate_limited_from_headers(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) -> bool {
+    if status != reqwest::StatusCode::FORBIDDEN {
+        return false;
+    }
+    headers
+        .get("x-ratelimit-remaining")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim() == "0")
+        .unwrap_or(false)
+}
+
+fn github_mark_token_cooldown(
+    token: &str,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+) {
+    let cooldown_until = if status == reqwest::StatusCode::UNAUTHORIZED {
+        Some(Instant::now() + Duration::from_secs(GITHUB_TOKEN_UNAUTHORIZED_COOLDOWN_SECS))
+    } else if github_is_rate_limited_from_headers(status, headers) {
+        github_rate_limit_reset_instant(headers).or_else(|| {
+            Some(
+                Instant::now()
+                    + Duration::from_secs(GITHUB_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECS),
+            )
+        })
+    } else {
+        None
+    };
+    if let Some(until) = cooldown_until {
+        if let Ok(mut guard) = github_token_rotation_state().lock() {
+            guard.cooldown_until.insert(token.to_string(), until);
+        }
+    }
+}
+
+fn github_clear_token_cooldown(token: &str) {
+    if let Ok(mut guard) = github_token_rotation_state().lock() {
+        guard.cooldown_until.remove(token);
+    }
+}
+
+fn github_tokens_in_request_order(all_tokens: &[String]) -> Vec<String> {
+    if all_tokens.is_empty() {
+        return vec![];
+    }
+    let now = Instant::now();
+    let mut guard = match github_token_rotation_state().lock() {
+        Ok(value) => value,
+        Err(_) => return all_tokens.to_vec(),
+    };
+    guard.cooldown_until.retain(|_, until| *until > now);
+    let len = all_tokens.len();
+    let start = guard.next_start_index % len;
+    guard.next_start_index = (start + 1) % len;
+
+    let mut ordered = Vec::with_capacity(len);
+    for offset in 0..len {
+        ordered.push(all_tokens[(start + offset) % len].clone());
+    }
+    let available: Vec<String> = ordered
+        .iter()
+        .filter(|token| !guard.cooldown_until.contains_key((*token).as_str()))
+        .cloned()
+        .collect();
+    if !available.is_empty() {
+        return available;
+    }
+    // If every token is cooling down, probe one token so we recover quickly after reset.
+    ordered.into_iter().take(1).collect()
+}
+
+fn github_http_error_message(
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+    token_attempts: usize,
+    retried_without_token: bool,
+) -> String {
+    if status == reqwest::StatusCode::FORBIDDEN {
+        let remaining = headers
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let message = github_error_message_from_body(body).unwrap_or_else(|| {
+            "GitHub denied this request (likely rate-limited or blocked temporarily).".to_string()
+        });
+        if remaining == "0" || message.to_ascii_lowercase().contains("rate limit") {
+            let reset = github_rate_limit_reset_local(headers)
+                .map(|value| format!(" Resets around {value}."))
+                .unwrap_or_default();
+            return format!(
+                "GitHub API rate limit reached (403 Forbidden).{} Configure MPM_GITHUB_TOKENS (or MPM_GITHUB_TOKEN, GITHUB_TOKEN, GH_TOKEN, including numbered variants like *_TOKEN_1) to raise limits (unauthenticated GitHub traffic is heavily limited). {}",
+                if token_attempts > 1 {
+                    " All configured GitHub tokens are rate-limited."
+                } else if token_attempts == 1 {
+                    " The configured token is still rate-limited."
+                } else {
+                    ""
+                },
+                reset
+            );
+        }
+        if token_attempts > 0 && !retried_without_token {
+            return format!(
+                "GitHub request failed with status 403 Forbidden using the configured token(s). {message}"
+            );
+        }
+        return format!("GitHub request failed with status 403 Forbidden. {message}");
+    }
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return if token_attempts > 0 {
+            "GitHub request failed with status 401 Unauthorized for the configured token(s). Check MPM_GITHUB_TOKENS / MPM_GITHUB_TOKEN / GITHUB_TOKEN / GH_TOKEN."
+                .to_string()
+        } else {
+            "GitHub request failed with status 401 Unauthorized.".to_string()
+        };
+    }
+    let message = github_error_message_from_body(body).unwrap_or_default();
+    if message.is_empty() {
+        format!("GitHub request failed with status {status}")
+    } else {
+        format!("GitHub request failed with status {status}: {message}")
+    }
+}
+
+fn github_get_json<T: for<'de> Deserialize<'de>>(client: &Client, url: &str) -> Result<T, String> {
+    if let Some(cached) = github_api_cache_get(url) {
+        if let Ok(parsed) = serde_json::from_str::<T>(&cached) {
+            return Ok(parsed);
+        }
+    }
+
+    let all_tokens = github_api_tokens();
+    let tokens = github_tokens_in_request_order(&all_tokens);
+    let mut token_attempts = 0usize;
+    let mut retried_without_token = false;
+    let mut response = if tokens.is_empty() {
+        github_request(client, url, None)?
+    } else {
+        let mut selected: Option<Response> = None;
+        for token in tokens.iter() {
+            token_attempts += 1;
+            let attempt = github_request(client, url, Some(token.as_str()))?;
+            let status = attempt.status();
+            if status.is_success() {
+                github_clear_token_cooldown(token);
+                selected = Some(attempt);
+                break;
+            }
+            let should_try_next_token = status == reqwest::StatusCode::FORBIDDEN
+                || status == reqwest::StatusCode::UNAUTHORIZED;
+            if should_try_next_token {
+                github_mark_token_cooldown(token, status, attempt.headers());
+            }
+            selected = Some(attempt);
+            if !should_try_next_token {
+                break;
+            }
+        }
+        selected
+            .ok_or_else(|| "GitHub request failed: no request attempts were executed".to_string())?
+    };
+
+    if !response.status().is_success()
+        && token_attempts > 0
+        && (response.status() == reqwest::StatusCode::FORBIDDEN
+            || response.status() == reqwest::StatusCode::UNAUTHORIZED)
+    {
+        retried_without_token = true;
+        response = github_request(client, url, None)?;
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let body = response.text().unwrap_or_default();
+        return Err(github_http_error_message(
+            status,
+            &headers,
+            &body,
+            token_attempts,
+            retried_without_token,
+        ));
+    }
+
+    let body = response
+        .text()
+        .map_err(|e| format!("read GitHub response body failed: {e}"))?;
+    github_api_cache_put(url, body.clone());
+    serde_json::from_str::<T>(&body).map_err(|e| format!("parse GitHub response failed: {e}"))
+}
+
+fn github_release_version_label(release: &GithubRelease) -> String {
+    if !release.tag_name.trim().is_empty() {
+        return release.tag_name.trim().to_string();
+    }
+    if let Some(name) = release.name.as_ref() {
+        if !name.trim().is_empty() {
+            return name.trim().to_string();
+        }
+    }
+    format!("release-{}", release.id)
+}
+
+fn github_release_sort_key(release: &GithubRelease) -> i64 {
+    if let Some(value) = release.published_at.as_ref() {
+        let key = created_at_sort_key(value);
+        if key > 0 {
+            return key;
+        }
+    }
+    if let Some(value) = release.created_at.as_ref() {
+        let key = created_at_sort_key(value);
+        if key > 0 {
+            return key;
+        }
+    }
+    0
+}
+
+fn github_release_asset_is_checksum_sidecar(asset_name: &str) -> bool {
+    let lower = asset_name.trim().to_ascii_lowercase();
+    lower.ends_with(".sha256")
+        || lower.ends_with(".sha512")
+        || lower.ends_with(".md5")
+        || lower.ends_with(".sha1")
+        || lower.contains("checksum")
+}
+
+fn github_release_asset_looks_like_mod_jar(asset_name: &str) -> bool {
+    let lower = asset_name.trim().to_ascii_lowercase();
+    if !lower.ends_with(".jar") {
+        return false;
+    }
+    !(lower.contains("sources")
+        || lower.contains("source")
+        || lower.contains("javadoc")
+        || lower.contains("deobf"))
+}
+
+fn bounded_levenshtein_distance(left: &str, right: &str, max_distance: usize) -> usize {
+    if left == right {
+        return 0;
+    }
+    if left.is_empty() {
+        return right.chars().count().min(max_distance.saturating_add(1));
+    }
+    if right.is_empty() {
+        return left.chars().count().min(max_distance.saturating_add(1));
+    }
+
+    let left_chars: Vec<char> = left.chars().collect();
+    let right_chars: Vec<char> = right.chars().collect();
+    let left_len = left_chars.len();
+    let right_len = right_chars.len();
+    let length_delta = left_len.abs_diff(right_len);
+    if length_delta > max_distance {
+        return max_distance.saturating_add(1);
+    }
+
+    let mut prev: Vec<usize> = (0..=right_len).collect();
+    let mut curr: Vec<usize> = vec![0; right_len + 1];
+    for (i, left_ch) in left_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        let mut row_best = curr[0];
+        for (j, right_ch) in right_chars.iter().enumerate() {
+            let cost = if left_ch == right_ch { 0 } else { 1 };
+            let deletion = prev[j + 1].saturating_add(1);
+            let insertion = curr[j].saturating_add(1);
+            let substitution = prev[j].saturating_add(cost);
+            let value = deletion.min(insertion).min(substitution);
+            curr[j + 1] = value;
+            row_best = row_best.min(value);
+        }
+        if row_best > max_distance {
+            return max_distance.saturating_add(1);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[right_len]
+}
+
+fn normalized_discover_tokens(input: &str) -> Vec<String> {
+    normalize_provider_match_key(input)
+        .split_whitespace()
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| token.len() > 1)
+        .collect()
+}
+
+fn github_name_similarity_score(name: &str, query: &str) -> i64 {
+    let normalized_name = normalize_provider_match_key(name);
+    let normalized_query = normalize_provider_match_key(query);
+    if normalized_name.is_empty() || normalized_query.is_empty() {
+        return 0;
+    }
+    if normalized_name.contains(&normalized_query) {
+        return 72;
+    }
+
+    let query_terms = normalized_discover_tokens(&normalized_query);
+    let name_terms = normalized_discover_tokens(&normalized_name);
+    if query_terms.is_empty() || name_terms.is_empty() {
+        return 0;
+    }
+
+    let mut score = 0_i64;
+    for query_token in &query_terms {
+        let mut best = 0_i64;
+        for name_token in &name_terms {
+            if name_token.contains(query_token) || query_token.contains(name_token) {
+                let overlap = query_token.len().min(name_token.len()) as i64;
+                best = best.max(16 + overlap.min(20));
+                continue;
+            }
+            let max_edit = if query_token.len() <= 4 { 1 } else { 2 };
+            let distance = bounded_levenshtein_distance(query_token, name_token, max_edit);
+            if distance <= max_edit {
+                let proximity = (max_edit.saturating_sub(distance)) as i64;
+                let token_weight = query_token.len().min(12) as i64;
+                best = best.max(6 + proximity * 6 + token_weight / 2);
+            }
+            if query_token.starts_with(name_token) || name_token.starts_with(query_token) {
+                best = best.max(10);
+            }
+        }
+        score += best;
+    }
+    if query_terms.len() > 1 {
+        let joined = query_terms.join(" ");
+        if normalized_name.contains(&joined) {
+            score += 16;
+        }
+    }
+    score.clamp(0, 100)
+}
+
+fn discover_hit_query_score(hit: &DiscoverSearchHit, query: &str) -> i64 {
+    let q = query.trim();
+    if q.is_empty() {
+        return 0;
+    }
+    let categories_text = hit.categories.join(" ");
+    github_name_similarity_score(&hit.title, q)
+        .max(github_name_similarity_score(&hit.project_id, q))
+        .max(github_name_similarity_score(
+            hit.slug.as_deref().unwrap_or_default(),
+            q,
+        ))
+        .max(github_name_similarity_score(&categories_text, q))
+        .max(github_name_similarity_score(&hit.description, q) / 2)
+        .max(github_name_similarity_score(&hit.author, q) / 2)
+}
+
+fn discover_query_variants(query: &str) -> Vec<String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return vec![];
+    }
+    let tokens = normalized_discover_tokens(trimmed);
+    if tokens.is_empty() {
+        return vec![];
+    }
+    let normalized_query = normalize_provider_match_key(trimmed);
+    let mut variants: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let push = |value: String, variants: &mut Vec<String>, seen: &mut HashSet<String>| {
+        let normalized = normalize_provider_match_key(&value);
+        if normalized.is_empty() || normalized == normalized_query {
+            return;
+        }
+        if seen.insert(normalized.clone()) {
+            variants.push(normalized);
+        }
+    };
+
+    if tokens.len() >= 2 {
+        let mut longest = tokens.clone();
+        longest.sort_by(|a, b| b.len().cmp(&a.len()));
+        for token in longest.into_iter().take(3) {
+            push(token, &mut variants, &mut seen);
+        }
+        let joined = tokens.join(" ");
+        push(joined, &mut variants, &mut seen);
+        if tokens.len() >= 3 {
+            push(
+                format!("{} {}", tokens[0], tokens[1]),
+                &mut variants,
+                &mut seen,
+            );
+        }
+    } else if let Some(token) = tokens.first() {
+        if token.len() >= 8 {
+            let prefix = token
+                .chars()
+                .take(token.len().saturating_sub(2))
+                .collect::<String>();
+            push(prefix, &mut variants, &mut seen);
+        }
+    }
+
+    variants.truncate(4);
+    variants
+}
+
+fn github_repo_policy_rejection_reason(repo: &GithubRepository) -> Option<&'static str> {
+    if repo.archived {
+        return Some("repository is archived");
+    }
+    if repo.fork {
+        return Some("repository is a fork");
+    }
+    if repo.disabled {
+        return Some("repository is disabled");
+    }
+    None
+}
+
+fn extract_github_asset_digest(asset: &GithubReleaseAsset) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    if let Some(digest) = asset.digest.as_ref() {
+        let trimmed = digest.trim();
+        if let Some(value) = trimmed.strip_prefix("sha256:") {
+            if !value.trim().is_empty() {
+                out.insert("sha256".to_string(), value.trim().to_string());
+            }
+        } else if let Some(value) = trimmed.strip_prefix("sha512:") {
+            if !value.trim().is_empty() {
+                out.insert("sha512".to_string(), value.trim().to_string());
+            }
+        }
+    }
+    out
+}
+
+fn select_github_release_with_asset(
+    repo: &GithubRepository,
+    releases: &[GithubRelease],
+    query: &str,
+    required_game_version: Option<&str>,
+    required_loader: Option<&str>,
+    discover_filters: Option<&SearchDiscoverContentArgs>,
+    repo_loader_hints: Option<&HashSet<String>>,
+) -> Option<GithubReleaseSelection> {
+    let repo_hint = if repo.name.trim().is_empty() {
+        repo.full_name.trim().to_string()
+    } else {
+        repo.name.trim().to_string()
+    };
+    let query_hint = if query.trim().is_empty() {
+        repo_hint.as_str()
+    } else {
+        query.trim()
+    };
+
+    let collect_candidates = |allow_prerelease: bool| -> Vec<(i64, i64, GithubReleaseSelection)> {
+        let mut candidates: Vec<(i64, i64, GithubReleaseSelection)> = Vec::new();
+        for release in releases {
+            if release.draft || (release.prerelease && !allow_prerelease) {
+                continue;
+            }
+            let mut checksum_present = false;
+            for asset in &release.assets {
+                if github_release_asset_is_checksum_sidecar(&asset.name) {
+                    checksum_present = true;
+                    continue;
+                }
+                if !github_release_asset_looks_like_mod_jar(&asset.name) {
+                    continue;
+                }
+                if let Some(filters) = discover_filters {
+                    if !github_release_asset_matches_discover_filters(
+                        repo,
+                        release,
+                        asset,
+                        filters,
+                        repo_loader_hints,
+                    ) {
+                        continue;
+                    }
+                }
+                if !github_release_asset_matches_install_requirements(
+                    repo,
+                    release,
+                    asset,
+                    required_game_version,
+                    required_loader,
+                    repo_loader_hints,
+                ) {
+                    continue;
+                }
+                let mut asset_score = github_name_similarity_score(&asset.name, query_hint)
+                    + github_name_similarity_score(&asset.name, &repo_hint);
+                if let Some(content_type) = asset.content_type.as_ref() {
+                    if content_type.eq_ignore_ascii_case("application/java-archive") {
+                        asset_score += 16;
+                    }
+                }
+                if release.prerelease {
+                    asset_score -= 5;
+                }
+                asset_score += ((asset.size / (1024 * 1024)).min(40)) as i64;
+                let selection = GithubReleaseSelection {
+                    release: release.clone(),
+                    asset: asset.clone(),
+                    has_checksum_sidecar: checksum_present,
+                };
+                candidates.push((github_release_sort_key(release), asset_score, selection));
+            }
+        }
+        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        candidates
+    };
+
+    let stable_candidates = collect_candidates(false);
+    if let Some(best) = stable_candidates.into_iter().next() {
+        return Some(best.2);
+    }
+    collect_candidates(true)
+        .into_iter()
+        .next()
+        .map(|item| item.2)
+}
+
+fn github_discover_confidence_score(
+    repo: &GithubRepository,
+    selection: &GithubReleaseSelection,
+    query: &str,
+) -> i64 {
+    let mut score = (repo.stargazers_count.min(15_000) / 120) as i64;
+    if repo.owner.owner_type.eq_ignore_ascii_case("organization") {
+        score += 24;
+    }
+    if selection.has_checksum_sidecar {
+        score += 18;
+    }
+    score += github_name_similarity_score(&selection.asset.name, query);
+    score += github_name_similarity_score(&repo.full_name, query) / 2;
+    let age_days = Utc::now()
+        .timestamp()
+        .saturating_sub(github_release_sort_key(&selection.release));
+    if age_days > 0 {
+        let days = age_days / 86_400;
+        if days <= 30 {
+            score += 24;
+        } else if days <= 120 {
+            score += 12;
+        } else if days > 720 {
+            score -= 10;
+        }
+    }
+    score.clamp(0, 100)
+}
+
+fn github_confidence_label(score: i64) -> String {
+    if score >= 70 {
+        "high".to_string()
+    } else if score >= 45 {
+        "medium".to_string()
+    } else {
+        "low".to_string()
+    }
+}
+
+fn github_discover_reason(
+    repo: &GithubRepository,
+    selection: &GithubReleaseSelection,
+    score: i64,
+) -> String {
+    let mut parts = Vec::new();
+    parts.push(format!("{}★", repo.stargazers_count));
+    if repo.owner.owner_type.eq_ignore_ascii_case("organization") {
+        parts.push("organization-owned".to_string());
+    }
+    if selection.has_checksum_sidecar {
+        parts.push("checksum sidecar detected".to_string());
+    }
+    if !selection.release.tag_name.trim().is_empty() {
+        parts.push(format!("tag {}", selection.release.tag_name.trim()));
+    }
+    parts.push(format!("confidence {}", github_confidence_label(score)));
+    parts.join(" · ")
+}
+
+fn fetch_github_repo(client: &Client, owner: &str, repo: &str) -> Result<GithubRepository, String> {
+    let url = format!("{}/repos/{}/{}", GITHUB_API_BASE, owner, repo);
+    github_get_json::<GithubRepository>(client, &url)
+}
+
+fn fetch_github_releases(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+) -> Result<Vec<GithubRelease>, String> {
+    let url = format!(
+        "{}/repos/{}/{}/releases?per_page={}",
+        GITHUB_API_BASE, owner, repo, GITHUB_RELEASES_PER_PAGE
+    );
+    github_get_json::<Vec<GithubRelease>>(client, &url)
+}
+
+fn fetch_github_readme(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+) -> Result<GithubReadmeResponse, String> {
+    let url = format!("{}/repos/{}/{}/readme", GITHUB_API_BASE, owner, repo);
+    github_get_json::<GithubReadmeResponse>(client, &url)
+}
+
+fn decode_github_readme_markdown(payload: &GithubReadmeResponse) -> Option<String> {
+    let encoding = payload.encoding.trim().to_ascii_lowercase();
+    if encoding != "base64" {
+        let text = payload.content.trim();
+        if text.is_empty() {
+            return None;
+        }
+        return Some(text.to_string());
+    }
+    let compact = payload
+        .content
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect::<String>();
+    if compact.is_empty() {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .ok()?;
+    let text = String::from_utf8(decoded).ok()?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn github_repo_project_id(repo: &GithubRepository) -> String {
+    if !repo.full_name.trim().is_empty() {
+        format!("gh:{}", repo.full_name.trim())
+    } else {
+        github_project_key(&repo.owner.login, &repo.name)
+    }
+}
+
+fn github_repo_title(repo: &GithubRepository) -> String {
+    if repo.name.trim().is_empty() {
+        repo.full_name.clone()
+    } else {
+        repo.name.clone()
+    }
+}
+
+fn github_repo_external_url(repo: &GithubRepository) -> String {
+    if !repo.html_url.trim().is_empty() {
+        repo.html_url.clone()
+    } else {
+        format!(
+            "https://github.com/{}/{}",
+            repo.owner.login.trim(),
+            repo.name.trim()
+        )
+    }
+}
+
+fn github_owner_avatar_url(repo: &GithubRepository) -> Option<String> {
+    let owner = repo.owner.login.trim();
+    if owner.is_empty() {
+        None
+    } else {
+        Some(format!("https://github.com/{owner}.png?size=96"))
+    }
+}
+
+fn github_repo_identity(repo: &GithubRepository) -> Option<(String, String)> {
+    if !repo.full_name.trim().is_empty() {
+        if let Ok((owner, repo_name)) = parse_github_project_id(&repo.full_name) {
+            return Some((owner, repo_name));
+        }
+    }
+    let owner = repo.owner.login.trim();
+    let repo_name = repo.name.trim();
+    if owner.is_empty() || repo_name.is_empty() {
+        None
+    } else {
+        Some((owner.to_string(), repo_name.to_string()))
+    }
+}
+
+fn fetch_github_repo_tree_paths(
+    client: &Client,
+    owner: &str,
+    repo: &str,
+    reference: &str,
+) -> Result<Vec<String>, String> {
+    let encoded_reference =
+        url::form_urlencoded::byte_serialize(reference.trim().as_bytes()).collect::<String>();
+    let url = format!(
+        "{}/repos/{}/{}/git/trees/{}?recursive=1",
+        GITHUB_API_BASE, owner, repo, encoded_reference
+    );
+    let payload = github_get_json::<GithubTreeResponse>(client, &url)?;
+    let mut out = Vec::new();
+    for node in payload.tree {
+        if node.node_type != "blob" {
+            continue;
+        }
+        let normalized = node.path.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        out.push(normalized.to_ascii_lowercase());
+        if out.len() >= GITHUB_REPO_TREE_PATH_SCAN_LIMIT {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+fn github_loader_hints_from_repo_tree_paths(paths: &[String]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for path in paths {
+        if path.ends_with("fabric.mod.json")
+            || path.contains("/fabric.mod.json")
+            || path.contains("/src/fabric/")
+            || path.starts_with("fabric/src/")
+        {
+            out.insert("fabric".to_string());
+        }
+        if path.ends_with("quilt.mod.json")
+            || path.contains("/quilt.mod.json")
+            || path.contains("/src/quilt/")
+            || path.starts_with("quilt/src/")
+        {
+            out.insert("quilt".to_string());
+        }
+        if path.ends_with("meta-inf/neoforge.mods.toml")
+            || path.ends_with("neoforge.mods.toml")
+            || path.contains("/src/neoforge/")
+            || path.starts_with("neoforge/src/")
+            || path.contains("/neo-forge/")
+        {
+            out.insert("neoforge".to_string());
+        }
+        if path.ends_with("meta-inf/mods.toml")
+            || path.ends_with("mcmod.info")
+            || path.contains("/src/forge/")
+            || path.starts_with("forge/src/")
+        {
+            out.insert("forge_family".to_string());
+        }
+    }
+    out
+}
+
+fn fetch_github_repo_loader_hints(client: &Client, repo: &GithubRepository) -> HashSet<String> {
+    let Some((owner, repo_name)) = github_repo_identity(repo) else {
+        return HashSet::new();
+    };
+    let mut refs: Vec<String> = vec![];
+    let mut seen_refs: HashSet<String> = HashSet::new();
+    for candidate in [repo.default_branch.trim(), "HEAD", "main", "master"] {
+        if candidate.is_empty() {
+            continue;
+        }
+        let key = candidate.to_ascii_lowercase();
+        if !seen_refs.insert(key) {
+            continue;
+        }
+        refs.push(candidate.to_string());
+    }
+    for reference in refs {
+        match fetch_github_repo_tree_paths(client, &owner, &repo_name, &reference) {
+            Ok(paths) => {
+                let hints = github_loader_hints_from_repo_tree_paths(&paths);
+                if !hints.is_empty() {
+                    return hints;
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    HashSet::new()
+}
+
+fn github_loader_hints_to_labels(hints: &HashSet<String>) -> Vec<String> {
+    let mut labels = Vec::new();
+    if hints.contains("fabric") {
+        labels.push("loader:fabric".to_string());
+    }
+    if hints.contains("quilt") {
+        labels.push("loader:quilt".to_string());
+    }
+    if hints.contains("neoforge") {
+        labels.push("loader:neoforge".to_string());
+    }
+    if hints.contains("forge") || hints.contains("forge_family") {
+        labels.push("loader:forge".to_string());
+    }
+    labels
+}
+
+fn normalize_provider_match_key(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().to_ascii_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else if !out.ends_with(' ') {
+            out.push(' ');
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn fetch_modrinth_icon_hints_for_query(client: &Client, query: &str) -> HashMap<String, String> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return HashMap::new();
+    }
+    let facets_json = serde_json::to_string(&vec![vec!["project_type:mod"]]).unwrap_or_default();
+    let encoded_query =
+        url::form_urlencoded::byte_serialize(trimmed.as_bytes()).collect::<String>();
+    let encoded_facets =
+        url::form_urlencoded::byte_serialize(facets_json.as_bytes()).collect::<String>();
+    let url = format!(
+        "{}/search?query={encoded_query}&index=relevance&limit=20&offset=0&facets={encoded_facets}",
+        modrinth_api_base()
+    );
+    let resp = match client.get(url).header("Accept", "application/json").send() {
+        Ok(value) => value,
+        Err(_) => return HashMap::new(),
+    };
+    if !resp.status().is_success() {
+        return HashMap::new();
+    }
+    let payload = match resp.json::<serde_json::Value>() {
+        Ok(value) => value,
+        Err(_) => return HashMap::new(),
+    };
+    let mut out = HashMap::new();
+    let Some(items) = payload.get("hits").and_then(|v| v.as_array()) else {
+        return out;
+    };
+    for item in items {
+        let icon = item
+            .get("icon_url")
+            .and_then(|v| v.as_str())
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        let Some(icon_url) = icon else {
+            continue;
+        };
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(normalize_provider_match_key);
+        if let Some(key) = title.filter(|v| !v.is_empty()) {
+            out.entry(key).or_insert_with(|| icon_url.clone());
+        }
+        let slug = item
+            .get("slug")
+            .and_then(|v| v.as_str())
+            .map(normalize_provider_match_key);
+        if let Some(key) = slug.filter(|v| !v.is_empty()) {
+            out.entry(key).or_insert_with(|| icon_url.clone());
+        }
+    }
+    out
+}
+
+fn github_best_discover_icon_url(
+    repo: &GithubRepository,
+    modrinth_icon_hints: &HashMap<String, String>,
+) -> Option<String> {
+    let mut candidates = vec![
+        normalize_provider_match_key(&repo.name),
+        normalize_provider_match_key(repo.full_name.split('/').last().unwrap_or_default().trim()),
+        normalize_provider_match_key(&github_repo_title(repo)),
+    ];
+    candidates.retain(|value| !value.is_empty());
+    candidates.sort();
+    candidates.dedup();
+    for key in candidates {
+        if let Some(icon) = modrinth_icon_hints.get(&key) {
+            return Some(icon.clone());
+        }
+    }
+    github_owner_avatar_url(repo)
+}
+
+fn github_loader_hints_from_text(text: &str) -> HashSet<String> {
+    let mut out = detect_mod_loader_hints_from_filename(text);
+    for token in text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')) {
+        if let Some(loader) = normalize_loader_hint_token(token) {
+            out.insert(loader);
+        }
+    }
+    out
+}
+
+fn github_repo_minecraft_signal_score(repo: &GithubRepository) -> i64 {
+    let text = normalize_provider_match_key(&format!(
+        "{} {} {} {}",
+        repo.name,
+        repo.full_name,
+        repo.description.clone().unwrap_or_default(),
+        repo.topics.join(" ")
+    ));
+    let topics = repo
+        .topics
+        .iter()
+        .map(|value| normalize_provider_match_key(value))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut score = 0_i64;
+    if topics
+        .iter()
+        .any(|topic| topic == "minecraft" || topic.contains("minecraft"))
+    {
+        score += 3;
+    }
+    if topics.iter().any(|topic| {
+        topic.contains("fabric")
+            || topic.contains("forge")
+            || topic.contains("neoforge")
+            || topic.contains("neo forge")
+            || topic.contains("quilt")
+    }) {
+        score += 2;
+    }
+    if topics
+        .iter()
+        .any(|topic| topic == "mod" || topic == "mods" || topic.contains("minecraft mod"))
+    {
+        score += 2;
+    }
+    if text.contains("minecraft") {
+        score += 2;
+    }
+    for token in ["fabric", "forge", "neoforge", "neo forge", "quilt"] {
+        if text.contains(token) {
+            score += 1;
+        }
+    }
+    for token in [
+        "plugin",
+        "bukkit",
+        "spigot",
+        "paper",
+        "velocity",
+        "bungeecord",
+    ] {
+        if text.contains(token) {
+            score -= 2;
+        }
+    }
+    score
+}
+
+fn github_repo_mod_ecosystem_signal_score(repo: &GithubRepository) -> i64 {
+    let text = normalize_provider_match_key(&format!(
+        "{} {} {} {}",
+        repo.name,
+        repo.full_name,
+        repo.description.clone().unwrap_or_default(),
+        repo.topics.join(" ")
+    ));
+    let token_set = normalized_discover_tokens(&text)
+        .into_iter()
+        .collect::<HashSet<String>>();
+    let has_token = |token: &str| token_set.contains(token);
+    let has_pair = |left: &str, right: &str| has_token(left) && has_token(right);
+
+    let mut score = 0_i64;
+    for token in [
+        "mod", "mods", "addon", "addons", "meteor", "fabric", "forge", "neoforge", "quilt",
+    ] {
+        if has_token(token) {
+            score += 1;
+        }
+    }
+    if has_pair("minecraft", "client")
+        || has_pair("minecraft", "mod")
+        || has_pair("minecraft", "mods")
+    {
+        score += 2;
+    }
+    if has_pair("add", "on") {
+        score += 1;
+    }
+    for token in [
+        "dataset",
+        "tensor",
+        "tensorflow",
+        "pytorch",
+        "model",
+        "gan",
+        "llm",
+        "image generation",
+        "fashion",
+        "mnist",
+    ] {
+        if has_token(token) {
+            score -= 2;
+        }
+    }
+    score
+}
+
+fn github_loader_filter_matches(
+    requested_loaders: &[String],
+    detected_loaders: &HashSet<String>,
+    allow_when_unknown: bool,
+) -> bool {
+    if requested_loaders.is_empty() {
+        return true;
+    }
+    if detected_loaders.is_empty() {
+        return allow_when_unknown;
+    }
+    requested_loaders.iter().any(|requested| {
+        let normalized = parse_loader_for_instance(requested)
+            .or_else(|| normalize_loader_hint_token(requested))
+            .unwrap_or_else(|| requested.trim().to_ascii_lowercase());
+        detected_loaders
+            .iter()
+            .any(|detected| instance_loader_accepts_mod_loader(&normalized, detected))
+    })
+}
+
+fn github_game_version_filter_matches(required_game_version: Option<&str>, text: &str) -> bool {
+    let Some(required) = required_game_version.map(|value| value.trim().to_ascii_lowercase())
+    else {
+        return true;
+    };
+    if required.is_empty() {
+        return true;
+    }
+    for token in text.split(|ch: char| !(ch.is_ascii_digit() || ch == '.')) {
+        let normalized = token.trim_matches('.');
+        if normalized.len() < 3 || !normalized.starts_with('1') {
+            continue;
+        }
+        if parse_mc_version_parts_loose(normalized).is_none() {
+            continue;
+        }
+        if minecraft_version_matches_advertised(normalized, &required, true) {
+            return true;
+        }
+    }
+    false
+}
+
+fn github_category_filter_matches(
+    requested_categories: &[String],
+    repo: &GithubRepository,
+    text: &str,
+) -> bool {
+    if requested_categories.is_empty() {
+        return true;
+    }
+    let topics = repo
+        .topics
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let normalized_text = normalize_provider_match_key(text);
+    for category in requested_categories {
+        let normalized = normalize_provider_match_key(category);
+        if normalized.is_empty() {
+            continue;
+        }
+        if topics
+            .iter()
+            .any(|topic| topic == &normalized || topic.contains(&normalized))
+        {
+            return true;
+        }
+        if normalized_text.contains(&normalized) {
+            return true;
+        }
+    }
+    false
+}
+
+fn github_repo_matches_discover_light_filters(
+    repo: &GithubRepository,
+    args: &SearchDiscoverContentArgs,
+    repo_loader_hints: Option<&HashSet<String>>,
+) -> bool {
+    let repo_text = format!(
+        "{} {} {} {}",
+        repo.name,
+        repo.full_name,
+        repo.description.clone().unwrap_or_default(),
+        repo.topics.join(" ")
+    );
+    let mut loader_hints = github_loader_hints_from_text(&repo_text);
+    if let Some(extra) = repo_loader_hints {
+        loader_hints.extend(extra.iter().cloned());
+    }
+    github_loader_filter_matches(&args.loaders, &loader_hints, true)
+        && github_category_filter_matches(&args.categories, repo, &repo_text)
+}
+
+fn github_repo_passes_signal_gate(
+    repo: &GithubRepository,
+    minecraft_signal: i64,
+    similarity: i64,
+    query: &str,
+) -> bool {
+    if minecraft_signal > 0 {
+        return true;
+    }
+    !query.trim().is_empty()
+        && similarity >= GITHUB_DISCOVER_MIN_SIMILARITY_WITHOUT_SIGNAL
+        && github_repo_mod_ecosystem_signal_score(repo) > 0
+}
+
+fn github_repo_can_skip_release_validation(
+    repo: &GithubRepository,
+    minecraft_signal: i64,
+    similarity: i64,
+) -> bool {
+    minecraft_signal > 0
+        || (similarity >= GITHUB_LOW_SIGNAL_HIGH_SIMILARITY_THRESHOLD
+            && github_repo_mod_ecosystem_signal_score(repo) > 0)
+}
+
+fn github_release_asset_matches_discover_filters(
+    repo: &GithubRepository,
+    release: &GithubRelease,
+    asset: &GithubReleaseAsset,
+    args: &SearchDiscoverContentArgs,
+    repo_loader_hints: Option<&HashSet<String>>,
+) -> bool {
+    let combined_text = format!(
+        "{} {} {} {} {} {} {}",
+        repo.name,
+        repo.full_name,
+        repo.description.clone().unwrap_or_default(),
+        repo.topics.join(" "),
+        release.tag_name,
+        release.name.clone().unwrap_or_default(),
+        asset.name
+    );
+    let mut loader_hints = github_loader_hints_from_text(&combined_text);
+    if let Some(extra) = repo_loader_hints {
+        loader_hints.extend(extra.iter().cloned());
+    }
+    github_loader_filter_matches(&args.loaders, &loader_hints, false)
+        && github_game_version_filter_matches(args.game_version.as_deref(), &combined_text)
+        && github_category_filter_matches(&args.categories, repo, &combined_text)
+}
+
+fn github_release_asset_matches_install_requirements(
+    repo: &GithubRepository,
+    release: &GithubRelease,
+    asset: &GithubReleaseAsset,
+    required_game_version: Option<&str>,
+    required_loader: Option<&str>,
+    repo_loader_hints: Option<&HashSet<String>>,
+) -> bool {
+    let combined_text = format!(
+        "{} {} {} {} {} {} {}",
+        repo.name,
+        repo.full_name,
+        repo.description.clone().unwrap_or_default(),
+        repo.topics.join(" "),
+        release.tag_name,
+        release.name.clone().unwrap_or_default(),
+        asset.name
+    );
+    if !github_game_version_filter_matches(required_game_version, &combined_text) {
+        return false;
+    }
+    let Some(loader) = required_loader
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return true;
+    };
+    let mut loader_hints = github_loader_hints_from_text(&combined_text);
+    if let Some(extra) = repo_loader_hints {
+        loader_hints.extend(extra.iter().cloned());
+    }
+    if loader_hints.is_empty() {
+        return true;
+    }
+    loader_hints
+        .iter()
+        .any(|detected| instance_loader_accepts_mod_loader(loader, detected))
+}
+
+fn github_repo_query_similarity(repo: &GithubRepository, query: &str) -> i64 {
+    let query = query.trim();
+    if query.is_empty() {
+        return 0;
+    }
+    let repo_name = github_repo_title(repo);
+    github_name_similarity_score(&repo_name, query)
+        .max(github_name_similarity_score(&repo.full_name, query))
+        .max(
+            github_name_similarity_score(repo.description.as_deref().unwrap_or_default(), query)
+                / 2,
+        )
+}
+
+fn parse_github_repo_query_candidate(query: &str) -> Option<(String, String)> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    parse_github_project_id(trimmed).ok()
+}
+
+fn search_github_repositories_once(
+    client: &Client,
+    query: &str,
+    per_page: usize,
+    page: usize,
+) -> Result<Vec<GithubRepository>, String> {
+    let raw_query = query.trim();
+    let query_with_qualifiers = if raw_query.is_empty() {
+        "minecraft mod archived:false fork:false".to_string()
+    } else {
+        format!("{raw_query} archived:false fork:false")
+    };
+    let encoded_query =
+        url::form_urlencoded::byte_serialize(query_with_qualifiers.as_bytes()).collect::<String>();
+    let url = format!(
+        "{}/search/repositories?q={encoded_query}&per_page={}&page={}",
+        GITHUB_API_BASE,
+        per_page.clamp(1, GITHUB_REPO_SEARCH_PER_PAGE_MAX),
+        page.max(1)
+    );
+    let payload = github_get_json::<GithubRepoSearchResponse>(client, &url)?;
+    Ok(payload.items)
+}
+
+fn search_github_repositories(
+    client: &Client,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<GithubRepository>, String> {
+    let has_configured_auth_tokens = github_has_configured_tokens();
+    let effective_limit = limit.max(1);
+    let collection_limit = effective_limit
+        .saturating_mul(2)
+        .min(GITHUB_DISCOVER_SOURCE_MAX_REPO_CANDIDATES.saturating_mul(2))
+        .max(effective_limit);
+    let mut out: Vec<GithubRepository> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut per_page = effective_limit
+        .clamp(1, GITHUB_REPO_SEARCH_PER_PAGE_MAX)
+        .max(10);
+    if !has_configured_auth_tokens {
+        per_page = per_page.min(20);
+    }
+    let max_pages_cap = if has_configured_auth_tokens {
+        GITHUB_REPO_SEARCH_MAX_PAGES_PER_QUERY
+    } else {
+        GITHUB_UNAUTH_MAX_PAGES_PER_QUERY
+    };
+    let max_pages = ((collection_limit + per_page - 1) / per_page).clamp(1, max_pages_cap);
+    let trimmed_query = query.trim();
+    let search_queries = github_discover_search_queries(trimmed_query, has_configured_auth_tokens);
+
+    for (query_index, search_query) in search_queries.into_iter().enumerate() {
+        let page_limit = if query_index == 0 { max_pages } else { 1 };
+        for page in 1..=page_limit {
+            let repos = search_github_repositories_once(client, &search_query, per_page, page)?;
+            if repos.is_empty() {
+                break;
+            }
+            let fetched_count = repos.len();
+            for repo in repos {
+                let key = repo.full_name.trim().to_ascii_lowercase();
+                if key.is_empty() || !seen.insert(key) {
+                    continue;
+                }
+                out.push(repo);
+                if out.len() >= collection_limit {
+                    break;
+                }
+            }
+            if out.len() >= collection_limit {
+                break;
+            }
+            if fetched_count < per_page {
+                break;
+            }
+        }
+        if out.len() >= collection_limit {
+            break;
+        }
+    }
+
+    if !trimmed_query.is_empty() {
+        out.sort_by(|a, b| {
+            let left = github_repo_query_similarity(a, trimmed_query);
+            let right = github_repo_query_similarity(b, trimmed_query);
+            right
+                .cmp(&left)
+                .then_with(|| b.stargazers_count.cmp(&a.stargazers_count))
+                .then_with(|| b.forks_count.cmp(&a.forks_count))
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+        });
+    }
+    out.truncate(effective_limit);
+    Ok(out)
+}
+
+fn github_discover_search_queries(
+    trimmed_query: &str,
+    has_configured_auth_tokens: bool,
+) -> Vec<String> {
+    if trimmed_query.trim().is_empty() {
+        return vec!["minecraft mod language:java".to_string()];
+    }
+    let mut variants: Vec<String> = Vec::new();
+    let mut seen_variants: HashSet<String> = HashSet::new();
+    for candidate in std::iter::once(trimmed_query.trim().to_string())
+        .chain(discover_query_variants(trimmed_query).into_iter().take(3))
+    {
+        let normalized = normalize_provider_match_key(&candidate);
+        if normalized.is_empty() || !seen_variants.insert(normalized) {
+            continue;
+        }
+        variants.push(candidate.trim().to_string());
+    }
+    if variants.is_empty() {
+        return vec![];
+    }
+    let primary = variants[0].clone();
+    let fallback = variants
+        .iter()
+        .skip(1)
+        .find(|value| !value.trim().is_empty())
+        .cloned();
+    let mut queries: Vec<String> = Vec::new();
+    let mut seen_queries: HashSet<String> = HashSet::new();
+    let push = |value: String, queries: &mut Vec<String>, seen_queries: &mut HashSet<String>| {
+        let normalized = value.trim().to_ascii_lowercase();
+        if normalized.is_empty() || !seen_queries.insert(normalized) {
+            return;
+        }
+        queries.push(value);
+    };
+
+    push(
+        format!("{primary} in:name,description"),
+        &mut queries,
+        &mut seen_queries,
+    );
+    push(
+        format!("{primary} minecraft mod in:name,description"),
+        &mut queries,
+        &mut seen_queries,
+    );
+    if let Some(fallback_query) = fallback {
+        push(
+            format!("{fallback_query} in:name,description"),
+            &mut queries,
+            &mut seen_queries,
+        );
+        push(
+            format!("{fallback_query} minecraft mod in:name,description"),
+            &mut queries,
+            &mut seen_queries,
+        );
+    }
+    push(
+        format!("{primary} topic:minecraft"),
+        &mut queries,
+        &mut seen_queries,
+    );
+    push(
+        format!("{primary} minecraft fabric forge neoforge quilt"),
+        &mut queries,
+        &mut seen_queries,
+    );
+
+    queries.truncate(if has_configured_auth_tokens {
+        8
+    } else {
+        GITHUB_UNAUTH_MAX_SEARCH_QUERIES
+    });
+    queries
+}
+
+fn github_release_to_discover_hit(
+    repo: &GithubRepository,
+    selection: &GithubReleaseSelection,
+    query: &str,
+    icon_url: Option<String>,
+    detected_loader_hints: Option<&HashSet<String>>,
+) -> DiscoverSearchHit {
+    let confidence_score = github_discover_confidence_score(repo, selection, query);
+    let project_id = github_repo_project_id(repo);
+    let title = github_repo_title(repo);
+    let description = repo
+        .description
+        .clone()
+        .unwrap_or_else(|| "GitHub release suggestion".to_string());
+    DiscoverSearchHit {
+        source: "github".to_string(),
+        project_id,
+        title,
+        description,
+        author: repo.owner.login.clone(),
+        downloads: repo.stargazers_count,
+        follows: repo.forks_count,
+        icon_url,
+        categories: {
+            let mut tags = repo.topics.clone();
+            if let Some(hints) = detected_loader_hints {
+                tags.extend(github_loader_hints_to_labels(hints));
+            }
+            tags.retain(|topic| !topic.trim().is_empty());
+            tags.sort();
+            tags.dedup();
+            tags
+        },
+        versions: vec![github_release_version_label(&selection.release)],
+        date_modified: selection
+            .release
+            .published_at
+            .clone()
+            .or_else(|| selection.release.created_at.clone())
+            .or_else(|| repo.pushed_at.clone())
+            .or_else(|| repo.updated_at.clone())
+            .unwrap_or_default(),
+        content_type: "mods".to_string(),
+        slug: Some(repo.name.clone()),
+        external_url: Some(github_repo_external_url(repo)),
+        confidence: Some(github_confidence_label(confidence_score)),
+        reason: Some(github_discover_reason(repo, selection, confidence_score)),
+        install_supported: Some(true),
+        install_note: None,
+    }
+}
+
+fn github_repo_without_release_hit(
+    repo: &GithubRepository,
+    query: &str,
+    install_note: &str,
+    icon_url: Option<String>,
+    detected_loader_hints: Option<&HashSet<String>>,
+) -> DiscoverSearchHit {
+    let similarity = github_repo_query_similarity(repo, query);
+    let confidence_score =
+        ((repo.stargazers_count.min(4000) / 80) as i64 + similarity).clamp(0, 100);
+    DiscoverSearchHit {
+        source: "github".to_string(),
+        project_id: github_repo_project_id(repo),
+        title: github_repo_title(repo),
+        description: repo
+            .description
+            .clone()
+            .unwrap_or_else(|| "GitHub repository".to_string()),
+        author: repo.owner.login.clone(),
+        downloads: repo.stargazers_count,
+        follows: repo.forks_count,
+        icon_url,
+        categories: {
+            let mut tags = repo.topics.clone();
+            if let Some(hints) = detected_loader_hints {
+                tags.extend(github_loader_hints_to_labels(hints));
+            }
+            tags.retain(|topic| !topic.trim().is_empty());
+            tags.sort();
+            tags.dedup();
+            tags
+        },
+        versions: vec![],
+        date_modified: repo
+            .pushed_at
+            .clone()
+            .or_else(|| repo.updated_at.clone())
+            .unwrap_or_default(),
+        content_type: "mods".to_string(),
+        slug: Some(repo.name.clone()),
+        external_url: Some(github_repo_external_url(repo)),
+        confidence: Some(github_confidence_label(confidence_score)),
+        reason: Some(format!(
+            "{}★ · repository match · {}",
+            repo.stargazers_count,
+            github_confidence_label(confidence_score)
+        )),
+        install_supported: Some(false),
+        install_note: Some(install_note.to_string()),
+    }
+}
+
+fn github_repo_deferred_release_hit(
+    repo: &GithubRepository,
+    query: &str,
+    install_note: &str,
+    icon_url: Option<String>,
+    detected_loader_hints: Option<&HashSet<String>>,
+) -> DiscoverSearchHit {
+    let mut hit =
+        github_repo_without_release_hit(repo, query, install_note, icon_url, detected_loader_hints);
+    hit.install_supported = Some(true);
+    hit
+}
+
+fn search_github_discover(
+    client: &Client,
+    args: &SearchDiscoverContentArgs,
+) -> Result<DiscoverSearchResult, String> {
+    if normalize_discover_content_type(&args.content_type) != "mods" {
+        return Ok(DiscoverSearchResult {
+            hits: vec![],
+            offset: args.offset,
+            limit: args.limit,
+            total_hits: 0,
+        });
+    }
+    let query = args.query.trim();
+    let required_hits = args
+        .offset
+        .saturating_add(args.limit)
+        .saturating_add(GITHUB_DISCOVER_RESULTS_BUFFER);
+    let desired_pool = required_hits
+        .max(args.limit.saturating_mul(3))
+        .max(GITHUB_DISCOVER_MIN_RESULT_POOL)
+        .min(GITHUB_DISCOVER_SOURCE_MAX_REPO_CANDIDATES);
+    let requested_limit = desired_pool;
+    let mut repos = search_github_repositories(client, query, requested_limit)?;
+    let modrinth_icon_hints = fetch_modrinth_icon_hints_for_query(client, query);
+    if let Some((owner, repo_name)) = parse_github_repo_query_candidate(query) {
+        if let Ok(direct_repo) = fetch_github_repo(client, &owner, &repo_name) {
+            let key = direct_repo.full_name.trim().to_ascii_lowercase();
+            let already_present = repos
+                .iter()
+                .any(|repo| repo.full_name.trim().eq_ignore_ascii_case(&key));
+            if !already_present {
+                repos.insert(0, direct_repo);
+            }
+        }
+    }
+
+    let mut hits: Vec<DiscoverSearchHit> = Vec::new();
+    let mut seen_hits: HashSet<String> = HashSet::new();
+    let has_configured_auth_tokens = github_has_configured_tokens();
+    let strict_asset_filters = !args.loaders.is_empty()
+        || args
+            .game_version
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    let mut release_fetch_budget = if strict_asset_filters {
+        GITHUB_DISCOVER_MAX_RELEASE_FETCHES
+    } else {
+        GITHUB_DISCOVER_NONSTRICT_RELEASE_FETCHES
+    };
+    if !has_configured_auth_tokens {
+        release_fetch_budget = if strict_asset_filters {
+            GITHUB_UNAUTH_STRICT_RELEASE_FETCH_BUDGET
+        } else {
+            GITHUB_UNAUTH_NONSTRICT_RELEASE_FETCH_BUDGET
+        };
+    }
+    let mut release_fetches = 0usize;
+    for repo in repos {
+        if github_repo_policy_rejection_reason(&repo).is_some() {
+            continue;
+        }
+        let repo_tree_loader_hints = if args.loaders.is_empty() {
+            HashSet::new()
+        } else {
+            fetch_github_repo_loader_hints(client, &repo)
+        };
+        let repo_tree_loader_hints_opt = if repo_tree_loader_hints.is_empty() {
+            None
+        } else {
+            Some(&repo_tree_loader_hints)
+        };
+        if !github_repo_matches_discover_light_filters(&repo, args, repo_tree_loader_hints_opt) {
+            continue;
+        }
+        let similarity = github_repo_query_similarity(&repo, query);
+        let minecraft_signal = github_repo_minecraft_signal_score(&repo);
+        if !github_repo_passes_signal_gate(&repo, minecraft_signal, similarity, query) {
+            continue;
+        }
+        if query.is_empty() && repo.stargazers_count < 250 {
+            continue;
+        }
+        if !query.is_empty() && similarity < 8 && repo.stargazers_count < 120 {
+            continue;
+        }
+        let (owner, repo_name) = if !repo.full_name.trim().is_empty() {
+            parse_github_project_id(&repo.full_name)?
+        } else {
+            (repo.owner.login.clone(), repo.name.clone())
+        };
+        let icon_url = github_best_discover_icon_url(&repo, &modrinth_icon_hints);
+        let requires_release_validation = minecraft_signal <= 0
+            && !github_repo_can_skip_release_validation(&repo, minecraft_signal, similarity);
+        if requires_release_validation && release_fetches >= release_fetch_budget {
+            continue;
+        }
+        if !strict_asset_filters && release_fetches >= release_fetch_budget {
+            let hit = github_repo_deferred_release_hit(
+                &repo,
+                query,
+                "Fast mode: release metadata is checked when you open/install this result.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            );
+            let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+            if seen_hits.insert(dedupe_key) {
+                hits.push(hit);
+            }
+            if hits.len() >= desired_pool {
+                break;
+            }
+            continue;
+        }
+        if strict_asset_filters && release_fetches >= release_fetch_budget {
+            break;
+        }
+        release_fetches = release_fetches.saturating_add(1);
+        let releases = match fetch_github_releases(client, &owner, &repo_name) {
+            Ok(value) => value,
+            Err(_) => {
+                if strict_asset_filters || requires_release_validation {
+                    continue;
+                }
+                let hit = github_repo_without_release_hit(
+                    &repo,
+                    query,
+                    "Repository found, but GitHub release metadata is unavailable right now.",
+                    icon_url,
+                    repo_tree_loader_hints_opt,
+                );
+                let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+                if seen_hits.insert(dedupe_key) {
+                    hits.push(hit);
+                }
+                continue;
+            }
+        };
+        if let Some(selection) = select_github_release_with_asset(
+            &repo,
+            &releases,
+            query,
+            None,
+            None,
+            Some(args),
+            repo_tree_loader_hints_opt,
+        ) {
+            let combined_text = format!(
+                "{} {} {} {} {} {} {}",
+                repo.name,
+                repo.full_name,
+                repo.description.clone().unwrap_or_default(),
+                repo.topics.join(" "),
+                selection.release.tag_name,
+                selection.release.name.clone().unwrap_or_default(),
+                selection.asset.name
+            );
+            let mut detected_loader_hints = github_loader_hints_from_text(&combined_text);
+            if let Some(extra) = repo_tree_loader_hints_opt {
+                detected_loader_hints.extend(extra.iter().cloned());
+            }
+            let loader_hints_opt = if detected_loader_hints.is_empty() {
+                None
+            } else {
+                Some(&detected_loader_hints)
+            };
+            let hit = github_release_to_discover_hit(
+                &repo,
+                &selection,
+                query,
+                icon_url,
+                loader_hints_opt,
+            );
+            let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+            if seen_hits.insert(dedupe_key) {
+                hits.push(hit);
+            }
+            if hits.len() >= desired_pool {
+                break;
+            }
+            continue;
+        }
+
+        if strict_asset_filters || requires_release_validation {
+            continue;
+        }
+        let hit = github_repo_deferred_release_hit(
+            &repo,
+            query,
+            "Repository match found. Release compatibility is checked when you open/install.",
+            icon_url,
+            repo_tree_loader_hints_opt,
+        );
+        let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+        if seen_hits.insert(dedupe_key) {
+            hits.push(hit);
+        }
+        if hits.len() >= desired_pool {
+            break;
+        }
+    }
+    sort_discover_hits(&mut hits, &args.index, Some(query));
+    let total_hits = hits.len();
+    let sliced = hits
+        .into_iter()
+        .skip(args.offset)
+        .take(args.limit)
+        .collect::<Vec<_>>();
+    Ok(DiscoverSearchResult {
+        hits: sliced,
+        offset: args.offset,
+        limit: args.limit,
+        total_hits,
+    })
+}
+
+fn search_github_discover_fallback(
+    client: &Client,
+    args: &SearchDiscoverContentArgs,
+    existing_hits: &[DiscoverSearchHit],
+) -> Vec<DiscoverSearchHit> {
+    let normalized = normalize_discover_content_type(&args.content_type);
+    if normalized != "mods" {
+        return vec![];
+    }
+    let query = args.query.trim();
+    if query.is_empty() {
+        return vec![];
+    }
+    let repos = match search_github_repositories(client, query, GITHUB_DISCOVER_MAX_REPO_CANDIDATES)
+    {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("github fallback discover search failed: {err}");
+            return vec![];
+        }
+    };
+    let modrinth_icon_hints = fetch_modrinth_icon_hints_for_query(client, query);
+    let mut dedupe: HashSet<String> = existing_hits
+        .iter()
+        .map(|hit| hit.project_id.trim().to_ascii_lowercase())
+        .collect();
+    let mut out: Vec<DiscoverSearchHit> = Vec::new();
+    let has_configured_auth_tokens = github_has_configured_tokens();
+    let strict_asset_filters = !args.loaders.is_empty()
+        || args
+            .game_version
+            .as_ref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
+    let mut release_fetch_budget = if strict_asset_filters {
+        GITHUB_DISCOVER_MAX_RELEASE_FETCHES
+    } else {
+        (GITHUB_DISCOVER_NONSTRICT_RELEASE_FETCHES / 2).max(6)
+    };
+    if !has_configured_auth_tokens {
+        release_fetch_budget = if strict_asset_filters {
+            GITHUB_UNAUTH_STRICT_RELEASE_FETCH_BUDGET
+        } else {
+            GITHUB_UNAUTH_NONSTRICT_RELEASE_FETCH_BUDGET
+        };
+    }
+    let mut release_fetches = 0usize;
+    for repo in repos {
+        if github_repo_policy_rejection_reason(&repo).is_some() {
+            continue;
+        }
+        let key = github_repo_project_id(&repo).to_ascii_lowercase();
+        if !key.is_empty() && dedupe.contains(&key) {
+            continue;
+        }
+        let repo_tree_loader_hints = if args.loaders.is_empty() {
+            HashSet::new()
+        } else {
+            fetch_github_repo_loader_hints(client, &repo)
+        };
+        let repo_tree_loader_hints_opt = if repo_tree_loader_hints.is_empty() {
+            None
+        } else {
+            Some(&repo_tree_loader_hints)
+        };
+        if !github_repo_matches_discover_light_filters(&repo, args, repo_tree_loader_hints_opt) {
+            continue;
+        }
+        let similarity = github_repo_query_similarity(&repo, query);
+        let minecraft_signal = github_repo_minecraft_signal_score(&repo);
+        if !github_repo_passes_signal_gate(&repo, minecraft_signal, similarity, query) {
+            continue;
+        }
+        if similarity < 8 && repo.stargazers_count < 120 {
+            continue;
+        }
+        let icon_url = github_best_discover_icon_url(&repo, &modrinth_icon_hints);
+        let requires_release_validation = minecraft_signal <= 0
+            && !github_repo_can_skip_release_validation(&repo, minecraft_signal, similarity);
+        if requires_release_validation && release_fetches >= release_fetch_budget {
+            continue;
+        }
+        if !strict_asset_filters && release_fetches >= release_fetch_budget {
+            let hit = github_repo_deferred_release_hit(
+                &repo,
+                query,
+                "Fast fallback: release metadata is checked when you open/install this result.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            );
+            if dedupe.insert(hit.project_id.trim().to_ascii_lowercase()) {
+                out.push(hit);
+            }
+            continue;
+        }
+        let (owner, repo_name) = if !repo.full_name.trim().is_empty() {
+            match parse_github_project_id(&repo.full_name) {
+                Ok(value) => value,
+                Err(_) => continue,
+            }
+        } else {
+            (repo.owner.login.clone(), repo.name.clone())
+        };
+        release_fetches = release_fetches.saturating_add(1);
+        let releases = match fetch_github_releases(client, &owner, &repo_name) {
+            Ok(value) => value,
+            Err(_) => {
+                if strict_asset_filters || requires_release_validation {
+                    continue;
+                }
+                let hit = github_repo_without_release_hit(
+                    &repo,
+                    query,
+                    "Repository found, but release metadata is currently unavailable.",
+                    icon_url,
+                    repo_tree_loader_hints_opt,
+                );
+                if dedupe.insert(hit.project_id.trim().to_ascii_lowercase()) {
+                    out.push(hit);
+                }
+                continue;
+            }
+        };
+        let hit = if let Some(selection) = select_github_release_with_asset(
+            &repo,
+            &releases,
+            query,
+            None,
+            None,
+            Some(args),
+            repo_tree_loader_hints_opt,
+        ) {
+            let combined_text = format!(
+                "{} {} {} {} {} {} {}",
+                repo.name,
+                repo.full_name,
+                repo.description.clone().unwrap_or_default(),
+                repo.topics.join(" "),
+                selection.release.tag_name,
+                selection.release.name.clone().unwrap_or_default(),
+                selection.asset.name
+            );
+            let mut detected_loader_hints = github_loader_hints_from_text(&combined_text);
+            if let Some(extra) = repo_tree_loader_hints_opt {
+                detected_loader_hints.extend(extra.iter().cloned());
+            }
+            let loader_hints_opt = if detected_loader_hints.is_empty() {
+                None
+            } else {
+                Some(&detected_loader_hints)
+            };
+            github_release_to_discover_hit(&repo, &selection, query, icon_url, loader_hints_opt)
+        } else {
+            if strict_asset_filters || requires_release_validation {
+                continue;
+            }
+            github_repo_deferred_release_hit(
+                &repo,
+                query,
+                "Repository match found. Release compatibility is checked when you open/install.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            )
+        };
+        if dedupe.insert(hit.project_id.trim().to_ascii_lowercase()) {
+            out.push(hit);
+        }
+    }
+    out
+}
+
+fn sha256_bytes_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    format!("{:x}", digest)
+}
+
+fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|e| format!("open file '{}' for sha256 failed: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("read file '{}' for sha256 failed: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(format!("{:x}", digest))
 }
 
 fn parse_cf_hashes(file: &CurseforgeFile) -> HashMap<String, String> {
@@ -8659,7 +12884,8 @@ fn resolve_curseforge_dependency_chain_with_worker_cap(
         ordered.extend(level_ids.iter().copied());
 
         let queue = Arc::new(Mutex::new(VecDeque::from(level_ids.clone())));
-        let results: Arc<Mutex<Vec<(i64, CurseforgeFile, Vec<i64>)>>> = Arc::new(Mutex::new(vec![]));
+        let results: Arc<Mutex<Vec<(i64, CurseforgeFile, Vec<i64>)>>> =
+            Arc::new(Mutex::new(vec![]));
         let first_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
         let worker_count = adaptive_curseforge_resolve_worker_cap(level_ids.len(), max_worker_cap);
@@ -8710,7 +12936,9 @@ fn resolve_curseforge_dependency_chain_with_worker_cap(
                 let deps = file
                     .dependencies
                     .iter()
-                    .filter(|dep| dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type))
+                    .filter(|dep| {
+                        dep.mod_id > 0 && curseforge_relation_is_required(dep.relation_type)
+                    })
                     .map(|dep| dep.mod_id)
                     .collect::<Vec<_>>();
                 if let Ok(mut guard) = results_ref.lock() {
@@ -8762,7 +12990,9 @@ fn resolve_curseforge_dependency_chain_with_worker_cap(
             .lock()
             .ok()
             .and_then(|guard| guard.get(&mod_id).cloned())
-            .ok_or_else(|| format!("Missing selected CurseForge file for dependency project {mod_id}"))?;
+            .ok_or_else(|| {
+                format!("Missing selected CurseForge file for dependency project {mod_id}")
+            })?;
         plan.push(ResolvedCurseforgeInstallMod { mod_id, file });
     }
     Ok(plan)
@@ -9273,7 +13503,7 @@ where
         source: "modrinth".to_string(),
         project_id: project_id.to_string(),
         version_id: version.id.clone(),
-        name: resolved_title.clone(),
+        name: canonical_lock_entry_name(&normalized, &safe_filename, &resolved_title),
         version_number: version.version_number.clone(),
         filename: safe_filename,
         content_type: normalized.clone(),
@@ -9398,10 +13628,15 @@ where
         source: "curseforge".to_string(),
         project_id: project_key,
         version_id: format!("cf_file:{}", file.id),
-        name: project_title
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| project.name.clone()),
+        name: canonical_lock_entry_name(
+            &normalized,
+            &safe_filename,
+            project_title
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| project.name.clone())
+                .as_str(),
+        ),
         version_number: if file.display_name.trim().is_empty() {
             file.file_name.clone()
         } else {
@@ -9433,6 +13668,167 @@ where
             },
             confidence: None,
             reason: None,
+        }],
+    };
+    lock.entries.push(new_entry.clone());
+    Ok(new_entry)
+}
+
+fn install_github_content_inner<F>(
+    instance: &Instance,
+    instance_dir: &Path,
+    lock: &mut Lockfile,
+    client: &Client,
+    project_id: &str,
+    project_title: Option<&str>,
+    content_type: &str,
+    target_worlds: &[String],
+    mut on_progress: F,
+) -> Result<LockEntry, String>
+where
+    F: FnMut(u64, Option<u64>),
+{
+    let normalized = normalize_lock_content_type(content_type);
+    if normalized != "mods" {
+        return Err("GitHub provider currently supports mods only.".to_string());
+    }
+    if !target_worlds.is_empty() {
+        return Err("GitHub mods install at instance scope only.".to_string());
+    }
+
+    let (owner, repo_name) = parse_github_project_id(project_id)?;
+    let repo = fetch_github_repo(client, &owner, &repo_name)?;
+    if let Some(reason) = github_repo_policy_rejection_reason(&repo) {
+        return Err(format!(
+            "GitHub repository rejected by safety policy: {reason}."
+        ));
+    }
+    let releases = fetch_github_releases(client, &owner, &repo_name)?;
+    let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
+    let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+        None
+    } else {
+        Some(&repo_loader_hints)
+    };
+    let query_hint = project_title
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| repo.name.trim());
+    let selection = if let Some(selection) = select_github_release_with_asset(
+        &repo,
+        &releases,
+        query_hint,
+        Some(&instance.mc_version),
+        Some(&instance.loader),
+        None,
+        repo_loader_hints_opt,
+    ) {
+        selection
+    } else if select_github_release_with_asset(
+        &repo,
+        &releases,
+        query_hint,
+        None,
+        None,
+        None,
+        repo_loader_hints_opt,
+    )
+    .is_some()
+    {
+        return Err(format!(
+            "No compatible GitHub release .jar found for {} + {}. This launcher now requires explicit game-version hints in release assets/tags for GitHub installs.",
+            instance.loader, instance.mc_version
+        ));
+    } else {
+        return Err("No acceptable GitHub release with a .jar asset was found.".to_string());
+    };
+
+    let safe_filename = sanitize_filename(&selection.asset.name);
+    if safe_filename.is_empty() {
+        return Err("Resolved GitHub release filename is invalid".to_string());
+    }
+
+    let tmp_dir = instance_dir.join(".openjar_downloads");
+    fs::create_dir_all(&tmp_dir)
+        .map_err(|e| format!("mkdir '{}' failed: {e}", tmp_dir.display()))?;
+    let tmp_path = tmp_dir.join(format!("{safe_filename}.{}.part", selection.release.id));
+    let mut stream_result = download_stream_to_temp_with_retry(
+        client,
+        &selection.asset.browser_download_url,
+        &format!("gh:{owner}/{repo_name}:{}", selection.release.id),
+        &tmp_path,
+        |downloaded_bytes, total_bytes| on_progress(downloaded_bytes, total_bytes),
+    )?;
+    let sha256 = sha256_file_hex(&tmp_path)?;
+
+    let post_process_started = Instant::now();
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &[],
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(
+        &format!("gh:{owner}/{repo_name}:{}", selection.release.id),
+        &stream_result.profile,
+    );
+
+    let project_key = github_project_key(&owner, &repo_name);
+    remove_replaced_entries_for_content(lock, instance_dir, &project_key, &normalized)?;
+    if project_id.trim() != project_key {
+        remove_replaced_entries_for_content(lock, instance_dir, project_id, &normalized)?;
+    }
+
+    let mut hashes = extract_github_asset_digest(&selection.asset);
+    hashes.insert("sha256".to_string(), sha256);
+    if !stream_result.sha512.trim().is_empty() {
+        hashes
+            .entry("sha512".to_string())
+            .or_insert_with(|| stream_result.sha512.clone());
+    }
+    if selection.has_checksum_sidecar {
+        hashes
+            .entry("checksum_sidecar".to_string())
+            .or_insert_with(|| "present".to_string());
+    }
+
+    let resolved_name = project_title
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            if repo.full_name.trim().is_empty() {
+                None
+            } else {
+                Some(repo.full_name.clone())
+            }
+        })
+        .unwrap_or_else(|| format!("{owner}/{repo_name}"));
+    let version_number = github_release_version_label(&selection.release);
+    let version_id = format!("gh_release:{}", selection.release.id);
+
+    let new_entry = LockEntry {
+        source: "github".to_string(),
+        project_id: project_key.clone(),
+        version_id: version_id.clone(),
+        name: canonical_lock_entry_name(&normalized, &safe_filename, &resolved_name),
+        version_number: version_number.clone(),
+        filename: safe_filename,
+        content_type: normalized,
+        target_scope: "instance".to_string(),
+        target_worlds: vec![],
+        pinned_version: None,
+        enabled: true,
+        hashes,
+        provider_candidates: vec![ProviderCandidate {
+            source: "github".to_string(),
+            project_id: project_key,
+            version_id,
+            name: resolved_name,
+            version_number,
+            confidence: None,
+            reason: Some("GitHub release asset (policy-filtered)".to_string()),
         }],
     };
     lock.entries.push(new_entry.clone());
@@ -9842,6 +14238,10 @@ fn search_modrinth_discover(
                 content_type: hit_content_type,
                 slug: slug.clone(),
                 external_url: slug.map(|s| format!("https://modrinth.com/project/{s}")),
+                confidence: None,
+                reason: None,
+                install_supported: None,
+                install_note: None,
             });
         }
     }
@@ -9969,22 +14369,54 @@ fn search_curseforge_discover(
                     item.slug.as_deref(),
                     &hit_content_type,
                 )),
+                confidence: None,
+                reason: None,
+                install_supported: None,
+                install_note: None,
             });
         }
     }
 
+    if !args.categories.is_empty() {
+        let requested = args
+            .categories
+            .iter()
+            .map(|value| normalize_provider_match_key(value))
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if !requested.is_empty() {
+            all_hits.retain(|hit| {
+                let categories_text = hit.categories.join(" ");
+                let normalized_hit_text = normalize_provider_match_key(&categories_text);
+                requested.iter().any(|category| {
+                    normalized_hit_text.contains(category)
+                        || hit
+                            .categories
+                            .iter()
+                            .any(|value| normalize_provider_match_key(value).contains(category))
+                })
+            });
+        }
+    }
+
+    let filtered_total = all_hits.len();
     all_hits.sort_by(|a, b| b.date_modified.cmp(&a.date_modified));
     let sliced = all_hits
         .into_iter()
         .skip(args.offset)
         .take(args.limit)
         .collect::<Vec<_>>();
+    let total_hits = if args.categories.is_empty() {
+        aggregate_total.max(filtered_total)
+    } else {
+        filtered_total
+    };
 
     Ok(DiscoverSearchResult {
         hits: sliced,
         offset: args.offset,
         limit: args.limit,
-        total_hits: aggregate_total,
+        total_hits,
     })
 }
 
@@ -10049,12 +14481,36 @@ This file may disallow third-party downloads. Try another file/provider or impor
     Err(prior_error)
 }
 
-fn sort_discover_hits(hits: &mut [DiscoverSearchHit], index: &str) {
+fn sort_discover_hits(hits: &mut [DiscoverSearchHit], index: &str, query: Option<&str>) {
+    let relevance_cmp = |left: &DiscoverSearchHit, right: &DiscoverSearchHit| {
+        let left_score = query
+            .map(|value| discover_hit_query_score(left, value))
+            .unwrap_or(0);
+        let right_score = query
+            .map(|value| discover_hit_query_score(right, value))
+            .unwrap_or(0);
+        right_score
+            .cmp(&left_score)
+            .then_with(|| right.downloads.cmp(&left.downloads))
+            .then_with(|| right.follows.cmp(&left.follows))
+            .then_with(|| right.date_modified.cmp(&left.date_modified))
+    };
+
     match index.trim().to_lowercase().as_str() {
-        "downloads" => hits.sort_by(|a, b| b.downloads.cmp(&a.downloads)),
-        "follows" => hits.sort_by(|a, b| b.follows.cmp(&a.follows)),
-        "updated" | "newest" => hits.sort_by(|a, b| b.date_modified.cmp(&a.date_modified)),
-        _ => hits.sort_by(|a, b| b.downloads.cmp(&a.downloads)),
+        "downloads" => hits.sort_by(|a, b| {
+            b.downloads
+                .cmp(&a.downloads)
+                .then_with(|| relevance_cmp(a, b))
+        }),
+        "follows" => {
+            hits.sort_by(|a, b| b.follows.cmp(&a.follows).then_with(|| relevance_cmp(a, b)))
+        }
+        "updated" | "newest" => hits.sort_by(|a, b| {
+            b.date_modified
+                .cmp(&a.date_modified)
+                .then_with(|| relevance_cmp(a, b))
+        }),
+        _ => hits.sort_by(relevance_cmp),
     }
 }
 
@@ -10678,6 +15134,138 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn copy_entry_recursive(src: &Path, dst: &Path) -> Result<(), String> {
+    let meta = fs::metadata(src)
+        .map_err(|e| format!("read source metadata '{}' failed: {e}", src.display()))?;
+    if meta.is_dir() {
+        copy_dir_recursive(src, dst)
+    } else if meta.is_file() {
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("mkdir '{}' failed: {e}", parent.display()))?;
+        }
+        fs::copy(src, dst).map_err(|e| {
+            format!(
+                "copy '{}' -> '{}' failed: {e}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+        Ok(())
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_instance_content_dirs(instance_dir: &Path) -> Result<(), String> {
+    for seg in ["mods", "config", "resourcepacks", "shaderpacks", "saves"] {
+        let dir = instance_dir.join(seg);
+        fs::create_dir_all(&dir)
+            .map_err(|e| format!("mkdir instance content '{}' failed: {e}", dir.display()))?;
+    }
+    Ok(())
+}
+
+fn runtime_reconcile_marker_path(instance_dir: &Path) -> PathBuf {
+    instance_dir.join(RUNTIME_RECONCILE_MARKER_FILE)
+}
+
+fn runtime_reconcile_skip_entry(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "assets" | "libraries" | "versions" | "logs" | "crash-reports" | "runtime_sessions"
+    )
+}
+
+fn runtime_reconcile_newest_wins(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "options.txt" | "servers.dat" | "usercache.json"
+    )
+}
+
+fn write_runtime_reconcile_marker(instance_dir: &Path) -> Result<(), String> {
+    let marker = runtime_reconcile_marker_path(instance_dir);
+    if marker.exists() {
+        return Ok(());
+    }
+    fs::write(&marker, now_iso()).map_err(|e| {
+        format!(
+            "write runtime reconcile marker '{}' failed: {e}",
+            marker.display()
+        )
+    })
+}
+
+fn is_source_newer_than_destination(src: &Path, dst: &Path) -> bool {
+    let src_modified = fs::metadata(src).and_then(|m| m.modified()).ok();
+    let dst_modified = fs::metadata(dst).and_then(|m| m.modified()).ok();
+    match (src_modified, dst_modified) {
+        (Some(a), Some(b)) => a > b,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
+fn reconcile_legacy_runtime_into_instance(instance_dir: &Path) -> Result<(), String> {
+    let marker = runtime_reconcile_marker_path(instance_dir);
+    if marker.exists() {
+        return Ok(());
+    }
+
+    let runtime_root = instance_dir.join("runtime");
+    if !runtime_root.exists() || !runtime_root.is_dir() {
+        return write_runtime_reconcile_marker(instance_dir);
+    }
+
+    let mut copied = 0usize;
+    let mut replaced = 0usize;
+    let mut skipped = 0usize;
+    let entries = fs::read_dir(&runtime_root).map_err(|e| {
+        format!(
+            "read legacy runtime '{}' failed: {e}",
+            runtime_root.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read legacy runtime entry failed: {e}"))?;
+        let src_path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.trim().is_empty() || runtime_reconcile_skip_entry(&name) {
+            continue;
+        }
+        let dst_path = instance_dir.join(&name);
+        if !dst_path.exists() {
+            copy_entry_recursive(&src_path, &dst_path)?;
+            copied += 1;
+            continue;
+        }
+        if runtime_reconcile_newest_wins(&name)
+            && src_path.is_file()
+            && dst_path.is_file()
+            && is_source_newer_than_destination(&src_path, &dst_path)
+        {
+            copy_entry_recursive(&src_path, &dst_path)?;
+            replaced += 1;
+            continue;
+        }
+        skipped += 1;
+        eprintln!(
+            "runtime reconcile skipped conflicting entry '{}': destination '{}' already exists",
+            name,
+            dst_path.display()
+        );
+    }
+    eprintln!(
+        "runtime reconcile complete for '{}': copied={}, replaced={}, skipped={}",
+        instance_dir.display(),
+        copied,
+        replaced,
+        skipped
+    );
+    write_runtime_reconcile_marker(instance_dir)
+}
+
 fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
@@ -10732,76 +15320,194 @@ fn sync_dir_link_first(src: &Path, dst: &Path, label: &str) -> Result<(), String
     }
 }
 
-fn sync_instance_runtime_content(
+fn isolated_runtime_clone_excluded(rel_path: &str) -> bool {
+    let normalized = rel_path.trim_matches('/').replace('\\', "/");
+    if normalized.is_empty() {
+        return false;
+    }
+    let lower = normalized.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "play_sessions.v1.json" | "play_sessions_active.v1.json"
+    ) {
+        return true;
+    }
+    if lower == "runtime" || lower.starts_with("runtime/") {
+        return true;
+    }
+    if lower == "runtime_sessions" || lower.starts_with("runtime_sessions/") {
+        return true;
+    }
+    if lower == "snapshots" || lower.starts_with("snapshots/") {
+        return true;
+    }
+    if lower == "world_backups" || lower.starts_with("world_backups/") {
+        return true;
+    }
+    if lower == "assets" || lower.starts_with("assets/") {
+        return true;
+    }
+    if lower == "libraries" || lower.starts_with("libraries/") {
+        return true;
+    }
+    if lower == "versions" || lower.starts_with("versions/") {
+        return true;
+    }
+    if lower == "logs/launches" || lower.starts_with("logs/launches/") {
+        return true;
+    }
+    false
+}
+
+fn clone_tree_recursive_with_exclusions(
+    src_root: &Path,
+    dst_root: &Path,
+    rel_prefix: &str,
+) -> Result<(), String> {
+    let current = if rel_prefix.is_empty() {
+        src_root.to_path_buf()
+    } else {
+        src_root.join(rel_prefix)
+    };
+    if !current.exists() {
+        return Ok(());
+    }
+    let entries =
+        fs::read_dir(&current).map_err(|e| format!("read '{}' failed: {e}", current.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read dir entry failed: {e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.trim().is_empty() {
+            continue;
+        }
+        let rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        if isolated_runtime_clone_excluded(&rel) {
+            continue;
+        }
+        let src_path = src_root.join(&rel);
+        let dst_path = dst_root.join(&rel);
+        let meta = entry
+            .metadata()
+            .map_err(|e| format!("read metadata '{}' failed: {e}", src_path.display()))?;
+        if meta.is_dir() {
+            fs::create_dir_all(&dst_path)
+                .map_err(|e| format!("mkdir '{}' failed: {e}", dst_path.display()))?;
+            clone_tree_recursive_with_exclusions(src_root, dst_root, &rel)?;
+        } else if meta.is_file() {
+            if let Some(parent) = dst_path.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("mkdir '{}' failed: {e}", parent.display()))?;
+            }
+            fs::copy(&src_path, &dst_path).map_err(|e| {
+                format!(
+                    "copy '{}' -> '{}' failed: {e}",
+                    src_path.display(),
+                    dst_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn clone_instance_to_isolated_runtime(
     app_instance_dir: &Path,
     runtime_dir: &Path,
 ) -> Result<(), String> {
-    let source_mods = app_instance_dir.join("mods");
-    let source_config = app_instance_dir.join("config");
-    let source_resourcepacks = app_instance_dir.join("resourcepacks");
-    let source_shaderpacks = app_instance_dir.join("shaderpacks");
-    let source_saves = app_instance_dir.join("saves");
-    let runtime_mods = runtime_dir.join("mods");
-    let runtime_config = runtime_dir.join("config");
-    let runtime_resourcepacks = runtime_dir.join("resourcepacks");
-    let runtime_shaderpacks = runtime_dir.join("shaderpacks");
-    let runtime_saves = runtime_dir.join("saves");
-    sync_dir_link_first(&source_mods, &runtime_mods, "runtime mods")?;
-    sync_dir_link_first(&source_config, &runtime_config, "runtime config")?;
-    sync_dir_link_first(
-        &source_resourcepacks,
-        &runtime_resourcepacks,
-        "runtime resourcepacks",
-    )?;
-    sync_dir_link_first(
-        &source_shaderpacks,
-        &runtime_shaderpacks,
-        "runtime shaderpacks",
-    )?;
-    sync_dir_link_first(&source_saves, &runtime_saves, "runtime saves")?;
+    remove_path_if_exists(runtime_dir)?;
+    fs::create_dir_all(runtime_dir).map_err(|e| {
+        format!(
+            "mkdir isolated runtime '{}' failed: {e}",
+            runtime_dir.display()
+        )
+    })?;
+    clone_tree_recursive_with_exclusions(app_instance_dir, runtime_dir, "")?;
+    ensure_instance_content_dirs(runtime_dir)?;
     Ok(())
+}
+
+fn runtime_session_active_marker_path(runtime_session_dir: &Path) -> PathBuf {
+    runtime_session_dir.join(RUNTIME_SESSION_ACTIVE_MARKER_FILE)
+}
+
+fn write_runtime_session_active_marker(runtime_session_dir: &Path) -> Result<(), String> {
+    let marker = runtime_session_active_marker_path(runtime_session_dir);
+    fs::write(&marker, now_iso()).map_err(|e| {
+        format!(
+            "write runtime session active marker '{}' failed: {e}",
+            marker.display()
+        )
+    })
+}
+
+fn cleanup_stale_runtime_sessions_for_instance(
+    instance_dir: &Path,
+    max_age: Duration,
+) -> Result<usize, String> {
+    let sessions_root = instance_dir.join("runtime_sessions");
+    if !sessions_root.exists() || !sessions_root.is_dir() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    let now = std::time::SystemTime::now();
+    let entries = fs::read_dir(&sessions_root).map_err(|e| {
+        format!(
+            "read runtime sessions '{}' failed: {e}",
+            sessions_root.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read runtime session entry failed: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let marker = runtime_session_active_marker_path(&path);
+        if marker.exists() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let age = now
+            .duration_since(modified)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        if age < max_age {
+            continue;
+        }
+        remove_path_if_exists(&path)?;
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn cleanup_stale_runtime_sessions_startup(app: &tauri::AppHandle) -> Result<usize, String> {
+    let instances_dir = app_instances_dir(app)?;
+    let idx = read_index(&instances_dir)?;
+    let mut removed = 0usize;
+    let max_age = Duration::from_secs(STALE_RUNTIME_SESSION_MAX_AGE_HOURS * 3600);
+    for instance in idx.instances {
+        let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
+        if !instance_dir.exists() {
+            continue;
+        }
+        removed += cleanup_stale_runtime_sessions_for_instance(&instance_dir, max_age)?;
+    }
+    Ok(removed)
 }
 
 fn sync_instance_runtime_content_isolated(
     app_instance_dir: &Path,
     runtime_dir: &Path,
 ) -> Result<(), String> {
-    let source_mods = app_instance_dir.join("mods");
-    let source_config = app_instance_dir.join("config");
-    let source_resourcepacks = app_instance_dir.join("resourcepacks");
-    let source_shaderpacks = app_instance_dir.join("shaderpacks");
-    let source_saves = app_instance_dir.join("saves");
-    let runtime_mods = runtime_dir.join("mods");
-    let runtime_config = runtime_dir.join("config");
-    let runtime_resourcepacks = runtime_dir.join("resourcepacks");
-    let runtime_shaderpacks = runtime_dir.join("shaderpacks");
-    let runtime_saves = runtime_dir.join("saves");
-
-    // Concurrent sessions must not mutate live instance worlds/config.
-    sync_dir_link_first(&source_mods, &runtime_mods, "runtime mods (isolated)")?;
-    sync_dir_link_first(
-        &source_resourcepacks,
-        &runtime_resourcepacks,
-        "runtime resourcepacks (isolated)",
-    )?;
-    sync_dir_link_first(
-        &source_shaderpacks,
-        &runtime_shaderpacks,
-        "runtime shaderpacks (isolated)",
-    )?;
-
-    remove_path_if_exists(&runtime_config)?;
-    copy_dir_recursive(&source_config, &runtime_config)?;
-    remove_path_if_exists(&runtime_saves)?;
-    copy_dir_recursive(&source_saves, &runtime_saves)?;
-    let _ = copy_file_if_exists(
-        &app_instance_dir.join("options.txt"),
-        &runtime_dir.join("options.txt"),
-    )?;
-    let _ = copy_file_if_exists(
-        &app_instance_dir.join("servers.dat"),
-        &runtime_dir.join("servers.dat"),
-    )?;
+    // Concurrent sessions are disposable full clones of the instance at launch time.
+    clone_instance_to_isolated_runtime(app_instance_dir, runtime_dir)?;
+    write_runtime_session_active_marker(runtime_dir)?;
     Ok(())
 }
 
@@ -10830,6 +15536,36 @@ fn sync_prism_instance_content(app_instance_dir: &Path, prism_mc_dir: &Path) -> 
         "prism shaderpacks",
     )?;
     sync_dir_link_first(&source_saves, &target_saves, "prism saves")?;
+    for filename in [
+        "options.txt",
+        "optionsof.txt",
+        "optionsshaders.txt",
+        "servers.dat",
+    ] {
+        let root = app_instance_dir.join(filename);
+        let dot_mc = app_instance_dir.join(".minecraft").join(filename);
+        let source_file = match (root.is_file(), dot_mc.is_file()) {
+            (true, true) => {
+                let root_time = fs::metadata(&root)
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                let dot_time = fs::metadata(&dot_mc)
+                    .ok()
+                    .and_then(|meta| meta.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                if dot_time > root_time {
+                    dot_mc
+                } else {
+                    root
+                }
+            }
+            (true, false) => root,
+            (false, true) => dot_mc,
+            (false, false) => continue,
+        };
+        let _ = copy_file_if_exists(&source_file, &prism_mc_dir.join(filename))?;
+    }
     Ok(())
 }
 
@@ -11458,6 +16194,18 @@ fn main() {
             if let Err(err) = migrate_selected_refresh_alias(&app.handle()) {
                 eprintln!("selected refresh-token alias migration warning: {err}");
             }
+            match cleanup_stale_runtime_sessions_startup(&app.handle()) {
+                Ok(removed) if removed > 0 => {
+                    eprintln!("startup cleanup removed {removed} stale runtime session folder(s)");
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!("startup runtime session cleanup warning: {err}");
+                }
+            }
+            if let Err(err) = recover_native_play_sessions_startup(&app.handle()) {
+                eprintln!("startup play session recovery warning: {err}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -11481,9 +16229,11 @@ fn main() {
             commands::update_all_modrinth_mods,
             commands::import_local_mod_file,
             commands::resolve_local_mod_sources,
+            commands::prune_missing_installed_entries,
             commands::list_installed_mods,
             commands::set_installed_mod_enabled,
             commands::set_installed_mod_provider,
+            commands::attach_installed_mod_github_repo,
             commands::remove_installed_mod,
             commands::trigger_instance_microphone_permission_prompt,
             commands::open_microphone_system_settings,
@@ -11506,6 +16256,7 @@ fn main() {
             commands::list_instance_snapshots,
             commands::list_instance_worlds,
             commands::get_instance_disk_usage,
+            commands::get_instance_playtime,
             commands::get_instance_last_run_metadata,
             commands::get_instance_last_run_report,
             commands::list_instance_run_reports,
@@ -11560,6 +16311,7 @@ fn main() {
             friend_link::list_instance_config_file_backups,
             friend_link::restore_instance_config_file_backup,
             commands::get_curseforge_project_detail,
+            commands::get_github_project_detail,
             commands::import_provider_modpack_template,
             commands::export_presets_json,
             commands::import_presets_json,
@@ -11788,8 +16540,14 @@ mod content_compatibility_tests {
     #[test]
     fn local_loader_guard_allows_forge_family_hint_for_forge_variants() {
         assert!(instance_loader_accepts_mod_loader("forge", "forge_family"));
-        assert!(instance_loader_accepts_mod_loader("neoforge", "forge_family"));
-        assert!(!instance_loader_accepts_mod_loader("fabric", "forge_family"));
+        assert!(instance_loader_accepts_mod_loader(
+            "neoforge",
+            "forge_family"
+        ));
+        assert!(!instance_loader_accepts_mod_loader(
+            "fabric",
+            "forge_family"
+        ));
     }
 }
 
@@ -11813,6 +16571,65 @@ mod discover_ranking_tests {
             content_type: "mods".to_string(),
             slug: None,
             external_url: None,
+            confidence: None,
+            reason: None,
+            install_supported: None,
+            install_note: None,
+        }
+    }
+
+    fn sample_discover_repo() -> GithubRepository {
+        GithubRepository {
+            full_name: "etianl/Trouser-Streak".to_string(),
+            name: "Trouser-Streak".to_string(),
+            description: Some("Meteor addon with mods for chunk tracing.".to_string()),
+            stargazers_count: 500,
+            forks_count: 12,
+            archived: false,
+            fork: false,
+            disabled: false,
+            html_url: "https://github.com/etianl/Trouser-Streak".to_string(),
+            homepage: None,
+            watchers_count: 500,
+            open_issues_count: 1,
+            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
+            topics: vec![],
+            default_branch: "main".to_string(),
+            owner: GithubOwner {
+                login: "etianl".to_string(),
+                owner_type: "User".to_string(),
+            },
+        }
+    }
+
+    fn sample_non_minecraft_ml_repo() -> GithubRepository {
+        GithubRepository {
+            full_name: "hwaluskle/tensorflow-generative-model-collections".to_string(),
+            name: "tensorflow-generative-model-collections".to_string(),
+            description: Some("Collection of generative models in Tensorflow.".to_string()),
+            stargazers_count: 3900,
+            forks_count: 840,
+            archived: false,
+            fork: false,
+            disabled: false,
+            html_url: "https://github.com/hwaluskle/tensorflow-generative-model-collections"
+                .to_string(),
+            homepage: None,
+            watchers_count: 3900,
+            open_issues_count: 1,
+            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
+            topics: vec![
+                "tensorflow".to_string(),
+                "model".to_string(),
+                "gan".to_string(),
+            ],
+            default_branch: "main".to_string(),
+            owner: GithubOwner {
+                login: "hwaluskle".to_string(),
+                owner_type: "User".to_string(),
+            },
         }
     }
 
@@ -11842,6 +16659,656 @@ mod discover_ranking_tests {
             .map(|hit| hit.project_id.as_str())
             .collect::<Vec<_>>();
         assert_eq!(order, vec!["mr_1", "mr_2"]);
+    }
+
+    #[test]
+    fn github_similarity_score_tolerates_common_typos() {
+        let exact = github_name_similarity_score("meteor client", "meteor client");
+        let typo = github_name_similarity_score("meteor client", "metor clint");
+        assert!(exact >= typo);
+        assert!(typo >= 20);
+    }
+
+    #[test]
+    fn discover_query_variants_include_shortened_form() {
+        let variants = discover_query_variants("meteor client hacks");
+        assert!(!variants.is_empty());
+        assert!(variants.iter().any(|value| value.contains("meteor")));
+    }
+
+    #[test]
+    fn sort_discover_hits_prefers_relevance_by_default() {
+        let mut hits = vec![
+            DiscoverSearchHit {
+                project_id: "a".to_string(),
+                title: "random utility".to_string(),
+                downloads: 9000,
+                ..make_hit("modrinth", "a")
+            },
+            DiscoverSearchHit {
+                project_id: "b".to_string(),
+                title: "meteor client".to_string(),
+                downloads: 100,
+                ..make_hit("modrinth", "b")
+            },
+        ];
+        sort_discover_hits(&mut hits, "relevance", Some("metor"));
+        assert_eq!(hits.first().map(|hit| hit.project_id.as_str()), Some("b"));
+    }
+
+    #[test]
+    fn github_signal_gate_rejects_low_similarity_without_minecraft_signal() {
+        let repo = sample_discover_repo();
+        assert!(!github_repo_passes_signal_gate(
+            &repo,
+            0,
+            12,
+            "trouser treaks"
+        ));
+    }
+
+    #[test]
+    fn github_signal_gate_allows_high_similarity_without_minecraft_signal() {
+        let repo = sample_discover_repo();
+        assert!(github_repo_passes_signal_gate(
+            &repo,
+            0,
+            40,
+            "trouser treaks"
+        ));
+    }
+
+    #[test]
+    fn github_signal_gate_allows_positive_minecraft_signal() {
+        let repo = sample_discover_repo();
+        assert!(github_repo_passes_signal_gate(&repo, 2, 0, "any"));
+    }
+
+    #[test]
+    fn github_mod_ecosystem_signal_does_not_confuse_model_with_mod() {
+        let repo = sample_non_minecraft_ml_repo();
+        assert!(github_repo_mod_ecosystem_signal_score(&repo) <= 0);
+    }
+
+    #[test]
+    fn github_lookup_queries_strip_local_version_noise() {
+        let queries =
+            github_lookup_queries_for_local_mod("Trouser-Streak-v1.5.8-fabric-1.21.1.jar", None);
+        assert!(!queries.is_empty());
+        assert!(queries
+            .iter()
+            .any(|query| query.contains("trouser") && query.contains("streak")));
+    }
+
+    #[test]
+    fn github_discover_search_queries_prioritize_typo_fallback_without_tokens() {
+        let queries = github_discover_search_queries("Trouser Treaks", false);
+        assert!(!queries.is_empty());
+        assert!(queries
+            .iter()
+            .any(|q| q.contains("trouser in:name,description")));
+        assert!(queries.len() <= GITHUB_UNAUTH_MAX_SEARCH_QUERIES);
+    }
+}
+
+#[cfg(test)]
+mod lock_entry_name_tests {
+    use super::*;
+
+    #[test]
+    fn mod_entries_use_core_jar_filename_as_name() {
+        let name = canonical_lock_entry_name("mods", "meteor-client-1.21.1-0.5.8.jar", "Meteor");
+        assert_eq!(name, "meteor-client-1.21.1-0.5.8");
+    }
+
+    #[test]
+    fn mod_entries_strip_disabled_suffix_before_naming() {
+        let name = canonical_lock_entry_name(
+            "mods",
+            "trouser-streak-1.21.1.jar.disabled",
+            "Trouser Streak",
+        );
+        assert_eq!(name, "trouser-streak-1.21.1");
+    }
+
+    #[test]
+    fn non_mod_entries_keep_existing_name() {
+        let name = canonical_lock_entry_name(
+            "resourcepacks",
+            "fresh-animations-1.0.0.zip",
+            "Fresh Animations",
+        );
+        assert_eq!(name, "Fresh Animations");
+    }
+}
+
+#[cfg(test)]
+mod github_provider_tests {
+    use super::*;
+
+    fn sample_repo() -> GithubRepository {
+        GithubRepository {
+            full_name: "OpenJar/test-mod".to_string(),
+            name: "test-mod".to_string(),
+            description: Some("A test Minecraft mod".to_string()),
+            stargazers_count: 4200,
+            forks_count: 120,
+            archived: false,
+            fork: false,
+            disabled: false,
+            html_url: "https://github.com/OpenJar/test-mod".to_string(),
+            homepage: None,
+            watchers_count: 4200,
+            open_issues_count: 12,
+            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
+            topics: vec!["minecraft".to_string(), "fabric".to_string()],
+            default_branch: "main".to_string(),
+            owner: GithubOwner {
+                login: "OpenJar".to_string(),
+                owner_type: "Organization".to_string(),
+            },
+        }
+    }
+
+    fn release_with_assets(id: u64, published_at: &str, assets: Vec<&str>) -> GithubRelease {
+        GithubRelease {
+            id,
+            tag_name: format!("v{id}"),
+            html_url: format!("https://github.com/OpenJar/test-mod/releases/tag/v{id}"),
+            name: None,
+            draft: false,
+            prerelease: false,
+            created_at: Some(published_at.to_string()),
+            published_at: Some(published_at.to_string()),
+            assets: assets
+                .into_iter()
+                .map(|name| GithubReleaseAsset {
+                    name: name.to_string(),
+                    browser_download_url: format!(
+                        "https://github.com/OpenJar/test-mod/releases/download/v{id}/{name}"
+                    ),
+                    content_type: Some("application/java-archive".to_string()),
+                    size: 2 * 1024 * 1024,
+                    digest: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn github_repo_policy_rejects_unsafe_repository_states() {
+        let mut repo = sample_repo();
+        repo.archived = true;
+        assert_eq!(
+            github_repo_policy_rejection_reason(&repo),
+            Some("repository is archived")
+        );
+        repo.archived = false;
+        repo.fork = true;
+        assert_eq!(
+            github_repo_policy_rejection_reason(&repo),
+            Some("repository is a fork")
+        );
+        repo.fork = false;
+        repo.disabled = true;
+        assert_eq!(
+            github_repo_policy_rejection_reason(&repo),
+            Some("repository is disabled")
+        );
+    }
+
+    #[test]
+    fn github_error_classification_detects_auth_or_rate_limit() {
+        assert!(github_error_is_auth_or_rate_limit(
+            "GitHub API rate limit reached (403 Forbidden)."
+        ));
+        assert!(github_error_is_auth_or_rate_limit(
+            "GitHub request failed with status 401 Unauthorized."
+        ));
+        assert!(!github_error_is_auth_or_rate_limit(
+            "GitHub request failed with status 404 Not Found."
+        ));
+    }
+
+    #[test]
+    fn github_reason_transient_detection_covers_verification_unavailable_messages() {
+        assert!(github_reason_is_transient_verification_failure(
+            "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached)."
+        ));
+        assert!(!github_reason_is_transient_verification_failure(
+            "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
+        ));
+    }
+
+    #[test]
+    fn github_release_selector_picks_latest_real_jar_asset() {
+        let repo = sample_repo();
+        let releases = vec![
+            release_with_assets(
+                1,
+                "2026-01-01T00:00:00Z",
+                vec!["test-mod-1.0.0.jar", "checksums.sha256"],
+            ),
+            release_with_assets(
+                2,
+                "2026-02-01T00:00:00Z",
+                vec!["test-mod-1.1.0-sources.jar", "test-mod-1.1.0.jar"],
+            ),
+        ];
+        let selected =
+            select_github_release_with_asset(&repo, &releases, "test mod", None, None, None, None)
+                .expect("expected a selected github release");
+        assert_eq!(selected.release.id, 2);
+        assert_eq!(selected.asset.name, "test-mod-1.1.0.jar");
+        assert!(!selected.asset.name.contains("sources"));
+    }
+
+    #[test]
+    fn github_discover_hit_contains_confidence_metadata() {
+        let repo = sample_repo();
+        let releases = vec![release_with_assets(
+            3,
+            "2026-03-01T00:00:00Z",
+            vec!["test-mod-1.2.0.jar", "checksums.sha256"],
+        )];
+        let selected =
+            select_github_release_with_asset(&repo, &releases, "test mod", None, None, None, None)
+                .expect("expected selected release");
+        let hit = github_release_to_discover_hit(&repo, &selected, "test mod", None, None);
+        assert_eq!(hit.source, "github");
+        assert_eq!(hit.content_type, "mods");
+        assert!(hit.confidence.is_some());
+        assert!(hit.reason.is_some());
+    }
+
+    #[test]
+    fn github_release_selector_enforces_instance_compatibility() {
+        let repo = sample_repo();
+        let releases = vec![
+            release_with_assets(
+                1,
+                "2026-01-01T00:00:00Z",
+                vec!["test-mod-fabric-1.20.4.jar"],
+            ),
+            release_with_assets(
+                2,
+                "2026-02-01T00:00:00Z",
+                vec!["test-mod-fabric-1.21.1.jar"],
+            ),
+        ];
+        let selected = select_github_release_with_asset(
+            &repo,
+            &releases,
+            "test mod",
+            Some("1.21.1"),
+            Some("fabric"),
+            None,
+            None,
+        )
+        .expect("expected a compatible github selection");
+        assert_eq!(selected.release.id, 2);
+
+        let incompatible = select_github_release_with_asset(
+            &repo,
+            &releases,
+            "test mod",
+            Some("1.21.1"),
+            Some("forge"),
+            None,
+            None,
+        );
+        assert!(incompatible.is_none());
+    }
+
+    #[test]
+    fn github_asset_digest_matching_rejects_mismatch() {
+        let mut digests = HashMap::new();
+        digests.insert("sha256".to_string(), "abc123".to_string());
+        assert_eq!(
+            github_asset_digest_matches_local_hashes(&digests, "abc123", "zzz"),
+            Some(true)
+        );
+        assert_eq!(
+            github_asset_digest_matches_local_hashes(&digests, "nope", "zzz"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn github_local_release_selector_uses_exact_asset_filename() {
+        let repo = sample_repo();
+        let releases = vec![
+            release_with_assets(1, "2026-01-01T00:00:00Z", vec!["test-mod-1.0.0.jar"]),
+            release_with_assets(
+                2,
+                "2026-02-01T00:00:00Z",
+                vec!["test-mod-1.2.0.jar", "test-mod-1.2.0-sources.jar"],
+            ),
+        ];
+        let selected = select_github_release_for_local_file(
+            &repo,
+            &releases,
+            "test-mod-1.2.0.jar",
+            "test mod",
+        )
+        .expect("expected exact filename match");
+        assert_eq!(selected.release.id, 2);
+        assert_eq!(selected.asset.name, "test-mod-1.2.0.jar");
+    }
+
+    #[test]
+    fn github_local_release_selector_accepts_strong_name_pattern_match() {
+        let repo = sample_repo();
+        let releases = vec![
+            release_with_assets(
+                1,
+                "2026-01-01T00:00:00Z",
+                vec!["meteor-client-fabric-1.21.1-0.5.8.jar"],
+            ),
+            release_with_assets(2, "2026-02-01T00:00:00Z", vec!["something-else-1.0.0.jar"]),
+        ];
+        let selected = select_github_release_for_local_file(
+            &repo,
+            &releases,
+            "meteor-client-0.5.8.jar",
+            "meteor client",
+        )
+        .expect("expected strong fuzzy filename pattern match");
+        assert_eq!(selected.release.id, 1);
+        assert_eq!(selected.asset.name, "meteor-client-fabric-1.21.1-0.5.8.jar");
+    }
+
+    #[test]
+    fn github_local_match_rejects_similarity_only_without_hard_evidence() {
+        let repo = sample_repo();
+        let release = release_with_assets(1, "2026-01-01T00:00:00Z", vec!["totally-different.jar"]);
+        let selection = GithubReleaseSelection {
+            release: release.clone(),
+            asset: release.assets[0].clone(),
+            has_checksum_sidecar: false,
+        };
+        let result = github_local_match_confidence_and_reason(
+            &repo,
+            &selection,
+            "meteor-client-1.0.0.jar",
+            "meteor client",
+            None,
+            false,
+            0,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn github_local_match_rejects_ambiguous_baritone_on_weak_repo() {
+        let weak_repo = GithubRepository {
+            full_name: "kaushikkumarbora/forager".to_string(),
+            name: "forager".to_string(),
+            description: Some("A random utility project".to_string()),
+            stargazers_count: 12,
+            forks_count: 1,
+            archived: false,
+            fork: false,
+            disabled: false,
+            html_url: "https://github.com/kaushikkumarbora/forager".to_string(),
+            homepage: None,
+            watchers_count: 12,
+            open_issues_count: 0,
+            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
+            topics: vec![],
+            default_branch: "main".to_string(),
+            owner: GithubOwner {
+                login: "kaushikkumarbora".to_string(),
+                owner_type: "User".to_string(),
+            },
+        };
+        let release = release_with_assets(2, "2026-01-01T00:00:00Z", vec!["baritone-1.0.0.jar"]);
+        let selection = GithubReleaseSelection {
+            release: release.clone(),
+            asset: release.assets[0].clone(),
+            has_checksum_sidecar: false,
+        };
+        let result = github_local_match_confidence_and_reason(
+            &weak_repo,
+            &selection,
+            "baritone-1.0.0.jar",
+            "baritone",
+            None,
+            false,
+            0,
+            None,
+            None,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn github_local_known_repo_boost_enables_canonical_baritone_match() {
+        let canonical_repo = GithubRepository {
+            full_name: "cabaletta/baritone".to_string(),
+            name: "baritone".to_string(),
+            description: Some("Minecraft pathfinding bot".to_string()),
+            stargazers_count: 8_000,
+            forks_count: 900,
+            archived: false,
+            fork: false,
+            disabled: false,
+            html_url: "https://github.com/cabaletta/baritone".to_string(),
+            homepage: None,
+            watchers_count: 8_000,
+            open_issues_count: 12,
+            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
+            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
+            topics: vec!["minecraft".to_string()],
+            default_branch: "main".to_string(),
+            owner: GithubOwner {
+                login: "cabaletta".to_string(),
+                owner_type: "Organization".to_string(),
+            },
+        };
+        let (boost, reason) =
+            github_local_known_repo_boost(&canonical_repo, "baritone-1.0.0.jar", "baritone", None);
+        assert!(boost >= 40);
+        assert!(reason.is_some());
+
+        let release = release_with_assets(3, "2026-01-01T00:00:00Z", vec!["baritone-1.0.0.jar"]);
+        let selection = GithubReleaseSelection {
+            release: release.clone(),
+            asset: release.assets[0].clone(),
+            has_checksum_sidecar: false,
+        };
+        let evaluated = github_local_match_confidence_and_reason(
+            &canonical_repo,
+            &selection,
+            "baritone-1.0.0.jar",
+            "baritone",
+            None,
+            false,
+            boost,
+            reason,
+            None,
+        )
+        .expect("canonical match accepted");
+        assert!(matches!(evaluated.0.as_str(), "high" | "deterministic"));
+    }
+
+    #[test]
+    fn extract_github_repo_slug_parses_owner_repo_urls() {
+        let parsed = extract_github_repo_slug("https://github.com/MeteorDevelopment/meteor-client");
+        assert_eq!(parsed.as_deref(), Some("MeteorDevelopment/meteor-client"));
+    }
+
+    #[test]
+    fn extract_github_repo_slug_rejects_non_github_urls() {
+        assert!(extract_github_repo_slug("https://meteorclient.com").is_none());
+        assert!(extract_github_repo_slug("https://jfronny.gitlab.io").is_none());
+    }
+
+    #[test]
+    fn parse_github_project_id_rejects_non_github_urls() {
+        assert!(parse_github_project_id("https://meteorclient.com").is_err());
+        assert!(parse_github_project_id("gh:https://meteorclient.com").is_err());
+        assert!(parse_github_project_id("https://jfronny.gitlab.io").is_err());
+        assert!(parse_github_project_id("gh:https://jfronny.gitlab.io").is_err());
+    }
+
+    #[test]
+    fn parse_github_project_id_accepts_github_urls_with_extra_path_segments() {
+        let parsed = parse_github_project_id(
+            "https://github.com/MeteorDevelopment/meteor-client/releases/tag/v1.0.0",
+        )
+        .expect("github release URL should parse");
+        assert_eq!(parsed.0, "MeteorDevelopment");
+        assert_eq!(parsed.1, "meteor-client");
+    }
+
+    #[test]
+    fn parse_toml_assignment_is_case_insensitive() {
+        let toml = r#"
+            modId = "examplemod"
+            displayName = "Example Mod"
+            displayURL = "https://github.com/example/mod-repo"
+        "#;
+        assert_eq!(
+            parse_toml_assignment(toml, "modid").as_deref(),
+            Some("examplemod")
+        );
+        assert_eq!(
+            parse_toml_assignment(toml, "displayname").as_deref(),
+            Some("Example Mod")
+        );
+        assert_eq!(
+            parse_toml_assignment(toml, "displayurl").as_deref(),
+            Some("https://github.com/example/mod-repo")
+        );
+    }
+
+    #[test]
+    fn github_api_tokens_from_env_entries_supports_pool_and_numbered_tokens() {
+        let entries = vec![
+            (
+                "MPM_GITHUB_TOKENS".to_string(),
+                "poolA, poolB;poolC\npoolD".to_string(),
+            ),
+            ("MPM_GITHUB_TOKEN_2".to_string(), "two".to_string()),
+            ("MPM_GITHUB_TOKEN_1".to_string(), "one".to_string()),
+            ("MPM_GITHUB_TOKEN_10".to_string(), "ten".to_string()),
+            ("MPM_GITHUB_TOKEN".to_string(), "single".to_string()),
+        ];
+        let tokens = github_api_tokens_from_env_entries(&entries);
+        assert_eq!(
+            tokens,
+            vec!["poolA", "poolB", "poolC", "poolD", "one", "two", "ten", "single",]
+        );
+    }
+
+    #[test]
+    fn github_api_tokens_from_env_entries_supports_non_mpm_numbered_tokens() {
+        let entries = vec![
+            ("GITHUB_TOKEN_2".to_string(), "two".to_string()),
+            ("GH_TOKEN_1".to_string(), "one".to_string()),
+            ("GH_TOKEN_3".to_string(), "three".to_string()),
+            ("GITHUB_TOKEN".to_string(), "fallback".to_string()),
+        ];
+        let tokens = github_api_tokens_from_env_entries(&entries);
+        assert_eq!(tokens, vec!["one", "two", "three", "fallback"]);
+    }
+
+    #[test]
+    fn github_api_tokens_from_env_entries_deduplicates_across_sources() {
+        let entries = vec![
+            (
+                "MPM_GITHUB_TOKENS".to_string(),
+                "same,other,same".to_string(),
+            ),
+            ("MPM_GITHUB_TOKEN_1".to_string(), "same".to_string()),
+            ("GITHUB_TOKEN".to_string(), "other".to_string()),
+            ("GH_TOKEN".to_string(), "third".to_string()),
+        ];
+        let tokens = github_api_tokens_from_env_entries(&entries);
+        assert_eq!(tokens, vec!["same", "other", "third"]);
+    }
+
+    #[test]
+    fn github_api_tokens_from_env_entries_caps_to_max_tokens() {
+        let pool = (1..=(GITHUB_API_TOKENS_MAX + 20))
+            .map(|idx| format!("token{idx}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let entries = vec![("MPM_GITHUB_TOKENS".to_string(), pool)];
+        let tokens = github_api_tokens_from_env_entries(&entries);
+        let expected_last = format!("token{}", GITHUB_API_TOKENS_MAX);
+        assert_eq!(tokens.len(), GITHUB_API_TOKENS_MAX);
+        assert_eq!(tokens.first().map(String::as_str), Some("token1"));
+        assert_eq!(
+            tokens.last().map(String::as_str),
+            Some(expected_last.as_str())
+        );
+    }
+
+    #[test]
+    fn github_unverified_manual_candidate_is_manual_and_activatable_only_for_transient_outages() {
+        let candidate = github_unverified_manual_candidate(
+            "example",
+            "repo",
+            "Example Repo",
+            "sha256",
+            "sha512",
+            "GitHub local identify manual candidate: direct metadata repo hint found, but repository verification is unavailable (rate limited).".to_string(),
+        );
+        assert_eq!(candidate.source, "github");
+        assert_eq!(candidate.project_id, "gh:example/repo");
+        assert_eq!(candidate.version_id, "gh_repo_unverified");
+        assert_eq!(candidate.confidence, "manual");
+        assert_eq!(
+            candidate.hashes.get("sha256").map(String::as_str),
+            Some("sha256")
+        );
+        assert_eq!(
+            candidate.hashes.get("sha512").map(String::as_str),
+            Some("sha512")
+        );
+        assert!(provider_match_is_auto_activatable(&candidate));
+
+        let non_transient = github_unverified_manual_candidate(
+            "example",
+            "repo",
+            "Example Repo",
+            "sha256",
+            "sha512",
+            "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file.".to_string(),
+        );
+        assert!(!provider_match_is_auto_activatable(&non_transient));
+    }
+
+    #[test]
+    fn github_provider_activation_rejects_invalid_project_ids() {
+        let invalid_match = LocalImportedProviderMatch {
+            source: "github".to_string(),
+            project_id: "gh:https://meteorclient.com".to_string(),
+            version_id: "gh_release:123".to_string(),
+            name: "Invalid".to_string(),
+            version_number: "1.0.0".to_string(),
+            hashes: HashMap::new(),
+            confidence: "deterministic".to_string(),
+            reason: "invalid".to_string(),
+        };
+        assert!(!provider_match_is_auto_activatable(&invalid_match));
+
+        let invalid_candidate = ProviderCandidate {
+            source: "github".to_string(),
+            project_id: "gh:https://meteorclient.com".to_string(),
+            version_id: "gh_release:123".to_string(),
+            name: "Invalid".to_string(),
+            version_number: "1.0.0".to_string(),
+            confidence: Some("deterministic".to_string()),
+            reason: Some("invalid".to_string()),
+        };
+        assert!(!provider_candidate_is_auto_activatable(&invalid_candidate));
     }
 }
 
@@ -12252,6 +17719,142 @@ mod token_storage_tests {
         let canonical = token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
             .expect("read canonical migrated dev curseforge key");
         assert_eq!(canonical.as_deref(), Some("legacy_dev_cf_key"));
+    }
+}
+
+#[cfg(test)]
+mod runtime_and_playtime_tests {
+    use super::*;
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("openjar-runtime-tests-{label}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn runtime_reconcile_copies_missing_entries_and_keeps_non_allowlisted_conflicts() {
+        let instance_dir = temp_path("runtime-reconcile");
+        fs::create_dir_all(instance_dir.join("runtime")).expect("create runtime");
+        fs::create_dir_all(instance_dir.join("mods")).expect("create canonical mods");
+        fs::create_dir_all(instance_dir.join("runtime").join(".meteor-client"))
+            .expect("create runtime meteor");
+        fs::write(
+            instance_dir
+                .join("runtime")
+                .join(".meteor-client")
+                .join("config.json"),
+            br#"{"ok":true}"#,
+        )
+        .expect("write runtime meteor config");
+        fs::write(instance_dir.join("mods").join("keep.jar"), b"canonical")
+            .expect("write canonical mod");
+        fs::write(instance_dir.join("runtime").join("mods"), b"bad")
+            .expect("write conflicting runtime file");
+        fs::write(
+            instance_dir.join("runtime").join("options.txt"),
+            b"runtime options",
+        )
+        .expect("write runtime options");
+        fs::write(instance_dir.join("options.txt"), b"canonical options")
+            .expect("write canonical options");
+
+        reconcile_legacy_runtime_into_instance(&instance_dir).expect("reconcile runtime");
+
+        assert!(instance_dir
+            .join(".meteor-client")
+            .join("config.json")
+            .exists());
+        assert_eq!(
+            fs::read_to_string(instance_dir.join("options.txt")).expect("read options"),
+            "canonical options"
+        );
+        assert!(instance_dir.join("mods").join("keep.jar").exists());
+        assert!(runtime_reconcile_marker_path(&instance_dir).exists());
+
+        let _ = fs::remove_dir_all(&instance_dir);
+    }
+
+    #[test]
+    fn isolated_clone_excludes_transient_roots_and_keeps_game_content() {
+        let instance_dir = temp_path("isolated-clone");
+        let isolated_dir = instance_dir.join("runtime_sessions").join("launch");
+        fs::create_dir_all(instance_dir.join("mods")).expect("create mods");
+        fs::create_dir_all(instance_dir.join("config")).expect("create config");
+        fs::create_dir_all(instance_dir.join("runtime_sessions").join("old"))
+            .expect("create old session");
+        fs::create_dir_all(instance_dir.join("snapshots").join("s1")).expect("create snapshot");
+        fs::create_dir_all(instance_dir.join("logs").join("launches")).expect("create launch logs");
+        fs::write(instance_dir.join("mods").join("a.jar"), b"jar").expect("write mod jar");
+        fs::write(instance_dir.join("play_sessions.v1.json"), b"{}").expect("write play sessions");
+        fs::write(
+            instance_dir.join("logs").join("launches").join("x.log"),
+            b"log",
+        )
+        .expect("write launch log");
+
+        clone_instance_to_isolated_runtime(&instance_dir, &isolated_dir)
+            .expect("clone isolated runtime");
+
+        assert!(isolated_dir.join("mods").join("a.jar").exists());
+        assert!(isolated_dir.join("config").exists());
+        assert!(!isolated_dir.join("runtime_sessions").exists());
+        assert!(!isolated_dir.join("snapshots").exists());
+        assert!(!isolated_dir.join("play_sessions.v1.json").exists());
+        assert!(!isolated_dir.join("logs").join("launches").exists());
+
+        let _ = fs::remove_dir_all(&instance_dir);
+    }
+
+    #[test]
+    fn playtime_store_tracks_native_session_duration_and_summary() {
+        let instances_dir = temp_path("playtime");
+        fs::create_dir_all(&instances_dir).expect("create instances root");
+        let instance = Instance {
+            id: "inst_playtime".to_string(),
+            name: "Playtime".to_string(),
+            folder_name: Some("Playtime".to_string()),
+            mc_version: "1.20.1".to_string(),
+            loader: "fabric".to_string(),
+            created_at: now_iso(),
+            icon_path: None,
+            settings: InstanceSettings::default(),
+        };
+        let index = InstanceIndex {
+            instances: vec![instance.clone()],
+        };
+        write_index(&instances_dir, &index).expect("write index");
+        let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
+        fs::create_dir_all(&instance_dir).expect("create instance dir");
+
+        register_native_play_session_start(
+            &instances_dir,
+            &instance.id,
+            "native_test",
+            std::process::id(),
+            false,
+        )
+        .expect("register active play session");
+        let mut active = read_active_play_sessions_store(&instance_dir);
+        assert_eq!(active.active.len(), 1);
+        active.active[0].started_at = format!("unix:{}", Utc::now().timestamp().saturating_sub(5));
+        write_active_play_sessions_store(&instance_dir, active).expect("write active store");
+
+        let finalized = finalize_native_play_session(
+            &instances_dir,
+            &instance.id,
+            "native_test",
+            "success",
+            false,
+        )
+        .expect("finalize play session");
+        assert!(finalized.is_some());
+
+        let summary =
+            instance_playtime_summary(&instances_dir, &instance.id).expect("read playtime summary");
+        assert!(summary.total_seconds >= 5);
+        assert_eq!(summary.sessions_count, 1);
+        assert_eq!(summary.tracking_scope, "native_only");
+
+        let _ = fs::remove_dir_all(&instances_dir);
     }
 }
 

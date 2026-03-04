@@ -2,7 +2,7 @@ mod classifier;
 
 use crate::{
     app_instances_dir, find_instance, friend_link, instance_dir_for_id, instance_dir_for_instance,
-    list_snapshots, latest_crash_report_path, latest_launch_log_path, normalize_instance_settings,
+    latest_crash_report_path, latest_launch_log_path, list_snapshots, normalize_instance_settings,
     now_iso, now_millis, read_lockfile, required_java_major_for_mc, Lockfile,
 };
 use serde::{Deserialize, Serialize};
@@ -182,7 +182,10 @@ fn read_run_reports_store(instance_dir: &Path) -> RunReportsStoreV1 {
     }
 }
 
-fn write_run_reports_store(instance_dir: &Path, mut store: RunReportsStoreV1) -> Result<(), String> {
+fn write_run_reports_store(
+    instance_dir: &Path,
+    mut store: RunReportsStoreV1,
+) -> Result<(), String> {
     store.version = 1;
     if store.reports.len() > MAX_RUN_REPORTS {
         store.reports.truncate(MAX_RUN_REPORTS);
@@ -204,7 +207,10 @@ fn read_instance_events_store(instance_dir: &Path) -> InstanceEventsStoreV1 {
     }
 }
 
-fn write_instance_events_store(instance_dir: &Path, mut store: InstanceEventsStoreV1) -> Result<(), String> {
+fn write_instance_events_store(
+    instance_dir: &Path,
+    mut store: InstanceEventsStoreV1,
+) -> Result<(), String> {
     store.version = 1;
     if store.events.len() > MAX_INSTANCE_EVENTS {
         let drop = store.events.len().saturating_sub(MAX_INSTANCE_EVENTS);
@@ -280,12 +286,16 @@ fn build_suggested_actions(
         });
     }
 
-    if findings.iter().any(|item| item.id == "java_version_mismatch") {
+    if findings
+        .iter()
+        .any(|item| item.id == "java_version_mismatch")
+    {
         out.push(RunSuggestedAction {
             id: action_id("open_java_settings"),
             kind: "open_java_settings".to_string(),
             title: "Open Java settings".to_string(),
-            detail: "Review Java runtime selection with the recommended major preselected.".to_string(),
+            detail: "Review Java runtime selection with the recommended major preselected."
+                .to_string(),
             dry_run: format!(
                 "Would open Java settings and recommend Java {}+ for this instance.",
                 required_java_major
@@ -323,7 +333,11 @@ fn build_suggested_actions(
             dry_run: format!(
                 "Would back up and reset {} config file(s): {}",
                 reset_paths.len(),
-                if preview.is_empty() { "(paths unavailable)" } else { &preview }
+                if preview.is_empty() {
+                    "(paths unavailable)"
+                } else {
+                    &preview
+                }
             ),
             reversible: true,
             payload: Some(serde_json::json!({
@@ -368,7 +382,8 @@ fn build_suggested_actions(
                 id: action_id("disable_suspects"),
                 kind: "disable_suspect_mods".to_string(),
                 title: "Disable suspect mod(s)".to_string(),
-                detail: "Temporarily disable high-signal suspect mods from this report.".to_string(),
+                detail: "Temporarily disable high-signal suspect mods from this report."
+                    .to_string(),
                 dry_run: format!(
                     "Would disable {} mod(s): {}",
                     labels.len(),
@@ -480,7 +495,10 @@ pub(crate) fn capture_and_store_run_report(
         exit_code: input.exit_code,
         exit_message: input.message.as_deref(),
     });
-    let _classifier_hints = (&classifier_out.suspect_mod_tokens, &classifier_out.config_paths);
+    let _classifier_hints = (
+        &classifier_out.suspect_mod_tokens,
+        &classifier_out.config_paths,
+    );
 
     let mut top_causes = classifier_out
         .findings
@@ -530,9 +548,10 @@ pub(crate) fn capture_and_store_run_report(
         launch_method: input.launch_method,
         mc_version: instance.mc_version.clone(),
         loader: instance.loader.clone(),
-        java_path: input
-            .java_path
-            .or_else(|| (!instance_settings.java_path.trim().is_empty()).then(|| instance_settings.java_path.clone())),
+        java_path: input.java_path.or_else(|| {
+            (!instance_settings.java_path.trim().is_empty())
+                .then(|| instance_settings.java_path.clone())
+        }),
         java_major: input.java_major,
         required_java_major,
         memory_mb: instance_settings.memory_mb,
@@ -618,14 +637,20 @@ pub(crate) fn reset_instance_config_files_with_backup(
         });
     }
 
-    let backup_root = instance_dir.join("config_backups").join(format!("reset-{}", now_millis()));
+    let backup_root = instance_dir
+        .join("config_backups")
+        .join(format!("reset-{}", now_millis()));
     let mut items = Vec::<ConfigResetItem>::new();
     let mut reset_count = 0usize;
     let mut skipped_count = 0usize;
     let mut backups_created = 0usize;
 
     for path in &unique_paths {
-        let read_result = match friend_link::state::read_instance_config_file(&instances_dir, instance_id, path) {
+        let read_result = match friend_link::state::read_instance_config_file(
+            &instances_dir,
+            instance_id,
+            path,
+        ) {
             Ok(value) => value,
             Err(err) => {
                 skipped_count += 1;
@@ -651,7 +676,8 @@ pub(crate) fn reset_instance_config_files_with_backup(
             continue;
         }
 
-        let backup_path = match friend_link::state::safe_join_under(&backup_root, &read_result.path) {
+        let backup_path = match friend_link::state::safe_join_under(&backup_root, &read_result.path)
+        {
             Ok(path) => path,
             Err(err) => {
                 skipped_count += 1;
@@ -722,10 +748,7 @@ pub(crate) fn reset_instance_config_files_with_backup(
                 reset_count, skipped_count
             )
         } else {
-            format!(
-                "Reset {} file(s), skipped {}.",
-                reset_count, skipped_count
-            )
+            format!("Reset {} file(s), skipped {}.", reset_count, skipped_count)
         },
     })
 }

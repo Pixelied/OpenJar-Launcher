@@ -1494,14 +1494,20 @@ fn build_friend_link_drift_preview(
                 trusted_peer: trusted_peers.contains(&peer.peer_id),
             };
             let known_bytes = local
-                .and_then(|entry| read_lock_entry_bytes(instances_dir, instance_id, entry).ok().flatten())
+                .and_then(|entry| {
+                    read_lock_entry_bytes(instances_dir, instance_id, entry)
+                        .ok()
+                        .flatten()
+                })
                 .map(|bytes| bytes.len() as u64);
             if let Some(bytes) = known_bytes {
                 total_bytes_estimate = total_bytes_estimate.saturating_add(bytes);
             } else {
                 unknown_bytes_items += 1;
             }
-            *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+            *prefix_counts
+                .entry(drift_item_top_prefix(&item))
+                .or_insert(0) += 1;
             items.push(item);
         }
         if peer_states.len() == 1 {
@@ -1536,7 +1542,9 @@ fn build_friend_link_drift_preview(
                 } else {
                     unknown_bytes_items += 1;
                 }
-                *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+                *prefix_counts
+                    .entry(drift_item_top_prefix(&item))
+                    .or_insert(0) += 1;
                 items.push(item);
             }
         }
@@ -1569,7 +1577,9 @@ fn build_friend_link_drift_preview(
             };
             total_bytes_estimate =
                 total_bytes_estimate.saturating_add(remote_file.content.as_bytes().len() as u64);
-            *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+            *prefix_counts
+                .entry(drift_item_top_prefix(&item))
+                .or_insert(0) += 1;
             items.push(item);
         }
         if peer_states.len() == 1 {
@@ -1594,7 +1604,9 @@ fn build_friend_link_drift_preview(
                 };
                 total_bytes_estimate =
                     total_bytes_estimate.saturating_add(local_file.content.as_bytes().len() as u64);
-                *prefix_counts.entry(drift_item_top_prefix(&item)).or_insert(0) += 1;
+                *prefix_counts
+                    .entry(drift_item_top_prefix(&item))
+                    .or_insert(0) += 1;
                 items.push(item);
             }
         }
@@ -1612,8 +1624,13 @@ fn build_friend_link_drift_preview(
         .take(3)
         .map(|(prefix, count)| format!("{prefix} ({count})"))
         .collect::<Vec<_>>();
-    let change_summary =
-        summarize_drift_changes(added, removed, changed, total_changes, has_untrusted_changes);
+    let change_summary = summarize_drift_changes(
+        added,
+        removed,
+        changed,
+        total_changes,
+        has_untrusted_changes,
+    );
     let status = if session.pending_conflicts.is_empty() {
         if session.peers.is_empty() {
             "no_peers".to_string()
@@ -2724,7 +2741,10 @@ fn preview_friend_link_drift_inner(
     let mut rotated_host_secret = false;
     {
         let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
-            return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
+            return Ok(empty_friend_link_drift_preview(
+                args.instance_id,
+                "unlinked",
+            ));
         };
         match ensure_session_security_material_loaded(session) {
             Ok(()) => {
@@ -2754,10 +2774,16 @@ fn preview_friend_link_drift_inner(
     }
     if let Some(reason) = broken_secret_reason {
         unlink_broken_session(&app, &mut store, &args.instance_id, &reason)?;
-        return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
+        return Ok(empty_friend_link_drift_preview(
+            args.instance_id,
+            "unlinked",
+        ));
     }
     let Some(session) = get_session_mut(&mut store, &args.instance_id) else {
-        return Ok(empty_friend_link_drift_preview(args.instance_id, "unlinked"));
+        return Ok(empty_friend_link_drift_preview(
+            args.instance_id,
+            "unlinked",
+        ));
     };
     let instances_dir = app_instances_dir(&app)?;
     let local_state = collect_sync_state(&instances_dir, &args.instance_id, &session.allowlist)?;
@@ -3107,9 +3133,12 @@ fn sync_friend_link_selected_inner(
             "Friend Link selective sync ({}) applied {} change(s).",
             result.mode, result.actions_applied
         );
-        if let Err(err) =
-            crate::run_reports::log_instance_event(&app, &args.instance_id, "friend_link_sync", &summary)
-        {
+        if let Err(err) = crate::run_reports::log_instance_event(
+            &app,
+            &args.instance_id,
+            "friend_link_sync",
+            &summary,
+        ) {
             eprintln!(
                 "friend-link event write failed for '{}' [friend_link_sync]: {}",
                 args.instance_id, err

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
 use uuid::Uuid;
 use zip::write::FileOptions;
@@ -33,15 +33,55 @@ fn capture_run_report_best_effort(
 ) {
     let instance_id = input.instance_id.clone();
     if let Err(err) = crate::run_reports::capture_and_store_run_report(app, input) {
-        eprintln!(
-            "run report capture failed for '{}': {}",
-            instance_id, err
-        );
+        eprintln!("run report capture failed for '{}': {}", instance_id, err);
     }
 }
 
-const MINECRAFT_SETTINGS_SYNC_FILES: &[&str] =
-    &["options.txt", "optionsof.txt", "optionsshaders.txt"];
+const MINECRAFT_SETTINGS_SYNC_FILES: &[&str] = &[
+    "options.txt",
+    "optionsof.txt",
+    "optionsshaders.txt",
+    "servers.dat",
+];
+
+fn copy_file_atomic(src: &Path, dst: &Path) -> Result<(), String> {
+    let parent = dst
+        .parent()
+        .ok_or_else(|| format!("target file has no parent: '{}'", dst.display()))?;
+    fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "create target parent directory failed for '{}': {e}",
+            parent.display()
+        )
+    })?;
+    let tmp = parent.join(format!(
+        ".openjar-sync-{}.tmp",
+        Uuid::new_v4().to_string().replace('-', "")
+    ));
+    fs::copy(src, &tmp).map_err(|e| {
+        format!(
+            "copy settings file '{}' to temporary '{}' failed: {e}",
+            src.display(),
+            tmp.display()
+        )
+    })?;
+    if dst.exists() {
+        fs::remove_file(dst).map_err(|e| {
+            format!(
+                "remove existing settings file '{}' before atomic replace failed: {e}",
+                dst.display()
+            )
+        })?;
+    }
+    fs::rename(&tmp, dst).map_err(|e| {
+        format!(
+            "atomic rename settings file '{}' -> '{}' failed: {e}",
+            tmp.display(),
+            dst.display()
+        )
+    })?;
+    Ok(())
+}
 
 fn sync_instance_minecraft_settings_before_launch(
     instances_dir: &Path,
@@ -54,32 +94,38 @@ fn sync_instance_minecraft_settings_before_launch(
     let source_dir = instance_dir_for_instance(instances_dir, source_instance);
     let source_target = source_settings.sync_minecraft_settings_target.trim();
     let index = read_index(instances_dir)?;
-    let target_ids: Vec<String> = if source_target.eq_ignore_ascii_case("all") || source_target.is_empty() {
-        index
-            .instances
-            .iter()
-            .filter(|item| item.id != source_instance.id)
-            .map(|item| item.id.clone())
-            .collect()
-    } else {
-        index
-            .instances
-            .iter()
-            .find(|item| item.id == source_target && item.id != source_instance.id)
-            .map(|item| vec![item.id.clone()])
-            .unwrap_or_default()
-    };
+    let target_ids: Vec<String> =
+        if source_target.eq_ignore_ascii_case("all") || source_target.is_empty() {
+            index
+                .instances
+                .iter()
+                .filter(|item| item.id != source_instance.id)
+                .map(|item| item.id.clone())
+                .collect()
+        } else {
+            index
+                .instances
+                .iter()
+                .find(|item| item.id == source_target && item.id != source_instance.id)
+                .map(|item| vec![item.id.clone()])
+                .unwrap_or_default()
+        };
     if target_ids.is_empty() {
         return Ok(0);
     }
 
     let mut copied_files = 0usize;
+    let mut attempted_files = 0usize;
+    let mut skipped_missing_source = 0usize;
+    let mut mirrored_dot_minecraft = 0usize;
     for filename in MINECRAFT_SETTINGS_SYNC_FILES {
-        let source_file = source_dir.join(filename);
-        if !source_file.exists() {
+        let Some(source_file) = resolve_minecraft_settings_source_file(&source_dir, filename)
+        else {
+            skipped_missing_source += target_ids.len();
             continue;
-        }
+        };
         for target_id in &target_ids {
+            attempted_files += 1;
             let target_dir = instance_dir_for_id(instances_dir, target_id)?;
             fs::create_dir_all(&target_dir).map_err(|e| {
                 format!(
@@ -87,18 +133,110 @@ fn sync_instance_minecraft_settings_before_launch(
                     target_dir.display()
                 )
             })?;
-            let target_file = target_dir.join(filename);
-            fs::copy(&source_file, &target_file).map_err(|e| {
-                format!(
-                    "copy settings file '{}' to '{}' failed: {e}",
-                    source_file.display(),
-                    target_file.display()
-                )
-            })?;
-            copied_files += 1;
+            let (copied, mirrored) =
+                copy_minecraft_settings_file_to_target_dirs(&source_file, &target_dir, filename)?;
+            copied_files += copied;
+            mirrored_dot_minecraft += mirrored;
         }
     }
+    eprintln!(
+        "minecraft settings sync summary for '{}': attempted={}, copied={}, mirrored_dot_minecraft={}, skipped_missing_source={}, target_count={}",
+        source_instance.id,
+        attempted_files,
+        copied_files,
+        mirrored_dot_minecraft,
+        skipped_missing_source,
+        target_ids.len()
+    );
     Ok(copied_files)
+}
+
+fn file_modified_time_or_epoch(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+fn resolve_minecraft_settings_source_file(source_dir: &Path, filename: &str) -> Option<PathBuf> {
+    let root = source_dir.join(filename);
+    let dot_mc = source_dir.join(".minecraft").join(filename);
+    match (root.is_file(), dot_mc.is_file()) {
+        (true, true) => {
+            if file_modified_time_or_epoch(&dot_mc) > file_modified_time_or_epoch(&root) {
+                Some(dot_mc)
+            } else {
+                Some(root)
+            }
+        }
+        (true, false) => Some(root),
+        (false, true) => Some(dot_mc),
+        (false, false) => None,
+    }
+}
+
+fn copy_minecraft_settings_file_to_target_dirs(
+    source_file: &Path,
+    target_dir: &Path,
+    filename: &str,
+) -> Result<(usize, usize), String> {
+    let mut copied = 0usize;
+    let mut mirrored_dot_minecraft = 0usize;
+    let root_target = target_dir.join(filename);
+    copy_file_atomic(source_file, &root_target)?;
+    copied += 1;
+
+    let dot_mc_dir = target_dir.join(".minecraft");
+    if dot_mc_dir.exists() && dot_mc_dir.is_dir() {
+        let dot_mc_target = dot_mc_dir.join(filename);
+        copy_file_atomic(source_file, &dot_mc_target)?;
+        copied += 1;
+        mirrored_dot_minecraft += 1;
+    }
+    Ok((copied, mirrored_dot_minecraft))
+}
+
+fn hydrate_instance_settings_from_prism(
+    prism_mc_dir: &Path,
+    app_instance_dir: &Path,
+) -> Result<usize, String> {
+    let mut copied = 0usize;
+    for filename in MINECRAFT_SETTINGS_SYNC_FILES {
+        let prism_file = prism_mc_dir.join(filename);
+        if !prism_file.is_file() {
+            continue;
+        }
+        let target = app_instance_dir.join(filename);
+        copy_file_atomic(&prism_file, &target)?;
+        copied += 1;
+    }
+    Ok(copied)
+}
+
+fn run_instance_settings_sync_before_launch(
+    app: &tauri::AppHandle,
+    instances_dir: &Path,
+    instance: &Instance,
+    instance_settings: &InstanceSettings,
+) {
+    match sync_instance_minecraft_settings_before_launch(instances_dir, instance, instance_settings)
+    {
+        Ok(copied) if copied > 0 => {
+            log_instance_event_best_effort(
+                app,
+                &instance.id,
+                "settings_sync",
+                format!("Synced Minecraft settings to {} file target(s).", copied),
+            );
+        }
+        Ok(_) => {}
+        Err(err) => {
+            eprintln!(
+                "minecraft settings sync before launch failed for '{}': {}",
+                instance.id, err
+            );
+        }
+    }
 }
 
 fn is_jar_filename(filename: &str) -> bool {
@@ -107,6 +245,23 @@ fn is_jar_filename(filename: &str) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("jar"))
         .unwrap_or(false)
+}
+
+fn provider_matches_have_transient_github_verification_issue(
+    matches: &[LocalImportedProviderMatch],
+) -> Option<String> {
+    matches.iter().find_map(|item| {
+        if !item.source.trim().eq_ignore_ascii_case("github") {
+            return None;
+        }
+        if !item.confidence.trim().eq_ignore_ascii_case("manual") {
+            return None;
+        }
+        if github_reason_is_transient_verification_failure(&item.reason) {
+            return Some(item.reason.clone());
+        }
+        None
+    })
 }
 
 fn mod_filename_identity_key(filename: &str) -> Option<String> {
@@ -127,7 +282,11 @@ fn mod_filename_identity_key(filename: &str) -> Option<String> {
         "api",
         "v",
     ];
-    let stem = Path::new(filename).file_stem()?.to_str()?.trim().to_ascii_lowercase();
+    let stem = Path::new(filename)
+        .file_stem()?
+        .to_str()?
+        .trim()
+        .to_ascii_lowercase();
     if stem.is_empty() {
         return None;
     }
@@ -187,10 +346,7 @@ fn detect_mod_filename_key_collisions(jar_filenames: &[String]) -> Vec<(String, 
         let Some(key) = mod_filename_identity_key(filename) else {
             continue;
         };
-        grouped
-            .entry(key)
-            .or_default()
-            .push(filename.clone());
+        grouped.entry(key).or_default().push(filename.clone());
     }
     let mut out = grouped
         .into_iter()
@@ -272,9 +428,7 @@ fn append_runtime_mod_diagnostics(
         .canonicalize()
         .unwrap_or_else(|_| runtime_dir.to_path_buf());
     let mods_dir = runtime_dir.join("mods");
-    let mods_dir_display = mods_dir
-        .canonicalize()
-        .unwrap_or_else(|_| mods_dir.clone());
+    let mods_dir_display = mods_dir.canonicalize().unwrap_or_else(|_| mods_dir.clone());
     let jar_filenames = list_mod_jar_filenames(&mods_dir)?;
     let collisions = detect_mod_filename_key_collisions(&jar_filenames);
     writeln!(
@@ -303,8 +457,11 @@ fn append_runtime_mod_diagnostics(
         .map_err(|e| format!("write launch preflight empty jar list failed: {e}"))?;
     } else {
         for name in &jar_filenames {
-            writeln!(launch_log_file, "[OpenJar] Launch preflight: mod_jar={name}")
-                .map_err(|e| format!("write launch preflight jar list failed: {e}"))?;
+            writeln!(
+                launch_log_file,
+                "[OpenJar] Launch preflight: mod_jar={name}"
+            )
+            .map_err(|e| format!("write launch preflight jar list failed: {e}"))?;
         }
     }
     if collisions.is_empty() {
@@ -486,7 +643,9 @@ pub(crate) fn set_launcher_settings(
 }
 
 #[tauri::command]
-pub(crate) fn list_launcher_accounts(app: tauri::AppHandle) -> Result<Vec<LauncherAccount>, String> {
+pub(crate) fn list_launcher_accounts(
+    app: tauri::AppHandle,
+) -> Result<Vec<LauncherAccount>, String> {
     read_launcher_accounts(&app)
 }
 
@@ -987,11 +1146,12 @@ pub(crate) fn reveal_config_editor_file(
                 &args.instance_id,
                 &path,
             )?;
-            let resolved = crate::friend_link::state::resolve_instance_file_path_from_instances_dir(
-                &instances_dir,
-                &args.instance_id,
-                &read.path,
-            )?;
+            let resolved =
+                crate::friend_link::state::resolve_instance_file_path_from_instances_dir(
+                    &instances_dir,
+                    &args.instance_id,
+                    &read.path,
+                )?;
             let (opened, revealed_file) = reveal_path_in_shell(&resolved, true)?;
             return Ok(RevealConfigEditorFileResult {
                 opened_path: opened.display().to_string(),
@@ -1325,6 +1485,18 @@ pub(crate) async fn get_instance_last_run_metadata(
     .await
 }
 
+#[tauri::command]
+pub(crate) async fn get_instance_playtime(
+    app: tauri::AppHandle,
+    args: GetInstancePlaytimeArgs,
+) -> Result<InstancePlaytimeSummary, String> {
+    run_blocking_task("get instance playtime", move || {
+        let instances_dir = app_instances_dir(&app)?;
+        instance_playtime_summary(&instances_dir, &args.instance_id)
+    })
+    .await
+}
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct GetInstanceLastRunReportArgs {
     #[serde(alias = "instanceId")]
@@ -1576,7 +1748,10 @@ pub(crate) fn write_world_config_file(
         &app,
         &args.instance_id,
         "world_config_edit",
-        format!("Updated world '{}' config file '{}'.", args.world_id, normalized_path),
+        format!(
+            "Updated world '{}' config file '{}'.",
+            args.world_id, normalized_path
+        ),
     );
     Ok(WriteWorldConfigFileResult {
         path: normalized_path,
@@ -1673,6 +1848,102 @@ fn install_discover_content_inner(
                 snapshot_reason,
             );
         }
+        if source == "github" {
+            let instances_dir = app_instances_dir(&app)?;
+            let instance = find_instance(&instances_dir, &args.instance_id)?;
+            let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
+            let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+            let client = build_http_client()?;
+
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "resolving".to_string(),
+                    downloaded: 0,
+                    total: Some(1),
+                    percent: None,
+                    message: Some("Resolving compatible GitHub release…".to_string()),
+                },
+            );
+
+            if let Some(reason) = snapshot_reason {
+                let _ = create_instance_snapshot(&instances_dir, &args.instance_id, reason);
+            }
+
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "downloading".to_string(),
+                    downloaded: 0,
+                    total: Some(1),
+                    percent: Some(0.8),
+                    message: Some("Starting GitHub mod download…".to_string()),
+                },
+            );
+
+            let new_entry = install_github_content_inner(
+                &instance,
+                &instance_dir,
+                &mut lock,
+                &client,
+                &args.project_id,
+                args.project_title.as_deref(),
+                &content_type,
+                &args.target_worlds,
+                |downloaded_bytes, total_bytes| {
+                    let ratio = match total_bytes {
+                        Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
+                        _ => unknown_progress_ratio(downloaded_bytes),
+                    };
+                    let visible_percent = if downloaded_bytes > 0 {
+                        (ratio * 100.0).max(0.8)
+                    } else {
+                        0.8
+                    };
+                    emit_install_progress(
+                        &app,
+                        InstallProgressEvent {
+                            instance_id: args.instance_id.clone(),
+                            project_id: args.project_id.clone(),
+                            stage: "downloading".to_string(),
+                            downloaded: downloaded_bytes,
+                            total: total_bytes,
+                            percent: Some(visible_percent.clamp(0.0, 99.4)),
+                            message: Some(format!(
+                                "Downloading GitHub mod… · {}",
+                                format_download_meter(downloaded_bytes, total_bytes)
+                            )),
+                        },
+                    );
+                },
+            )?;
+            lock.entries
+                .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+            log_instance_event_best_effort(
+                &app,
+                &args.instance_id,
+                "content_install",
+                format!("Installed mod '{}' via GitHub.", new_entry.name),
+            );
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "completed".to_string(),
+                    downloaded: 1,
+                    total: Some(1),
+                    percent: Some(100.0),
+                    message: Some("GitHub mod install complete".to_string()),
+                },
+            );
+            return Ok(lock_entry_to_installed(&instance_dir, &new_entry));
+        }
         let modrinth_reason = snapshot_reason;
         return install_modrinth_mod_inner(
             app,
@@ -1693,9 +1964,20 @@ fn install_discover_content_inner(
     let content_label = content_type_display_name(&content_type);
     let source_label = if source == "curseforge" {
         "CurseForge"
-    } else {
+    } else if source == "modrinth" {
         "Modrinth"
+    } else if source == "github" {
+        "GitHub"
+    } else {
+        "Provider"
     };
+
+    if source == "github" {
+        return Err(format!(
+            "GitHub provider currently supports mods only, not {}.",
+            content_label
+        ));
+    }
 
     emit_install_progress(
         &app,
@@ -1821,6 +2103,8 @@ fn install_discover_content_inner(
             new_entry.name,
             if source == "curseforge" {
                 "CurseForge"
+            } else if source == "github" {
+                "GitHub"
             } else {
                 "Modrinth"
             }
@@ -1977,53 +2261,255 @@ pub(crate) async fn search_discover_content(
     .await
 }
 
+fn discover_hit_dedupe_key(hit: &DiscoverSearchHit) -> String {
+    let source = hit.source.trim().to_ascii_lowercase();
+    let project_id = hit.project_id.trim().to_ascii_lowercase();
+    if !project_id.is_empty() {
+        return format!("{source}::{project_id}");
+    }
+    let slug = normalize_provider_match_key(hit.slug.as_deref().unwrap_or_default());
+    let title = normalize_provider_match_key(&hit.title);
+    format!(
+        "{}::{}::{}",
+        source,
+        if title.is_empty() { "untitled" } else { &title },
+        if slug.is_empty() { "noslug" } else { &slug },
+    )
+}
+
+fn merge_discover_hits_in_place(
+    base: &mut Vec<DiscoverSearchHit>,
+    incoming: Vec<DiscoverSearchHit>,
+    query: &str,
+) {
+    let mut index_by_key: HashMap<String, usize> = HashMap::new();
+    for (index, hit) in base.iter().enumerate() {
+        index_by_key.insert(discover_hit_dedupe_key(hit), index);
+    }
+
+    for hit in incoming {
+        let key = discover_hit_dedupe_key(&hit);
+        if let Some(existing_index) = index_by_key.get(&key).copied() {
+            let replace_existing = {
+                let existing = &base[existing_index];
+                let existing_score = discover_hit_query_score(existing, query);
+                let candidate_score = discover_hit_query_score(&hit, query);
+                candidate_score > existing_score
+                    || (candidate_score == existing_score
+                        && (hit.downloads > existing.downloads
+                            || hit.date_modified > existing.date_modified))
+            };
+            if replace_existing {
+                base[existing_index] = hit;
+            }
+            continue;
+        }
+        index_by_key.insert(key, base.len());
+        base.push(hit);
+    }
+}
+
+fn gather_provider_hits_with_query_variants(
+    client: &Client,
+    args: &SearchDiscoverContentArgs,
+    pool_limit: usize,
+    max_variants: usize,
+    swallow_base_error: bool,
+    provider_search: fn(
+        &Client,
+        &SearchDiscoverContentArgs,
+    ) -> Result<DiscoverSearchResult, String>,
+) -> Result<(Vec<DiscoverSearchHit>, usize), String> {
+    let requested_pool = pool_limit.max(args.limit).max(20);
+    let mut search_args = args.clone();
+    search_args.offset = 0;
+    search_args.limit = requested_pool;
+
+    let base = match provider_search(client, &search_args) {
+        Ok(value) => value,
+        Err(_) if swallow_base_error => DiscoverSearchResult {
+            hits: vec![],
+            offset: 0,
+            limit: requested_pool,
+            total_hits: 0,
+        },
+        Err(err) => return Err(err),
+    };
+    let mut hits = base.hits;
+    let mut total_hits = base.total_hits.max(hits.len());
+    let query = args.query.trim();
+
+    if max_variants > 0 && !query.is_empty() && hits.len() < requested_pool {
+        for variant in discover_query_variants(query)
+            .into_iter()
+            .take(max_variants)
+        {
+            let mut variant_args = search_args.clone();
+            variant_args.query = variant;
+            let extra = provider_search(client, &variant_args).unwrap_or(DiscoverSearchResult {
+                hits: vec![],
+                offset: 0,
+                limit: requested_pool,
+                total_hits: 0,
+            });
+            total_hits = total_hits.max(extra.total_hits);
+            merge_discover_hits_in_place(&mut hits, extra.hits, query);
+            if hits.len() >= requested_pool {
+                break;
+            }
+        }
+    }
+
+    sort_discover_hits(&mut hits, &args.index, Some(query));
+    hits.truncate(requested_pool);
+    total_hits = total_hits.max(hits.len());
+    Ok((hits, total_hits))
+}
+
 fn search_discover_content_inner(
     args: SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
     let source = args.source.trim().to_lowercase();
     let normalized_content_type = normalize_discover_content_type(&args.content_type);
     let client = build_http_client()?;
+
+    let pool_limit = args
+        .offset
+        .saturating_add(args.limit)
+        .saturating_add(12)
+        .max(args.limit)
+        .max(24);
+
     if source == "modrinth" {
-        return search_modrinth_discover(&client, &args);
+        let (hits, total_hits) = gather_provider_hits_with_query_variants(
+            &client,
+            &args,
+            pool_limit,
+            2,
+            false,
+            search_modrinth_discover,
+        )?;
+        let sliced = hits
+            .into_iter()
+            .skip(args.offset)
+            .take(args.limit)
+            .collect::<Vec<_>>();
+        return Ok(DiscoverSearchResult {
+            hits: sliced,
+            offset: args.offset,
+            limit: args.limit,
+            total_hits,
+        });
     }
     if source == "curseforge" {
-        return search_curseforge_discover(&client, &args);
+        let (hits, total_hits) = gather_provider_hits_with_query_variants(
+            &client,
+            &args,
+            pool_limit,
+            2,
+            false,
+            search_curseforge_discover,
+        )?;
+        let sliced = hits
+            .into_iter()
+            .skip(args.offset)
+            .take(args.limit)
+            .collect::<Vec<_>>();
+        return Ok(DiscoverSearchResult {
+            hits: sliced,
+            offset: args.offset,
+            limit: args.limit,
+            total_hits,
+        });
+    }
+    if source == "github" {
+        let max_query_variants = if crate::github_has_configured_tokens() {
+            1
+        } else {
+            0
+        };
+        let (hits, total_hits) = gather_provider_hits_with_query_variants(
+            &client,
+            &args,
+            pool_limit.max(GITHUB_DISCOVER_MIN_RESULT_POOL),
+            max_query_variants,
+            false,
+            search_github_discover,
+        )?;
+        let sliced = hits
+            .into_iter()
+            .skip(args.offset)
+            .take(args.limit)
+            .collect::<Vec<_>>();
+        return Ok(DiscoverSearchResult {
+            hits: sliced,
+            offset: args.offset,
+            limit: args.limit,
+            total_hits,
+        });
     }
 
     let mut sub = args.clone();
     sub.offset = 0;
-    sub.limit = (args.offset + args.limit).max(args.limit);
+    sub.limit = pool_limit.max(GITHUB_DISCOVER_MIN_RESULT_POOL / 2);
 
-    let modrinth = search_modrinth_discover(&client, &sub).unwrap_or(DiscoverSearchResult {
-        hits: vec![],
-        offset: 0,
-        limit: sub.limit,
-        total_hits: 0,
-    });
-
-    let curseforge = if curseforge_api_key().is_some() {
-        search_curseforge_discover(&client, &sub).unwrap_or(DiscoverSearchResult {
-            hits: vec![],
-            offset: 0,
-            limit: sub.limit,
-            total_hits: 0,
-        })
+    let (modrinth_hits, modrinth_total) = gather_provider_hits_with_query_variants(
+        &client,
+        &sub,
+        sub.limit,
+        2,
+        true,
+        search_modrinth_discover,
+    )?;
+    let (curseforge_hits, curseforge_total) = if curseforge_api_key().is_some() {
+        gather_provider_hits_with_query_variants(
+            &client,
+            &sub,
+            sub.limit,
+            2,
+            true,
+            search_curseforge_discover,
+        )?
     } else {
-        DiscoverSearchResult {
-            hits: vec![],
-            offset: 0,
-            limit: sub.limit,
-            total_hits: 0,
-        }
+        (Vec::new(), 0)
     };
 
-    let mut merged = modrinth.hits;
-    merged.extend(curseforge.hits);
-    sort_discover_hits(&mut merged, &args.index);
+    let mut merged = modrinth_hits;
+    merge_discover_hits_in_place(&mut merged, curseforge_hits, args.query.trim());
+    if source == "all"
+        && normalized_content_type == "mods"
+        && merged.len() < GITHUB_DISCOVER_LOW_HITS_THRESHOLD
+    {
+        let mut github_fallback_hits = search_github_discover_fallback(&client, &sub, &merged);
+        if !github_fallback_hits.is_empty() {
+            merge_discover_hits_in_place(&mut merged, github_fallback_hits, args.query.trim());
+        }
+        if !args.query.trim().is_empty() && merged.len() < pool_limit {
+            for variant in discover_query_variants(&args.query).into_iter().take(2) {
+                let mut variant_sub = sub.clone();
+                variant_sub.query = variant;
+                github_fallback_hits =
+                    search_github_discover_fallback(&client, &variant_sub, &merged);
+                if github_fallback_hits.is_empty() {
+                    continue;
+                }
+                merge_discover_hits_in_place(&mut merged, github_fallback_hits, args.query.trim());
+                if merged.len() >= pool_limit {
+                    break;
+                }
+            }
+        }
+    }
+    sort_discover_hits(&mut merged, &args.index, Some(args.query.trim()));
     if source == "all" && normalized_content_type == "mods" {
         merged = blend_discover_hits_prefer_modrinth(merged);
     }
-    let total_hits = modrinth.total_hits.saturating_add(curseforge.total_hits);
+    let mut total_hits = modrinth_total
+        .saturating_add(curseforge_total)
+        .max(merged.len());
+    if source == "all" && normalized_content_type == "mods" {
+        total_hits = total_hits.max(merged.len());
+    }
     let hits = merged
         .into_iter()
         .skip(args.offset)
@@ -2161,6 +2647,260 @@ fn get_curseforge_project_detail_inner(
 }
 
 #[tauri::command]
+pub(crate) async fn get_github_project_detail(
+    args: GetGithubProjectArgs,
+) -> Result<GithubProjectDetail, String> {
+    run_blocking_task("github project detail", move || {
+        get_github_project_detail_inner(args)
+    })
+    .await
+}
+
+fn get_github_project_detail_inner(
+    args: GetGithubProjectArgs,
+) -> Result<GithubProjectDetail, String> {
+    let project_id = args.project_id.trim();
+    if project_id.is_empty() {
+        return Err("projectId is required".to_string());
+    }
+    let (owner, repo_name) = parse_github_project_id(project_id)?;
+    let project_key = github_project_key(&owner, &repo_name);
+    let default_external_url = format!("https://github.com/{owner}/{repo_name}");
+    let default_icon_url = Some(format!("https://github.com/{owner}.png?size=96"));
+    let client = build_http_client()?;
+
+    let mut warning_parts: Vec<String> = Vec::new();
+    let mut auth_or_rate_limit_warning: Option<String> = None;
+    let push_warning = |warning_parts: &mut Vec<String>,
+                        auth_or_rate_limit_warning: &mut Option<String>,
+                        warning: String| {
+        if github_error_is_auth_or_rate_limit(&warning) {
+            if auth_or_rate_limit_warning.is_none() {
+                *auth_or_rate_limit_warning = Some(warning);
+            }
+            return;
+        }
+        if !warning_parts.iter().any(|existing| existing == &warning) {
+            warning_parts.push(warning);
+        }
+    };
+
+    let repo = match fetch_github_repo(&client, &owner, &repo_name) {
+        Ok(value) => {
+            if let Some(reason) = github_repo_policy_rejection_reason(&value) {
+                warning_parts.push(format!("Safety policy warning: {reason}."));
+            }
+            Some(value)
+        }
+        Err(err) => {
+            push_warning(&mut warning_parts, &mut auth_or_rate_limit_warning, err);
+            None
+        }
+    };
+
+    let mut releases_raw = Vec::<GithubRelease>::new();
+    match fetch_github_releases(&client, &owner, &repo_name) {
+        Ok(mut value) => {
+            value.sort_by(|a, b| github_release_sort_key(b).cmp(&github_release_sort_key(a)));
+            releases_raw = value;
+        }
+        Err(err) => {
+            let lower = err.to_ascii_lowercase();
+            if !lower.contains("404") {
+                push_warning(
+                    &mut warning_parts,
+                    &mut auth_or_rate_limit_warning,
+                    format!("Release list unavailable: {err}"),
+                );
+            }
+        }
+    }
+
+    let mut readme_markdown: Option<String> = None;
+    let mut readme_html_url: Option<String> = None;
+    let mut readme_source_url: Option<String> = None;
+    match fetch_github_readme(&client, &owner, &repo_name) {
+        Ok(readme) => {
+            readme_markdown = decode_github_readme_markdown(&readme)
+                .map(|value| value.chars().take(180_000).collect::<String>());
+            let download = readme.download_url.trim();
+            if !download.is_empty() {
+                readme_source_url = Some(download.to_string());
+            }
+            let html = readme.html_url.trim();
+            if !html.is_empty() {
+                readme_html_url = Some(html.to_string());
+            }
+        }
+        Err(err) => {
+            let lower = err.to_ascii_lowercase();
+            if !lower.contains("404") {
+                push_warning(
+                    &mut warning_parts,
+                    &mut auth_or_rate_limit_warning,
+                    format!("README unavailable: {err}"),
+                );
+            }
+        }
+    }
+
+    let title = repo
+        .as_ref()
+        .map(github_repo_title)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| repo_name.clone());
+    let summary = repo
+        .as_ref()
+        .and_then(|value| value.description.clone())
+        .unwrap_or_else(|| format!("GitHub repository {owner}/{repo_name}"));
+    let external_url = repo
+        .as_ref()
+        .map(github_repo_external_url)
+        .unwrap_or_else(|| default_external_url.clone());
+    let issues_url = format!("{external_url}/issues");
+    let releases_url = format!("{external_url}/releases");
+    let icon_url = repo
+        .as_ref()
+        .and_then(github_owner_avatar_url)
+        .or(default_icon_url);
+    let date_modified = repo
+        .as_ref()
+        .and_then(|value| value.pushed_at.clone().or_else(|| value.updated_at.clone()))
+        .unwrap_or_else(|| {
+            releases_raw
+                .iter()
+                .find_map(|release| {
+                    release
+                        .published_at
+                        .clone()
+                        .or_else(|| release.created_at.clone())
+                })
+                .unwrap_or_default()
+        });
+
+    let releases = releases_raw
+        .into_iter()
+        .filter(|release| !release.draft)
+        .take(25)
+        .map(|release| {
+            let tag_name = if release.tag_name.trim().is_empty() {
+                format!("release-{}", release.id)
+            } else {
+                release.tag_name.trim().to_string()
+            };
+            let name = release
+                .name
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| tag_name.clone());
+            let published_at = release
+                .published_at
+                .clone()
+                .or_else(|| release.created_at.clone())
+                .unwrap_or_default();
+            let assets = release
+                .assets
+                .iter()
+                .take(20)
+                .map(|asset| GithubProjectReleaseAssetDetail {
+                    name: asset.name.clone(),
+                    download_url: asset.browser_download_url.clone(),
+                    size: asset.size,
+                    content_type: asset.content_type.clone(),
+                })
+                .collect::<Vec<_>>();
+            let external = release
+                .html_url
+                .trim()
+                .to_string()
+                .chars()
+                .take(4096)
+                .collect::<String>();
+            GithubProjectReleaseDetail {
+                id: format!("gh_release:{}", release.id),
+                tag_name,
+                name,
+                published_at,
+                prerelease: release.prerelease,
+                draft: release.draft,
+                external_url: if external.is_empty() {
+                    Some(format!("{releases_url}/tag/{}", release.tag_name.trim()))
+                } else {
+                    Some(external)
+                },
+                assets,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if readme_html_url.is_none() {
+        readme_html_url = repo
+            .as_ref()
+            .and_then(|value| {
+                if value.default_branch.trim().is_empty() {
+                    None
+                } else {
+                    Some(format!(
+                        "{external_url}/blob/{}/README.md",
+                        value.default_branch.trim()
+                    ))
+                }
+            })
+            .or_else(|| Some(format!("{external_url}/blob/HEAD/README.md")));
+    }
+
+    let homepage_url = repo
+        .as_ref()
+        .and_then(|value| value.homepage.as_ref())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if let Some(warning) = auth_or_rate_limit_warning {
+        warning_parts.insert(0, warning);
+    }
+
+    let warning = if warning_parts.is_empty() {
+        None
+    } else {
+        Some(warning_parts.join(" "))
+    };
+
+    Ok(GithubProjectDetail {
+        source: "github".to_string(),
+        project_id: project_key,
+        title,
+        owner: owner.clone(),
+        summary: summary.clone(),
+        description: summary,
+        stars: repo
+            .as_ref()
+            .map(|value| value.stargazers_count)
+            .unwrap_or(0),
+        forks: repo.as_ref().map(|value| value.forks_count).unwrap_or(0),
+        watchers: repo.as_ref().map(|value| value.watchers_count).unwrap_or(0),
+        open_issues: repo
+            .as_ref()
+            .map(|value| value.open_issues_count)
+            .unwrap_or(0),
+        categories: repo
+            .as_ref()
+            .map(|value| value.topics.clone())
+            .unwrap_or_default(),
+        icon_url,
+        date_modified,
+        external_url: Some(external_url),
+        releases_url: Some(releases_url),
+        issues_url: Some(issues_url),
+        homepage_url,
+        readme_markdown,
+        readme_html_url,
+        readme_source_url,
+        releases,
+        warning,
+    })
+}
+
+#[tauri::command]
 pub(crate) fn import_provider_modpack_template(
     args: ImportProviderModpackArgs,
 ) -> Result<CreatorPreset, String> {
@@ -2179,7 +2919,9 @@ pub(crate) fn import_provider_modpack_template(
 }
 
 #[tauri::command]
-pub(crate) fn export_presets_json(args: ExportPresetsJsonArgs) -> Result<PresetsJsonIoResult, String> {
+pub(crate) fn export_presets_json(
+    args: ExportPresetsJsonArgs,
+) -> Result<PresetsJsonIoResult, String> {
     let path_text = args.output_path.trim();
     if path_text.is_empty() {
         return Err("outputPath is required".to_string());
@@ -2208,7 +2950,9 @@ pub(crate) fn export_presets_json(args: ExportPresetsJsonArgs) -> Result<Presets
 }
 
 #[tauri::command]
-pub(crate) fn import_presets_json(args: ImportPresetsJsonArgs) -> Result<serde_json::Value, String> {
+pub(crate) fn import_presets_json(
+    args: ImportPresetsJsonArgs,
+) -> Result<serde_json::Value, String> {
     let path_text = args.input_path.trim();
     if path_text.is_empty() {
         return Err("inputPath is required".to_string());
@@ -2636,7 +3380,10 @@ fn create_instance_internal(
 }
 
 #[tauri::command]
-pub(crate) fn create_instance(app: tauri::AppHandle, args: CreateInstanceArgs) -> Result<Instance, String> {
+pub(crate) fn create_instance(
+    app: tauri::AppHandle,
+    args: CreateInstanceArgs,
+) -> Result<Instance, String> {
     let loader_lc = parse_loader_for_instance(&args.loader)
         .ok_or_else(|| "loader must be one of vanilla/fabric/forge/neoforge/quilt".to_string())?;
 
@@ -2723,7 +3470,10 @@ pub(crate) fn import_instance_from_launcher(
 }
 
 #[tauri::command]
-pub(crate) fn update_instance(app: tauri::AppHandle, args: UpdateInstanceArgs) -> Result<Instance, String> {
+pub(crate) fn update_instance(
+    app: tauri::AppHandle,
+    args: UpdateInstanceArgs,
+) -> Result<Instance, String> {
     let dir = app_instances_dir(&app)?;
     let mut idx = read_index(&dir)?;
     if migrate_instance_folder_names(&dir, &mut idx)? {
@@ -2806,7 +3556,10 @@ pub(crate) fn detect_java_runtimes() -> Result<Vec<JavaRuntimeCandidate>, String
 }
 
 #[tauri::command]
-pub(crate) fn set_instance_icon(app: tauri::AppHandle, args: SetInstanceIconArgs) -> Result<Instance, String> {
+pub(crate) fn set_instance_icon(
+    app: tauri::AppHandle,
+    args: SetInstanceIconArgs,
+) -> Result<Instance, String> {
     let dir = app_instances_dir(&app)?;
     let mut idx = read_index(&dir)?;
     let pos = idx
@@ -2870,7 +3623,10 @@ pub(crate) fn read_local_image_data_url(args: ReadLocalImageDataUrlArgs) -> Resu
 }
 
 #[tauri::command]
-pub(crate) fn delete_instance(app: tauri::AppHandle, args: DeleteInstanceArgs) -> Result<(), String> {
+pub(crate) fn delete_instance(
+    app: tauri::AppHandle,
+    args: DeleteInstanceArgs,
+) -> Result<(), String> {
     let dir = app_instances_dir(&app)?;
     let mut idx = read_index(&dir)?;
     if migrate_instance_folder_names(&dir, &mut idx)? {
@@ -3082,7 +3838,7 @@ fn install_modrinth_mod_inner(
             source: "modrinth".into(),
             project_id: item.project_id.clone(),
             version_id: item.version.id.clone(),
-            name: resolved_name.clone(),
+            name: canonical_lock_entry_name("mods", &safe_filename, &resolved_name),
             version_number: item.version.version_number.clone(),
             filename: safe_filename,
             content_type: "mods".to_string(),
@@ -3252,7 +4008,10 @@ fn install_curseforge_mod_inner(
                     resolved_count, pending_count
                 )
             } else {
-                format!("Resolved {} project(s), preparing downloads…", resolved_count)
+                format!(
+                    "Resolved {} project(s), preparing downloads…",
+                    resolved_count
+                )
             };
             emit_install_progress(
                 &app,
@@ -3559,12 +4318,17 @@ fn import_local_mod_file_inner(
                 &file_bytes,
                 &safe_filename,
                 normalized_content_type == "mods",
+                None,
             ))
         });
     let detected_provider_matches = detected_provider_matches.unwrap_or_default();
     let detected_provider =
         select_preferred_provider_match(&detected_provider_matches, None).cloned();
     let detected_provider_candidates = to_provider_candidates(&detected_provider_matches);
+    let detected_provider_for_activation = detected_provider
+        .as_ref()
+        .filter(|found| provider_match_is_auto_activatable(found))
+        .cloned();
 
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     lock.entries.retain(|e| {
@@ -3572,7 +4336,7 @@ fn import_local_mod_file_inner(
             && normalize_lock_content_type(&e.content_type) == normalized_content_type)
     });
 
-    if let Some(found) = detected_provider.as_ref() {
+    if let Some(found) = detected_provider_for_activation.as_ref() {
         remove_replaced_entries_for_content(
             &mut lock,
             &instance_dir,
@@ -3581,12 +4345,12 @@ fn import_local_mod_file_inner(
         )?;
     }
 
-    let new_entry = if let Some(found) = detected_provider {
+    let new_entry = if let Some(found) = detected_provider_for_activation {
         LockEntry {
             source: found.source,
             project_id: found.project_id,
             version_id: found.version_id,
-            name: found.name,
+            name: canonical_lock_entry_name(&normalized_content_type, &safe_filename, &found.name),
             version_number: found.version_number,
             filename: safe_filename.clone(),
             content_type: normalized_content_type.clone(),
@@ -3611,7 +4375,11 @@ fn import_local_mod_file_inner(
             source: "local".into(),
             project_id,
             version_id: format!("local_{}", now_millis()),
-            name: infer_local_name(&safe_filename),
+            name: canonical_lock_entry_name(
+                &normalized_content_type,
+                &safe_filename,
+                &infer_local_name(&safe_filename),
+            ),
             version_number: "local-file".into(),
             filename: safe_filename.clone(),
             content_type: normalized_content_type.clone(),
@@ -3624,7 +4392,7 @@ fn import_local_mod_file_inner(
             pinned_version: None,
             enabled: true,
             hashes: HashMap::new(),
-            provider_candidates: vec![],
+            provider_candidates: detected_provider_candidates,
         }
     };
 
@@ -3644,6 +4412,26 @@ fn import_local_mod_file_inner(
     );
 
     Ok(lock_entry_to_installed(&instance_dir, &new_entry))
+}
+
+fn lock_entry_has_untrusted_github_mapping(entry: &LockEntry) -> bool {
+    if !entry.source.trim().eq_ignore_ascii_case("github") {
+        return false;
+    }
+    if parse_github_project_id(&entry.project_id).is_err() {
+        return true;
+    }
+    let github_candidates = entry
+        .provider_candidates
+        .iter()
+        .filter(|candidate| candidate.source.trim().eq_ignore_ascii_case("github"))
+        .collect::<Vec<_>>();
+    if github_candidates.is_empty() {
+        return true;
+    }
+    !github_candidates
+        .iter()
+        .any(|candidate| provider_candidate_is_auto_activatable(candidate))
 }
 
 fn resolve_local_mod_sources_inner(
@@ -3694,13 +4482,34 @@ fn resolve_local_mod_sources_inner(
     for idx in 0..lock.entries.len() {
         let source = lock.entries[idx].source.trim().to_ascii_lowercase();
         let is_local = source == "local";
+        let is_supported_provider_source =
+            source == "modrinth" || source == "curseforge" || source == "github";
+        let should_revalidate_untrusted_github =
+            !strict_local_only && lock_entry_has_untrusted_github_mapping(&lock.entries[idx]);
         if strict_local_only && !is_local {
             continue;
         }
-        if !is_local {
+        let entry_content_type = normalize_lock_content_type(&lock.entries[idx].content_type);
+        let should_revalidate_github_in_all = !strict_local_only
+            && source == "github"
+            && entry_content_type == "mods"
+            && lock.entries[idx]
+                .version_id
+                .trim()
+                .starts_with("gh_release:");
+        let should_repair_existing_github_mapping = !strict_local_only
+            && source == "github"
+            && entry_content_type == "mods"
+            && (should_revalidate_untrusted_github || should_revalidate_github_in_all);
+        let should_scan_non_local_entry = !strict_local_only
+            && !is_local
+            && (!is_supported_provider_source
+                || lock.entries[idx].provider_candidates.is_empty()
+                || should_revalidate_untrusted_github
+                || should_revalidate_github_in_all);
+        if !is_local && !should_scan_non_local_entry {
             continue;
         }
-        let entry_content_type = normalize_lock_content_type(&lock.entries[idx].content_type);
         if !content_types_filter.contains(&entry_content_type) {
             continue;
         }
@@ -3723,25 +4532,152 @@ fn resolve_local_mod_sources_inner(
             &file_bytes,
             &filename,
             entry_content_type == "mods",
+            if should_revalidate_github_in_all {
+                Some(lock.entries[idx].project_id.as_str())
+            } else {
+                None
+            },
         );
-        let Some(found) = select_preferred_provider_match(&found_matches, None) else {
+        let github_verification_unavailable =
+            provider_matches_have_transient_github_verification_issue(&found_matches);
+        let preferred_source_hint = if should_revalidate_github_in_all {
+            Some("github")
+        } else {
+            None
+        };
+        let preferred_match =
+            select_preferred_provider_match(&found_matches, preferred_source_hint);
+        let preferred_is_activatable = preferred_match
+            .map(|item| provider_match_is_auto_activatable(item))
+            .unwrap_or(false);
+        let no_viable_match = preferred_match.is_none()
+            || (should_repair_existing_github_mapping && !preferred_is_activatable);
+        let key_before = local_entry_key(&lock.entries[idx]);
+        let from_source = lock.entries[idx].source.clone();
+        let existing_project_id = lock.entries[idx].project_id.clone();
+        let existing_project_id_valid = parse_github_project_id(&existing_project_id).is_ok();
+
+        if no_viable_match {
+            if should_repair_existing_github_mapping {
+                if should_revalidate_github_in_all && existing_project_id_valid {
+                    if let Some(transient_reason) = github_verification_unavailable {
+                        warnings.push(format!(
+                            "Kept existing GitHub mapping for '{}': release verification is temporarily unavailable ({}).",
+                            filename, transient_reason
+                        ));
+                        continue;
+                    }
+                }
+                let revert_reason = if !existing_project_id_valid {
+                    format!(
+                        "Existing GitHub mapping has invalid repository ID '{}'.",
+                        existing_project_id.trim()
+                    )
+                } else if let Some(found) = preferred_match {
+                    format!(
+                        "Existing GitHub mapping is not safely auto-activatable ({} confidence): {}",
+                        found.confidence, found.reason
+                    )
+                } else if should_revalidate_untrusted_github {
+                    "Existing GitHub mapping is untrusted and could not be safely re-verified against local file evidence."
+                        .to_string()
+                } else {
+                    "Existing GitHub mapping could not be verified against local file evidence."
+                        .to_string()
+                };
+                lock.entries[idx].source = "local".to_string();
+                lock.entries[idx].project_id =
+                    format!("local:{}", sanitize_filename(&lock.entries[idx].filename));
+                lock.entries[idx].version_id = format!("local_{}", Uuid::new_v4());
+                lock.entries[idx].version_number = "local-file".to_string();
+                lock.entries[idx]
+                    .provider_candidates
+                    .retain(|candidate| !candidate.source.trim().eq_ignore_ascii_case("github"));
+                changed = true;
+                resolved_entries += 1;
+                warnings.push(format!(
+                    "Reverted GitHub mapping for '{}' to local: {}",
+                    filename, revert_reason
+                ));
+                matches.push(LocalResolverMatch {
+                    key: key_before,
+                    from_source,
+                    to_source: "local".to_string(),
+                    project_id: lock.entries[idx].project_id.clone(),
+                    version_id: lock.entries[idx].version_id.clone(),
+                    name: lock.entries[idx].name.clone(),
+                    version_number: lock.entries[idx].version_number.clone(),
+                    confidence: "manual".to_string(),
+                    reason: revert_reason,
+                });
+            }
+            continue;
+        }
+        let Some(found) = preferred_match else {
             continue;
         };
-        let key_before = local_entry_key(&lock.entries[idx]);
-        apply_provider_match_to_lock_entry(&mut lock.entries[idx], &found);
-        lock.entries[idx].provider_candidates = to_provider_candidates(&found_matches);
+        if is_local
+            && found.source.trim().eq_ignore_ascii_case("github")
+            && !provider_match_is_auto_activatable(found)
+        {
+            warnings.push(format!(
+                "Kept '{}' as local: GitHub candidate is {} confidence and will stay non-active ({})",
+                filename, found.confidence, found.reason
+            ));
+        }
+        let before_candidates = lock.entries[idx].provider_candidates.clone();
+        let mut before_candidate_keys = before_candidates
+            .iter()
+            .map(provider_candidate_identity_key)
+            .collect::<Vec<_>>();
+        before_candidate_keys.sort();
+
+        if (is_local
+            || !is_supported_provider_source
+            || should_revalidate_untrusted_github
+            || should_revalidate_github_in_all)
+            && provider_match_is_auto_activatable(found)
+        {
+            apply_provider_match_to_lock_entry(&mut lock.entries[idx], &found);
+        }
+        if lock.entries[idx].provider_candidates.is_empty() {
+            lock.entries[idx].provider_candidates =
+                lock_entry_provider_candidates(&lock.entries[idx]);
+        }
+        for candidate in to_provider_candidates(&found_matches) {
+            upsert_provider_candidate(&mut lock.entries[idx], candidate);
+        }
+
+        let source_changed = lock.entries[idx].source != from_source;
+        let mut after_candidate_keys = lock.entries[idx]
+            .provider_candidates
+            .iter()
+            .map(provider_candidate_identity_key)
+            .collect::<Vec<_>>();
+        after_candidate_keys.sort();
+        let candidates_changed = after_candidate_keys != before_candidate_keys;
+        if !source_changed && !candidates_changed {
+            continue;
+        }
         resolved_entries += 1;
         changed = true;
+        let preferred_for_report = if source_changed {
+            Some(lock.entries[idx].source.as_str())
+        } else {
+            Some(from_source.as_str())
+        };
+        let found_for_report =
+            select_preferred_provider_match(&found_matches, preferred_for_report).unwrap_or(found);
         matches.push(LocalResolverMatch {
             key: key_before,
-            from_source: "local".to_string(),
-            to_source: found.source.clone(),
-            project_id: found.project_id.clone(),
-            version_id: found.version_id.clone(),
-            name: found.name.clone(),
-            version_number: found.version_number.clone(),
-            confidence: found.confidence.clone(),
-            reason: found.reason.clone(),
+            from_source,
+            to_source: lock.entries[idx].source.clone(),
+            project_id: found_for_report.project_id.clone(),
+            version_id: found_for_report.version_id.clone(),
+            name: found_for_report.name.clone(),
+            version_number: found_for_report.version_number.clone(),
+            confidence: found_for_report.confidence.clone(),
+            reason: found_for_report.reason.clone(),
         });
     }
 
@@ -3749,11 +4685,25 @@ fn resolve_local_mod_sources_inner(
         lock.entries
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         write_lockfile(&instances_dir, instance_id, &lock)?;
+        let github_reverts = matches
+            .iter()
+            .filter(|item| {
+                item.from_source.trim().eq_ignore_ascii_case("github")
+                    && item.to_source.trim().eq_ignore_ascii_case("local")
+            })
+            .count();
+        let github_activations = matches
+            .iter()
+            .filter(|item| item.to_source.trim().eq_ignore_ascii_case("github"))
+            .count();
         log_instance_event_best_effort(
             app,
             instance_id,
             "local_resolve",
-            format!("Resolved {} local entry provider mapping(s).", resolved_entries),
+            format!(
+                "Resolved {} local entry provider mapping(s) (GitHub activated: {}, GitHub reverted: {}).",
+                resolved_entries, github_activations, github_reverts
+            ),
         );
     }
 
@@ -3951,7 +4901,10 @@ fn update_all_instance_content_inner(
             &app,
             &args.instance_id,
             "content_update_all",
-            format!("Updated {} content entries from update-all.", updated_entries),
+            format!(
+                "Updated {} content entries from update-all.",
+                updated_entries
+            ),
         );
     }
     Ok(UpdateAllContentResult {
@@ -4087,24 +5040,6 @@ pub(crate) async fn launch_instance(
             instance.id, err
         );
     }
-    match sync_instance_minecraft_settings_before_launch(&instances_dir, &instance, &instance_settings) {
-        Ok(copied) if copied > 0 => {
-            log_instance_event_best_effort(
-                &app,
-                &instance.id,
-                "settings_sync",
-                format!("Synced Minecraft settings to {} file target(s).", copied),
-            );
-        }
-        Ok(_) => {}
-        Err(err) => {
-            eprintln!(
-                "minecraft settings sync before launch failed for '{}': {}",
-                instance.id, err
-            );
-        }
-    }
-
     let method_for_report = method.clone();
     let launch_result: Result<LaunchResult, String> = match method {
         LaunchMethod::Prism => {
@@ -4126,6 +5061,32 @@ pub(crate) async fn launch_instance(
                 .join("instances")
                 .join(&prism_instance_id)
                 .join("minecraft");
+            match hydrate_instance_settings_from_prism(&prism_mc_dir, &app_instance_dir) {
+                Ok(copied) if copied > 0 => {
+                    log_instance_event_best_effort(
+                        &app,
+                        &instance.id,
+                        "settings_sync",
+                        format!(
+                            "Refreshed {} Minecraft settings file(s) from Prism before cross-instance sync.",
+                            copied
+                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    eprintln!(
+                        "prism settings hydration before launch failed for '{}': {}",
+                        instance.id, err
+                    );
+                }
+            }
+            run_instance_settings_sync_before_launch(
+                &app,
+                &instances_dir,
+                &instance,
+                &instance_settings,
+            );
 
             emit_launch_state(
                 &app,
@@ -4198,6 +5159,13 @@ pub(crate) async fn launch_instance(
                 clear_launch_cancel_request(&state, &instance.id)?;
                 return Err("Launch cancelled by user.".to_string());
             }
+
+            run_instance_settings_sync_before_launch(
+                &app,
+                &instances_dir,
+                &instance,
+                &instance_settings,
+            );
 
             emit_launch_state(
                 &app,
@@ -4287,7 +5255,7 @@ pub(crate) async fn launch_instance(
             };
             let runtime_dir = runtime_session_cleanup_dir
                 .clone()
-                .unwrap_or_else(|| app_instance_dir.join("runtime"));
+                .unwrap_or_else(|| app_instance_dir.clone());
             emit_launch_state(
                 &app,
                 &instance.id,
@@ -4297,7 +5265,7 @@ pub(crate) async fn launch_instance(
                 if use_isolated_runtime_session {
                     "Preparing isolated runtime session…"
                 } else {
-                    "Preparing runtime files…"
+                    "Preparing instance files…"
                 },
             );
             let app_instance_dir_for_sync = app_instance_dir.clone();
@@ -4317,6 +5285,13 @@ pub(crate) async fn launch_instance(
                 150,
                 async move {
                     tauri::async_runtime::spawn_blocking(move || {
+                        if !use_isolated_runtime_for_sync {
+                            reconcile_legacy_runtime_into_instance(&app_instance_dir_for_sync)?;
+                        }
+                        let _ = cleanup_stale_runtime_sessions_for_instance(
+                            &app_instance_dir_for_sync,
+                            Duration::from_secs(STALE_RUNTIME_SESSION_MAX_AGE_HOURS * 3600),
+                        );
                         fs::create_dir_all(&runtime_dir_for_sync)
                             .map_err(|e| format!("mkdir native runtime failed: {e}"))?;
                         if use_isolated_runtime_for_sync {
@@ -4325,10 +5300,7 @@ pub(crate) async fn launch_instance(
                                 &runtime_dir_for_sync,
                             )?;
                         } else {
-                            sync_instance_runtime_content(
-                                &app_instance_dir_for_sync,
-                                &runtime_dir_for_sync,
-                            )?;
+                            ensure_instance_content_dirs(&runtime_dir_for_sync)?;
                         }
                         let cache_dir = launcher_cache_dir(&app_for_sync)?;
                         fs::create_dir_all(&cache_dir)
@@ -4494,7 +5466,8 @@ pub(crate) async fn launch_instance(
             }
             thread::sleep(Duration::from_millis(900));
             if let Ok(Some(status)) = child.try_wait() {
-                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "crashed") {
+                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "crashed")
+                {
                     eprintln!(
                         "instance last-run metadata crash marker write failed for '{}': {}",
                         instance.id, err
@@ -4512,6 +5485,18 @@ pub(crate) async fn launch_instance(
             }
 
             let pid = child.id();
+            if let Err(err) = register_native_play_session_start(
+                &instances_dir,
+                &instance.id,
+                &launch_id,
+                pid,
+                use_isolated_runtime_session,
+            ) {
+                eprintln!(
+                    "playtime active session registration failed for '{}': {}",
+                    instance.id, err
+                );
+            }
             let child = Arc::new(Mutex::new(child));
             let keep_launcher_open = instance_settings.keep_launcher_open_while_playing;
             let close_launcher_on_exit = instance_settings.close_launcher_on_game_exit;
@@ -4594,17 +5579,15 @@ pub(crate) async fn launch_instance(
                     }
                     let waited = if let Ok(mut c) = child.lock() {
                         match c.try_wait() {
-                            Ok(Some(status)) => {
-                                Some((
-                                    if status.success() {
-                                        "success".to_string()
-                                    } else {
-                                        "crashed".to_string()
-                                    },
-                                    status.code(),
-                                    format!("Game exited with status {:?}", status.code()),
-                                ))
-                            }
+                            Ok(Some(status)) => Some((
+                                if status.success() {
+                                    "success".to_string()
+                                } else {
+                                    "crashed".to_string()
+                                },
+                                status.code(),
+                                format!("Game exited with status {:?}", status.code()),
+                            )),
                             Ok(None) => None,
                             Err(e) => Some((
                                 "crashed".to_string(),
@@ -4638,11 +5621,25 @@ pub(crate) async fn launch_instance(
                 } else {
                     exit_message
                 };
-                if let Err(err) =
-                    mark_instance_launch_exit(&instances_dir_for_thread, &instance_id_for_thread, &exit_kind)
-                {
+                if let Err(err) = mark_instance_launch_exit(
+                    &instances_dir_for_thread,
+                    &instance_id_for_thread,
+                    &exit_kind,
+                ) {
                     eprintln!(
                         "instance last-run metadata exit marker write failed for '{}': {}",
+                        instance_id_for_thread, err
+                    );
+                }
+                if let Err(err) = finalize_native_play_session(
+                    &instances_dir_for_thread,
+                    &instance_id_for_thread,
+                    &launch_id_for_thread,
+                    &exit_kind,
+                    false,
+                ) {
+                    eprintln!(
+                        "playtime session finalize failed for '{}': {}",
                         instance_id_for_thread, err
                     );
                 }
@@ -4700,7 +5697,8 @@ pub(crate) async fn launch_instance(
     match &launch_result {
         Ok(result) => {
             if matches!(method_for_report, LaunchMethod::Prism) {
-                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "success") {
+                if let Err(err) = mark_instance_launch_exit(&instances_dir, &instance.id, "success")
+                {
                     eprintln!(
                         "instance last-run metadata prism success marker write failed for '{}': {}",
                         instance.id, err
@@ -4728,7 +5726,9 @@ pub(crate) async fn launch_instance(
             } else {
                 "crashed"
             };
-            if let Err(mark_err) = mark_instance_launch_exit(&instances_dir, &instance.id, exit_kind) {
+            if let Err(mark_err) =
+                mark_instance_launch_exit(&instances_dir, &instance.id, exit_kind)
+            {
                 eprintln!(
                     "instance last-run metadata error marker write failed for '{}': {}",
                     instance.id, mark_err
@@ -5314,6 +6314,108 @@ pub(crate) fn list_installed_mods(
     Ok(out)
 }
 
+fn requested_content_type_filter(requested: Option<&[String]>) -> Option<HashSet<String>> {
+    let values = requested?;
+    let mut out: HashSet<String> = HashSet::new();
+    for raw in values {
+        let normalized = match raw.trim().to_ascii_lowercase().as_str() {
+            "mods" | "mod" => Some("mods"),
+            "resourcepacks" | "resourcepack" => Some("resourcepacks"),
+            "shaderpacks" | "shaderpack" | "shaders" | "shader" => Some("shaderpacks"),
+            "datapacks" | "datapack" => Some("datapacks"),
+            "modpacks" | "modpack" => Some("modpacks"),
+            _ => None,
+        };
+        if let Some(value) = normalized {
+            out.insert(value.to_string());
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn prune_missing_entries_from_lock(
+    lock: &mut Lockfile,
+    instance_dir: &Path,
+    content_type_filter: Option<&HashSet<String>>,
+) -> Vec<String> {
+    let mut removed_names: Vec<String> = Vec::new();
+    let mut retained_entries: Vec<LockEntry> = Vec::with_capacity(lock.entries.len());
+
+    for entry in lock.entries.drain(..) {
+        let normalized_content_type = normalize_lock_content_type(&entry.content_type);
+        let should_prune_check = content_type_filter
+            .map(|allow| allow.contains(&normalized_content_type))
+            .unwrap_or(true);
+        if should_prune_check && !entry_file_exists(instance_dir, &entry) {
+            removed_names.push(canonical_lock_entry_name(
+                &normalized_content_type,
+                &entry.filename,
+                &entry.name,
+            ));
+            continue;
+        }
+        retained_entries.push(entry);
+    }
+
+    lock.entries = retained_entries;
+    removed_names.sort_by_key(|name| name.to_ascii_lowercase());
+    removed_names
+}
+
+#[tauri::command]
+pub(crate) fn prune_missing_installed_entries(
+    app: tauri::AppHandle,
+    args: PruneMissingInstalledEntriesArgs,
+) -> Result<PruneMissingInstalledEntriesResult, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let _ = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let content_type_filter = requested_content_type_filter(args.content_types.as_deref());
+
+    let removed_names =
+        prune_missing_entries_from_lock(&mut lock, &instance_dir, content_type_filter.as_ref());
+    let removed_count = removed_names.len();
+    let remaining_count = lock.entries.len();
+
+    if removed_count > 0 {
+        write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+        log_instance_event_best_effort(
+            &app,
+            &args.instance_id,
+            "content_prune_missing",
+            format!(
+                "Cleaned {} missing entr{} from lock metadata.",
+                removed_count,
+                if removed_count == 1 { "y" } else { "ies" }
+            ),
+        );
+    }
+
+    let filter_label = if let Some(filter) = content_type_filter {
+        let mut labels = filter.into_iter().collect::<Vec<_>>();
+        labels.sort();
+        labels.join(",")
+    } else {
+        "all".to_string()
+    };
+    eprintln!(
+        "prune missing entries summary for '{}': removed={}, remaining={}, filter={}",
+        args.instance_id, removed_count, remaining_count, filter_label
+    );
+
+    Ok(PruneMissingInstalledEntriesResult {
+        instance_id: args.instance_id,
+        removed_count,
+        remaining_count,
+        removed_names,
+    })
+}
+
 #[tauri::command]
 pub(crate) fn set_installed_mod_enabled(
     app: tauri::AppHandle,
@@ -5436,7 +6538,9 @@ pub(crate) fn set_installed_mod_enabled(
                 "{} '{}' ({}).",
                 if args.enabled { "Enabled" } else { "Disabled" },
                 lock.entries[idx].name,
-                content_type_display_name(&normalize_lock_content_type(&lock.entries[idx].content_type))
+                content_type_display_name(&normalize_lock_content_type(
+                    &lock.entries[idx].content_type
+                ))
             ),
         );
     }
@@ -5471,15 +6575,336 @@ pub(crate) fn set_installed_mod_provider(
         entry.provider_candidates = lock_entry_provider_candidates(entry);
     }
 
-    let candidate = entry
-        .provider_candidates
-        .iter()
-        .find(|item| item.source.trim().eq_ignore_ascii_case(&requested_source))
-        .cloned()
-        .ok_or_else(|| "Requested provider is not available for this entry".to_string())?;
+    let candidate = select_provider_candidate_for_source(entry, &requested_source)?;
+    validate_provider_switch(entry, &requested_source, &candidate)?;
 
     apply_provider_candidate_to_lock_entry(entry, &candidate);
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+
+    let updated = lock.entries[idx].clone();
+    Ok(lock_entry_to_installed(&instance_dir, &updated))
+}
+
+fn select_provider_candidate_for_source(
+    entry: &LockEntry,
+    requested_source: &str,
+) -> Result<ProviderCandidate, String> {
+    if requested_source == "github" {
+        let github_candidates = entry
+            .provider_candidates
+            .iter()
+            .filter(|item| item.source.trim().eq_ignore_ascii_case("github"))
+            .collect::<Vec<_>>();
+        if github_candidates.is_empty() {
+            return Err("Requested provider is not available for this entry".to_string());
+        }
+        let distinct_projects = github_candidates
+            .iter()
+            .map(|item| item.project_id.trim().to_ascii_lowercase())
+            .collect::<HashSet<_>>();
+        if entry.source.trim().eq_ignore_ascii_case("local") && distinct_projects.len() > 1 {
+            return Err(
+                "Multiple GitHub candidates were found for this local mod. Reattach GitHub to choose the correct repository before switching providers."
+                    .to_string(),
+            );
+        }
+        return github_candidates
+            .iter()
+            .find(|item| provider_candidate_is_auto_activatable(item))
+            .or_else(|| {
+                github_candidates.iter().find(|item| {
+                    item.version_id
+                        .trim()
+                        .to_ascii_lowercase()
+                        .starts_with("gh_release:")
+                })
+            })
+            .or_else(|| github_candidates.first())
+            .cloned()
+            .cloned()
+            .ok_or_else(|| "Requested provider is not available for this entry".to_string());
+    }
+    entry
+        .provider_candidates
+        .iter()
+        .find(|item| item.source.trim().eq_ignore_ascii_case(requested_source))
+        .cloned()
+        .ok_or_else(|| "Requested provider is not available for this entry".to_string())
+}
+
+fn validate_provider_switch(
+    entry: &LockEntry,
+    requested_source: &str,
+    candidate: &ProviderCandidate,
+) -> Result<(), String> {
+    if requested_source != "github" {
+        return Ok(());
+    }
+    if parse_github_project_id(&candidate.project_id).is_err() {
+        return Err(
+            "GitHub provider switch blocked: repository ID is invalid. Reattach GitHub with a valid owner/repo first."
+                .to_string(),
+        );
+    }
+    let explicit_local_override = entry.source.trim().eq_ignore_ascii_case("local");
+    let confidence = candidate
+        .confidence
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let reason = candidate
+        .reason
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let activation_safe = provider_candidate_is_auto_activatable(candidate);
+    let manual_verified = confidence == "manual" && !reason.contains("unverified");
+    if confidence == "manual" && reason.contains("unverified") && !explicit_local_override {
+        return Err(
+            "This GitHub repository mapping is pending verification. Re-run Attach GitHub when GitHub API is available before switching providers.".to_string()
+        );
+    }
+    if !activation_safe && !manual_verified && !explicit_local_override {
+        return Err(
+            "GitHub provider switch blocked: this mapping is medium/low confidence and stays as a non-active candidate. Reattach or re-identify until confidence is high/deterministic."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn provider_candidate_identity_key(candidate: &ProviderCandidate) -> String {
+    format!(
+        "{}:{}:{}",
+        candidate.source.trim().to_ascii_lowercase(),
+        candidate.project_id.trim().to_ascii_lowercase(),
+        candidate.version_id.trim().to_ascii_lowercase()
+    )
+}
+
+fn upsert_provider_candidate(entry: &mut LockEntry, candidate: ProviderCandidate) {
+    if entry.provider_candidates.is_empty() {
+        entry.provider_candidates = lock_entry_provider_candidates(entry);
+    }
+    let key = provider_candidate_identity_key(&candidate);
+    let mut replaced = false;
+    for existing in &mut entry.provider_candidates {
+        if provider_candidate_identity_key(existing) == key {
+            *existing = candidate.clone();
+            replaced = true;
+            break;
+        }
+    }
+    if !replaced {
+        entry.provider_candidates.push(candidate);
+    }
+    entry.provider_candidates.sort_by(|a, b| {
+        provider_source_priority(&b.source)
+            .cmp(&provider_source_priority(&a.source))
+            .then_with(|| a.source.cmp(&b.source))
+            .then_with(|| a.project_id.cmp(&b.project_id))
+            .then_with(|| a.version_id.cmp(&b.version_id))
+    });
+}
+
+fn local_hash_match_confidence(digest_match: Option<bool>, exact_filename_match: bool) -> String {
+    if digest_match == Some(true) {
+        "deterministic".to_string()
+    } else if exact_filename_match {
+        "high".to_string()
+    } else {
+        "manual".to_string()
+    }
+}
+
+fn lock_entry_allows_manual_github_attach(entry: &LockEntry) -> bool {
+    if normalize_lock_content_type(&entry.content_type) != "mods" {
+        return false;
+    }
+    entry.source.trim().eq_ignore_ascii_case("local")
+        || entry.source.trim().eq_ignore_ascii_case("github")
+}
+
+#[tauri::command]
+pub(crate) fn attach_installed_mod_github_repo(
+    app: tauri::AppHandle,
+    args: AttachInstalledModGithubRepoArgs,
+) -> Result<InstalledMod, String> {
+    let instances_dir = app_instances_dir(&app)?;
+    let _instance = find_instance(&instances_dir, &args.instance_id)?;
+    let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    let activate = args.activate.unwrap_or(true);
+
+    let idx = lock
+        .entries
+        .iter()
+        .position(|entry| entry.version_id == args.version_id)
+        .ok_or_else(|| "installed mod entry not found".to_string())?;
+
+    let github_repo = args.github_repo.trim();
+    if github_repo.is_empty() {
+        return Err("GitHub repository is required (owner/repo or URL).".to_string());
+    }
+    let (owner, repo_name) = parse_github_project_id(github_repo)?;
+    let project_key = github_project_key(&owner, &repo_name);
+    let client = build_http_client()?;
+
+    let mut repo_for_title: Option<GithubRepository> = None;
+    let repo_fetch = fetch_github_repo(&client, &owner, &repo_name);
+    match repo_fetch {
+        Ok(repo) => {
+            if let Some(reason) = github_repo_policy_rejection_reason(&repo) {
+                return Err(format!(
+                    "GitHub repository rejected by safety policy: {reason}."
+                ));
+            }
+            repo_for_title = Some(repo);
+        }
+        Err(err) => {
+            let auth_or_limit = github_error_is_auth_or_rate_limit(&err);
+            if !auth_or_limit {
+                return Err(err);
+            }
+            eprintln!(
+                "github repo attach proceeding without repo metadata due to API auth/rate-limit error: {}",
+                err
+            );
+        }
+    }
+    let can_activate = activate;
+
+    let attached_name = {
+        let entry = &mut lock.entries[idx];
+        if !lock_entry_allows_manual_github_attach(entry) {
+            return Err(
+                "Manual GitHub repo attach is available only for local or existing GitHub entries."
+                    .to_string(),
+            );
+        }
+
+        let mut candidate = ProviderCandidate {
+            source: "github".to_string(),
+            project_id: project_key.clone(),
+            version_id: entry.version_id.clone(),
+            name: if entry.name.trim().is_empty() {
+                repo_for_title
+                    .as_ref()
+                    .map(github_repo_title)
+                    .unwrap_or_else(|| format!("{owner}/{repo_name}"))
+            } else {
+                entry.name.clone()
+            },
+            version_number: if entry.version_number.trim().is_empty() {
+                "unknown".to_string()
+            } else {
+                entry.version_number.clone()
+            },
+            confidence: Some("manual".to_string()),
+            reason: Some(if repo_for_title.is_some() {
+                "Manual GitHub repository attachment.".to_string()
+            } else {
+                "Manual GitHub repository attachment (unverified; GitHub API unavailable)."
+                    .to_string()
+            }),
+        };
+
+        let mut matched_hashes: Option<HashMap<String, String>> = None;
+        if let Some(read_path) = local_entry_file_read_path(&instance_dir, entry)? {
+            let file_bytes = fs::read(&read_path).map_err(|e| {
+                format!(
+                    "read local mod file for GitHub attach '{}' failed: {e}",
+                    read_path.display()
+                )
+            })?;
+            let sha256 = sha256_bytes_hex(&file_bytes);
+            let sha512 = sha512_hex(&file_bytes);
+            if let Ok(releases) = fetch_github_releases(&client, &owner, &repo_name) {
+                let query_hint = core_mod_name_from_filename(&entry.filename)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| infer_local_name(&entry.filename));
+                if let Some(repo) = repo_for_title.as_ref() {
+                    if let Some(selection) = select_github_release_for_local_file(
+                        repo,
+                        &releases,
+                        &entry.filename,
+                        &query_hint,
+                    ) {
+                        let mut hashes = extract_github_asset_digest(&selection.asset);
+                        let digest_match =
+                            github_asset_digest_matches_local_hashes(&hashes, &sha256, &sha512);
+                        if digest_match != Some(false) {
+                            hashes
+                                .entry("sha256".to_string())
+                                .or_insert_with(|| sha256.to_string());
+                            hashes
+                                .entry("sha512".to_string())
+                                .or_insert_with(|| sha512.to_string());
+                            if selection.has_checksum_sidecar {
+                                hashes
+                                    .entry("checksum_sidecar".to_string())
+                                    .or_insert_with(|| "present".to_string());
+                            }
+                            let exact_filename_match = sanitize_filename(&selection.asset.name)
+                                .eq_ignore_ascii_case(&sanitize_filename(&entry.filename));
+                            candidate.version_id = format!("gh_release:{}", selection.release.id);
+                            candidate.version_number =
+                                github_release_version_label(&selection.release);
+                            candidate.confidence = Some(local_hash_match_confidence(
+                                digest_match,
+                                exact_filename_match,
+                            ));
+                            candidate.reason = if digest_match == Some(true) {
+                                Some(format!(
+                                    "Manual attach verified with GitHub release asset checksum for '{}'.",
+                                    entry.filename
+                                ))
+                            } else if exact_filename_match {
+                                Some(format!(
+                                    "Manual attach matched GitHub release asset filename '{}'.",
+                                    entry.filename
+                                ))
+                            } else {
+                                Some(format!(
+                                    "Manual attach matched GitHub release asset '{}' to local '{}'.",
+                                    selection.asset.name, entry.filename
+                                ))
+                            };
+                            matched_hashes = Some(hashes);
+                        }
+                    }
+                }
+            }
+        }
+
+        upsert_provider_candidate(entry, candidate.clone());
+        if can_activate {
+            apply_provider_candidate_to_lock_entry(entry, &candidate);
+        }
+        if let Some(hashes) = matched_hashes {
+            entry.hashes = hashes;
+        }
+        entry.name.clone()
+    };
+
+    write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    log_instance_event_best_effort(
+        &app,
+        &args.instance_id,
+        "provider_attach",
+        format!(
+            "Attached GitHub repository '{}' to '{}'{}.",
+            project_key,
+            attached_name,
+            if can_activate {
+                ""
+            } else {
+                " (pending verification before provider activation)"
+            }
+        ),
+    );
 
     let updated = lock.entries[idx].clone();
     Ok(lock_entry_to_installed(&instance_dir, &updated))
@@ -5606,6 +7031,22 @@ mod tests {
         }
     }
 
+    fn sample_entry_with_content_type(
+        source: &str,
+        filename: &str,
+        enabled: bool,
+        content_type: &str,
+    ) -> LockEntry {
+        let mut entry = sample_entry(source, filename, enabled);
+        entry.content_type = normalize_lock_content_type(content_type);
+        entry.target_scope = if entry.content_type == "datapacks" {
+            "world".to_string()
+        } else {
+            "instance".to_string()
+        };
+        entry
+    }
+
     fn sample_instance(id: &str, name: &str) -> Instance {
         Instance {
             id: id.to_string(),
@@ -5617,6 +7058,159 @@ mod tests {
             icon_path: None,
             settings: InstanceSettings::default(),
         }
+    }
+
+    fn sample_provider_match(
+        source: &str,
+        confidence: &str,
+        reason: &str,
+    ) -> LocalImportedProviderMatch {
+        LocalImportedProviderMatch {
+            source: source.to_string(),
+            project_id: "gh:owner/repo".to_string(),
+            version_id: "gh_repo_unverified".to_string(),
+            name: "Sample".to_string(),
+            version_number: "unverified".to_string(),
+            hashes: HashMap::new(),
+            confidence: confidence.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    #[test]
+    fn transient_github_verification_issue_detected_from_manual_candidate_reason() {
+        let matches = vec![sample_provider_match(
+            "github",
+            "manual",
+            "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached).",
+        )];
+        let reason = provider_matches_have_transient_github_verification_issue(&matches);
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn non_transient_manual_candidate_does_not_block_revert_logic() {
+        let matches = vec![sample_provider_match(
+            "github",
+            "manual",
+            "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file.",
+        )];
+        let reason = provider_matches_have_transient_github_verification_issue(&matches);
+        assert!(reason.is_none());
+    }
+
+    #[test]
+    fn manual_github_attach_allowed_only_for_local_or_github_mod_entries() {
+        let local_mod = sample_entry("local", "a.jar", true);
+        let github_mod = sample_entry("github", "b.jar", true);
+        let modrinth_mod = sample_entry("modrinth", "c.jar", true);
+        let local_resourcepack =
+            sample_entry_with_content_type("local", "pack.zip", true, "resourcepacks");
+        assert!(lock_entry_allows_manual_github_attach(&local_mod));
+        assert!(lock_entry_allows_manual_github_attach(&github_mod));
+        assert!(!lock_entry_allows_manual_github_attach(&modrinth_mod));
+        assert!(!lock_entry_allows_manual_github_attach(&local_resourcepack));
+    }
+
+    #[test]
+    fn github_mapping_trust_check_rejects_invalid_project_ids() {
+        let mut invalid_entry = sample_entry("github", "broken.jar", true);
+        invalid_entry.project_id = "gh:https://meteorclient.com".to_string();
+        invalid_entry.provider_candidates = vec![ProviderCandidate {
+            source: "github".to_string(),
+            project_id: "gh:https://meteorclient.com".to_string(),
+            version_id: "gh_release:123".to_string(),
+            name: "Invalid mapping".to_string(),
+            version_number: "1.0.0".to_string(),
+            confidence: Some("deterministic".to_string()),
+            reason: Some("legacy invalid mapping".to_string()),
+        }];
+        assert!(lock_entry_has_untrusted_github_mapping(&invalid_entry));
+
+        let mut valid_entry = sample_entry("github", "ok.jar", true);
+        valid_entry.project_id = "gh:MeteorDevelopment/meteor-client".to_string();
+        valid_entry.provider_candidates = vec![ProviderCandidate {
+            source: "github".to_string(),
+            project_id: "gh:MeteorDevelopment/meteor-client".to_string(),
+            version_id: "gh_release:123".to_string(),
+            name: "Valid mapping".to_string(),
+            version_number: "1.0.0".to_string(),
+            confidence: Some("deterministic".to_string()),
+            reason: Some("verified".to_string()),
+        }];
+        assert!(!lock_entry_has_untrusted_github_mapping(&valid_entry));
+    }
+
+    #[test]
+    fn validate_provider_switch_allows_explicit_local_override_for_unverified_github() {
+        let mut entry = sample_entry("local", "candidate.jar", true);
+        let candidate = ProviderCandidate {
+            source: "github".to_string(),
+            project_id: "gh:example/repo".to_string(),
+            version_id: "gh_repo_unverified".to_string(),
+            name: "Example Repo".to_string(),
+            version_number: "unverified".to_string(),
+            confidence: Some("manual".to_string()),
+            reason: Some(
+                "GitHub local identify manual candidate: direct metadata repo hint matched, but release evidence is currently unverified."
+                    .to_string(),
+            ),
+        };
+        entry.provider_candidates = vec![candidate.clone()];
+        let selected = select_provider_candidate_for_source(&entry, "github")
+            .expect("select github candidate");
+        assert!(validate_provider_switch(&entry, "github", &selected).is_ok());
+    }
+
+    #[test]
+    fn validate_provider_switch_blocks_unverified_when_not_local_override() {
+        let mut entry = sample_entry("github", "candidate.jar", true);
+        let candidate = ProviderCandidate {
+            source: "github".to_string(),
+            project_id: "gh:example/repo".to_string(),
+            version_id: "gh_repo_unverified".to_string(),
+            name: "Example Repo".to_string(),
+            version_number: "unverified".to_string(),
+            confidence: Some("manual".to_string()),
+            reason: Some(
+                "GitHub local identify manual candidate: direct metadata repo hint matched, but release evidence is currently unverified."
+                    .to_string(),
+            ),
+        };
+        entry.provider_candidates = vec![candidate.clone()];
+        let selected = select_provider_candidate_for_source(&entry, "github")
+            .expect("select github candidate");
+        let err = validate_provider_switch(&entry, "github", &selected)
+            .expect_err("non-local override should stay blocked");
+        assert!(err.contains("pending verification"));
+    }
+
+    #[test]
+    fn select_provider_candidate_for_source_blocks_ambiguous_local_github_projects() {
+        let mut entry = sample_entry("local", "candidate.jar", true);
+        entry.provider_candidates = vec![
+            ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:owner/repo-a".to_string(),
+                version_id: "gh_release:1".to_string(),
+                name: "Repo A".to_string(),
+                version_number: "1".to_string(),
+                confidence: Some("high".to_string()),
+                reason: Some("test".to_string()),
+            },
+            ProviderCandidate {
+                source: "github".to_string(),
+                project_id: "gh:owner/repo-b".to_string(),
+                version_id: "gh_release:2".to_string(),
+                name: "Repo B".to_string(),
+                version_number: "1".to_string(),
+                confidence: Some("high".to_string()),
+                reason: Some("test".to_string()),
+            },
+        ];
+        let err = select_provider_candidate_for_source(&entry, "github")
+            .expect_err("ambiguous candidates should be blocked");
+        assert!(err.contains("Multiple GitHub candidates were found"));
     }
 
     #[test]
@@ -5649,7 +7243,8 @@ mod tests {
         let mods_dir = root.join("mods");
         fs::create_dir_all(&mods_dir).expect("create mods dir");
         fs::write(mods_dir.join("Essential-1.20.1.jar"), b"provider").expect("write provider jar");
-        fs::write(mods_dir.join("Essential (forge_1.20.1).jar"), b"local").expect("write local jar");
+        fs::write(mods_dir.join("Essential (forge_1.20.1).jar"), b"local")
+            .expect("write local jar");
         fs::write(mods_dir.join("other.jar"), b"other").expect("write other jar");
 
         let mut lock = Lockfile {
@@ -5681,6 +7276,59 @@ mod tests {
     }
 
     #[test]
+    fn requested_content_type_filter_ignores_unknown_values() {
+        let requested = vec![
+            "mods".to_string(),
+            "shaders".to_string(),
+            "unknown".to_string(),
+        ];
+        let filter = requested_content_type_filter(Some(&requested)).expect("filter");
+        assert!(filter.contains("mods"));
+        assert!(filter.contains("shaderpacks"));
+        assert_eq!(filter.len(), 2);
+
+        let unknown = vec!["???".to_string()];
+        assert!(requested_content_type_filter(Some(&unknown)).is_none());
+    }
+
+    #[test]
+    fn prune_missing_entries_from_lock_respects_content_filter() {
+        let root = temp_path("prune-missing");
+        fs::create_dir_all(root.join("mods")).expect("create mods dir");
+        fs::create_dir_all(root.join("resourcepacks")).expect("create resourcepacks dir");
+
+        fs::write(root.join("mods").join("present-mod.jar"), b"present").expect("seed present mod");
+
+        let mut lock = Lockfile {
+            version: 2,
+            entries: vec![
+                sample_entry_with_content_type("local", "present-mod.jar", true, "mods"),
+                sample_entry_with_content_type("local", "missing-mod.jar", true, "mods"),
+                sample_entry_with_content_type("local", "missing-pack.zip", true, "resourcepacks"),
+            ],
+        };
+
+        let filter = HashSet::from(["mods".to_string()]);
+        let removed_mods = prune_missing_entries_from_lock(&mut lock, &root, Some(&filter));
+        assert_eq!(removed_mods, vec!["missing-mod".to_string()]);
+        assert_eq!(lock.entries.len(), 2);
+        assert!(lock
+            .entries
+            .iter()
+            .any(|entry| entry.filename == "present-mod.jar"));
+        assert!(lock
+            .entries
+            .iter()
+            .any(|entry| entry.filename == "missing-pack.zip"));
+
+        let removed_remaining = prune_missing_entries_from_lock(&mut lock, &root, None);
+        assert_eq!(removed_remaining, vec!["missing-pack.zip".to_string()]);
+        assert_eq!(lock.entries.len(), 1);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn sync_instance_minecraft_settings_respects_target_mode() {
         let instances_dir = temp_path("sync-minecraft-settings");
         fs::create_dir_all(&instances_dir).expect("create instances dir");
@@ -5693,11 +7341,11 @@ mod tests {
         };
         write_index(&instances_dir, &idx).expect("write index");
 
-        let source_dir =
-            instance_dir_for_instance(&instances_dir, &source);
+        let source_dir = instance_dir_for_instance(&instances_dir, &source);
         fs::create_dir_all(&source_dir).expect("create source dir");
         fs::write(source_dir.join("options.txt"), b"gamma:0.8").expect("write options");
         fs::write(source_dir.join("optionsof.txt"), b"optifine=true").expect("write optionsof");
+        fs::write(source_dir.join("servers.dat"), b"servers").expect("write servers");
         fs::write(source_dir.join("notes.txt"), b"do-not-sync").expect("write unrelated");
 
         let target_a_dir = instance_dir_for_id(&instances_dir, &target_a.id).expect("target a dir");
@@ -5708,28 +7356,32 @@ mod tests {
         let mut all_targets = InstanceSettings::default();
         all_targets.sync_minecraft_settings = true;
         all_targets.sync_minecraft_settings_target = "all".to_string();
-        let copied_all = sync_instance_minecraft_settings_before_launch(
-            &instances_dir,
-            &source,
-            &all_targets,
-        )
-        .expect("sync all");
-        assert_eq!(copied_all, 4);
+        let copied_all =
+            sync_instance_minecraft_settings_before_launch(&instances_dir, &source, &all_targets)
+                .expect("sync all");
+        assert_eq!(copied_all, 6);
         assert_eq!(
             fs::read_to_string(target_a_dir.join("options.txt")).expect("read target a options"),
             "gamma:0.8"
         );
         assert_eq!(
-            fs::read_to_string(target_b_dir.join("optionsof.txt")).expect("read target b optionsof"),
+            fs::read_to_string(target_b_dir.join("optionsof.txt"))
+                .expect("read target b optionsof"),
             "optifine=true"
+        );
+        assert_eq!(
+            fs::read_to_string(target_b_dir.join("servers.dat")).expect("read target b servers"),
+            "servers"
         );
         assert!(!target_a_dir.join("notes.txt").exists());
         assert!(!target_b_dir.join("notes.txt").exists());
 
         fs::remove_file(target_a_dir.join("options.txt")).expect("clear target a options");
         fs::remove_file(target_a_dir.join("optionsof.txt")).expect("clear target a optionsof");
+        fs::remove_file(target_a_dir.join("servers.dat")).expect("clear target a servers");
         fs::remove_file(target_b_dir.join("options.txt")).expect("clear target b options");
         fs::remove_file(target_b_dir.join("optionsof.txt")).expect("clear target b optionsof");
+        fs::remove_file(target_b_dir.join("servers.dat")).expect("clear target b servers");
 
         let mut specific_target = InstanceSettings::default();
         specific_target.sync_minecraft_settings = true;
@@ -5740,11 +7392,59 @@ mod tests {
             &specific_target,
         )
         .expect("sync specific");
-        assert_eq!(copied_specific, 2);
+        assert_eq!(copied_specific, 3);
         assert!(target_a_dir.join("options.txt").exists());
         assert!(target_a_dir.join("optionsof.txt").exists());
+        assert!(target_a_dir.join("servers.dat").exists());
         assert!(!target_b_dir.join("options.txt").exists());
         assert!(!target_b_dir.join("optionsof.txt").exists());
+        assert!(!target_b_dir.join("servers.dat").exists());
+
+        let _ = fs::remove_dir_all(&instances_dir);
+    }
+
+    #[test]
+    fn sync_instance_minecraft_settings_supports_dot_minecraft_layout() {
+        let instances_dir = temp_path("sync-minecraft-settings-dot-minecraft");
+        fs::create_dir_all(&instances_dir).expect("create instances dir");
+
+        let source = sample_instance("source-dotmc", "Source DotMc");
+        let target = sample_instance("target-dotmc", "Target DotMc");
+        let idx = InstanceIndex {
+            instances: vec![source.clone(), target.clone()],
+        };
+        write_index(&instances_dir, &idx).expect("write index");
+
+        let source_dir = instance_dir_for_instance(&instances_dir, &source);
+        fs::create_dir_all(source_dir.join(".minecraft")).expect("create source .minecraft");
+        fs::write(source_dir.join("options.txt"), b"old-root").expect("write source root options");
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        fs::write(
+            source_dir.join(".minecraft").join("options.txt"),
+            b"new-dot-minecraft",
+        )
+        .expect("write source dot minecraft options");
+
+        let target_dir = instance_dir_for_id(&instances_dir, &target.id).expect("target dir");
+        fs::create_dir_all(target_dir.join(".minecraft")).expect("create target .minecraft");
+
+        let mut settings = InstanceSettings::default();
+        settings.sync_minecraft_settings = true;
+        settings.sync_minecraft_settings_target = "all".to_string();
+        let copied =
+            sync_instance_minecraft_settings_before_launch(&instances_dir, &source, &settings)
+                .expect("sync from .minecraft source");
+
+        assert_eq!(copied, 2);
+        assert_eq!(
+            fs::read_to_string(target_dir.join("options.txt")).expect("read target root options"),
+            "new-dot-minecraft"
+        );
+        assert_eq!(
+            fs::read_to_string(target_dir.join(".minecraft").join("options.txt"))
+                .expect("read target dot minecraft options"),
+            "new-dot-minecraft"
+        );
 
         let _ = fs::remove_dir_all(&instances_dir);
     }

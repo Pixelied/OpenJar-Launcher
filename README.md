@@ -2,7 +2,7 @@
 
 **OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
 
-It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
+It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge/GitHub, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
 
 Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
 
@@ -76,7 +76,7 @@ Screenshots live in `readme-assets/images/` — click any image to view full siz
 
 - **Clean, modern UI** (macOS-friendly look & feel)
 - **Instance management** + import from Vanilla / Prism
-- **Multi-provider discovery**: Modrinth + CurseForge
+- **Multi-provider discovery**: Modrinth + CurseForge + GitHub
 - **Update availability** + **Update all** + **scheduled checks** across providers/content types
 - **Dependency-aware installs** + per-instance **lockfile** tracking
 - **Per-content enable/disable/delete** (mods/resourcepacks/shaderpacks/datapacks)
@@ -96,13 +96,14 @@ Find content and install it straight into an instance.
 Discover/search supports:
 - **Modrinth**
 - **CurseForge**
+- **GitHub** (direct source filter + fallback suggestions in `All + Mods`)
 
 Filters include:
 - Content type: mods / resourcepacks / shaderpacks / datapacks / modpacks
 - Loader: Fabric / Forge / Quilt / NeoForge (and Vanilla where relevant)
 - Minecraft version
 - Sort: downloads / updated / newest / follows (depends on provider)
-- In `All + Mods`, results are still mixed across providers but ranking prefers Modrinth entries.
+- In `All + Mods`, results are mixed across providers, ranking still favors Modrinth entries, and GitHub suggestions are injected when primary providers are sparse.
 
 #### Modrinth (works now)
 
@@ -122,11 +123,25 @@ Filters include:
   - OpenJar now surfaces this as a clear actionable error.
   - Recovery path: open the CurseForge project page and use **Add from file** for local import.
 
+#### GitHub
+
+- You can search with source set to **GitHub** only, or use **All** and receive GitHub fallback suggestions.
+- Install/update is supported when a repository has a valid release `.jar` asset.
+- GitHub mod installs now require explicit compatibility hints for the target instance (loader + Minecraft version) in release metadata/asset naming.
+- Safety filters reject archived/fork/disabled repositories and non-mod assets.
+- GitHub loader/version/category filters are **best-effort** and based on release asset metadata and repository topics.
+- Local import resolver uses strict safety-first evidence for GitHub mapping: checksum/digest and exact asset filename are preferred, and weak/ambiguous matches stay local as non-active candidates.
+- If a local mod cannot be auto-matched, you can manually **Attach GitHub repository** from the instance content row (accepts `owner/repo` or full GitHub URL).
+- GitHub API rate limits can return `403`; set `MPM_GITHUB_TOKEN` (or `GITHUB_TOKEN` / `GH_TOKEN`) to raise limits.
+- You can also set `MPM_GITHUB_TOKENS` as a comma/semicolon/newline-separated token pool, plus numbered vars like `MPM_GITHUB_TOKEN_1`, `GITHUB_TOKEN_2`, or `GH_TOKEN_3` (up to 200 unique tokens are loaded, hard-capped for predictable memory/perf).
+- OpenJar rotates configured tokens in round-robin order, cools down tokens that hit `401`/rate-limit `403`, and then falls back unauthenticated when needed.
+- When no token is configured, OpenJar uses a lower GitHub request budget to reduce rate-limit lockouts; adding a token is still strongly recommended for frequent searching.
+
 ---
 
 ### Updates + Update Availability (Multi-provider)
 
-This feature keeps installed content up to date across **Modrinth + CurseForge** and across supported content types tracked in `lock.json` (mods/resourcepacks/shaderpacks/datapacks).
+This feature keeps installed content up to date across **Modrinth + CurseForge + GitHub** and across supported content types tracked in `lock.json` (mods/resourcepacks/shaderpacks/datapacks).
 
 What “Refresh / Check” actually does:
 - Looks at tracked content entries currently installed in that instance
@@ -454,11 +469,10 @@ How rollback works:
 When you launch a second (or third…) copy of the same instance, OpenJar creates a **runtime session** folder.
 
 How it behaves:
-- First launch: the game uses the normal instance runtime folder
+- Normal launch: the game runs directly from the canonical instance folder
 - Additional launches: OpenJar makes `runtime_sessions/<launch_id>/` and:
-  - links mods/resourcepacks/shaderpacks (fast, shared)
-  - copies config + saves into the session (so changes don’t touch your main instance)
-  - copies `options.txt` + `servers.dat`
+  - clones the current instance state for a disposable isolated run
+  - rewires shared caches (`assets/libraries/versions`) to launcher cache
 - When the game closes, that runtime session folder is deleted automatically
 
 Why it exists:
@@ -530,6 +544,7 @@ Other import/export tools:
   - OpenJar attempts provider detection for local imports (when hashes/fingerprints match):
     - **Modrinth** by file `sha512`
     - **CurseForge** by file fingerprint
+    - **GitHub** by release asset filename match (plus checksum validation when available)
   - When matched, the lock entry is saved with provider/source IDs so update checks and update-all work normally.
   - If no provider match is found, it falls back to a local-only lock entry.
 - Export installed mods as a **ZIP**
@@ -568,9 +583,10 @@ Per instance you’ll typically see:
 - `lock.json` (tracks what OpenJar installed so updates/rollback are reliable)
 - `snapshots/` (snapshots of installed content for rollback)
 - `world_backups/` (zipped backups of your worlds, based on your backup settings)
-- `runtime/` and `runtime_sessions/` (temporary launch/runtime folders, especially for multi-launch)
+- `runtime_sessions/` (temporary isolated launch sessions for concurrent native runs; disposable)
+- Optional legacy `runtime/` may still exist from older builds, but regular native launches use the canonical instance folder directly.
 
-Privacy note: OpenJar doesn’t upload your instances, worlds, or configs anywhere — it works directly with the files on your machine. Anything network-related is only for things you explicitly do (like browsing/installing from Modrinth/CurseForge or signing in to Microsoft for launching).
+Privacy note: OpenJar doesn’t upload your instances, worlds, or configs anywhere — it works directly with the files on your machine. Anything network-related is only for things you explicitly do (like browsing/installing from Modrinth/CurseForge/GitHub or signing in to Microsoft for launching).
 
 ---
 
@@ -578,7 +594,7 @@ Privacy note: OpenJar doesn’t upload your instances, worlds, or configs anywhe
 
 - **Tauri v1** + **Rust** backend
 - **React + TypeScript** frontend (**Vite**)
-- Multi-provider content flows (**Modrinth + CurseForge**)
+- Multi-provider content flows (**Modrinth + CurseForge + GitHub**)
 - Clean separation between UI, commands, and instance filesystem operations
 
 ---
@@ -657,6 +673,36 @@ npm run tauri:build
 ```
 
 On macOS, this build command produces the `.app` bundle and then creates a `.dmg`.
+
+### macOS Spotlight + Launchpad verification
+
+After building a macOS bundle, run:
+
+```bash
+./scripts/verify-macos-bundle.sh
+```
+
+Or point to a specific app bundle:
+
+```bash
+./scripts/verify-macos-bundle.sh "/path/to/OpenJar Launcher.app"
+```
+
+The script validates required bundle metadata (`CFBundleIdentifier`, display name, category, version keys) and reports LaunchServices / Spotlight indexing hints.
+
+If Spotlight or Launchpad still does not show the app for a fresh local unsigned build, run:
+
+```bash
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/path/to/OpenJar Launcher.app"
+mdimport "/path/to/OpenJar Launcher.app"
+/usr/bin/killall Finder
+```
+
+For downloaded builds, also remove quarantine before re-indexing:
+
+```bash
+xattr -dr com.apple.quarantine "/path/to/OpenJar Launcher.app"
+```
 
 ### Preview (frontend build)
 

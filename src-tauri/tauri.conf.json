@@ -46,6 +46,7 @@
       "active": true,
       "targets": "all",
       "identifier": "io.github.pixelied.openjarlauncher",
+      "category": "Game",
       "icon": [
         "icons/32x32.png",
         "icons/128x128.png",

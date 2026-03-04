@@ -3,6 +3,12 @@
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleDisplayName</key>
+  <string>OpenJar Launcher</string>
+  <key>CFBundleName</key>
+  <string>OpenJar Launcher</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.games</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>OpenJar Launcher uses microphone access so Java/Minecraft voice chat mods can capture your voice.</string>
   <key>NSCameraUsageDescription</key>

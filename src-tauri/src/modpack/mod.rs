@@ -888,12 +888,8 @@ fn adaptive_local_jar_import_workers(total_files: usize) -> usize {
     if total_files <= 1 {
         return total_files.max(1);
     }
-    let worker_cap_max = crate::env_worker_cap_or_default(
-        crate::LOCAL_JAR_IMPORT_WORKERS_MAX_ENV,
-        24,
-        1,
-        32,
-    );
+    let worker_cap_max =
+        crate::env_worker_cap_or_default(crate::LOCAL_JAR_IMPORT_WORKERS_MAX_ENV, 24, 1, 32);
     let cpu = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)

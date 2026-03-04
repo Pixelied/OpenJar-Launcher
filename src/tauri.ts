@@ -6,6 +6,7 @@ import type {
   CreatorPreset,
   CurseforgeApiStatus,
   CurseforgeProjectDetail,
+  GithubProjectDetail,
   DiscoverContentType,
   DiscoverSearchResult,
   DiscoverSource,
@@ -15,6 +16,7 @@ import type {
   InstanceRunReport,
   InstanceSettings,
   InstanceLastRunMetadata,
+  InstancePlaytimeSummary,
   InstanceWorld,
   InstallPlanPreview,
   Instance,
@@ -25,6 +27,7 @@ import type {
   LauncherSettings,
   LaunchResult,
   LocalResolverResult,
+  PruneMissingInstalledEntriesResult,
   ResolveLocalModSourcesInput,
   ImportLocalModFileInput,
   LaunchMethod,
@@ -175,6 +178,15 @@ export function setInstalledModProvider(input: {
   return invoke("set_installed_mod_provider", { args: input });
 }
 
+export function attachInstalledModGithubRepo(input: {
+  instanceId: string;
+  versionId: string;
+  githubRepo: string;
+  activate?: boolean;
+}): Promise<InstalledMod> {
+  return invoke("attach_installed_mod_github_repo", { args: input });
+}
+
 export function removeInstalledMod(input: {
   instanceId: string;
   versionId: string;
@@ -188,6 +200,13 @@ export function importLocalModFile(input: ImportLocalModFileInput): Promise<Inst
 
 export function resolveLocalModSources(input: ResolveLocalModSourcesInput): Promise<LocalResolverResult> {
   return invoke("resolve_local_mod_sources", { args: input });
+}
+
+export function pruneMissingInstalledEntries(input: {
+  instanceId: string;
+  contentTypes?: string[];
+}): Promise<PruneMissingInstalledEntriesResult> {
+  return invoke("prune_missing_installed_entries", { args: input });
 }
 
 export function previewModrinthInstall(input: {
@@ -243,6 +262,12 @@ export function getCurseforgeProjectDetail(input: {
   contentType?: DiscoverContentType;
 }): Promise<CurseforgeProjectDetail> {
   return invoke("get_curseforge_project_detail", { args: input });
+}
+
+export function getGithubProjectDetail(input: {
+  projectId: string;
+}): Promise<GithubProjectDetail> {
+  return invoke("get_github_project_detail", { args: input });
 }
 
 export function launchInstance(input: {
@@ -448,6 +473,12 @@ export function getInstanceLastRunMetadata(input: {
   return invoke("get_instance_last_run_metadata", { args: input });
 }
 
+export function getInstancePlaytime(input: {
+  instanceId: string;
+}): Promise<InstancePlaytimeSummary> {
+  return invoke("get_instance_playtime", { args: input });
+}
+
 export function getInstanceLastRunReport(input: {
   instanceId: string;
 }): Promise<InstanceRunReport | null> {
@@ -533,7 +564,7 @@ export function restoreInstanceConfigFileBackup(input: {
 
 export function installDiscoverContent(input: {
   instanceId: string;
-  source: DiscoverSource | "modrinth" | "curseforge";
+  source: DiscoverSource | "modrinth" | "curseforge" | "github";
   projectId: string;
   projectTitle?: string;
   contentType: DiscoverContentType;

@@ -32,7 +32,7 @@ export type InstanceSettings = {
 };
 
 export type InstalledMod = {
-  source: "modrinth" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   version_id: string;
   name: string;
@@ -50,7 +50,7 @@ export type InstalledMod = {
 };
 
 export type ProviderCandidate = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   version_id: string;
   name: string;
@@ -96,7 +96,7 @@ export type UpdateAllResult = {
 };
 
 export type ContentUpdateInfo = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
   project_id: string;
   name: string;
@@ -201,6 +201,13 @@ export type LocalResolverResult = {
   remaining_local_entries: number;
   matches: LocalResolverMatch[];
   warnings: string[];
+};
+
+export type PruneMissingInstalledEntriesResult = {
+  instance_id: string;
+  removed_count: number;
+  remaining_count: number;
+  removed_names: string[];
 };
 
 export type ImportLocalModFileInput = {
@@ -456,6 +463,14 @@ export type InstanceLastRunMetadata = {
   lastLaunchAt?: string | null;
   lastExitKind?: "success" | "crashed" | "stopped" | "unknown" | string | null;
   lastExitAt?: string | null;
+};
+
+export type InstancePlaytimeSummary = {
+  totalSeconds: number;
+  sessionsCount: number;
+  lastSessionSeconds?: number | null;
+  currentlyRunning: boolean;
+  trackingScope: "native_only" | string;
 };
 
 export type RunArtifactRef = {
@@ -740,11 +755,11 @@ export type WorldRollbackResult = {
   message: string;
 };
 
-export type DiscoverSource = "modrinth" | "curseforge" | "all";
+export type DiscoverSource = "modrinth" | "curseforge" | "github" | "all";
 export type DiscoverContentType = "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "modpacks";
 
 export type DiscoverSearchHit = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   title: string;
   description: string;
@@ -758,6 +773,10 @@ export type DiscoverSearchHit = {
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "modpacks" | string;
   slug?: string | null;
   external_url?: string | null;
+  confidence?: string | null;
+  reason?: string | null;
+  install_supported?: boolean | null;
+  install_note?: string | null;
 };
 
 export type DiscoverSearchResult = {
@@ -792,13 +811,56 @@ export type CurseforgeProjectDetail = {
   files: CurseforgeProjectFileDetail[];
 };
 
+export type GithubProjectReleaseAssetDetail = {
+  name: string;
+  download_url: string;
+  size: number;
+  content_type?: string | null;
+};
+
+export type GithubProjectReleaseDetail = {
+  id: string;
+  tag_name: string;
+  name: string;
+  published_at: string;
+  prerelease: boolean;
+  draft: boolean;
+  external_url?: string | null;
+  assets: GithubProjectReleaseAssetDetail[];
+};
+
+export type GithubProjectDetail = {
+  source: "github" | string;
+  project_id: string;
+  title: string;
+  owner: string;
+  summary: string;
+  description: string;
+  stars: number;
+  forks: number;
+  watchers: number;
+  open_issues: number;
+  categories: string[];
+  icon_url?: string | null;
+  date_modified: string;
+  external_url?: string | null;
+  releases_url?: string | null;
+  issues_url?: string | null;
+  homepage_url?: string | null;
+  readme_markdown?: string | null;
+  readme_html_url?: string | null;
+  readme_source_url?: string | null;
+  releases: GithubProjectReleaseDetail[];
+  warning?: string | null;
+};
+
 export type PresetsJsonIoResult = {
   path: string;
   items: number;
 };
 
 export type CreatorPresetEntry = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   title: string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "modpacks" | string;
@@ -846,13 +908,13 @@ export type PresetApplyResult = {
 };
 
 export type EntryKey = {
-  provider: "modrinth" | "curseforge" | string;
+  provider: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
 };
 
 export type ModEntry = {
-  provider: "modrinth" | "curseforge" | string;
+  provider: "modrinth" | "curseforge" | "github" | string;
   project_id: string;
   slug?: string | null;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
@@ -933,7 +995,7 @@ export type TargetInstanceSnapshot = {
 };
 
 export type ResolvedMod = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
   project_id: string;
   name: string;
@@ -951,7 +1013,7 @@ export type ResolvedMod = {
 };
 
 export type FailedMod = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
   project_id: string;
   name: string;
@@ -995,7 +1057,7 @@ export type ResolutionPlan = {
 };
 
 export type LockSnapshotEntry = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
   project_id: string;
   name: string;
@@ -1026,7 +1088,7 @@ export type InstanceModpackLinkState = {
 };
 
 export type DriftItem = {
-  source: "modrinth" | "curseforge" | string;
+  source: "modrinth" | "curseforge" | "github" | string;
   content_type: "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | string;
   project_id: string;
   name: string;

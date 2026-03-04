@@ -197,7 +197,11 @@ fn detect_microphone_requirement(lock: &Lockfile) -> LaunchMicRequirementSummary
                 matched_rules.push(rule);
             }
             let label = entry_display_label(entry);
-            if !label.is_empty() && !matched_mods.iter().any(|item| item.eq_ignore_ascii_case(&label)) {
+            if !label.is_empty()
+                && !matched_mods
+                    .iter()
+                    .any(|item| item.eq_ignore_ascii_case(&label))
+            {
                 matched_mods.push(label);
             }
         }
@@ -408,9 +412,7 @@ enum MacMicrophonePermission {
 #[cfg(target_os = "macos")]
 fn check_macos_microphone_permission_for_java(java_executable: &str) -> MacMicrophonePermission {
     let raw_path = PathBuf::from(java_executable);
-    let canonical = raw_path
-        .canonicalize()
-        .unwrap_or_else(|_| raw_path.clone());
+    let canonical = raw_path.canonicalize().unwrap_or_else(|_| raw_path.clone());
     let db_path = tcc_db_path();
     if !db_path.exists() {
         return MacMicrophonePermission::Unknown(
@@ -428,7 +430,7 @@ fn check_macos_microphone_permission_for_java(java_executable: &str) -> MacMicro
             return MacMicrophonePermission::Unknown(format!(
                 "Could not inspect macOS microphone permission database ({}).",
                 sanitize_macos_tcc_error(&err)
-            ))
+            ));
         }
     };
     let mut candidates = vec![java_executable.to_string()];
@@ -631,11 +633,7 @@ fn open_microphone_system_settings_macos() -> Result<String, String> {
             Err(err) => failures.push(format!("{} ({})", target, err)),
         }
     }
-    let details = failures
-        .into_iter()
-        .take(2)
-        .collect::<Vec<_>>()
-        .join("; ");
+    let details = failures.into_iter().take(2).collect::<Vec<_>>().join("; ");
     if details.is_empty() {
         Err("Could not open System Settings automatically.".to_string())
     } else {
@@ -646,7 +644,9 @@ fn open_microphone_system_settings_macos() -> Result<String, String> {
 }
 
 #[cfg(target_os = "macos")]
-fn trigger_java_microphone_permission_prompt_macos(java_executable: &str) -> Result<String, String> {
+fn trigger_java_microphone_permission_prompt_macos(
+    java_executable: &str,
+) -> Result<String, String> {
     let java = java_executable.trim();
     if java.is_empty() {
         return Err("Java executable is not configured for this instance.".to_string());
@@ -859,7 +859,9 @@ mod tests {
             "Error: unable to open database \"/Users/test/Library/Application Support/com.apple.TCC/TCC.db\": authorization denied"
         ));
         assert!(is_macos_tcc_access_restricted_error("permission denied"));
-        assert!(!is_macos_tcc_access_restricted_error("no such table: access"));
+        assert!(!is_macos_tcc_access_restricted_error(
+            "no such table: access"
+        ));
     }
 
     #[test]
@@ -880,7 +882,9 @@ mod tests {
             targets.first().copied(),
             Some("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
         );
-        assert!(targets.iter().any(|value| value.contains("System Settings.app")));
+        assert!(targets
+            .iter()
+            .any(|value| value.contains("System Settings.app")));
     }
 
     #[test]

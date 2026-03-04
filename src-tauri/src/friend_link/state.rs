@@ -930,7 +930,8 @@ pub fn list_instance_config_files(
             continue;
         }
         let mut sample = vec![0u8; 1024];
-        let mut file = fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
+        let mut file =
+            fs::File::open(&path).map_err(|e| format!("open config file failed: {e}"))?;
         let read_len = file
             .read(&mut sample)
             .map_err(|e| format!("read config sample failed: {e}"))?;
@@ -1043,7 +1044,8 @@ pub fn write_instance_config_file(
             return Err("Requested config path is not a file".to_string());
         }
 
-        let existing_bytes = fs::read(&path).map_err(|e| format!("read config file failed: {e}"))?;
+        let existing_bytes =
+            fs::read(&path).map_err(|e| format!("read config file failed: {e}"))?;
         let _ = create_instance_config_backup(&dir, &normalized, &existing_bytes)?;
     }
 
@@ -1088,7 +1090,10 @@ pub fn list_instance_config_file_backups(
     for entry in entries {
         let entry = entry.map_err(|e| format!("read backup entry failed: {e}"))?;
         let path = entry.path();
-        let Some(file_name) = path.file_name().map(|name| name.to_string_lossy().to_string()) else {
+        let Some(file_name) = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+        else {
             continue;
         };
         if !file_name.ends_with(".bak") {
@@ -1143,13 +1148,8 @@ pub fn restore_instance_config_file_backup(
     let bytes = fs::read(&backup_path).map_err(|e| format!("read backup file failed: {e}"))?;
     let content =
         String::from_utf8(bytes).map_err(|_| "Backup is not valid UTF-8 text.".to_string())?;
-    let output = write_instance_config_file(
-        instances_dir,
-        instance_id,
-        &normalized,
-        &content,
-        None,
-    )?;
+    let output =
+        write_instance_config_file(instances_dir, instance_id, &normalized, &content, None)?;
 
     Ok(RestoreInstanceConfigBackupResult {
         path: output.path,

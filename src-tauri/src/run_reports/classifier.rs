@@ -53,8 +53,8 @@ fn normalize_mod_token(raw: &str) -> String {
         return String::new();
     }
     match token.as_str() {
-        "minecraft" | "java" | "client" | "server" | "forge" | "fabric" | "quilt"
-        | "neoforge" | "mod" | "mods" | "loader" | "mixin" | "core" => String::new(),
+        "minecraft" | "java" | "client" | "server" | "forge" | "fabric" | "quilt" | "neoforge"
+        | "mod" | "mods" | "loader" | "mixin" | "core" => String::new(),
         _ => token,
     }
 }
@@ -120,14 +120,7 @@ fn detect_phase(lines: &[String]) -> Option<String> {
             Some("world_load")
         } else if text_contains_any(
             &lower,
-            &[
-                "shader",
-                "opengl",
-                "glfw",
-                "render",
-                "framebuffer",
-                "gpu",
-            ],
+            &["shader", "opengl", "glfw", "render", "framebuffer", "gpu"],
         ) {
             Some("render")
         } else if text_contains_any(
@@ -201,9 +194,7 @@ fn extract_config_path(line: &str) -> Option<String> {
     let tail = &line[marker..];
     let mut path = String::new();
     for ch in tail.chars() {
-        if ch.is_ascii_alphanumeric()
-            || matches!(ch, '/' | '\\' | '-' | '_' | '.' )
-        {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '/' | '\\' | '-' | '_' | '.') {
             path.push(ch);
             continue;
         }
@@ -288,7 +279,11 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
     }
 
     if !missing_enabled_mods.is_empty() {
-        let preview = missing_enabled_mods.iter().take(3).cloned().collect::<Vec<_>>();
+        let preview = missing_enabled_mods
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
         push_or_update_finding(
             &mut findings,
             RunFinding {
@@ -301,7 +296,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 ),
                 confidence: 0.95,
                 evidence: preview,
-                likely_fix: Some("Disable or reinstall the missing mod jars, then relaunch.".to_string()),
+                likely_fix: Some(
+                    "Disable or reinstall the missing mod jars, then relaunch.".to_string(),
+                ),
                 mod_id: None,
                 file_path: None,
             },
@@ -320,7 +317,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "duplicate_mod_jars".to_string(),
                 category: "mod_state".to_string(),
                 title: "Duplicate mod jar(s) detected".to_string(),
-                explanation: "Duplicate jars can cause classpath conflicts and random startup failures.".to_string(),
+                explanation:
+                    "Duplicate jars can cause classpath conflicts and random startup failures."
+                        .to_string(),
                 confidence: 0.9,
                 evidence: duplicate_list.into_iter().take(3).collect(),
                 likely_fix: Some("Keep one jar per mod version and remove duplicates.".to_string()),
@@ -356,7 +355,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 ),
                 confidence: 0.91,
                 evidence: loader_mismatch_lines,
-                likely_fix: Some("Use only mods built for this loader and Minecraft version.".to_string()),
+                likely_fix: Some(
+                    "Use only mods built for this loader and Minecraft version.".to_string(),
+                ),
                 mod_id: None,
                 file_path: None,
             },
@@ -400,10 +401,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
             .any(|line| line.to_lowercase().contains("missing mandatory dependency"))
         {
             "A required dependency is missing."
-        } else if dependency_lines
-            .iter()
-            .any(|line| line.to_lowercase().contains("requires") && line.to_lowercase().contains("present"))
-        {
+        } else if dependency_lines.iter().any(|line| {
+            line.to_lowercase().contains("requires") && line.to_lowercase().contains("present")
+        }) {
             "Detected incompatible dependency versions."
         } else {
             "A loader/dependency validation error prevented mod initialization."
@@ -417,7 +417,10 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 explanation: reason.to_string(),
                 confidence: 0.94,
                 evidence: dependency_lines,
-                likely_fix: Some("Install required dependencies or align versions to one compatible set.".to_string()),
+                likely_fix: Some(
+                    "Install required dependencies or align versions to one compatible set."
+                        .to_string(),
+                ),
                 mod_id: mod_hint,
                 file_path: None,
             },
@@ -442,7 +445,8 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "broken_mod_jar".to_string(),
                 category: "mod_loading".to_string(),
                 title: "Mod jar appears broken".to_string(),
-                explanation: "A jar could not be parsed or read, so loading stopped early.".to_string(),
+                explanation: "A jar could not be parsed or read, so loading stopped early."
+                    .to_string(),
                 confidence: 0.9,
                 evidence: broken_jar_lines,
                 likely_fix: Some("Replace the affected jar with a clean copy.".to_string()),
@@ -472,10 +476,13 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "core_library_conflict".to_string(),
                 category: "mod_loading".to_string(),
                 title: "Core library conflict pattern".to_string(),
-                explanation: "Shared core libraries appear duplicated or incompatible across mods.".to_string(),
+                explanation: "Shared core libraries appear duplicated or incompatible across mods."
+                    .to_string(),
                 confidence: 0.82,
                 evidence: core_conflict_lines,
-                likely_fix: Some("Update/remove overlapping core library mods as a group.".to_string()),
+                likely_fix: Some(
+                    "Update/remove overlapping core library mods as a group.".to_string(),
+                ),
                 mod_id: None,
                 file_path: None,
             },
@@ -500,10 +507,14 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "out_of_memory".to_string(),
                 category: "runtime".to_string(),
                 title: "Out of memory or GC thrash".to_string(),
-                explanation: "The JVM ran out of memory or spent too long in garbage collection.".to_string(),
+                explanation: "The JVM ran out of memory or spent too long in garbage collection."
+                    .to_string(),
                 confidence: 0.97,
                 evidence: oom_lines,
-                likely_fix: Some("Increase memory for this instance and reduce heavy render/shader load.".to_string()),
+                likely_fix: Some(
+                    "Increase memory for this instance and reduce heavy render/shader load."
+                        .to_string(),
+                ),
                 mod_id: None,
                 file_path: None,
             },
@@ -543,7 +554,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "java_version_mismatch".to_string(),
                 category: "runtime".to_string(),
                 title: "Java version mismatch".to_string(),
-                explanation: "Minecraft and mods were launched with an incompatible Java major version.".to_string(),
+                explanation:
+                    "Minecraft and mods were launched with an incompatible Java major version."
+                        .to_string(),
                 confidence: if java_too_old { 0.99 } else { 0.85 },
                 evidence,
                 likely_fix: Some(format!(
@@ -640,10 +653,14 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 id: "gpu_or_render_path".to_string(),
                 category: "render".to_string(),
                 title: "GPU/render pipeline issue".to_string(),
-                explanation: "Rendering initialization failed (OpenGL/shader/driver path).".to_string(),
+                explanation: "Rendering initialization failed (OpenGL/shader/driver path)."
+                    .to_string(),
                 confidence: 0.81,
                 evidence: gpu_lines,
-                likely_fix: Some("Disable shaderpacks, test without render mods, and verify GPU driver/runtime.".to_string()),
+                likely_fix: Some(
+                    "Disable shaderpacks, test without render mods, and verify GPU driver/runtime."
+                        .to_string(),
+                ),
                 mod_id: None,
                 file_path: None,
             },
@@ -689,7 +706,9 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                     explanation: format!("Minecraft exited with code {code}."),
                     confidence: 0.65,
                     evidence: vec![format!("Exit code: {code}")],
-                    likely_fix: Some("Open latest logs to inspect the first root-cause error.".to_string()),
+                    likely_fix: Some(
+                        "Open latest logs to inspect the first root-cause error.".to_string(),
+                    ),
                     mod_id: None,
                     file_path: None,
                 },
@@ -780,7 +799,10 @@ mod tests {
             exit_code: Some(1),
             exit_message: Some("Game exited"),
         });
-        assert!(output.findings.iter().any(|item| item.id == "out_of_memory"));
+        assert!(output
+            .findings
+            .iter()
+            .any(|item| item.id == "out_of_memory"));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -823,7 +845,10 @@ mod tests {
             exit_code: Some(1),
             exit_message: None,
         });
-        assert!(output.findings.iter().any(|item| item.id == "config_parse_error"));
+        assert!(output
+            .findings
+            .iter()
+            .any(|item| item.id == "config_parse_error"));
         assert!(output
             .config_paths
             .iter()
@@ -924,7 +949,10 @@ mod tests {
             exit_message: None,
         });
         assert_eq!(output.phase.as_deref(), Some("render"));
-        assert!(output.findings.iter().any(|item| item.id == "gpu_or_render_path"));
+        assert!(output
+            .findings
+            .iter()
+            .any(|item| item.id == "gpu_or_render_path"));
         let _ = fs::remove_dir_all(dir);
     }
 }

@@ -420,7 +420,11 @@ fn instance_config_allowlist_blocks_disallowed_paths_and_traversal() {
     let instance_dir = instances_dir.join("inst_1");
     fs::create_dir_all(instance_dir.join("config")).expect("create config dir");
     fs::create_dir_all(instance_dir.join("mods")).expect("create mods dir");
-    fs::write(instance_dir.join("config").join("allowed.toml"), "ok = true").expect("seed config");
+    fs::write(
+        instance_dir.join("config").join("allowed.toml"),
+        "ok = true",
+    )
+    .expect("seed config");
     fs::write(instance_dir.join("mods").join("blocked.txt"), "nope").expect("seed blocked path");
 
     let traversal_err = state::write_instance_config_file(
@@ -433,8 +437,9 @@ fn instance_config_allowlist_blocks_disallowed_paths_and_traversal() {
     .expect_err("traversal path should be blocked");
     assert!(traversal_err.to_ascii_lowercase().contains("traversal"));
 
-    let disallowed_err = state::read_instance_config_file(&instances_dir, "inst_1", "mods/blocked.txt")
-        .expect_err("mods path should not be allowlisted for config editing");
+    let disallowed_err =
+        state::read_instance_config_file(&instances_dir, "inst_1", "mods/blocked.txt")
+            .expect_err("mods path should not be allowlisted for config editing");
     assert!(disallowed_err.to_ascii_lowercase().contains("allowlist"));
 
     let _ = fs::remove_dir_all(&temp);
@@ -448,8 +453,11 @@ fn instance_config_file_size_limit_marks_large_files_read_only_and_blocks_write(
     fs::create_dir_all(instance_dir.join("config")).expect("create config dir");
 
     let large_content = "x".repeat(1_048_600);
-    fs::write(instance_dir.join("config").join("huge.toml"), large_content.as_bytes())
-        .expect("seed huge file");
+    fs::write(
+        instance_dir.join("config").join("huge.toml"),
+        large_content.as_bytes(),
+    )
+    .expect("seed huge file");
 
     let files = state::list_instance_config_files(&instances_dir, "inst_1").expect("list files");
     let huge = files
@@ -457,12 +465,11 @@ fn instance_config_file_size_limit_marks_large_files_read_only_and_blocks_write(
         .find(|item| item.path == "config/huge.toml")
         .expect("huge file entry");
     assert!(!huge.editable);
-    assert!(
-        huge.readonly_reason
-            .as_deref()
-            .unwrap_or_default()
-            .contains("too large")
-    );
+    assert!(huge
+        .readonly_reason
+        .as_deref()
+        .unwrap_or_default()
+        .contains("too large"));
 
     let write_err = state::write_instance_config_file(
         &instances_dir,

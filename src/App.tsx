@@ -1,4 +1,14 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
@@ -19,10 +29,12 @@ import type {
   CreatorPresetSettings,
   CurseforgeApiStatus,
   CurseforgeProjectDetail,
+  GithubProjectDetail,
   DiscoverContentType,
   DiscoverSearchHit,
   DiscoverSource,
   InstanceLastRunMetadata,
+  InstancePlaytimeSummary,
   InstanceRunReport,
   InstanceWorld,
   LaunchMethod,
@@ -80,9 +92,11 @@ import {
   getDevModeState,
   getCurseforgeApiStatus,
   getCurseforgeProjectDetail,
+  getGithubProjectDetail,
   getSelectedAccountDiagnostics,
   getInstanceDiskUsage,
   getInstanceLastRunMetadata,
+  getInstancePlaytime,
   getInstanceLastRunReport,
   getLauncherSettings,
   importPresetsJson,
@@ -113,6 +127,7 @@ import {
   pollMicrosoftLogin,
   previewModrinthInstall,
   preflightLaunchCompatibility,
+  pruneMissingInstalledEntries,
   triggerInstanceMicrophonePermissionPrompt,
   readInstanceLogs,
   readLocalImageDataUrl,
@@ -132,6 +147,7 @@ import {
   syncFriendLinkSelected,
   stopRunningInstance,
   resolveLocalModSources,
+  attachInstalledModGithubRepo,
   upsertModpackSpec,
   detectJavaRuntimes,
   updateAllInstanceContent,
@@ -219,6 +235,7 @@ type MotionPreset = "calm" | "standard" | "expressive";
 type DensityPreset = "comfortable" | "compact";
 type ProjectDetailTab = "overview" | "versions" | "changelog";
 type CurseforgeDetailTab = "overview" | "files" | "changelog";
+type GithubDetailTab = "overview" | "releases" | "readme";
 type SchedulerCadence =
   | "off"
   | "hourly"
@@ -252,6 +269,8 @@ type InstallTarget = {
   targetWorlds?: string[];
   iconUrl?: string | null;
   description?: string | null;
+  installSupported?: boolean;
+  installNote?: string | null;
 };
 
 type CurseforgeBlockedRecoveryPrompt = {
@@ -278,6 +297,12 @@ type DiscoverAddTrayItem = {
   modpackName: string;
   layerName: string;
   addedAt: string;
+};
+
+type GithubAttachModalTarget = {
+  instanceId: string;
+  instanceName: string;
+  mod: InstalledMod;
 };
 
 type InstanceLaunchStateEvent = {
@@ -365,7 +390,7 @@ type HomeWidgetLayoutItem = {
 type InstanceContentFilters = {
   query: string;
   state: "all" | "enabled" | "disabled";
-  source: "all" | "modrinth" | "curseforge" | "local" | "other";
+  source: "all" | "modrinth" | "curseforge" | "github" | "local" | "other";
   missing: "all" | "missing" | "present";
 };
 
@@ -866,10 +891,13 @@ function installedContentTypeToDiscover(contentType?: string): DiscoverContentTy
   return "mods";
 }
 
-function normalizeProviderSource(value?: string | null): "modrinth" | "curseforge" | "local" | "other" {
+function normalizeProviderSource(
+  value?: string | null
+): "modrinth" | "curseforge" | "github" | "local" | "other" {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (normalized === "modrinth") return "modrinth";
   if (normalized === "curseforge") return "curseforge";
+  if (normalized === "github") return "github";
   if (normalized === "local") return "local";
   return "other";
 }
@@ -878,8 +906,66 @@ function providerSourceLabel(value?: string | null): string {
   const normalized = normalizeProviderSource(value);
   if (normalized === "modrinth") return "Modrinth";
   if (normalized === "curseforge") return "CurseForge";
+  if (normalized === "github") return "GitHub";
   if (normalized === "local") return "Local";
   return String(value ?? "Unknown").trim() || "Unknown";
+}
+
+function providerCandidateExplain(candidate: ProviderCandidate): string | null {
+  const confidence = String(candidate.confidence ?? "").trim();
+  const reason = String(candidate.reason ?? "").trim();
+  if (!confidence && !reason) return null;
+  if (confidence && reason) {
+    return `${providerSourceLabel(candidate.source)} • ${confidence} confidence • ${reason}`;
+  }
+  if (confidence) {
+    return `${providerSourceLabel(candidate.source)} • ${confidence} confidence`;
+  }
+  return `${providerSourceLabel(candidate.source)} • ${reason}`;
+}
+
+function normalizeDiscoverSource(value?: string | null): DiscoverSource {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "modrinth" || normalized === "curseforge" || normalized === "github") {
+    return normalized;
+  }
+  return "modrinth";
+}
+
+function parseDiscoverSource(value?: string | null): DiscoverSource | null {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "modrinth" || normalized === "curseforge" || normalized === "github") {
+    return normalized;
+  }
+  return null;
+}
+
+function inferNoticeTone(message?: string | null): "success" | "warning" | "error" {
+  const lower = String(message ?? "").trim().toLowerCase();
+  if (!lower) return "success";
+  if (
+    lower.includes("error") ||
+    lower.includes("failed") ||
+    lower.includes("fatal") ||
+    lower.includes("crash")
+  ) {
+    return "error";
+  }
+  if (
+    lower.includes("warning") ||
+    lower.includes("blocked") ||
+    lower.includes("missing") ||
+    lower.includes("reverted") ||
+    lower.includes("not available") ||
+    lower.includes("no provider") ||
+    lower.includes("resolve local") ||
+    lower.includes("could not") ||
+    lower.includes("pending verification") ||
+    lower.includes("unverified")
+  ) {
+    return "warning";
+  }
+  return "success";
 }
 
 function parseCurseforgeProjectId(raw?: string | null): string | null {
@@ -891,6 +977,130 @@ function parseCurseforgeProjectId(raw?: string | null): string | null {
   const trailing = value.match(/(\d+)$/);
   if (trailing?.[1]) return trailing[1];
   return null;
+}
+
+function parseGithubProjectId(raw?: string | null): string | null {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+  let normalized = value.replace(/^gh:/i, "").replace(/^github:/i, "").trim();
+  let parsedFromGithubUrl = false;
+  if (/^https?:\/\//i.test(normalized)) {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(normalized);
+    } catch {
+      return null;
+    }
+    const host = parsedUrl.hostname.toLowerCase();
+    if (host !== "github.com" && host !== "www.github.com") {
+      return null;
+    }
+    parsedFromGithubUrl = true;
+    normalized = parsedUrl.pathname ?? "";
+  } else {
+    const hostPrefixed = normalized.match(/^(?:www\.)?github\.com\/(.+)$/i);
+    if (hostPrefixed?.[1]) {
+      parsedFromGithubUrl = true;
+      normalized = hostPrefixed[1];
+    } else if (normalized.includes("://")) {
+      return null;
+    }
+  }
+
+  normalized = normalized
+    .split(/[?#]/, 1)[0]
+    ?.replace(/^\/+|\/+$/g, "")
+    .trim();
+  if (!normalized) return null;
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length < 2 || (!parsedFromGithubUrl && parts.length !== 2)) {
+    return null;
+  }
+  const owner = parts[0]?.trim() ?? "";
+  const repo = (parts[1]?.trim() ?? "").replace(/\.git$/i, "");
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(owner)) return null;
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(repo) || repo === "." || repo === "..") return null;
+  return `${owner}/${repo}`;
+}
+
+function eventTargetsInteractiveControl(
+  event: ReactMouseEvent<HTMLElement> | ReactKeyboardEvent<HTMLElement>
+): boolean {
+  const target = event.target as HTMLElement | null;
+  if (!target) return false;
+  return Boolean(
+    target.closest(
+      "button, input, select, textarea, a, label, [data-row-action='true']"
+    )
+  );
+}
+
+function resolveGithubReadmeUrl(raw?: string | null, base?: string | null): string {
+  const href = String(raw ?? "").trim();
+  if (!href) return "";
+  if (href.startsWith("#")) return href;
+  if (/^(https?:|data:|mailto:|tel:)/i.test(href)) return href;
+  if (href.startsWith("//")) return `https:${href}`;
+  const baseHref = String(base ?? "").trim();
+  if (!baseHref) return href;
+  try {
+    if (href.startsWith("/")) {
+      const parsed = new URL(baseHref);
+      if (parsed.hostname.toLowerCase() === "raw.githubusercontent.com") {
+        const parts = parsed.pathname.split("/").filter(Boolean);
+        if (parts.length >= 3) {
+          const prefix = parts.slice(0, 3).join("/");
+          return `https://raw.githubusercontent.com/${prefix}/${href.replace(/^\/+/, "")}`;
+        }
+      }
+      return new URL(href, `${parsed.protocol}//${parsed.host}`).toString();
+    }
+    return new URL(href, baseHref).toString();
+  } catch {
+    return href;
+  }
+}
+
+function GithubReadmeMarkdown({
+  text,
+  className,
+  readmeHtmlUrl,
+  readmeSourceUrl,
+}: {
+  text: string;
+  className?: string;
+  readmeHtmlUrl?: string | null;
+  readmeSourceUrl?: string | null;
+}) {
+  return (
+    <div className={className}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw, rehypeSanitize]}
+        components={{
+          a: ({ node: _node, href, ...props }) => (
+            <a
+              {...props}
+              href={resolveGithubReadmeUrl(href, readmeHtmlUrl)}
+              target="_blank"
+              rel="noreferrer"
+            />
+          ),
+          img: ({ node: _node, src, alt, ...props }) => (
+            <img
+              {...props}
+              src={resolveGithubReadmeUrl(src, readmeSourceUrl ?? readmeHtmlUrl)}
+              alt={alt ?? ""}
+              loading="lazy"
+              style={{ maxWidth: "100%", height: "auto", borderRadius: 8 }}
+            />
+          ),
+        }}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
@@ -906,8 +1116,7 @@ function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
     seen.add(key);
     out.push(candidate);
   };
-  for (const candidate of raw) push(candidate);
-  if (out.length === 0 && mod.project_id) {
+  if (mod.project_id) {
     push({
       source: mod.source,
       project_id: mod.project_id,
@@ -916,12 +1125,26 @@ function installedProviderCandidates(mod: InstalledMod): ProviderCandidate[] {
       version_number: mod.version_number,
     });
   }
+  for (const candidate of raw) push(candidate);
   out.sort((a, b) => {
     const aPriority = normalizeProviderSource(a.source) === normalizeProviderSource(mod.source) ? 0 : 1;
     const bPriority = normalizeProviderSource(b.source) === normalizeProviderSource(mod.source) ? 0 : 1;
     if (aPriority !== bPriority) return aPriority - bPriority;
     return providerSourceLabel(a.source).localeCompare(providerSourceLabel(b.source));
   });
+  return out;
+}
+
+function installedProviderBadgeCandidates(mod: InstalledMod): ProviderCandidate[] {
+  const canonical = installedProviderCandidates(mod);
+  const out: ProviderCandidate[] = [];
+  const seenSources = new Set<string>();
+  for (const candidate of canonical) {
+    const source = normalizeProviderSource(candidate.source);
+    if (!source || seenSources.has(source)) continue;
+    seenSources.add(source);
+    out.push(candidate);
+  }
   return out;
 }
 
@@ -1040,6 +1263,32 @@ function LocalImage({
 
   if (!src) return <>{fallback}</>;
   return <img src={src} alt={alt} loading="lazy" decoding="async" />;
+}
+
+function RemoteImage({
+  src,
+  alt,
+  fallback = null,
+}: {
+  src?: string | null;
+  alt: string;
+  fallback?: ReactNode;
+}) {
+  const normalized = String(src ?? "").trim();
+  const [loadFailed, setLoadFailed] = useState(false);
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [normalized]);
+  if (!normalized || loadFailed) return <>{fallback}</>;
+  return (
+    <img
+      src={normalized}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      onError={() => setLoadFailed(true)}
+    />
+  );
 }
 
 async function openExternalLink(url: string) {
@@ -1606,7 +1855,14 @@ function sameInstanceContentFilters(a: InstanceContentFilters, b: InstanceConten
 }
 
 function isSourceFilterValue(value: string): value is InstanceContentFilters["source"] {
-  return value === "all" || value === "modrinth" || value === "curseforge" || value === "local" || value === "other";
+  return (
+    value === "all" ||
+    value === "modrinth" ||
+    value === "curseforge" ||
+    value === "github" ||
+    value === "local" ||
+    value === "other"
+  );
 }
 
 function readSettingsMode(): SettingsMode {
@@ -2134,6 +2390,7 @@ const DISCOVER_SOURCE_OPTIONS: { value: DiscoverSource; label: string }[] = [
   { value: "all", label: "All" },
   { value: "modrinth", label: "Modrinth" },
   { value: "curseforge", label: "CurseForge" },
+  { value: "github", label: "GitHub" },
 ];
 
 const DISCOVER_CONTENT_OPTIONS: { value: DiscoverContentType; label: string }[] = [
@@ -2262,6 +2519,12 @@ const CURSEFORGE_DETAIL_TABS: { value: string; label: string }[] = [
   { value: "overview", label: "Overview" },
   { value: "files", label: "Files" },
   { value: "changelog", label: "Changelog" },
+];
+
+const GITHUB_DETAIL_TABS: { value: string; label: string }[] = [
+  { value: "overview", label: "Info" },
+  { value: "releases", label: "Releases" },
+  { value: "readme", label: "README" },
 ];
 
 function isAccentPreset(value: string | null): value is AccentPreset {
@@ -2741,13 +3004,16 @@ function LazyInstalledModIcon({
   alt,
   src,
   onVisible,
+  onError,
 }: {
   alt: string;
   src?: string | null;
   onVisible: () => void;
+  onError?: () => void;
 }) {
   const holderRef = useRef<HTMLDivElement | null>(null);
   const [inView, setInView] = useState(Boolean(src));
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     if (src) {
@@ -2779,11 +3045,23 @@ function LazyInstalledModIcon({
     onVisible();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inView, src]);
+  useEffect(() => {
+    setLoadFailed(false);
+  }, [src]);
 
   return (
     <div className="instanceModIcon" ref={holderRef}>
-      {src ? (
-        <img src={src} alt={alt} loading="lazy" decoding="async" />
+      {src && !loadFailed ? (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          decoding="async"
+          onError={() => {
+            setLoadFailed(true);
+            onError?.();
+          }}
+        />
       ) : (
         <Icon name="layers" size={16} />
       )}
@@ -2825,6 +3103,17 @@ export default function App() {
       densityPreset,
     });
   }, [theme, accentPreset, accentStrength, motionPreset, densityPreset]);
+  useEffect(() => {
+    const isDevMode = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+    if (isDevMode) {
+      return;
+    }
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("contextmenu", handleContextMenu);
+    return () => window.removeEventListener("contextmenu", handleContextMenu);
+  }, []);
 
   const [route, setRoute] = useState<Route>("home");
   const [settingsMode, setSettingsMode] = useState<SettingsMode>(() => readSettingsMode());
@@ -3193,6 +3482,9 @@ export default function App() {
   const [instanceDiskUsageById, setInstanceDiskUsageById] = useState<Record<string, number>>({});
   const [instanceLastRunMetadataById, setInstanceLastRunMetadataById] = useState<
     Record<string, InstanceLastRunMetadata>
+  >({});
+  const [instancePlaytimeById, setInstancePlaytimeById] = useState<
+    Record<string, InstancePlaytimeSummary | null>
   >({});
   const [instanceRunReportById, setInstanceRunReportById] = useState<
     Record<string, InstanceRunReport | null>
@@ -3807,6 +4099,11 @@ export default function App() {
   const [projectDetailTab, setProjectDetailTab] = useState<ProjectDetailTab>("overview");
   const [projectCopyNotice, setProjectCopyNotice] = useState<string | null>(null);
   const [curseforgeOpen, setCurseforgeOpen] = useState<CurseforgeProjectDetail | null>(null);
+  const [githubOpen, setGithubOpen] = useState<DiscoverSearchHit | null>(null);
+  const [githubDetail, setGithubDetail] = useState<GithubProjectDetail | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubErr, setGithubErr] = useState<string | null>(null);
+  const [githubDetailTab, setGithubDetailTab] = useState<GithubDetailTab>("overview");
   const [curseforgeDetailTab, setCurseforgeDetailTab] = useState<CurseforgeDetailTab>("overview");
   const [curseforgeBusy, setCurseforgeBusy] = useState(false);
   const [curseforgeErr, setCurseforgeErr] = useState<string | null>(null);
@@ -3850,12 +4147,20 @@ export default function App() {
   const [installedIconCache, setInstalledIconCache] = useState<Record<string, string>>(() =>
     readInstalledIconCache()
   );
+  const [installedIconFailedByKey, setInstalledIconFailedByKey] = useState<Record<string, boolean>>(
+    {}
+  );
   const installedIconFetchesRef = useRef<Map<string, Promise<string | null>>>(new Map());
   const [selectedModVersionIds, setSelectedModVersionIds] = useState<string[]>([]);
   const [modsBusy, setModsBusy] = useState(false);
   const [modsErr, setModsErr] = useState<string | null>(null);
+  const [cleanMissingBusyInstanceId, setCleanMissingBusyInstanceId] = useState<string | null>(null);
   const [toggleBusyVersion, setToggleBusyVersion] = useState<string | null>(null);
   const [providerSwitchBusyKey, setProviderSwitchBusyKey] = useState<string | null>(null);
+  const [githubAttachBusyVersion, setGithubAttachBusyVersion] = useState<string | null>(null);
+  const [githubAttachTarget, setGithubAttachTarget] = useState<GithubAttachModalTarget | null>(null);
+  const [githubAttachInput, setGithubAttachInput] = useState("");
+  const [githubAttachErr, setGithubAttachErr] = useState<string | null>(null);
   const [installProgress, setInstallProgress] = useState<InstallProgressEvent | null>(null);
   const [installingKey, setInstallingKey] = useState<string | null>(null);
   const [installNotice, setInstallNotice] = useState<string | null>(null);
@@ -4346,8 +4651,8 @@ export default function App() {
     () => (selectedId ? `${selectedId}::${instanceContentType}` : ""),
     [selectedId, instanceContentType]
   );
-  useEffect(() => {
-    if (!instanceFilterScopeKey) return;
+  useLayoutEffect(() => {
+    if (route !== "instance" || instanceTab !== "content" || !instanceFilterScopeKey) return;
     const saved = instanceContentFiltersByScope[instanceFilterScopeKey] ?? defaultInstanceContentFilters();
     const nextQuery = saved.query ?? "";
     const nextState = saved.state ?? "all";
@@ -4357,24 +4662,29 @@ export default function App() {
     setInstanceFilterState((prev) => (prev === nextState ? prev : nextState));
     setInstanceFilterSource((prev) => (prev === nextSource ? prev : nextSource));
     setInstanceFilterMissing((prev) => (prev === nextMissing ? prev : nextMissing));
-  }, [instanceFilterScopeKey, instanceContentFiltersByScope]);
+    // Keep restore-to-scope deterministic without rebinding on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route, instanceTab, instanceFilterScopeKey]);
   useEffect(() => {
-    if (!instanceFilterScopeKey) return;
-    setInstanceContentFiltersByScope((prev) => {
-      const nextEntry: InstanceContentFilters = {
-        query: instanceQuery,
-        state: instanceFilterState,
-        source: instanceFilterSource,
-        missing: instanceFilterMissing,
-      };
-      const current = prev[instanceFilterScopeKey];
-      if (current && sameInstanceContentFilters(current, nextEntry)) return prev;
-      return {
-        ...prev,
-        [instanceFilterScopeKey]: nextEntry,
-      };
-    });
-  }, [instanceFilterScopeKey, instanceQuery, instanceFilterState, instanceFilterSource, instanceFilterMissing]);
+    if (route !== "instance" || instanceTab !== "content" || !instanceFilterScopeKey) return;
+    const timer = window.setTimeout(() => {
+      setInstanceContentFiltersByScope((prev) => {
+        const nextEntry: InstanceContentFilters = {
+          query: instanceQuery,
+          state: instanceFilterState,
+          source: instanceFilterSource,
+          missing: instanceFilterMissing,
+        };
+        const current = prev[instanceFilterScopeKey];
+        if (current && sameInstanceContentFilters(current, nextEntry)) return prev;
+        return {
+          ...prev,
+          [instanceFilterScopeKey]: nextEntry,
+        };
+      });
+    }, 90);
+    return () => window.clearTimeout(timer);
+  }, [route, instanceTab, instanceFilterScopeKey, instanceQuery, instanceFilterState, instanceFilterSource, instanceFilterMissing]);
   const normalizedInstanceQuery = useMemo(
     () => instanceQuery.trim().toLowerCase(),
     [instanceQuery]
@@ -4509,7 +4819,14 @@ export default function App() {
       if (instanceFilterSource !== "all") {
         const source = String(entry.source ?? "").trim().toLowerCase();
         if (instanceFilterSource === "other") {
-          if (source === "modrinth" || source === "curseforge" || source === "local") continue;
+          if (
+            source === "modrinth" ||
+            source === "curseforge" ||
+            source === "github" ||
+            source === "local"
+          ) {
+            continue;
+          }
         } else if (source !== instanceFilterSource) {
           continue;
         }
@@ -5170,6 +5487,11 @@ export default function App() {
     setProjectErr(null);
     setCurseforgeBusy(false);
     setCurseforgeOpen(null);
+    setGithubBusy(false);
+    setGithubOpen(null);
+    setGithubDetail(null);
+    setGithubErr(null);
+    setGithubDetailTab("overview");
     setProjectOpenContentType("mods");
     setCurseforgeOpenContentType("mods");
     setCurseforgeDetailTab("overview");
@@ -5183,8 +5505,7 @@ export default function App() {
     const entries: UserPresetEntry[] = entriesRaw
       .filter((entry: any) => entry && typeof entry === "object")
       .map((entry: any) => {
-        const source = String(entry.source ?? "").trim().toLowerCase();
-        const normalizedSource = source === "curseforge" ? "curseforge" : source === "modrinth" ? "modrinth" : "";
+        const normalizedSource = parseDiscoverSource(entry.source);
         const project_id = String(entry.project_id ?? "").trim();
         const title = String(entry.title ?? project_id ?? "").trim();
         const content_type = String(entry.content_type ?? "mods").trim().toLowerCase();
@@ -5379,7 +5700,7 @@ export default function App() {
         : (hit.content_type as DiscoverContentType) || "mods";
     addEntryToCreator(
       {
-        source: hit.source === "curseforge" ? "curseforge" : "modrinth",
+        source: normalizeDiscoverSource(hit.source),
         project_id: hit.project_id,
         title: hit.title,
         content_type: contentType,
@@ -5401,8 +5722,12 @@ export default function App() {
     setError(null);
     try {
       if (hit.content_type === "modpacks") {
+        const templateSource = normalizeDiscoverSource(hit.source);
+        if (templateSource === "github" || templateSource === "all") {
+          throw new Error("GitHub modpacks are not supported for template import yet.");
+        }
         const preset = await importProviderModpackTemplate({
-          source: hit.source === "curseforge" ? "curseforge" : "modrinth",
+          source: templateSource,
           projectId: hit.project_id,
           projectTitle: hit.title,
         });
@@ -5536,6 +5861,32 @@ export default function App() {
     }
   }
 
+  async function openGithubProject(hit: DiscoverSearchHit, contentType?: DiscoverContentType) {
+    closeProjectOverlays();
+    setProjectOpenContentType(contentType ?? "mods");
+    setGithubBusy(true);
+    setGithubErr(null);
+    setGithubDetail(null);
+    setGithubDetailTab("overview");
+    setGithubOpen(hit);
+    try {
+      const parsedProjectId =
+        parseGithubProjectId(hit.project_id) ??
+        parseGithubProjectId(hit.external_url) ??
+        parseGithubProjectId(hit.slug ? `${hit.author}/${hit.slug}` : "");
+      if (!parsedProjectId) {
+        setGithubErr("GitHub repository id is missing for this entry.");
+        return;
+      }
+      const detail = await getGithubProjectDetail({ projectId: parsedProjectId });
+      setGithubDetail(detail);
+    } catch (e: any) {
+      setGithubErr(e?.toString?.() ?? String(e));
+    } finally {
+      setGithubBusy(false);
+    }
+  }
+
   async function fetchInstalledIconFromProvider(
     source: string,
     projectId: string,
@@ -5556,11 +5907,19 @@ export default function App() {
       const icon = String(detail?.icon_url ?? "").trim();
       return icon || null;
     }
+    if (normalizedSource === "github") {
+      const parsed = parseGithubProjectId(projectId);
+      if (!parsed) return null;
+      const owner = parsed.split("/")[0]?.trim();
+      if (!owner) return null;
+      return `https://github.com/${encodeURIComponent(owner)}.png?size=96`;
+    }
     return null;
   }
 
   async function resolveInstalledModIcon(mod: InstalledMod): Promise<string | null> {
     const cacheKey = installedIconCacheKey(mod);
+    if (installedIconFailedByKey[cacheKey]) return null;
     const cached = String(installedIconCache[cacheKey] ?? "").trim();
     if (cached) return cached;
 
@@ -5574,7 +5933,13 @@ export default function App() {
       const seen = new Set<string>();
       const push = (source: string, projectId: string) => {
         const normalizedSource = normalizeProviderSource(source);
-        if (normalizedSource !== "modrinth" && normalizedSource !== "curseforge") return;
+        if (
+          normalizedSource !== "modrinth" &&
+          normalizedSource !== "curseforge" &&
+          normalizedSource !== "github"
+        ) {
+          return;
+        }
         const cleanProjectId = String(projectId ?? "").trim();
         if (!cleanProjectId) return;
         const key = `${normalizedSource}:${cleanProjectId}`;
@@ -5620,11 +5985,32 @@ export default function App() {
 
   function requestInstalledModIcon(mod: InstalledMod) {
     const cacheKey = installedIconCacheKey(mod);
+    if (installedIconFailedByKey[cacheKey]) return;
     if (installedIconCache[cacheKey]) return;
     void resolveInstalledModIcon(mod);
   }
 
-  async function openInstalledModDetails(mod: InstalledMod) {
+  function markInstalledModIconFailed(mod: InstalledMod) {
+    const cacheKey = installedIconCacheKey(mod);
+    setInstalledIconFailedByKey((prev) => {
+      if (prev[cacheKey]) return prev;
+      return {
+        ...prev,
+        [cacheKey]: true,
+      };
+    });
+    setInstalledIconCache((prev) => {
+      if (!prev[cacheKey]) return prev;
+      const next = { ...prev };
+      delete next[cacheKey];
+      return next;
+    });
+  }
+
+  async function openInstalledModDetails(
+    mod: InstalledMod,
+    options?: { autoResolveAttempted?: boolean }
+  ) {
     const candidates = installedProviderCandidates(mod);
     const detailType = installedContentTypeToDiscover(mod.content_type);
     const currentSource = normalizeProviderSource(mod.source);
@@ -5653,14 +6039,151 @@ export default function App() {
       return;
     }
 
-    setInstallNotice(
-      `No provider details are available for ${mod.name} yet. Resolve local sources first.`
+    const githubCandidate =
+      candidates.find((item) => normalizeProviderSource(item.source) === "github") ?? null;
+    const githubProjectId = parseGithubProjectId(
+      githubCandidate?.project_id ??
+        (normalizeProviderSource(mod.source) === "github" ? mod.project_id : "")
     );
+    if (githubProjectId) {
+      await openGithubProject(
+        {
+          source: "github",
+          project_id: `gh:${githubProjectId}`,
+          title: mod.name,
+          description: mod.filename,
+          author: githubProjectId.split("/")[0] ?? "Unknown",
+          downloads: 0,
+          follows: 0,
+          icon_url: `https://github.com/${encodeURIComponent(githubProjectId.split("/")[0] ?? "")}.png?size=96`,
+          categories: [],
+          versions: [mod.version_number ?? ""].filter(Boolean),
+          date_modified: "",
+          content_type: installedContentTypeToDiscover(mod.content_type),
+          slug: githubProjectId.split("/")[1] ?? null,
+          external_url: `https://github.com/${githubProjectId}`,
+          confidence: null,
+          reason: "Installed from GitHub release metadata.",
+          install_supported: true,
+          install_note: null,
+        },
+        detailType
+      );
+      return;
+    }
+
+    const canAttemptAutoResolve =
+      !options?.autoResolveAttempted &&
+      Boolean(selectedId) &&
+      normalizeProviderSource(mod.source) === "local";
+    if (canAttemptAutoResolve && selectedId) {
+      await runLocalResolverBackfill(selectedId, "all", {
+        silent: true,
+        refreshListAfterResolve: true,
+        contentTypes: [normalizeCreatorEntryType(mod.content_type)],
+      });
+      const refreshed = await listInstalledMods(selectedId).catch(() => null);
+      if (refreshed) {
+        setInstalledMods(refreshed);
+        const updated = refreshed.find((entry) => entry.version_id === mod.version_id) ?? null;
+        if (updated) {
+          const hasProviderNow =
+            normalizeProviderSource(updated.source) !== "local" ||
+            installedProviderCandidates(updated).some((candidate) => {
+              const source = normalizeProviderSource(candidate.source);
+              return source === "modrinth" || source === "curseforge" || source === "github";
+            });
+          if (hasProviderNow) {
+            await openInstalledModDetails(updated, { autoResolveAttempted: true });
+            return;
+          }
+        }
+      }
+    }
+
+    setInstallNotice(
+      `No provider details are available for ${mod.name} yet. Resolve local sources first or attach a GitHub repository manually.`
+    );
+  }
+
+  function beginAttachInstalledModGithubRepo(inst: Instance, mod: InstalledMod) {
+    if (normalizeCreatorEntryType(mod.content_type) !== "mods") {
+      setModsErr("Manual GitHub repo attach is currently supported for mods only.");
+      return;
+    }
+    const activeSource = normalizeProviderSource(mod.source);
+    if (activeSource === "modrinth" || activeSource === "curseforge") {
+      setModsErr(
+        "Manual GitHub repo attach is available only for local or existing GitHub entries."
+      );
+      return;
+    }
+    const existingGithubCandidate =
+      installedProviderCandidates(mod).find(
+        (candidate) => normalizeProviderSource(candidate.source) === "github"
+      ) ?? null;
+    const suggestedRepo =
+      parseGithubProjectId(existingGithubCandidate?.project_id ?? mod.project_id) ?? "";
+    setGithubAttachTarget({
+      instanceId: inst.id,
+      instanceName: inst.name,
+      mod,
+    });
+    setGithubAttachInput(suggestedRepo);
+    setGithubAttachErr(null);
+  }
+
+  async function submitAttachInstalledModGithubRepo() {
+    const target = githubAttachTarget;
+    if (!target) return;
+    const githubRepo = parseGithubProjectId(githubAttachInput);
+    if (!githubRepo) {
+      setGithubAttachErr("Invalid GitHub repository. Use owner/repo or a GitHub repository URL.");
+      return;
+    }
+
+    setGithubAttachBusyVersion(target.mod.version_id);
+    setModsErr(null);
+    setGithubAttachErr(null);
+    try {
+      const updated = await attachInstalledModGithubRepo({
+        instanceId: target.instanceId,
+        versionId: target.mod.version_id,
+        githubRepo,
+        activate: true,
+      });
+      setInstalledMods((prev) =>
+        prev.map((entry) => (entry.version_id === target.mod.version_id ? updated : entry))
+      );
+      requestInstalledModIcon(updated);
+      if (normalizeProviderSource(updated.source) === "github") {
+        setInstallNotice(`Attached GitHub repo ${githubRepo} to ${updated.name}.`);
+      } else {
+        setInstallNotice(
+          `Saved GitHub repo ${githubRepo} for ${updated.name}. Provider activation is pending verification.`
+        );
+      }
+      setGithubAttachTarget(null);
+      setGithubAttachInput("");
+      setGithubAttachErr(null);
+    } catch (e: any) {
+      const message = e?.toString?.() ?? String(e);
+      setModsErr(message);
+      setGithubAttachErr(message);
+    } finally {
+      setGithubAttachBusyVersion(null);
+    }
   }
 
   async function onSetInstalledModProvider(inst: Instance, mod: InstalledMod, source: string) {
     const normalizedSource = normalizeProviderSource(source);
-    if (normalizedSource !== "modrinth" && normalizedSource !== "curseforge") return;
+    if (
+      normalizedSource !== "modrinth" &&
+      normalizedSource !== "curseforge" &&
+      normalizedSource !== "github"
+    ) {
+      return;
+    }
     if (normalizeProviderSource(mod.source) === normalizedSource) return;
     const busyKey = `${mod.version_id}:${normalizedSource}`;
     setProviderSwitchBusyKey(busyKey);
@@ -5672,7 +6195,7 @@ export default function App() {
         source: normalizedSource,
       });
       setInstalledMods((prev) =>
-        prev.map((entry) => (entry.version_id === updated.version_id ? updated : entry))
+        prev.map((entry) => (entry.version_id === mod.version_id ? updated : entry))
       );
       requestInstalledModIcon(updated);
       setInstallNotice(`Set ${mod.name} provider to ${providerSourceLabel(normalizedSource)}.`);
@@ -5764,7 +6287,7 @@ export default function App() {
       }
 
       spec.layers[layerIndex].entries_delta.add.push({
-        provider: target.source === "curseforge" ? "curseforge" : "modrinth",
+        provider: normalizeDiscoverSource(target.source),
         project_id: target.projectId,
         slug: target.slug ?? null,
         content_type: target.contentType,
@@ -5845,7 +6368,7 @@ export default function App() {
       return;
     }
 
-    if (installTarget.source === "curseforge") {
+    if (installTarget.source === "curseforge" || installTarget.source === "github") {
       const nextBusy: Record<string, boolean> = {};
       const nextPreview: Record<string, InstallPlanPreview> = {};
       for (const inst of instances) {
@@ -5969,22 +6492,65 @@ export default function App() {
         mode,
         contentTypes: options?.contentTypes,
       });
+      if (
+        options?.refreshListAfterResolve !== false &&
+        (result.resolved_entries > 0 || mode === "all")
+      ) {
+        const refreshed = await listInstalledMods(instanceId).catch(() => null);
+        if (refreshed && route === "instance" && selectedId === instanceId) {
+          setInstalledMods(refreshed);
+        }
+      }
       if (result.resolved_entries > 0) {
         if (!options?.silent) {
-          const contentLabel =
-            options?.contentTypes?.length === 1
-              ? localImportTypeLabel(normalizeInstanceContentType(options.contentTypes[0]))
-              : "file";
-          setInstallNotice(
-            `Identified ${result.resolved_entries} local ${contentLabel}${result.resolved_entries === 1 ? "" : "s"} with provider metadata.`
+          const githubReverts = (result.matches ?? []).filter(
+            (item) =>
+              normalizeProviderSource(item.from_source) === "github" &&
+              normalizeProviderSource(item.to_source) === "local"
+          ).length;
+          const githubActivations = (result.matches ?? []).filter(
+            (item) => normalizeProviderSource(item.to_source) === "github"
+          ).length;
+          const reasons = (result.matches ?? [])
+            .map((item) => String(item.reason ?? "").trim())
+            .filter(Boolean);
+          const githubVerificationPending = reasons.filter((reason) =>
+            /verification is unavailable|temporarily unavailable|rate limit/i.test(reason)
+          ).length;
+          const githubAssetMatchPending = reasons.filter((reason) =>
+            /no verified release asset matched/i.test(reason)
+          ).length;
+          const summaryBits: string[] = [];
+          summaryBits.push(
+            `Resolved ${result.resolved_entries} entr${result.resolved_entries === 1 ? "y" : "ies"}`
           );
-        }
-        if (options?.refreshListAfterResolve !== false) {
-          const refreshed = await listInstalledMods(instanceId).catch(() => null);
-          if (refreshed && route === "instance" && selectedId === instanceId) {
-            setInstalledMods(refreshed);
+          if (githubActivations > 0) summaryBits.push(`GitHub activated ${githubActivations}`);
+          if (githubReverts > 0) summaryBits.push(`GitHub reverted ${githubReverts}`);
+          if (githubVerificationPending > 0) {
+            summaryBits.push(
+              `GitHub verification pending ${githubVerificationPending} entr${
+                githubVerificationPending === 1 ? "y" : "ies"
+              } (API unavailable/rate-limited)`
+            );
           }
+          if (githubAssetMatchPending > 0) {
+            summaryBits.push(
+              `GitHub release asset match pending ${githubAssetMatchPending} entr${
+                githubAssetMatchPending === 1 ? "y" : "ies"
+              }`
+            );
+          }
+          setInstallNotice(summaryBits.join(" • "));
         }
+      }
+      if (!options?.silent && result.resolved_entries === 0) {
+        const warningSuffix =
+          result.warnings.length > 0
+            ? ` ${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}.`
+            : "";
+        setInstallNotice(
+          `Identify local files scanned ${result.scanned_entries} entr${result.scanned_entries === 1 ? "y" : "ies"} and found no new provider matches.${warningSuffix}`
+        );
       }
       if (!options?.silent && result.warnings.length > 0 && result.resolved_entries === 0) {
         setModsErr(result.warnings[0] ?? "Some local files could not be identified.");
@@ -6447,10 +7013,19 @@ export default function App() {
               result.messages.push(`${action.title}: missing project id`);
               continue;
             }
-            if (source === "curseforge") {
+            const normalizedSource = normalizeDiscoverSource(source);
+            if (normalizedSource === "curseforge") {
               await installCurseforgeMod({ instanceId: inst.id, projectId, projectTitle: projectId });
-            } else {
+            } else if (normalizedSource === "modrinth") {
               await installModrinthMod({ instanceId: inst.id, projectId, projectTitle: projectId });
+            } else {
+              await installDiscoverContent({
+                instanceId: inst.id,
+                source: normalizedSource,
+                projectId,
+                projectTitle: projectId,
+                contentType: "mods",
+              });
             }
             result.applied += 1;
             result.messages.push(`${action.title}: installed`);
@@ -6614,10 +7189,11 @@ export default function App() {
 
   async function refreshInstanceHealthPanelData(instanceId: string) {
     try {
-      const [diskUsage, lastRun, runReport] = await Promise.all([
+      const [diskUsage, lastRun, runReport, playtime] = await Promise.all([
         getInstanceDiskUsage({ instanceId }).catch(() => null),
         getInstanceLastRunMetadata({ instanceId }).catch(() => null),
         getInstanceLastRunReport({ instanceId }).catch(() => null),
+        getInstancePlaytime({ instanceId }).catch(() => null),
       ]);
       if (typeof diskUsage === "number" && Number.isFinite(diskUsage) && diskUsage >= 0) {
         setInstanceDiskUsageById((prev) => ({ ...prev, [instanceId]: diskUsage }));
@@ -6625,6 +7201,10 @@ export default function App() {
       if (lastRun && typeof lastRun === "object") {
         setInstanceLastRunMetadataById((prev) => ({ ...prev, [instanceId]: lastRun }));
       }
+      setInstancePlaytimeById((prev) => ({
+        ...prev,
+        [instanceId]: playtime && typeof playtime === "object" ? playtime : null,
+      }));
       setInstanceRunReportById((prev) => ({
         ...prev,
         [instanceId]: runReport && typeof runReport === "object" ? runReport : null,
@@ -6637,6 +7217,13 @@ export default function App() {
   async function onInstallToInstance(inst: Instance) {
     const target = installTarget;
     if (!target) return;
+    if (target.installSupported === false) {
+      setInstallNotice(
+        target.installNote ||
+          "This result cannot be installed directly yet. Open the provider page for manual download/import."
+      );
+      return;
+    }
     const key = `${inst.id}:${target.source}:${target.contentType}:${target.projectId}`;
     const timingKey = `${inst.id}:${target.projectId}`;
     const nowPerf = performance.now();
@@ -6659,7 +7246,10 @@ export default function App() {
       downloaded: 0,
       total: null,
       percent: null,
-      message: "Resolving compatible version…",
+      message:
+        target.source === "github"
+          ? "Resolving compatible GitHub release…"
+          : "Resolving compatible version…",
     });
     let installSucceeded = false;
 
@@ -6683,14 +7273,23 @@ export default function App() {
                 projectId: target.projectId,
                 projectTitle: target.title,
               })
-            : await installModrinthMod({
-                instanceId: inst.id,
-                projectId: target.projectId,
-                projectTitle: target.title,
-              })
+            : target.source === "modrinth"
+              ? await installModrinthMod({
+                  instanceId: inst.id,
+                  projectId: target.projectId,
+                  projectTitle: target.title,
+                })
+              : await installDiscoverContent({
+                  instanceId: inst.id,
+                  source: normalizeDiscoverSource(target.source),
+                  projectId: target.projectId,
+                  projectTitle: target.title,
+                  contentType: target.contentType,
+                  targetWorlds: directDatapackWorlds,
+                })
           : await installDiscoverContent({
               instanceId: inst.id,
-              source: target.source === "curseforge" ? "curseforge" : "modrinth",
+              source: normalizeDiscoverSource(target.source),
               projectId: target.projectId,
               projectTitle: target.title,
               contentType: target.contentType,
@@ -6826,7 +7425,10 @@ export default function App() {
     try {
       const mods = await listInstalledMods(inst.id);
       const entries: UserPresetEntry[] = mods
-        .filter((m) => m.source === "modrinth" || m.source === "curseforge")
+        .filter(
+          (m) =>
+            m.source === "modrinth" || m.source === "curseforge" || m.source === "github"
+        )
         .map((m) => ({
           source: m.source,
           project_id: m.project_id,
@@ -6838,7 +7440,9 @@ export default function App() {
           enabled: true,
         }));
       if (entries.length === 0) {
-        throw new Error("This instance has no Modrinth/CurseForge entries to save as a preset.");
+        throw new Error(
+          "This instance has no Modrinth/CurseForge/GitHub entries to save as a preset."
+        );
       }
       const next: UserPreset = {
         id: `preset_${Date.now()}`,
@@ -7022,6 +7626,41 @@ export default function App() {
       setModsErr(e?.toString?.() ?? String(e));
     } finally {
       setToggleBusyVersion(null);
+    }
+  }
+
+  async function onCleanMissingInstalledEntries(
+    inst: Instance,
+    contentView: "mods" | "resourcepacks" | "datapacks" | "shaders"
+  ) {
+    setCleanMissingBusyInstanceId(inst.id);
+    setModsErr(null);
+    try {
+      const backendContentType = instanceContentTypeToBackend(contentView);
+      const out = await pruneMissingInstalledEntries({
+        instanceId: inst.id,
+        contentTypes: [backendContentType],
+      });
+      await refreshInstalledMods(inst.id);
+      const sectionLabel = instanceContentSectionLabel(contentView);
+      if (out.removed_count > 0) {
+        const removedPreview = out.removed_names.slice(0, 3).join(", ");
+        const extraCount = Math.max(0, out.removed_count - 3);
+        const previewSuffix = removedPreview
+          ? ` Removed: ${removedPreview}${extraCount > 0 ? ` (+${extraCount} more)` : ""}.`
+          : "";
+        setInstallNotice(
+          `Cleaned ${out.removed_count} missing ${sectionLabel} entr${
+            out.removed_count === 1 ? "y" : "ies"
+          } from lock metadata.${previewSuffix}`
+        );
+      } else {
+        setInstallNotice(`No missing ${sectionLabel} entries needed cleanup.`);
+      }
+    } catch (e: any) {
+      setModsErr(e?.toString?.() ?? String(e));
+    } finally {
+      setCleanMissingBusyInstanceId(null);
     }
   }
 
@@ -8235,6 +8874,50 @@ export default function App() {
     setUpdateCheck(null);
     setUpdateErr(null);
   }, [route, selectedId, instanceTab, instanceContentType]);
+
+  useEffect(() => {
+    if (route !== "instance" || instanceTab !== "content" || !selectedId) return;
+    let cancelled = false;
+    const syncFromDisk = async () => {
+      const refreshed = await listInstalledMods(selectedId).catch(() => null);
+      if (!refreshed || cancelled) return;
+      setInstalledMods((prev) => {
+        if (
+          prev.length === refreshed.length &&
+          prev.every((entry, index) => {
+            const next = refreshed[index];
+            return (
+              next &&
+              entry.version_id === next.version_id &&
+              entry.file_exists === next.file_exists &&
+              entry.enabled === next.enabled &&
+              entry.source === next.source &&
+              entry.filename === next.filename
+            );
+          })
+        ) {
+          return prev;
+        }
+        return refreshed;
+      });
+    };
+    const refreshOnForeground = () => {
+      if (document.visibilityState !== "visible") return;
+      void syncFromDisk();
+    };
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      void syncFromDisk();
+    }, 5000);
+    window.addEventListener("focus", refreshOnForeground);
+    document.addEventListener("visibilitychange", refreshOnForeground);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnForeground);
+      document.removeEventListener("visibilitychange", refreshOnForeground);
+    };
+  }, [route, instanceTab, selectedId]);
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
@@ -11972,6 +12655,42 @@ export default function App() {
 
     if (route === "discover") {
       const selectedInst = instances.find((i) => i.id === selectedId) ?? null;
+      const discoverFilterSupportNotes: string[] = [];
+      if (discoverSource === "github") {
+        if (discoverContentType !== "mods") {
+          discoverFilterSupportNotes.push("GitHub source currently supports mods only.");
+        } else if (
+          filterLoaders.length > 0 ||
+          Boolean(filterVersion) ||
+          filterCategories.length > 0
+        ) {
+          discoverFilterSupportNotes.push(
+            "GitHub source filters are best-effort: loader/version/category checks rely on repository topics and release asset naming."
+          );
+        }
+      } else if (discoverSource === "curseforge") {
+        if (discoverContentType === "mods" && filterLoaders.length > 0) {
+          discoverFilterSupportNotes.push(
+            "CurseForge loader filter is currently unavailable. Keep loader filters empty for CurseForge-only searches."
+          );
+        }
+        if (filterCategories.length > 0) {
+          discoverFilterSupportNotes.push(
+            "CurseForge category matching is best-effort because provider category vocabularies differ."
+          );
+        }
+      }
+      if (
+        discoverSource === "all" &&
+        (filterLoaders.length > 0 || Boolean(filterVersion) || filterCategories.length > 0)
+      ) {
+        discoverFilterSupportNotes.push(
+          "Source=All combines provider results; filter precision varies by provider."
+        );
+      }
+      const discoverFilterSupportNotice = discoverFilterSupportNotes.length
+        ? discoverFilterSupportNotes.join(" ")
+        : null;
       const discoverPlaceholder =
         discoverContentType === "shaderpacks"
           ? "Search shaderpacks…"
@@ -11986,7 +12705,7 @@ export default function App() {
       return (
         <div style={{ maxWidth: 1400 }}>
           <div className="h1">Discover content</div>
-          <div className="p">Search Modrinth + CurseForge and install directly into instances.</div>
+          <div className="p">Search Modrinth, CurseForge, or GitHub and install directly into instances.</div>
           {discoverAddContext ? (
             <div className={`discoverAddTray${discoverAddTraySticky ? " discoverAddTraySticky" : ""}`}>
               <div className="discoverAddTrayHeader">
@@ -12161,8 +12880,10 @@ export default function App() {
                   values={filterLoaders}
                   placeholder="Loaders: Any"
                   groups={DISCOVER_LOADER_GROUPS}
+                  disabled={discoverContentType !== "mods" || discoverSource === "curseforge"}
                   onChange={(v) => {
                     if (discoverContentType !== "mods") return;
+                    if (discoverSource === "curseforge") return;
                     setFilterLoaders(v);
                     setOffset(0);
                   }}
@@ -12215,6 +12936,9 @@ export default function App() {
             </div>
           </div>
 
+          {discoverFilterSupportNotice ? (
+            <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
+          ) : null}
           {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
 
           <div className="resultsGrid">
@@ -12227,11 +12951,21 @@ export default function App() {
                       openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
                       return;
                     }
-                    openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                    if (h.source === "curseforge") {
+                      openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                      return;
+                    }
+                    if (h.source === "github") {
+                      void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                      return;
+                    }
+                    if (h.external_url?.trim()) {
+                      void openExternalLink(h.external_url.trim());
+                    }
                 }}
               >
                 <div className="resultIcon">
-                  {h.icon_url ? <img src={h.icon_url} alt="" /> : <div>⬚</div>}
+                  <RemoteImage src={h.icon_url} alt={`${h.title} icon`} fallback={<div>⬚</div>} />
                 </div>
 
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -12242,6 +12976,9 @@ export default function App() {
                     <span>by {h.author}</span>
                     <span>↓ {formatCompact(h.downloads)}</span>
                     <span>♥ {formatCompact(h.follows)}</span>
+                    {h.install_supported === false && h.install_note ? (
+                      <span className="chip danger">{h.install_note}</span>
+                    ) : null}
                     {h.categories?.slice(0, 3)?.map((c) => (
                       <span key={c} className="chip">
                         {c}
@@ -12262,7 +12999,17 @@ export default function App() {
                         openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
                         return;
                       }
-                      openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                      if (h.source === "curseforge") {
+                        openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                        return;
+                      }
+                      if (h.source === "github") {
+                        void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                        return;
+                      }
+                      if (h.external_url?.trim()) {
+                        void openExternalLink(h.external_url.trim());
+                      }
                     }}
                   >
                     View
@@ -12271,7 +13018,7 @@ export default function App() {
                     className="btn"
                     onClick={() =>
                       openAddToModpack({
-                        source: h.source === "curseforge" ? "curseforge" : "modrinth",
+                        source: normalizeDiscoverSource(h.source),
                         projectId: h.project_id,
                         title: h.title,
                         contentType:
@@ -12296,7 +13043,7 @@ export default function App() {
                     className="btn primary installAction"
                     onClick={() =>
                       openInstall({
-                        source: h.source === "curseforge" ? "curseforge" : "modrinth",
+                        source: normalizeDiscoverSource(h.source),
                         projectId: h.project_id,
                         title: h.title,
                         contentType:
@@ -12305,10 +13052,18 @@ export default function App() {
                             : ((h.content_type as DiscoverContentType) ?? discoverContentType),
                         iconUrl: h.icon_url,
                         description: h.description,
+                        installSupported: h.install_supported !== false,
+                        installNote: h.install_note ?? null,
                       })
                     }
-                    title={h.content_type === "modpacks" ? "Modpacks are imported as templates" : "Install to instance"}
-                    disabled={h.content_type === "modpacks"}
+                    title={
+                      h.content_type === "modpacks"
+                        ? "Modpacks are imported as templates"
+                        : h.install_supported === false
+                          ? h.install_note ?? "This provider result cannot be installed directly yet."
+                          : "Install to instance"
+                    }
+                    disabled={h.content_type === "modpacks" || h.install_supported === false}
                   >
                     <Icon name="download" /> {h.content_type === "modpacks" ? "Template only" : "Install"}
                   </button>
@@ -12381,6 +13136,7 @@ export default function App() {
       const instSettings = normalizeInstanceSettings(inst.settings);
       const instanceDiskUsageBytes = Number(instanceDiskUsageById[inst.id] ?? 0);
       const instanceLastRunMeta = instanceLastRunMetadataById[inst.id] ?? null;
+      const instancePlaytime = instancePlaytimeById[inst.id] ?? null;
       const instanceLastRunReport = instanceRunReportById[inst.id] ?? null;
       const instancePreflightReport = preflightReportByInstance[inst.id] ?? null;
       const instancePermissionChecklist: LaunchPermissionChecklistItem[] =
@@ -12440,6 +13196,11 @@ export default function App() {
       const instanceLastLaunchAt = instanceLastRunMeta?.lastLaunchAt ?? null;
       const instanceLastExitKindRaw = String(instanceLastRunMeta?.lastExitKind ?? "").trim().toLowerCase();
       const instanceLastExitAt = instanceLastRunMeta?.lastExitAt ?? null;
+      const instancePlayedSeconds = Math.max(0, Number(instancePlaytime?.totalSeconds ?? 0));
+      const instancePlayedLabel = instancePlayedSeconds > 0
+        ? formatDurationMs(instancePlayedSeconds * 1000)
+        : "0s";
+      const showNativeOnlyPlaytimeHint = String(instancePlaytime?.trackingScope ?? "").toLowerCase() === "native_only";
       const autoBackupsEnabled =
         Number(instSettings.world_backup_interval_minutes ?? 0) > 0 &&
         Number(instSettings.world_backup_retention_count ?? 0) > 0;
@@ -12769,6 +13530,12 @@ export default function App() {
                     </span>
                     <span className="chip subtle" title="Most recent auto world backup across this instance.">
                       Backup {latestInstanceBackupAt ? formatDateTime(latestInstanceBackupAt) : "None yet"}
+                    </span>
+                    <span
+                      className="chip subtle"
+                      title={showNativeOnlyPlaytimeHint ? "Native launch sessions are tracked exactly. Prism launch tracking is not available yet." : "Accumulated tracked playtime."}
+                    >
+                      Time played {instancePlayedLabel}
                     </span>
                     <span className={`chip ${autoBackupsEnabled ? "subtle" : "danger"}`}>
                       Auto backups {autoBackupsEnabled ? "On" : "Off"}
@@ -13105,9 +13872,23 @@ export default function App() {
                           })
                         }
                         disabled={Boolean(localResolverBusyRef.current[inst.id])}
-                        data-oj-tooltip="Try to match local files to Modrinth and CurseForge metadata."
+                        data-oj-tooltip="Try to match local files to Modrinth, CurseForge, and GitHub metadata."
                       >
                         Identify local files
+                      </button>
+                      <button
+                        className="btn"
+                        onClick={() =>
+                          void onCleanMissingInstalledEntries(inst, instanceContentType)
+                        }
+                        disabled={
+                          cleanMissingBusyInstanceId === inst.id ||
+                          modsBusy ||
+                          Boolean(localResolverBusyRef.current[inst.id])
+                        }
+                        data-oj-tooltip="Remove entries that are missing on disk from lock metadata for this section."
+                      >
+                        {cleanMissingBusyInstanceId === inst.id ? "Cleaning…" : "Clean missing entries"}
                       </button>
                     </>
                   ) : instanceTab === "worlds" ? (
@@ -13175,6 +13956,7 @@ export default function App() {
                         { value: "all", label: "All" },
                         { value: "modrinth", label: "Modrinth" },
                         { value: "curseforge", label: "CurseForge" },
+                        { value: "github", label: "GitHub" },
                         { value: "local", label: "Local" },
                         { value: "other", label: "Other" },
                       ]}
@@ -13365,12 +14147,15 @@ export default function App() {
                         </div>
                         {visibleInstalledMods.map((m) => {
                           const iconKey = installedIconCacheKey(m);
-                          const iconSrc = installedIconCache[iconKey] ?? null;
+                          const iconSrc = installedIconFailedByKey[iconKey]
+                            ? null
+                            : installedIconCache[iconKey] ?? null;
+                          const activeProviderSource = normalizeProviderSource(m.source);
                           const providerCandidates = installedProviderCandidates(m);
-                          const switchableProviders = providerCandidates.filter((candidate) => {
-                            const source = normalizeProviderSource(candidate.source);
-                            return source === "modrinth" || source === "curseforge";
-                          });
+                          const providerBadgeCandidates = installedProviderBadgeCandidates(m);
+                          const hasGithubCandidate = providerCandidates.some(
+                            (candidate) => normalizeProviderSource(candidate.source) === "github"
+                          );
                           const addedAtMs = Number(m.added_at ?? 0);
                           const addedAtLabel =
                             Number.isFinite(addedAtMs) && addedAtMs > 0
@@ -13395,8 +14180,12 @@ export default function App() {
                               className={`instanceModsRow ${m.enabled ? "" : "disabled"}`}
                               role="button"
                               tabIndex={0}
-                              onClick={() => void openInstalledModDetails(m)}
+                              onClick={(event) => {
+                                if (eventTargetsInteractiveControl(event)) return;
+                                void openInstalledModDetails(m);
+                              }}
                               onKeyDown={(event) => {
+                                if (eventTargetsInteractiveControl(event)) return;
                                 if (event.key !== "Enter" && event.key !== " ") return;
                                 event.preventDefault();
                                 void openInstalledModDetails(m);
@@ -13408,6 +14197,8 @@ export default function App() {
                                   type="checkbox"
                                   className="instanceModsSelectCheck"
                                   checked={selectedModVersionIdSet.has(m.version_id)}
+                                  data-row-action="true"
+                                  onPointerDown={(e) => e.stopPropagation()}
                                   onClick={(e) => e.stopPropagation()}
                                   onChange={(e) => onToggleModSelection(m.version_id, e.target.checked)}
                                   disabled={!m.file_exists || toggleBusyVersion === "__bulk__"}
@@ -13419,27 +14210,41 @@ export default function App() {
                                   alt={`${m.name} icon`}
                                   src={iconSrc}
                                   onVisible={() => requestInstalledModIcon(m)}
+                                  onError={() => markInstalledModIconFailed(m)}
                                 />
                                 <div className="instanceModsNameText">
                                   <div className="instanceModsNameTitle">{m.name}</div>
                                   <div className="instanceModsNameMeta">{rowMetaParts.join(" · ")}</div>
                                   <div className="instanceModsProviderBadges">
-                                    {providerCandidates.map((candidate) => {
+                                    {!m.file_exists ? (
+                                      <span className="instanceProviderBadge missing">Missing on disk</span>
+                                    ) : null}
+                                    {providerBadgeCandidates.map((candidate) => {
                                       const source = normalizeProviderSource(candidate.source);
                                       const label = providerSourceLabel(candidate.source);
                                       const isActive = source === normalizeProviderSource(m.source);
+                                      const candidateExplain = providerCandidateExplain(candidate);
                                       const switchKey = `${m.version_id}:${source}`;
                                       const isBusy = providerSwitchBusyKey === switchKey;
                                       const canSwitch =
-                                        switchableProviders.length > 1 &&
-                                        (source === "modrinth" || source === "curseforge");
+                                        (source === "modrinth" ||
+                                          source === "curseforge" ||
+                                          source === "github") &&
+                                        source !== activeProviderSource;
+                                      const badgeLabel = isActive ? label : `${label} candidate`;
                                       if (!canSwitch) {
                                         return (
                                           <span
                                             key={`${candidate.source}:${candidate.project_id}:${candidate.version_id}`}
                                             className={`instanceProviderBadge ${isActive ? "active" : ""}`}
+                                            data-oj-tooltip={
+                                              candidateExplain ??
+                                              (isActive
+                                                ? `${label} is currently active`
+                                                : `${label} candidate`)
+                                            }
                                           >
-                                            {label}
+                                            {badgeLabel}
                                           </span>
                                         );
                                       }
@@ -13457,15 +14262,44 @@ export default function App() {
                                             toggleBusyVersion === "__bulk__"
                                           }
                                           data-oj-tooltip={
-                                            isActive
+                                            candidateExplain ??
+                                            (isActive
                                               ? `${label} is currently active for metadata and actions`
-                                              : `Switch to ${label} metadata and actions`
+                                              : `Switch to ${label} metadata and actions`)
                                           }
                                         >
-                                          {isBusy ? "Switching…" : label}
+                                          {isBusy ? "Switching…" : badgeLabel}
                                         </button>
                                       );
                                     })}
+                                    {normalizeCreatorEntryType(m.content_type) === "mods" &&
+                                    (activeProviderSource === "local" ||
+                                      activeProviderSource === "github") ? (
+                                      <button
+                                        className="instanceProviderBadge clickable"
+                                        data-row-action="true"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          beginAttachInstalledModGithubRepo(inst, m);
+                                        }}
+                                        disabled={
+                                          githubAttachBusyVersion === m.version_id ||
+                                          toggleBusyVersion === m.version_id ||
+                                          toggleBusyVersion === "__bulk__"
+                                        }
+                                        data-oj-tooltip={
+                                          hasGithubCandidate
+                                            ? "Attach or replace the GitHub repository mapping"
+                                            : "Attach a GitHub repository manually"
+                                        }
+                                      >
+                                        {githubAttachBusyVersion === m.version_id
+                                          ? "Attaching…"
+                                          : hasGithubCandidate
+                                            ? "Reattach GitHub"
+                                            : "Attach GitHub"}
+                                      </button>
+                                    ) : null}
                                   </div>
                                 </div>
                               </div>
@@ -13482,6 +14316,7 @@ export default function App() {
                                   <button
                                     className={`instanceActionIconBtn instanceActionToggleBtn ${m.enabled ? "enabled" : "disabled"}`}
                                     type="button"
+                                    data-row-action="true"
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       void onToggleInstalledMod(inst, m, !m.enabled);
@@ -13502,6 +14337,7 @@ export default function App() {
                                   <button
                                     className="instanceActionIconBtn instanceActionDeleteBtn"
                                     type="button"
+                                    data-row-action="true"
                                     onClick={(event) => {
                                       event.stopPropagation();
                                       void onDeleteInstalledMod(inst, m);
@@ -14561,13 +15397,13 @@ export default function App() {
 	                                  ]}
 	                                />
 	                              ) : null}
-	                              <div className="muted" style={{ marginTop: 8 }}>
-	                                {instances.filter((item) => item.id !== inst.id).length === 0
-	                                  ? "Add another instance to choose a sync target."
-	                                  : "Syncs options files (options.txt, optionsof.txt, optionsshaders.txt) right before launch."}
-	                              </div>
-	                            </>
-	                          ) : null}
+		                              <div className="muted" style={{ marginTop: 8 }}>
+		                                {instances.filter((item) => item.id !== inst.id).length === 0
+		                                  ? "Add another instance to choose a sync target."
+		                                  : "Syncs options files (options.txt, optionsof.txt, optionsshaders.txt, servers.dat) right before launch."}
+		                              </div>
+		                            </>
+		                          ) : null}
 	                        </div>
 	                      </div>
 	                    </>
@@ -15688,7 +16524,7 @@ export default function App() {
           </div>
         ) : null}
         {curseforgeBlockedRecoveryPrompt ? (
-          <div className="noticeBox topStatusBanner statusBanner">
+          <div className="warningBox topStatusBanner statusBanner">
             <div className="statusBannerMessage">
               CurseForge blocked automated download for
               {" "}
@@ -15736,16 +16572,24 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        {installNotice ? (
-          <div className="noticeBox topStatusBanner statusBanner">
-            <div className="statusBannerMessage">{installNotice}</div>
-            <div className="statusBannerActions">
-              <button className="btn subtle" onClick={() => setInstallNotice(null)}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-        ) : null}
+        {installNotice
+          ? (() => {
+              const tone = inferNoticeTone(installNotice);
+              const bannerClass =
+                tone === "error" ? "errorBox" : tone === "warning" ? "warningBox" : "noticeBox";
+              const dismissButtonClass = "btn ghost statusBannerDismiss";
+              return (
+                <div className={`${bannerClass} topStatusBanner statusBanner`}>
+                  <div className="statusBannerMessage">{installNotice}</div>
+                  <div className="statusBannerActions">
+                    <button className={dismissButtonClass} onClick={() => setInstallNotice(null)}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              );
+            })()
+          : null}
         {renderContent()}
       </main>
 
@@ -16535,20 +17379,28 @@ export default function App() {
           <div className="modalBody">
             <div className="installModHeader">
               <div className="resultIcon" style={{ width: 56, height: 56, borderRadius: 16 }}>
-                {installTarget.iconUrl ? <img src={installTarget.iconUrl} alt="" /> : <div>⬚</div>}
+                <RemoteImage src={installTarget.iconUrl} alt={`${installTarget.title} icon`} fallback={<div>⬚</div>} />
               </div>
               <div>
                 <div className="h3" style={{ margin: 0 }}>{installTarget.title}</div>
                 <div className="p" style={{ marginTop: 4 }}>
                   Source: {installTarget.source}. Type: {installTarget.contentType}.
                   {installTarget.contentType === "mods"
-                    ? " The app will pick the latest compatible version (loader + game version) and install required dependencies when available."
+                    ? installTarget.source === "github"
+                      ? " For GitHub mods, install requires explicit loader/game-version hints in release metadata."
+                      : " The app will pick the latest compatible version (loader + game version) and install required dependencies when available."
                     : installTarget.contentType === "datapacks"
                       ? " Datapacks install into world datapacks folders. Direct install targets all detected worlds on that instance."
                       : " The app will install the latest compatible file and track it in lockfile."}
                 </div>
               </div>
             </div>
+
+            {installTarget.installNote ? (
+              <div className={installTarget.installSupported === false ? "warningBox" : "noticeBox"}>
+                {installTarget.installNote}
+              </div>
+            ) : null}
 
             {installProgress && installProgress.project_id === installTarget.projectId ? (
               <div className="card installProgressCard">
@@ -16633,7 +17485,12 @@ export default function App() {
                       <button
                         className="btn primary installAction"
                         onClick={() => onInstallToInstance(inst)}
-                        disabled={installingKey !== null && installingKey !== `${inst.id}:${installTarget.source}:${installTarget.contentType}:${installTarget.projectId}`}
+                        disabled={
+                          installTarget.installSupported === false ||
+                          (installingKey !== null &&
+                            installingKey !==
+                              `${inst.id}:${installTarget.source}:${installTarget.contentType}:${installTarget.projectId}`)
+                        }
                       >
                         <Icon name="download" />
                         {installingKey === `${inst.id}:${installTarget.source}:${installTarget.contentType}:${installTarget.projectId}`
@@ -16861,7 +17718,11 @@ export default function App() {
 
                   <div className="projectHero">
                     <div className="resultIcon projectIcon projectIconLarge">
-                      {projectOpen.icon_url ? <img src={projectOpen.icon_url} alt="" /> : <div>⬚</div>}
+                      <RemoteImage
+                        src={projectOpen.icon_url}
+                        alt={`${projectOpen.title} icon`}
+                        fallback={<div>⬚</div>}
+                      />
                     </div>
 
                     <div className="projectHeroMain">
@@ -17210,7 +18071,11 @@ export default function App() {
 
                   <div className="projectHero">
                     <div className="resultIcon projectIcon projectIconLarge">
-                      {curseforgeOpen.icon_url ? <img src={curseforgeOpen.icon_url} alt="" /> : <div>⬚</div>}
+                      <RemoteImage
+                        src={curseforgeOpen.icon_url}
+                        alt={`${curseforgeOpen.title} icon`}
+                        fallback={<div>⬚</div>}
+                      />
                     </div>
 
                     <div className="projectHeroMain">
@@ -17414,6 +18279,315 @@ export default function App() {
               }}
             >
               <Icon name="download" /> {curseforgeOpenContentType === "modpacks" ? "Template only" : "Install to instance"}
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {githubOpen || githubBusy || githubErr ? (
+        <Modal
+          title={githubDetail?.title || githubOpen?.title || (githubBusy ? "Loading…" : "GitHub details")}
+          onClose={closeProjectOverlays}
+          size="wide"
+        >
+          <div className="modalBody">
+            {githubErr ? <div className="errorBox">{githubErr}</div> : null}
+            {githubBusy && !githubDetail ? (
+              <div className="card" style={{ padding: 16, borderRadius: 22 }}>
+                Loading…
+              </div>
+            ) : null}
+            {githubOpen ? (
+              <div className="projectDetailWrap">
+                <div className="card projectHeroCard">
+                  <div className="projectHeroAura" />
+                  <div className="projectHero">
+                    <div className="resultIcon projectIcon projectIconLarge">
+                      <RemoteImage
+                        src={githubDetail?.icon_url ?? githubOpen.icon_url}
+                        alt={`${githubDetail?.title || githubOpen.title} icon`}
+                        fallback={<div>⬚</div>}
+                      />
+                    </div>
+                    <div className="projectHeroMain">
+                      <div className="projectEyebrow">
+                        GitHub • {githubDetail?.project_id || githubOpen.project_id}
+                      </div>
+                      <div className="projectHeroTitleRow">
+                        <div className="projectHeroTitle">{githubDetail?.title || githubOpen.title}</div>
+                        {(githubDetail?.date_modified || githubOpen.date_modified) ? (
+                          <div className="chip">
+                            Updated {formatDate(githubDetail?.date_modified || githubOpen.date_modified)}
+                          </div>
+                        ) : null}
+                      </div>
+                      <div className="p projectHeroDesc">
+                        {githubDetail?.summary || githubOpen.description || "GitHub repository"}
+                      </div>
+                      <div className="projectChipRow">
+                        <span className="chip">Owner: {githubDetail?.owner || githubOpen.author || "Unknown"}</span>
+                        <span className="chip">Stars: {formatCompact(githubDetail?.stars ?? githubOpen.downloads)}</span>
+                        {typeof githubDetail?.forks === "number" ? (
+                          <span className="chip">Forks: {formatCompact(githubDetail.forks)}</span>
+                        ) : null}
+                        {githubOpen.confidence ? <span className="chip">Confidence: {githubOpen.confidence}</span> : null}
+                        {(githubDetail?.categories ?? githubOpen.categories ?? []).slice(0, 8).map((tag) => (
+                          <span key={tag} className="chip">{tag}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  {githubOpen.reason ? (
+                    <div className="noticeBox" style={{ marginTop: 10 }}>{githubOpen.reason}</div>
+                  ) : null}
+                  {githubOpen.install_note ? (
+                    <div className={githubOpen.install_supported === false ? "warningBox" : "noticeBox"} style={{ marginTop: 10 }}>
+                      {githubOpen.install_note}
+                    </div>
+                  ) : null}
+                  {githubDetail?.warning ? (
+                    <div className="warningBox" style={{ marginTop: 10 }}>{githubDetail.warning}</div>
+                  ) : null}
+                </div>
+
+                <div className="projectTabSticky">
+                  <SegmentedControl
+                    value={githubDetailTab}
+                    options={GITHUB_DETAIL_TABS}
+                    onChange={(v) => setGithubDetailTab((v ?? "overview") as GithubDetailTab)}
+                    variant="scroll"
+                    className="projectTabBar"
+                  />
+                </div>
+
+                {githubDetailTab === "overview" ? (
+                  <div className="projectOverviewCols">
+                    <div className="projectOverviewCol">
+                      <div className="card projectSectionCard projectSectionDesc">
+                        <div className="projectSectionTitle">Quick info</div>
+                        <div className="projectBodyText">
+                          {githubDetail?.summary || githubOpen.description || "No summary provided."}
+                          <div className="muted" style={{ marginTop: 8 }}>
+                            Full project documentation is in the README tab.
+                          </div>
+                        </div>
+                      </div>
+                      <div className="card projectSectionCard projectSectionLinks">
+                        <div className="projectSectionTitle">Links</div>
+                        <div className="projectLinks">
+                          {[
+                            { label: "Repository", href: githubDetail?.external_url ?? githubOpen.external_url ?? undefined },
+                            { label: "Releases", href: githubDetail?.releases_url ?? undefined },
+                            { label: "Issues", href: githubDetail?.issues_url ?? undefined },
+                            { label: "Homepage", href: githubDetail?.homepage_url ?? undefined },
+                            { label: "README", href: githubDetail?.readme_html_url ?? undefined },
+                          ]
+                            .filter((x) => Boolean(x.href))
+                            .map((x) => (
+                              <a
+                                key={x.label}
+                                className="projectLinkBtn"
+                                href={x.href}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {x.label}
+                              </a>
+                            ))}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="projectOverviewCol">
+                      <div className="card projectSectionCard projectSectionCompat">
+                        <div className="projectSectionTitle">Repository stats</div>
+                        <div className="projectFacetGroup">
+                          <div className="projectFacetWrap">
+                            <span className="chip">Stars: {formatCompact(githubDetail?.stars ?? 0)}</span>
+                            <span className="chip">Forks: {formatCompact(githubDetail?.forks ?? 0)}</span>
+                            <span className="chip">Watchers: {formatCompact(githubDetail?.watchers ?? 0)}</span>
+                            <span className="chip">Open issues: {formatCompact(githubDetail?.open_issues ?? 0)}</span>
+                            <span className="chip">Releases: {formatCompact(githubDetail?.releases?.length ?? 0)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {githubDetailTab === "releases" ? (
+                  <div className="card projectSectionCard">
+                    <div className="projectSectionTitle">Releases</div>
+                    {!githubDetail || githubDetail.releases.length === 0 ? (
+                      <div className="muted">No release list available.</div>
+                    ) : (
+                      <div className="projectVersionList">
+                        {githubDetail.releases.slice(0, 25).map((release) => (
+                          <div key={release.id} className="projectVersionRow">
+                            <div className="projectVersionMain">
+                              <div className="projectVersionTitle">
+                                {release.name || release.tag_name}
+                              </div>
+                              <div className="projectVersionMeta">
+                                <span>{release.tag_name}</span>
+                                <span>{release.published_at ? formatDate(release.published_at) : "Unknown date"}</span>
+                                {release.prerelease ? <span>Pre-release</span> : null}
+                                {release.draft ? <span>Draft</span> : null}
+                              </div>
+                              {release.assets.length > 0 ? (
+                                <div className="projectVersionFile">
+                                  {release.assets.slice(0, 6).map((asset) => asset.name).join(", ")}
+                                </div>
+                              ) : (
+                                <div className="muted">No assets</div>
+                              )}
+                            </div>
+                            <div className="projectVersionAside">
+                              <div className="chip">{release.assets.length} files</div>
+                              {release.external_url ? (
+                                <a className="chip" href={release.external_url} target="_blank" rel="noreferrer">
+                                  Open
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+
+                {githubDetailTab === "readme" ? (
+                  <div className="card projectSectionCard projectSectionDesc">
+                    <div className="projectSectionTitle">README</div>
+                    {githubDetail?.readme_markdown ? (
+                      <GithubReadmeMarkdown
+                        className="projectBodyText projectMarkdown"
+                        text={githubDetail.readme_markdown}
+                        readmeHtmlUrl={githubDetail.readme_html_url}
+                        readmeSourceUrl={githubDetail.readme_source_url}
+                      />
+                    ) : (
+                      <div className="muted">
+                        README is not available from GitHub API right now.
+                        {githubDetail?.readme_html_url ? (
+                          <>
+                            {" "}
+                            <a href={githubDetail.readme_html_url} target="_blank" rel="noreferrer">
+                              Open README on GitHub
+                            </a>
+                            .
+                          </>
+                        ) : null}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+          <div className="footerBar">
+            <button className="btn" onClick={closeProjectOverlays}>Close</button>
+            <button
+              className="btn"
+              onClick={() => {
+                const direct = githubDetail?.external_url?.trim() ?? githubOpen?.external_url?.trim() ?? "";
+                if (direct) {
+                  void openExternalLink(direct);
+                  return;
+                }
+                const parsed = parseGithubProjectId(githubDetail?.project_id ?? githubOpen?.project_id ?? "");
+                if (parsed) {
+                  void openExternalLink(`https://github.com/${parsed}`);
+                }
+              }}
+            >
+              Open on GitHub
+            </button>
+            <button
+              className="btn primary installAction"
+              disabled={!githubOpen || githubOpen.content_type === "modpacks" || githubOpen.install_supported === false}
+              onClick={() => {
+                if (!githubOpen) return;
+                openInstall({
+                  source: "github",
+                  projectId: githubDetail?.project_id ?? githubOpen.project_id,
+                  title: githubDetail?.title ?? githubOpen.title,
+                  contentType:
+                    (githubOpen.content_type as DiscoverContentType) === "modpacks"
+                      ? "modpacks"
+                      : ((githubOpen.content_type as DiscoverContentType) ?? "mods"),
+                  iconUrl: githubDetail?.icon_url ?? githubOpen.icon_url ?? null,
+                  description: githubDetail?.summary ?? githubOpen.description ?? null,
+                  installSupported: githubOpen.install_supported !== false,
+                  installNote: githubOpen.install_note ?? null,
+                });
+              }}
+            >
+              <Icon name="download" /> Install to instance
+            </button>
+          </div>
+        </Modal>
+      ) : null}
+
+      {githubAttachTarget ? (
+        <Modal
+          title={`Attach GitHub Repository`}
+          onClose={() => {
+            if (githubAttachBusyVersion === githubAttachTarget.mod.version_id) return;
+            setGithubAttachTarget(null);
+            setGithubAttachErr(null);
+          }}
+        >
+          <div className="modalBody">
+            <div className="card" style={{ padding: 14, borderRadius: 18, display: "grid", gap: 10 }}>
+              <div className="muted">
+                Attach a GitHub repo for <strong>{githubAttachTarget.mod.name}</strong> in{" "}
+                <strong>{githubAttachTarget.instanceName}</strong>.
+              </div>
+              <label style={{ display: "grid", gap: 6 }}>
+                <span className="muted">Repository</span>
+                <input
+                  className="input"
+                  placeholder="owner/repo or https://github.com/owner/repo"
+                  value={githubAttachInput}
+                  onChange={(event) => {
+                    setGithubAttachInput(event.target.value);
+                    if (githubAttachErr) setGithubAttachErr(null);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    void submitAttachInstalledModGithubRepo();
+                  }}
+                  autoFocus
+                />
+              </label>
+              {githubAttachErr ? (
+                <div className="errorBox">{githubAttachErr}</div>
+              ) : (
+                <div className="muted">
+                  If GitHub API is rate-limited, the launcher still saves the mapping and marks provider activation as pending verification.
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="footerBar">
+            <button
+              className="btn"
+              onClick={() => {
+                setGithubAttachTarget(null);
+                setGithubAttachErr(null);
+              }}
+              disabled={githubAttachBusyVersion === githubAttachTarget.mod.version_id}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn primary"
+              onClick={() => void submitAttachInstalledModGithubRepo()}
+              disabled={githubAttachBusyVersion === githubAttachTarget.mod.version_id}
+            >
+              {githubAttachBusyVersion === githubAttachTarget.mod.version_id ? "Attaching…" : "Attach"}
             </button>
           </div>
         </Modal>
