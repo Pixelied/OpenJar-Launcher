@@ -22,7 +22,8 @@ export type IconName =
   | "upload"
   | "trash"
   | "check_circle"
-  | "slash_circle";
+  | "slash_circle"
+  | "chevron_down";
 
 export default function Icon(props: { name: IconName; size?: number; className?: string }) {
   const size = props.size ?? 22;
@@ -143,6 +144,12 @@ export default function Icon(props: { name: IconName; size?: number; className?:
         <svg {...common}>
           <circle cx="12" cy="12" r="9" />
           <path d="M8 16L16 8" />
+        </svg>
+      );
+    case "chevron_down":
+      return (
+        <svg {...common}>
+          <path d="M6 9l6 6 6-6" />
         </svg>
       );
     case "download":

@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -178,6 +179,7 @@ import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
 import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
 import ModpackMaker from "./pages/ModpackMaker";
 import InstanceModpackCard from "./components/InstanceModpackCard";
+import DependencyBadge from "./components/DependencyBadge";
 import CommandPalette, { type CommandPaletteItem } from "./components/CommandPalette";
 import Icon from "./components/app-shell/Icon";
 import NavButton from "./components/app-shell/NavButton";
@@ -187,6 +189,9 @@ import Dropdown from "./components/app-shell/controls/Dropdown";
 import MultiSelectDropdown from "./components/app-shell/controls/MultiSelectDropdown";
 import MenuSelect from "./components/app-shell/controls/MenuSelect";
 import SegmentedControl from "./components/app-shell/controls/SegmentedControl";
+import ActivityFeed from "./components/activity/ActivityFeed";
+import FullHistoryView from "./components/activity/FullHistoryView";
+import type { RecentActivityFeedEntry, RecentActivityFilter } from "./components/activity/types";
 import {
   analyzeLogLines,
   analyzeLogText,
@@ -240,6 +245,8 @@ import {
   TOP_ERROR_AUTO_HIDE_MS,
 } from "./app/constants";
 
+// UI polish pass: tighten action hierarchy, surface empty/warning states, and improve activity/feed scanability
+// while preserving the existing layout and neutral light-theme visual direction.
 type Route = "home" | "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
 type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
@@ -404,6 +411,7 @@ type InstanceContentFilters = {
   state: "all" | "enabled" | "disabled";
   source: "all" | "modrinth" | "curseforge" | "github" | "local" | "other";
   missing: "all" | "missing" | "present";
+  warningsOnly: boolean;
 };
 
 type InstanceContentSort =
@@ -413,6 +421,7 @@ type InstanceContentSort =
   | "source"
   | "enabled_first"
   | "disabled_first";
+type InstanceContentBulkAction = "__menu" | "add_local" | "identify_local" | "clean_missing";
 
 type LaunchOutcomeEntry = {
   at: number;
@@ -628,6 +637,168 @@ function inferActivityTone(message: string): InstanceActivityEntry["tone"] {
   return "info";
 }
 
+const RECENT_ACTIVITY_WINDOW_HOURS = 24;
+const RECENT_ACTIVITY_LIMIT = 12;
+const RECENT_ACTIVITY_COALESCE_WINDOW_MS = 20_000;
+const FULL_HISTORY_PAGE_SIZE = 60;
+const INSTANCE_HISTORY_STORE_LIMIT = 300;
+
+function hasDependencyWarnings(mod: InstalledMod): boolean {
+  return Array.isArray(mod.local_analysis?.warnings) && (mod.local_analysis?.warnings.length ?? 0) > 0;
+}
+
+function extractDependencyHints(mod: InstalledMod): string[] {
+  const hints = new Set<string>();
+  const fromAnalyzer = Array.isArray(mod.local_analysis?.required_dependencies)
+    ? mod.local_analysis?.required_dependencies ?? []
+    : [];
+  for (const value of fromAnalyzer) {
+    const normalized = String(value ?? "").trim().toLowerCase();
+    if (/^[a-z0-9._-]{2,64}$/.test(normalized)) hints.add(normalized);
+  }
+  const warnings = Array.isArray(mod.local_analysis?.warnings) ? mod.local_analysis?.warnings ?? [] : [];
+  const patterns = [
+    /\bmissing mandatory dependency\s+([a-z0-9._-]{2,64})/gi,
+    /\brequires\s+([a-z0-9._-]{2,64})/gi,
+    /\bdepends on\s+([a-z0-9._-]{2,64})/gi,
+  ];
+  for (const warning of warnings) {
+    const text = String(warning ?? "").toLowerCase();
+    for (const pattern of patterns) {
+      for (const match of text.matchAll(pattern)) {
+        const candidate = String(match?.[1] ?? "").trim();
+        if (/^[a-z0-9._-]{2,64}$/.test(candidate)) hints.add(candidate);
+      }
+    }
+  }
+  const blocked = new Set(["minecraft", "fabric", "forge", "quilt", "neoforge", "java"]);
+  for (const id of mod.local_analysis?.mod_ids ?? []) {
+    blocked.add(String(id ?? "").trim().toLowerCase());
+  }
+  return Array.from(hints).filter((id) => id && !blocked.has(id));
+}
+
+function relativeTimeFromMs(atMs: number): string {
+  if (!Number.isFinite(atMs) || atMs <= 0) return "Unknown";
+  const deltaSeconds = Math.round((atMs - Date.now()) / 1000);
+  const absSeconds = Math.abs(deltaSeconds);
+  if (absSeconds < 10) return "Just now";
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+  if (absSeconds < 60) return formatter.format(deltaSeconds, "second");
+  const deltaMinutes = Math.round(deltaSeconds / 60);
+  if (Math.abs(deltaMinutes) < 60) return formatter.format(deltaMinutes, "minute");
+  const deltaHours = Math.round(deltaMinutes / 60);
+  if (Math.abs(deltaHours) < 24) return formatter.format(deltaHours, "hour");
+  const deltaDays = Math.round(deltaHours / 24);
+  return formatter.format(deltaDays, "day");
+}
+
+function inferRecentActivityTarget(summary: string): string {
+  const text = String(summary ?? "").trim();
+  if (!text) return "Instance";
+  const singleQuoted = text.match(/'([^']+)'/);
+  if (singleQuoted?.[1]) return singleQuoted[1];
+  const doubleQuoted = text.match(/"([^"]+)"/);
+  if (doubleQuoted?.[1]) return doubleQuoted[1];
+  const fileLike = text.match(/([a-z0-9._-]+\.(?:jar|zip|json|toml|yml|yaml|txt))/i);
+  if (fileLike?.[1]) return fileLike[1];
+  const forTarget = text.match(/\bfor\s+([a-z0-9._:-]{3,})/i);
+  if (forTarget?.[1]) return forTarget[1];
+  return "Instance";
+}
+
+function inferRecentActivityCategory(
+  rawKind: string,
+  summary: string,
+  tone: InstanceActivityEntry["tone"]
+): RecentActivityFilter {
+  const kind = String(rawKind ?? "").toLowerCase();
+  const text = String(summary ?? "").toLowerCase();
+  if (tone === "error" || tone === "warn") return "warnings";
+  if (kind.includes("import") || text.includes("imported local")) return "imports";
+  if (
+    kind.includes("pin") ||
+    /\b(set pin|clear(?:ed)? pin|pinned|unpinned)\b/.test(text) ||
+    text.includes(" pin ")
+  ) {
+    return "pins";
+  }
+  if (
+    kind.includes("update") ||
+    kind.includes("upgrade") ||
+    kind.includes("refresh") ||
+    kind.includes("snapshot") ||
+    kind.includes("rollback")
+  ) {
+    return "updates";
+  }
+  if (
+    kind.includes("install") ||
+    kind.includes("add") ||
+    kind.includes("resolve") ||
+    text.includes("installed") ||
+    text.includes("resolved")
+  ) {
+    return "installs";
+  }
+  return "all";
+}
+
+function inferRecentActivityVisual(
+  rawKind: string,
+  summary: string,
+  tone: InstanceActivityEntry["tone"]
+): Pick<RecentActivityFeedEntry, "icon" | "accent"> {
+  const kind = String(rawKind ?? "").toLowerCase();
+  const text = String(summary ?? "").toLowerCase();
+  if (tone === "error" || tone === "warn" || /\b(error|warn|failed|missing)\b/.test(text)) {
+    return { icon: "slash_circle", accent: "amber" };
+  }
+  if (kind.includes("import") || text.includes("imported local")) {
+    return { icon: "upload", accent: "blue" };
+  }
+  if (
+    kind.includes("pin") ||
+    /\b(set pin|clear(?:ed)? pin|pinned|unpinned)\b/.test(text) ||
+    text.includes(" pin ")
+  ) {
+    return { icon: "layers", accent: "purple" };
+  }
+  if (kind.includes("resolve") || text.includes("resolved")) {
+    return { icon: "check_circle", accent: "green" };
+  }
+  if (kind.includes("update") || kind.includes("install") || text.includes("installed")) {
+    return { icon: "download", accent: "neutral" };
+  }
+  return { icon: "sparkles", accent: "neutral" };
+}
+
+function toRecentActivityEntry(input: {
+  id: string;
+  atMs: number;
+  message: string;
+  tone: InstanceActivityEntry["tone"];
+  rawKind: string;
+  sourceLabel: string;
+}): RecentActivityFeedEntry {
+  const category = inferRecentActivityCategory(input.rawKind, input.message, input.tone);
+  const visual = inferRecentActivityVisual(input.rawKind, input.message, input.tone);
+  return {
+    id: input.id,
+    atMs: input.atMs,
+    tone: input.tone,
+    message: input.message,
+    target: inferRecentActivityTarget(input.message),
+    sourceLabel: input.sourceLabel,
+    rawKind: input.rawKind,
+    category,
+    icon: visual.icon,
+    accent: visual.accent,
+    exactTime: formatDateTime(new Date(input.atMs).toISOString(), "Unknown time"),
+    relativeTime: relativeTimeFromMs(input.atMs),
+  };
+}
+
 function summarizeWarnings(warnings: string[], maxItems = 3): string {
   const cleaned = warnings
     .map((item) => String(item ?? "").trim())
@@ -790,12 +961,38 @@ function requiredJavaMajorForMcVersion(mcVersion: string): number {
   return 8;
 }
 
+function javaRuntimeDisplayLabel(runtime: JavaRuntimeCandidate): string {
+  const majorSuffix = Number.isFinite(runtime.major) && runtime.major > 0 ? ` ${runtime.major}` : "";
+  const haystack = `${runtime.version_line} ${runtime.path}`.toLowerCase();
+  if (haystack.includes("temurin")) return `Temurin${majorSuffix}`;
+  if (
+    haystack.includes("/opt/homebrew/") ||
+    haystack.includes("/homebrew/") ||
+    haystack.includes("homebrew")
+  ) {
+    return `Homebrew OpenJDK${majorSuffix}`;
+  }
+  if (
+    haystack.includes("/library/java/javavirtualmachines/") ||
+    haystack.includes("/usr/bin/java") ||
+    haystack.includes("system")
+  ) {
+    return `System Java${majorSuffix}`;
+  }
+  if (haystack.includes("openjdk")) return `OpenJDK${majorSuffix}`;
+  if (haystack.includes("oracle")) return `Oracle Java${majorSuffix}`;
+  return `Java${majorSuffix}`;
+}
+
 function normalizeCreatorEntryType(input?: string) {
-  const value = String(input ?? "mods").trim().toLowerCase();
+  const raw = String(input ?? "").trim().toLowerCase();
+  if (!raw) return "mods";
+  const value = raw.replace(/[\s_-]+/g, "");
   if (value === "resourcepack" || value === "resourcepacks") return "resourcepacks";
   if (value === "shaderpack" || value === "shaderpacks" || value === "shaders") return "shaderpacks";
   if (value === "datapack" || value === "datapacks") return "datapacks";
   if (value === "modpack" || value === "modpacks") return "modpacks";
+  if (value === "mod" || value === "mods") return "mods";
   return "mods";
 }
 
@@ -1959,6 +2156,7 @@ function defaultInstanceContentFilters(): InstanceContentFilters {
     state: "all",
     source: "all",
     missing: "all",
+    warningsOnly: false,
   };
 }
 
@@ -1967,7 +2165,8 @@ function sameInstanceContentFilters(a: InstanceContentFilters, b: InstanceConten
     a.query === b.query &&
     a.state === b.state &&
     a.source === b.source &&
-    a.missing === b.missing
+    a.missing === b.missing &&
+    a.warningsOnly === b.warningsOnly
   );
 }
 
@@ -2074,6 +2273,7 @@ function readInstanceContentFiltersState(): Record<string, InstanceContentFilter
         state: value.state === "enabled" || value.state === "disabled" ? value.state : "all",
         source: isSourceFilterValue(source) ? source : "all",
         missing: value.missing === "missing" || value.missing === "present" ? value.missing : "all",
+        warningsOnly: Boolean(value.warningsOnly),
       };
     }
     return out;
@@ -3187,6 +3387,8 @@ function LazyInstalledModIcon({
 }
 
 export default function App() {
+  // UI polish: preserve the existing light/neutral system while strengthening hierarchy, warning visibility,
+  // empty states, and dense activity readability across key surfaces.
   // theme
   const [uiSettingsSeed] = useState<UiSettingsSnapshot>(() => readUiSettingsSnapshot());
   const [theme, setTheme] = useState<"dark" | "light">(uiSettingsSeed.theme);
@@ -3267,7 +3469,14 @@ export default function App() {
   const [instanceFilterState, setInstanceFilterState] = useState<InstanceContentFilters["state"]>("all");
   const [instanceFilterSource, setInstanceFilterSource] = useState<InstanceContentFilters["source"]>("all");
   const [instanceFilterMissing, setInstanceFilterMissing] = useState<InstanceContentFilters["missing"]>("all");
+  const [instanceFilterWarningsOnly, setInstanceFilterWarningsOnly] = useState(false);
   const [instanceSort, setInstanceSort] = useState<InstanceContentSort>("name_asc");
+  const [instanceActivityPanelOpenByInstance, setInstanceActivityPanelOpenByInstance] = useState<
+    Record<string, boolean>
+  >({});
+  const [recentActivityFilterByInstance, setRecentActivityFilterByInstance] = useState<
+    Record<string, RecentActivityFilter>
+  >({});
   const [instanceContentFiltersByScope, setInstanceContentFiltersByScope] = useState<
     Record<string, InstanceContentFilters>
   >(() => readInstanceContentFiltersState());
@@ -4261,6 +4470,7 @@ export default function App() {
   const [projectErr, setProjectErr] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Instance | null>(null);
   const [installedMods, setInstalledMods] = useState<InstalledMod[]>([]);
+  const [installedModsInstanceId, setInstalledModsInstanceId] = useState<string | null>(null);
   const [installedIconCache, setInstalledIconCache] = useState<Record<string, string>>(() =>
     readInstalledIconCache()
   );
@@ -4268,6 +4478,9 @@ export default function App() {
     {}
   );
   const installedIconFetchesRef = useRef<Map<string, Promise<string | null>>>(new Map());
+  const installedModsLoadSeqRef = useRef(0);
+  const selectedInstanceIdRef = useRef<string | null>(selectedId);
+  const routeRef = useRef(route);
   const [selectedModVersionIds, setSelectedModVersionIds] = useState<string[]>([]);
   const [modsBusy, setModsBusy] = useState(false);
   const [modsErr, setModsErr] = useState<string | null>(null);
@@ -4275,6 +4488,7 @@ export default function App() {
   const [toggleBusyVersion, setToggleBusyVersion] = useState<string | null>(null);
   const [providerSwitchBusyKey, setProviderSwitchBusyKey] = useState<string | null>(null);
   const [pinBusyVersion, setPinBusyVersion] = useState<string | null>(null);
+  const [dependencyInstallBusyVersion, setDependencyInstallBusyVersion] = useState<string | null>(null);
   const [githubAttachBusyVersion, setGithubAttachBusyVersion] = useState<string | null>(null);
   const [githubAttachTarget, setGithubAttachTarget] = useState<GithubAttachModalTarget | null>(null);
   const [githubAttachInput, setGithubAttachInput] = useState("");
@@ -4297,6 +4511,32 @@ export default function App() {
   const [scheduledUpdateRunTotal, setScheduledUpdateRunTotal] = useState(0);
   const [scheduledUpdateRunEtaSeconds, setScheduledUpdateRunEtaSeconds] = useState<number | null>(null);
   const [scheduledUpdateRunElapsedSeconds, setScheduledUpdateRunElapsedSeconds] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    selectedInstanceIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useLayoutEffect(() => {
+    routeRef.current = route;
+  }, [route]);
+
+  const canMutateVisibleInstalledMods = useCallback(
+    (instanceId: string) =>
+      routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId,
+    []
+  );
+
+  const applyInstalledModsForInstance = useCallback(
+    (
+      instanceId: string,
+      updater: InstalledMod[] | ((prev: InstalledMod[]) => InstalledMod[])
+    ) => {
+      if (!canMutateVisibleInstalledMods(instanceId)) return;
+      setInstalledMods((prev) => (typeof updater === "function" ? (updater as (prev: InstalledMod[]) => InstalledMod[])(prev) : updater));
+      setInstalledModsInstanceId(instanceId);
+    },
+    [canMutateVisibleInstalledMods]
+  );
   const [perfActions, setPerfActions] = useState<PerfActionEntry[]>(() => {
     try {
       const raw = localStorage.getItem(PERF_ACTION_LOG_KEY);
@@ -4566,6 +4806,7 @@ export default function App() {
   const [launcherSettings, setLauncherSettingsState] = useState<LauncherSettings | null>(null);
   const [autoIdentifyLocalJarsBusy, setAutoIdentifyLocalJarsBusy] = useState(false);
   const [launcherAccounts, setLauncherAccounts] = useState<LauncherAccount[]>([]);
+  const [settingsAccountManageId, setSettingsAccountManageId] = useState<string | null>(null);
   const [runningInstances, setRunningInstances] = useState<RunningInstance[]>([]);
   const [launcherErr, setLauncherErr] = useState<string | null>(null);
   const [launcherBusy, setLauncherBusy] = useState(false);
@@ -4615,6 +4856,20 @@ export default function App() {
   const [instanceHistoryById, setInstanceHistoryById] = useState<Record<string, InstanceHistoryEvent[]>>({});
   const [instanceHistoryBusyById, setInstanceHistoryBusyById] = useState<Record<string, boolean>>({});
   const [timelineClearedAtByInstance, setTimelineClearedAtByInstance] = useState<Record<string, number>>({});
+  const [fullHistoryModalInstanceId, setFullHistoryModalInstanceId] = useState<string | null>(null);
+  const [fullHistoryByInstance, setFullHistoryByInstance] = useState<
+    Record<string, InstanceHistoryEvent[]>
+  >({});
+  const [fullHistoryBeforeAtByInstance, setFullHistoryBeforeAtByInstance] = useState<
+    Record<string, string | null>
+  >({});
+  const [fullHistoryHasMoreByInstance, setFullHistoryHasMoreByInstance] = useState<Record<string, boolean>>({});
+  const [fullHistoryBusyByInstance, setFullHistoryBusyByInstance] = useState<Record<string, boolean>>({});
+  const [fullHistoryFilterByInstance, setFullHistoryFilterByInstance] = useState<
+    Record<string, RecentActivityFilter>
+  >({});
+  const [fullHistorySearchByInstance, setFullHistorySearchByInstance] = useState<Record<string, string>>({});
+  const [instanceModCountById, setInstanceModCountById] = useState<Record<string, number>>({});
   const instanceHistoryRefreshInFlightRef = useRef<Record<string, boolean>>({});
   const [oauthClientIdDraft, setOauthClientIdDraft] = useState("");
   const [accountDiagnostics, setAccountDiagnostics] = useState<AccountDiagnostics | null>(() =>
@@ -4784,10 +5039,15 @@ export default function App() {
   const [installPlanPreviewErr, setInstallPlanPreviewErr] = useState<Record<string, string>>({});
   const [snapshots, setSnapshots] = useState<SnapshotMeta[]>([]);
   const [snapshotsBusy, setSnapshotsBusy] = useState(false);
+  const snapshotsLoadSeqRef = useRef(0);
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [rollbackSnapshotId, setRollbackSnapshotId] = useState<string | null>(null);
   const [worldRollbackBusyById, setWorldRollbackBusyById] = useState<Record<string, boolean>>({});
   const [presetIoBusy, setPresetIoBusy] = useState(false);
+  const scopedInstalledMods = useMemo(
+    () => (selectedId && installedModsInstanceId === selectedId ? installedMods : []),
+    [installedMods, installedModsInstanceId, selectedId]
+  );
   const instanceFilterScopeKey = useMemo(
     () => (selectedId ? `${selectedId}::${instanceContentType}` : ""),
     [selectedId, instanceContentType]
@@ -4799,10 +5059,12 @@ export default function App() {
     const nextState = saved.state ?? "all";
     const nextSource = saved.source ?? "all";
     const nextMissing = saved.missing ?? "all";
+    const nextWarningsOnly = Boolean(saved.warningsOnly);
     setInstanceQuery((prev) => (prev === nextQuery ? prev : nextQuery));
     setInstanceFilterState((prev) => (prev === nextState ? prev : nextState));
     setInstanceFilterSource((prev) => (prev === nextSource ? prev : nextSource));
     setInstanceFilterMissing((prev) => (prev === nextMissing ? prev : nextMissing));
+    setInstanceFilterWarningsOnly((prev) => (prev === nextWarningsOnly ? prev : nextWarningsOnly));
     // Keep restore-to-scope deterministic without rebinding on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, instanceTab, instanceFilterScopeKey]);
@@ -4815,6 +5077,7 @@ export default function App() {
           state: instanceFilterState,
           source: instanceFilterSource,
           missing: instanceFilterMissing,
+          warningsOnly: instanceFilterWarningsOnly,
         };
         const current = prev[instanceFilterScopeKey];
         if (current && sameInstanceContentFilters(current, nextEntry)) return prev;
@@ -4825,7 +5088,16 @@ export default function App() {
       });
     }, 90);
     return () => window.clearTimeout(timer);
-  }, [route, instanceTab, instanceFilterScopeKey, instanceQuery, instanceFilterState, instanceFilterSource, instanceFilterMissing]);
+  }, [
+    route,
+    instanceTab,
+    instanceFilterScopeKey,
+    instanceQuery,
+    instanceFilterState,
+    instanceFilterSource,
+    instanceFilterMissing,
+    instanceFilterWarningsOnly,
+  ]);
   const normalizedInstanceQuery = useMemo(
     () => instanceQuery.trim().toLowerCase(),
     [instanceQuery]
@@ -4941,7 +5213,7 @@ export default function App() {
     let selectedVisibleEntryCount = 0;
     let selectedInstalledEntryCount = 0;
 
-    for (const entry of installedMods) {
+    for (const entry of scopedInstalledMods) {
       const normalized = normalizeCreatorEntryType(entry.content_type);
       if (normalized === "mods") modEntries.push(entry);
       else if (normalized === "resourcepacks") resourcepackEntries.push(entry);
@@ -4957,6 +5229,7 @@ export default function App() {
       if (instanceFilterState === "disabled" && entry.enabled) continue;
       if (instanceFilterMissing === "missing" && entry.file_exists) continue;
       if (instanceFilterMissing === "present" && !entry.file_exists) continue;
+      if (instanceFilterWarningsOnly && !hasDependencyWarnings(entry)) continue;
       if (instanceFilterSource !== "all") {
         const source = effectiveInstalledProviderSource(entry);
         if (instanceFilterSource === "other") {
@@ -5030,15 +5303,25 @@ export default function App() {
       selectedInstalledEntryCount,
     };
   }, [
-    installedMods,
+    scopedInstalledMods,
     instanceContentType,
     normalizedInstanceQuery,
     selectedModVersionIdSet,
     instanceFilterState,
     instanceFilterSource,
     instanceFilterMissing,
+    instanceFilterWarningsOnly,
     instanceSort,
   ]);
+  const hasDependencyWarningsInScope = useMemo(
+    () =>
+      scopedInstalledMods.some(
+        (entry) =>
+          normalizeInstanceContentType(entry.content_type) === instanceContentType &&
+          hasDependencyWarnings(entry)
+      ),
+    [scopedInstalledMods, instanceContentType]
+  );
   const instanceHealthById = useMemo<Record<string, InstanceHealthScore>>(() => {
     const out: Record<string, InstanceHealthScore> = {};
     for (const inst of instances) {
@@ -5347,16 +5630,18 @@ export default function App() {
     }
   }
 
-  async function refreshGithubTokenPoolStatus() {
+  async function refreshGithubTokenPoolStatus(): Promise<GithubTokenPoolStatus | null> {
     setGithubTokenPoolBusy(true);
     setLauncherErr(null);
     try {
       const status = await getGithubTokenPoolStatus();
       setGithubTokenPoolStatus(status);
+      return status;
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setLauncherErr(msg);
       setGithubTokenPoolStatus(null);
+      return null;
     } finally {
       setGithubTokenPoolBusy(false);
     }
@@ -5438,6 +5723,24 @@ export default function App() {
       setGithubTokenPoolNoticeIsError(true);
     } finally {
       setGithubTokenPoolBusy(false);
+    }
+  }
+
+  async function onValidateGithubTokenPool() {
+    if (githubTokenPoolBusy) return;
+    const draft = githubTokenPoolDraft.trim();
+    if (draft) {
+      await onSaveGithubTokenPool();
+      return;
+    }
+    const status = await refreshGithubTokenPoolStatus();
+    if (!status) return;
+    if (status.configured) {
+      setGithubTokenPoolNotice("Validated saved GitHub tokens from Keychain.");
+      setGithubTokenPoolNoticeIsError(false);
+    } else {
+      setGithubTokenPoolNotice("No saved tokens yet. Paste one or more tokens, then click Validate.");
+      setGithubTokenPoolNoticeIsError(false);
     }
   }
 
@@ -6300,7 +6603,7 @@ export default function App() {
       });
       const refreshed = await listInstalledMods(selectedId).catch(() => null);
       if (refreshed) {
-        setInstalledMods(refreshed);
+        applyInstalledModsForInstance(selectedId, refreshed);
         const updated = refreshed.find((entry) => entry.version_id === mod.version_id) ?? null;
         if (updated) {
           const hasProviderNow =
@@ -6365,10 +6668,12 @@ export default function App() {
       const updated = await attachInstalledModGithubRepo({
         instanceId: target.instanceId,
         versionId: target.mod.version_id,
+        contentType: target.mod.content_type,
+        filename: target.mod.filename,
         githubRepo,
         activate: true,
       });
-      setInstalledMods((prev) =>
+      applyInstalledModsForInstance(target.instanceId, (prev) =>
         prev.map((entry) => (entry.version_id === target.mod.version_id ? updated : entry))
       );
       requestInstalledModIcon(updated);
@@ -6408,9 +6713,11 @@ export default function App() {
       const updated = await setInstalledModProvider({
         instanceId: inst.id,
         versionId: mod.version_id,
+        contentType: mod.content_type,
+        filename: mod.filename,
         source: normalizedSource,
       });
-      setInstalledMods((prev) =>
+      applyInstalledModsForInstance(inst.id, (prev) =>
         prev.map((entry) => (entry.version_id === mod.version_id ? updated : entry))
       );
       requestInstalledModIcon(updated);
@@ -6422,6 +6729,106 @@ export default function App() {
     }
   }
 
+  async function onInstallMissingDependencies(inst: Instance, mod: InstalledMod) {
+    if (dependencyInstallBusyVersion) return;
+    const isModsEntry = normalizeCreatorEntryType(mod.content_type) === "mods";
+    if (!isModsEntry) return;
+    setDependencyInstallBusyVersion(mod.version_id);
+    setModsErr(null);
+    try {
+      const dependencyHints = extractDependencyHints(mod);
+      const activeSource = effectiveInstalledProviderSource(mod);
+      const activeProjectId = String(preferredProjectIdForProvider(mod, activeSource) ?? "").trim();
+      if (
+        dependencyHints.length === 0 &&
+        activeProjectId &&
+        (activeSource === "modrinth" || activeSource === "curseforge" || activeSource === "github")
+      ) {
+        if (activeSource === "curseforge") {
+          await installCurseforgeMod({
+            instanceId: inst.id,
+            projectId: activeProjectId,
+            projectTitle: mod.name,
+          });
+        } else if (activeSource === "modrinth") {
+          await installModrinthMod({
+            instanceId: inst.id,
+            projectId: activeProjectId,
+            projectTitle: mod.name,
+          });
+        } else {
+          await installDiscoverContent({
+            instanceId: inst.id,
+            source: activeSource,
+            projectId: activeProjectId,
+            projectTitle: mod.name,
+            contentType: "mods",
+          });
+        }
+        await refreshInstalledMods(inst.id);
+        await refreshSnapshots(inst.id).catch(() => null);
+        setInstallNotice(`Dependency sync complete for ${mod.name}. Required dependencies were installed when available.`);
+        return;
+      }
+
+      if (dependencyHints.length === 0) {
+        setInstallNotice(`No installable dependency ids were found for ${mod.name}.`);
+        return;
+      }
+      const baselineEntries =
+        installedModsInstanceId === inst.id
+          ? installedMods
+          : await listInstalledMods(inst.id).catch(() => [] as InstalledMod[]);
+      const installedIds = new Set<string>();
+      for (const entry of baselineEntries) {
+        const projectId = String(entry.project_id ?? "").trim().toLowerCase();
+        if (projectId) installedIds.add(projectId);
+        for (const id of entry.local_analysis?.mod_ids ?? []) {
+          const normalized = String(id ?? "").trim().toLowerCase();
+          if (normalized) installedIds.add(normalized);
+        }
+      }
+      const missingHints = dependencyHints.filter((id) => !installedIds.has(id)).slice(0, 8);
+      if (missingHints.length === 0) {
+        setInstallNotice(`Dependencies for ${mod.name} already appear installed.`);
+        return;
+      }
+      let installedCount = 0;
+      const failed: string[] = [];
+      for (const depId of missingHints) {
+        try {
+          await installModrinthMod({
+            instanceId: inst.id,
+            projectId: depId,
+            projectTitle: depId,
+          });
+          installedCount += 1;
+        } catch {
+          failed.push(depId);
+        }
+      }
+      await refreshInstalledMods(inst.id);
+      await refreshSnapshots(inst.id).catch(() => null);
+      if (installedCount > 0) {
+        const failSuffix =
+          failed.length > 0
+            ? ` ${failed.length} hint${failed.length === 1 ? "" : "s"} could not be resolved automatically.`
+            : "";
+        setInstallNotice(
+          `Installed ${installedCount} dependency mod${installedCount === 1 ? "" : "s"} for ${mod.name}.${failSuffix}`
+        );
+      } else {
+        setModsErr(`Could not auto-install dependencies for ${mod.name}. Try switching provider metadata first.`);
+      }
+    } catch (e: any) {
+      const message = e?.toString?.() ?? String(e);
+      setModsErr(message);
+      setError(message);
+    } finally {
+      setDependencyInstallBusyVersion(null);
+    }
+  }
+
   async function onToggleInstalledModPin(inst: Instance, mod: InstalledMod) {
     if (pinBusyVersion) return;
     setPinBusyVersion(mod.version_id);
@@ -6430,9 +6837,11 @@ export default function App() {
       const updated = await setInstalledModPin({
         instanceId: inst.id,
         versionId: mod.version_id,
+        contentType: mod.content_type,
+        filename: mod.filename,
         pin: mod.pinned_version ? "" : undefined,
       });
-      setInstalledMods((prev) =>
+      applyInstalledModsForInstance(inst.id, (prev) =>
         prev.map((entry) => (entry.version_id === mod.version_id ? updated : entry))
       );
       setInstallNotice(
@@ -6471,6 +6880,54 @@ export default function App() {
       setInstanceHistoryBusyById((prev) => ({ ...prev, [instanceId]: false }));
       delete instanceHistoryRefreshInFlightRef.current[instanceId];
     }
+  }
+
+  async function loadFullHistoryPage(instanceId: string, options?: { reset?: boolean }) {
+    if (!instanceId) return;
+    if (fullHistoryBusyByInstance[instanceId]) return;
+    const reset = options?.reset === true;
+    const beforeAt = reset ? null : fullHistoryBeforeAtByInstance[instanceId] ?? null;
+    setFullHistoryBusyByInstance((prev) => ({ ...prev, [instanceId]: true }));
+    try {
+      const page = await listInstanceHistoryEvents({
+        instanceId,
+        limit: FULL_HISTORY_PAGE_SIZE,
+        beforeAt: beforeAt || undefined,
+      });
+      const rows = Array.isArray(page) ? page : [];
+      setFullHistoryByInstance((prev) => {
+        const base = reset ? [] : prev[instanceId] ?? [];
+        const merged = [...base, ...rows];
+        const deduped = new Map<string, InstanceHistoryEvent>();
+        for (const item of merged) {
+          const key = `${item.id}:${item.at}:${item.kind}:${item.summary}`;
+          if (!deduped.has(key)) deduped.set(key, item);
+        }
+        return {
+          ...prev,
+          [instanceId]: Array.from(deduped.values()).sort((a, b) => b.at.localeCompare(a.at)),
+        };
+      });
+      const oldest = rows[rows.length - 1];
+      setFullHistoryBeforeAtByInstance((prev) => ({
+        ...prev,
+        [instanceId]: oldest?.at ?? prev[instanceId] ?? null,
+      }));
+      setFullHistoryHasMoreByInstance((prev) => ({
+        ...prev,
+        [instanceId]: rows.length >= FULL_HISTORY_PAGE_SIZE,
+      }));
+    } catch (e: any) {
+      setError(e?.toString?.() ?? String(e));
+    } finally {
+      setFullHistoryBusyByInstance((prev) => ({ ...prev, [instanceId]: false }));
+    }
+  }
+
+  function openFullHistory(instanceId: string) {
+    if (!instanceId) return;
+    setFullHistoryModalInstanceId(instanceId);
+    void loadFullHistoryPage(instanceId, { reset: true });
   }
 
   async function refreshQuickPlayServers(options?: { silent?: boolean }) {
@@ -6862,8 +7319,8 @@ export default function App() {
         (result.resolved_entries > 0 || mode === "all")
       ) {
         const refreshed = await listInstalledMods(instanceId).catch(() => null);
-        if (refreshed && route === "instance" && selectedId === instanceId) {
-          setInstalledMods(refreshed);
+        if (refreshed && canMutateVisibleInstalledMods(instanceId)) {
+          applyInstalledModsForInstance(instanceId, refreshed);
         }
       }
       if (result.resolved_entries > 0) {
@@ -7514,11 +7971,21 @@ export default function App() {
     instanceId: string,
     options?: { autoIdentifyAfterRefresh?: boolean }
   ) {
+    const loadSeq = ++installedModsLoadSeqRef.current;
     setModsBusy(true);
     setModsErr(null);
     try {
       const mods = await listInstalledMods(instanceId);
+      if (loadSeq !== installedModsLoadSeqRef.current) return;
+      setInstanceModCountById((prev) => ({
+        ...prev,
+        [instanceId]: mods.filter((entry) => normalizeCreatorEntryType(entry.content_type) === "mods").length,
+      }));
+      const isActiveInstanceView =
+        routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId;
+      if (!isActiveInstanceView) return;
       setInstalledMods(mods);
+      setInstalledModsInstanceId(instanceId);
       const shouldAutoIdentify =
         options?.autoIdentifyAfterRefresh === true &&
         Boolean(launcherSettings?.auto_identify_local_jars);
@@ -7528,30 +7995,45 @@ export default function App() {
           refreshListAfterResolve: true,
         });
       }
-      if (route === "instance" && selectedId === instanceId) {
+      if (routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId) {
         void refreshInstanceHistory(instanceId, { silent: true });
       }
     } catch (e: any) {
+      if (loadSeq !== installedModsLoadSeqRef.current) return;
       setModsErr(e?.toString?.() ?? String(e));
-      setInstalledMods([]);
+      if (routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId) {
+        setInstalledMods([]);
+        setInstalledModsInstanceId(instanceId);
+      }
     } finally {
-      setModsBusy(false);
+      if (loadSeq === installedModsLoadSeqRef.current) {
+        setModsBusy(false);
+      }
     }
   }
 
   async function refreshSnapshots(instanceId: string) {
+    const loadSeq = ++snapshotsLoadSeqRef.current;
     setSnapshotsBusy(true);
     try {
       const list = await listInstanceSnapshots({ instanceId });
+      const isActiveInstanceView =
+        routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId;
+      if (loadSeq !== snapshotsLoadSeqRef.current || !isActiveInstanceView) return;
       setSnapshots(list);
       setRollbackSnapshotId((prev) =>
         prev && list.some((s) => s.id === prev) ? prev : list[0]?.id ?? null
       );
     } catch {
+      const isActiveInstanceView =
+        routeRef.current === "instance" && selectedInstanceIdRef.current === instanceId;
+      if (loadSeq !== snapshotsLoadSeqRef.current || !isActiveInstanceView) return;
       setSnapshots([]);
       setRollbackSnapshotId(null);
     } finally {
-      setSnapshotsBusy(false);
+      if (loadSeq === snapshotsLoadSeqRef.current) {
+        setSnapshotsBusy(false);
+      }
     }
   }
 
@@ -7965,6 +8447,8 @@ export default function App() {
       await setInstalledModEnabled({
         instanceId: inst.id,
         versionId: mod.version_id,
+        contentType: mod.content_type,
+        filename: mod.filename,
         enabled,
       });
       await refreshInstalledMods(inst.id);
@@ -7987,6 +8471,8 @@ export default function App() {
       await removeInstalledMod({
         instanceId: inst.id,
         versionId: mod.version_id,
+        contentType: mod.content_type,
+        filename: mod.filename,
       });
       await refreshInstalledMods(inst.id);
       setInstallNotice(`Deleted ${mod.name} from ${inst.name}.`);
@@ -8082,6 +8568,8 @@ export default function App() {
           await setInstalledModEnabled({
             instanceId: inst.id,
             versionId: mod.version_id,
+            contentType: mod.content_type,
+            filename: mod.filename,
             enabled,
           });
           succeeded.add(mod.version_id);
@@ -8900,6 +9388,7 @@ export default function App() {
     try {
       const accounts = await logoutMicrosoftAccount({ accountId });
       setLauncherAccounts(accounts);
+      setSettingsAccountManageId((prev) => (prev === accountId ? null : prev));
       const settings = await getLauncherSettings();
       setLauncherSettingsState(settings);
       setUpdateCheckCadence(normalizeUpdateCheckCadence(settings.update_check_cadence));
@@ -9266,7 +9755,9 @@ export default function App() {
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
+      installedModsLoadSeqRef.current += 1;
       setInstalledMods([]);
+      setInstalledModsInstanceId(null);
       setModsErr(null);
       setUpdateCheck(null);
       setUpdateErr(null);
@@ -9275,6 +9766,17 @@ export default function App() {
       setWorldRollbackBusyById({});
       return;
     }
+    installedModsLoadSeqRef.current += 1;
+    setInstalledMods([]);
+    setInstalledModsInstanceId(null);
+    setSelectedModVersionIds([]);
+    setToggleBusyVersion(null);
+    setProviderSwitchBusyKey(null);
+    setPinBusyVersion(null);
+    setDependencyInstallBusyVersion(null);
+    setGithubAttachBusyVersion(null);
+    setGithubAttachTarget(null);
+    setGithubAttachErr(null);
     refreshInstalledMods(selectedId);
     refreshSnapshots(selectedId);
     void refreshInstanceHealthPanelData(selectedId);
@@ -9295,10 +9797,11 @@ export default function App() {
   useEffect(() => {
     if (route !== "instance" || instanceTab !== "content" || !selectedId) return;
     let cancelled = false;
+    const instanceId = selectedId;
     const syncFromDisk = async () => {
-      const refreshed = await listInstalledMods(selectedId).catch(() => null);
+      const refreshed = await listInstalledMods(instanceId).catch(() => null);
       if (!refreshed || cancelled) return;
-      setInstalledMods((prev) => {
+      applyInstalledModsForInstance(instanceId, (prev) => {
         if (
           prev.length === refreshed.length &&
           prev.every((entry, index) => {
@@ -9334,7 +9837,7 @@ export default function App() {
       window.removeEventListener("focus", refreshOnForeground);
       document.removeEventListener("visibilitychange", refreshOnForeground);
     };
-  }, [route, instanceTab, selectedId]);
+  }, [route, instanceTab, selectedId, applyInstalledModsForInstance]);
 
   useEffect(() => {
     if (route !== "instance" || !selectedId) {
@@ -9643,6 +10146,45 @@ export default function App() {
       .then((worlds) => setInstanceWorlds(worlds))
       .catch(() => setInstanceWorlds([]));
   }, [route, selectedId]);
+
+  useEffect(() => {
+    if (route !== "library" || instances.length === 0) return;
+    const missingModCounts = instances.filter((item) => instanceModCountById[item.id] == null);
+    const missingDiskUsage = instances.filter((item) => instanceDiskUsageById[item.id] == null);
+    if (missingModCounts.length === 0 && missingDiskUsage.length === 0) return;
+    let cancelled = false;
+    const run = async () => {
+      for (const inst of missingModCounts) {
+        try {
+          const rows = await listInstalledMods(inst.id);
+          if (cancelled) return;
+          const modCount = rows.filter((row) => normalizeCreatorEntryType(row.content_type) === "mods").length;
+          setInstanceModCountById((prev) =>
+            prev[inst.id] === modCount ? prev : { ...prev, [inst.id]: modCount }
+          );
+        } catch {
+          if (cancelled) return;
+        }
+      }
+      for (const inst of missingDiskUsage) {
+        try {
+          const bytes = await getInstanceDiskUsage({ instanceId: inst.id });
+          if (cancelled) return;
+          if (typeof bytes === "number" && Number.isFinite(bytes) && bytes >= 0) {
+            setInstanceDiskUsageById((prev) =>
+              prev[inst.id] === bytes ? prev : { ...prev, [inst.id]: bytes }
+            );
+          }
+        } catch {
+          if (cancelled) return;
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [route, instances, instanceModCountById, instanceDiskUsageById]);
 
   useEffect(() => {
     const valid = new Set(
@@ -11403,7 +11945,6 @@ export default function App() {
       if (!homeCustomizeOpen) {
         if (recentActivity.length === 0) autoHiddenHomeWidgets.add("recent_activity");
         if (runningInstances.length === 0) autoHiddenHomeWidgets.add("running_sessions");
-        if (topSlowPerfActions.length === 0) autoHiddenHomeWidgets.add("performance_pulse");
         if (!focusFriendStatus?.linked) autoHiddenHomeWidgets.add("friend_link");
       }
       const visibleHomeMainWidgets = orderedHomeLayout.filter(
@@ -11531,8 +12072,19 @@ export default function App() {
             </div>
             <div className="homeMeta">{perfTrendLabel}</div>
             {topSlowPerfActions.length === 0 ? (
-              <div className="homeEmpty">
-                <div>No timing samples yet. Run installs or update checks to collect speed data.</div>
+              <div className="homeEmpty homePerfEmpty">
+                <div className="homePerfSkeleton" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <div>Launch an instance to start tracking performance.</div>
+                <button className="btn subtle" onClick={() => setRoute("library")}>
+                  Open Library
+                </button>
               </div>
             ) : (
               <div className="homePerfList">
@@ -11685,7 +12237,15 @@ export default function App() {
             </div>
             {runningInstances.length === 0 ? (
               <div className="homeEmpty">
-                <div>No active sessions right now.</div>
+                <div className="compactEmptyState compactEmptyStateInline">
+                  <span className="compactEmptyIcon" aria-hidden="true">
+                    <Icon name="play" size={14} />
+                  </span>
+                  <div className="compactEmptyBody">
+                    <div className="compactEmptyTitle">Nothing running right now</div>
+                    <div className="compactEmptyText">Hit Play on any instance to start a session.</div>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="homeList">
@@ -12012,6 +12572,7 @@ export default function App() {
           <div className="settingsPageIntro">Appearance, account, and launcher behavior.</div>
           <div className="row" style={{ marginBottom: 10 }}>
             <SegmentedControl
+              className="settingsModeToggle"
               value={settingsMode}
               onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
               options={[
@@ -12054,11 +12615,15 @@ export default function App() {
                       {ACCENT_OPTIONS.map((opt) => (
                         <button
                           key={opt.value}
-                          className={`btn accentChoice ${accentPreset === opt.value ? "primary" : ""}`}
+                          className={`btn accentChoice ${accentPreset === opt.value ? "selected" : ""}`}
                           onClick={() => setAccentPreset(opt.value)}
+                          aria-pressed={accentPreset === opt.value}
                         >
                           <span className={`accentSwatch accent-${opt.value}`} />
-                          {opt.label}
+                          <span className="accentChoiceLabel">{opt.label}</span>
+                          {accentPreset === opt.value ? (
+                            <span className="accentChoiceCheck" aria-hidden="true">✓</span>
+                          ) : null}
                         </button>
                       ))}
                     </div>
@@ -12170,7 +12735,7 @@ export default function App() {
                             {javaRuntimeCandidates.map((runtime) => (
                               <div key={runtime.path} className="settingListMiniRow">
                                 <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
+                                  <div style={{ fontWeight: 900 }}>{javaRuntimeDisplayLabel(runtime)}</div>
                                   <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
                                 </div>
                                 <button
@@ -12246,6 +12811,7 @@ export default function App() {
                   ) : (
                     launcherAccounts.map((acct) => {
                       const selectedAccount = launcherSettings?.selected_account_id === acct.id;
+                      const manageOpen = settingsAccountManageId === acct.id;
                       return (
                         <div key={acct.id} className="card settingsAccountCard">
                           <div className="settingsAccountRow">
@@ -12253,7 +12819,7 @@ export default function App() {
                               <div style={{ fontWeight: 900 }}>{acct.username}</div>
                               <div className="muted">{acct.id}</div>
                             </div>
-                            <div className="row" style={{ gap: 8 }}>
+                            <div className="settingsAccountActions">
                               <button
                                 className={`btn ${selectedAccount ? "primary" : ""}`}
                                 onClick={() => onSelectAccount(acct.id)}
@@ -12262,14 +12828,35 @@ export default function App() {
                                 {selectedAccount ? "Selected" : "Use"}
                               </button>
                               <button
-                                className="btn danger"
-                                onClick={() => onLogoutAccount(acct.id)}
+                                className={`btn subtle settingsManageBtn ${manageOpen ? "active" : ""}`}
+                                onClick={() =>
+                                  setSettingsAccountManageId((prev) => (prev === acct.id ? null : acct.id))
+                                }
                                 disabled={launcherBusy}
+                                aria-expanded={manageOpen}
+                                aria-controls={`settings-account-manage-${acct.id}`}
                               >
-                                Disconnect
+                                Manage…
                               </button>
                             </div>
                           </div>
+                          {manageOpen ? (
+                            <div className="settingsAccountManagePanel" id={`settings-account-manage-${acct.id}`}>
+                              <div className="settingsAccountManageHint">
+                                Disconnect removes this account from this launcher on this device.
+                              </div>
+                              <button
+                                className="btn danger"
+                                onClick={() => {
+                                  if (!window.confirm(`Disconnect ${acct.username} from this launcher?`)) return;
+                                  void onLogoutAccount(acct.id);
+                                }}
+                                disabled={launcherBusy}
+                              >
+                                Disconnect account
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       );
                     })
@@ -12440,133 +13027,162 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div id="setting-anchor-global:permissions">
-                      <div className="settingTitle">Launch permissions</div>
-                      <div className="settingSub">
-                        Voice chat instances can auto-trigger a Java microphone permission probe before launch.
-                      </div>
-                      <div className="row">
-                        <button
-                          className={`btn ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "primary" : ""}`}
-                          onClick={() => void onToggleAutoMicPermissionPrompt()}
-                          disabled={autoMicPromptSettingBusy}
-                        >
-                          {autoMicPromptSettingBusy
-                            ? "Saving…"
-                            : (launcherSettings?.auto_trigger_mic_permission_prompt ?? true)
-                              ? "Auto prompt enabled"
-                              : "Auto prompt disabled"}
-                        </button>
-                        <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
-                          Open microphone settings
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() =>
-                            selectedPermissionsInstance
-                              ? void triggerInstanceMicrophonePrompt(selectedPermissionsInstance.id)
-                              : setInstallNotice("Select an instance first to trigger microphone prompt.")
-                          }
-                          disabled={!selectedPermissionsInstance}
-                        >
-                          Trigger selected prompt
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() =>
-                            selectedPermissionsInstance
-                              ? void refreshInstancePermissionChecklist(selectedPermissionsInstance.id, launchMethodPick)
-                              : setInstallNotice("Select an instance first to run a permission re-check.")
-                          }
-                          disabled={!selectedPermissionsInstance}
-                        >
-                          Re-check selected instance
-                        </button>
-                      </div>
-                      <div className="muted" style={{ marginTop: 6 }}>
-                        Selected instance: {selectedPermissionsInstance?.name ?? "None"}.
-                      </div>
-                      {selectedPermissionsChecklist.length > 0 ? (
-                        <div className="preflightPermissionsList" style={{ marginTop: 8 }}>
-                          {selectedPermissionsChecklist.map((perm) => (
-                            <div key={`settings-perm:${perm.key}`} className="preflightPermissionRow">
-                              <div className="preflightCheckMain">
-                                <div className="preflightCheckTitle">{perm.label}</div>
-                                <div className="preflightCheckMsg">{perm.detail}</div>
+                    <details className="settingsFoldSection" id="setting-anchor-global:permissions" open>
+                      <summary className="settingsFoldSummary">
+                        <span className="settingsFoldTitle">Launch permissions</span>
+                        <span className="settingsFoldMeta">Microphone checks and prompt controls</span>
+                      </summary>
+                      <div className="settingsFoldBody">
+                        <div className="settingSub">
+                          Voice chat instances can auto-trigger a Java microphone permission probe before launch.
+                        </div>
+                        <div className="row">
+                          <button
+                            className={`btn ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "primary" : ""}`}
+                            onClick={() => void onToggleAutoMicPermissionPrompt()}
+                            disabled={autoMicPromptSettingBusy}
+                          >
+                            {autoMicPromptSettingBusy
+                              ? "Saving…"
+                              : (launcherSettings?.auto_trigger_mic_permission_prompt ?? true)
+                                ? "Auto prompt enabled"
+                                : "Auto prompt disabled"}
+                          </button>
+                          <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
+                            Open microphone settings
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() =>
+                              selectedPermissionsInstance
+                                ? void triggerInstanceMicrophonePrompt(selectedPermissionsInstance.id)
+                                : setInstallNotice("Select an instance first to trigger microphone prompt.")
+                            }
+                            disabled={!selectedPermissionsInstance}
+                          >
+                            Trigger selected prompt
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() =>
+                              selectedPermissionsInstance
+                                ? void refreshInstancePermissionChecklist(selectedPermissionsInstance.id, launchMethodPick)
+                                : setInstallNotice("Select an instance first to run a permission re-check.")
+                            }
+                            disabled={!selectedPermissionsInstance}
+                          >
+                            Re-check selected instance
+                          </button>
+                        </div>
+                        <div className="muted" style={{ marginTop: 6 }}>
+                          Selected instance: {selectedPermissionsInstance?.name ?? "None"}.
+                        </div>
+                        {selectedPermissionsChecklist.length > 0 ? (
+                          <div className="preflightPermissionsList" style={{ marginTop: 8 }}>
+                            {selectedPermissionsChecklist.map((perm) => (
+                              <div key={`settings-perm:${perm.key}`} className="preflightPermissionRow">
+                                <div className="preflightCheckMain">
+                                  <div className="preflightCheckTitle">{perm.label}</div>
+                                  <div className="preflightCheckMsg">{perm.detail}</div>
+                                </div>
+                                <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
+                                  {permissionStatusLabel(perm.status)}
+                                </span>
                               </div>
-                              <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
-                                {permissionStatusLabel(perm.status)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="muted" style={{ marginTop: 8 }}>
-                          No permission report yet for the selected instance. Click Re-check selected instance.
-                        </div>
-                      )}
-                    </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="muted" style={{ marginTop: 8 }}>
+                            No permission report yet for the selected instance. Click Re-check selected instance.
+                          </div>
+                        )}
+                      </div>
+                    </details>
 
-                    <div id="setting-anchor-global:github-api">
-                      <div className="settingTitle">GitHub API authentication</div>
-                      <div className="settingSub">
-                        Save personal access tokens to secure OS keychain storage for higher GitHub rate limits. Tokens are not stored in launcher settings files.
-                      </div>
-                      <textarea
-                        className="input"
-                        value={githubTokenPoolDraft}
-                        onChange={(e) => setGithubTokenPoolDraft(e.target.value)}
-                        placeholder="Paste one token per line (or comma/semicolon separated)"
-                        rows={4}
-                        style={{ marginTop: 8, resize: "vertical", minHeight: 96 }}
-                      />
-                      <div className="row" style={{ marginTop: 8 }}>
-                        <button
-                          className="btn primary"
-                          onClick={() => void onSaveGithubTokenPool()}
-                          disabled={githubTokenPoolBusy}
-                        >
-                          {githubTokenPoolBusy ? "Saving…" : "Save GitHub tokens"}
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() => void onClearGithubTokenPool()}
-                          disabled={githubTokenPoolBusy}
-                        >
-                          Clear saved tokens
-                        </button>
-                        <button
-                          className="btn"
-                          onClick={() => void refreshGithubTokenPoolStatus()}
-                          disabled={githubTokenPoolBusy}
-                        >
-                          {githubTokenPoolBusy ? "Checking…" : "Refresh status"}
-                        </button>
-                      </div>
-                      {githubTokenPoolStatus ? (
-                        <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                          <div className={`chip ${githubTokenPoolStatus.configured ? "" : "subtle"}`}>
-                            {githubTokenPoolStatus.configured
-                              ? `${githubTokenPoolStatus.total_tokens} token${githubTokenPoolStatus.total_tokens === 1 ? "" : "s"} configured`
-                              : "No tokens configured"}
-                          </div>
-                          <div className={githubTokenPoolStatus.keychain_available ? "noticeBox" : "warningBox"}>
-                            {githubTokenPoolStatus.message}
-                          </div>
-                          <div className="muted">
-                            Sources: env {githubTokenPoolStatus.env_tokens} · keychain {githubTokenPoolStatus.keychain_tokens}
-                            {githubTokenPoolStatus.unauth_rate_limited
-                              ? ` · unauth rate-limited${githubTokenPoolStatus.unauth_rate_limit_reset_at ? ` until ${githubTokenPoolStatus.unauth_rate_limit_reset_at}` : ""}`
-                              : ""}
-                          </div>
+                    <details className="settingsFoldSection" id="setting-anchor-global:github-api">
+                      <summary className="settingsFoldSummary">
+                        <span className="settingsFoldTitle">GitHub API authentication</span>
+                        <span className="settingsFoldMeta">Token pool for higher API limits</span>
+                      </summary>
+                      <div className="settingsFoldBody">
+                        <div className="settingSub">
+                          Save personal access tokens to secure OS keychain storage for higher GitHub rate limits. Tokens are not stored in launcher settings files.
                         </div>
-                      ) : null}
-                      {githubTokenPoolNotice ? (
-                        <div className={githubTokenPoolNoticeIsError ? "errorBox" : "noticeBox"} style={{ marginTop: 10 }}>
-                          {githubTokenPoolNotice}
+                        <div className="row settingsInlineBadges">
+                          <span className="chip">Tokens are stored in Keychain</span>
+                          {githubTokenPoolStatus ? (
+                            <span className={`chip ${githubTokenPoolStatus.configured ? "" : "subtle"}`}>
+                              {githubTokenPoolStatus.configured
+                                ? `${githubTokenPoolStatus.total_tokens} token${githubTokenPoolStatus.total_tokens === 1 ? "" : "s"} configured`
+                                : "Ready for first token"}
+                            </span>
+                          ) : null}
                         </div>
-                      ) : null}
-                    </div>
+                        <textarea
+                          className={`input githubTokenTextarea ${
+                            !githubTokenPoolStatus?.configured && !githubTokenPoolDraft.trim() ? "ready" : ""
+                          }`}
+                          value={githubTokenPoolDraft}
+                          onChange={(e) => setGithubTokenPoolDraft(e.target.value)}
+                          placeholder="Paste one token per line (or comma/semicolon separated)"
+                          rows={4}
+                          style={{ marginTop: 8, resize: "vertical", minHeight: 96 }}
+                        />
+                        {!githubTokenPoolStatus?.configured && !githubTokenPoolDraft.trim() ? (
+                          <div className="githubTokenReadyHint">
+                            Paste tokens here and click Validate. We store them in secure Keychain storage only.
+                          </div>
+                        ) : null}
+                        <div className="row" style={{ marginTop: 8 }}>
+                          <button
+                            className="btn primary"
+                            onClick={() => void onSaveGithubTokenPool()}
+                            disabled={githubTokenPoolBusy}
+                          >
+                            {githubTokenPoolBusy ? "Saving…" : "Save GitHub tokens"}
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => void onValidateGithubTokenPool()}
+                            disabled={githubTokenPoolBusy}
+                          >
+                            {githubTokenPoolBusy ? "Validating…" : "Validate"}
+                          </button>
+                          <button
+                            className="btn"
+                            onClick={() => void onClearGithubTokenPool()}
+                            disabled={githubTokenPoolBusy}
+                          >
+                            Clear saved tokens
+                          </button>
+                          <button
+                            className="btn subtle"
+                            onClick={() => void refreshGithubTokenPoolStatus()}
+                            disabled={githubTokenPoolBusy}
+                          >
+                            {githubTokenPoolBusy ? "Checking…" : "Refresh status"}
+                          </button>
+                        </div>
+                        {githubTokenPoolStatus ? (
+                          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                            <div className={githubTokenPoolStatus.keychain_available ? "noticeBox" : "warningBox"}>
+                              {githubTokenPoolStatus.message}
+                            </div>
+                            <div className="muted">
+                              Sources: env {githubTokenPoolStatus.env_tokens} · keychain {githubTokenPoolStatus.keychain_tokens}
+                              {githubTokenPoolStatus.unauth_rate_limited
+                                ? ` · unauth rate-limited${githubTokenPoolStatus.unauth_rate_limit_reset_at ? ` until ${githubTokenPoolStatus.unauth_rate_limit_reset_at}` : ""}`
+                                : ""}
+                            </div>
+                          </div>
+                        ) : null}
+                        {githubTokenPoolNotice ? (
+                          <div className={githubTokenPoolNoticeIsError ? "errorBox" : "noticeBox"} style={{ marginTop: 10 }}>
+                            {githubTokenPoolNotice}
+                          </div>
+                        ) : null}
+                      </div>
+                    </details>
                   </div>
                 </div>
               ) : null}
@@ -12918,6 +13534,28 @@ export default function App() {
         toLocalIconSrc(
           avatarSources[Math.min(accountAvatarSourceIdx, Math.max(avatarSources.length - 1, 0))] ?? ""
         ) ?? "";
+      const connectionRaw = String(diag?.status ?? (account ? "connected" : "not_connected")).toLowerCase();
+      const tokenRaw = String(diag?.token_exchange_status ?? "idle").toLowerCase();
+      const isDisconnected =
+        !account ||
+        connectionRaw.includes("not_connected") ||
+        connectionRaw.includes("offline") ||
+        connectionRaw.includes("idle");
+      const isUnverified = !isDisconnected && (!diag?.entitlements_ok || tokenRaw.includes("error"));
+      const accountStatusTone = isDisconnected ? "error" : isUnverified ? "warn" : "ok";
+      const accountStatusLabel = isDisconnected
+        ? "Not Connected"
+        : isUnverified
+          ? "Not verified"
+          : "Connected / verified";
+      const authBannerMessage = isDisconnected
+        ? "Your launcher is not connected to a Microsoft account, so native launch and profile sync are unavailable."
+        : isUnverified
+          ? "Account connected, but entitlement verification is incomplete. Reconnect to refresh auth tokens."
+          : diag?.last_error || accountDiagnosticsErr
+            ? "Authentication returned an error. Reconnect to re-establish a healthy token chain."
+            : null;
+      const showAuthBrokenBanner = Boolean(authBannerMessage);
 
       return (
         <div className="accountPage">
@@ -12946,7 +13584,10 @@ export default function App() {
             <div className="accountHeroMain">
               <div className="accountHeroName">{username}</div>
               <div className="accountHeroMeta">
-                <span className="chip">{diag?.status ?? "not connected"}</span>
+                <span className={`accountStatusBadge tone-${accountStatusTone}`}>
+                  <span className="accountStatusDot" aria-hidden="true" />
+                  {accountStatusLabel}
+                </span>
                 {diag?.entitlements_ok ? <span className="chip">Owns Minecraft</span> : null}
                 {diag?.token_exchange_status ? <span className="chip subtle">{humanizeToken(diag.token_exchange_status)}</span> : null}
               </div>
@@ -12968,6 +13609,17 @@ export default function App() {
               </div>
             </div>
           </div>
+          {showAuthBrokenBanner ? (
+            <div className="card accountAuthBanner">
+              <div className="accountAuthBannerMain">
+                <div className="accountAuthBannerTitle">Authentication needs attention</div>
+                <div className="accountAuthBannerText">{authBannerMessage}</div>
+              </div>
+              <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
+                {msLoginSessionId ? "Waiting for login…" : "Reconnect"}
+              </button>
+            </div>
+          ) : null}
 
           <div className="accountGrid">
             <div className="card accountCard">
@@ -13044,11 +13696,13 @@ export default function App() {
               <div className="accountDiagList">
                 <div className="accountDiagRow">
                   <span>Connection</span>
-                  <strong>{humanizeToken(diag?.status ?? "not_connected")}</strong>
+                  <strong className={`accountStatusText tone-${accountStatusTone}`}>{accountStatusLabel}</strong>
                 </div>
                 <div className="accountDiagRow">
                   <span>Entitlements</span>
-                  <strong>{diag?.entitlements_ok ? "OK" : "Not verified"}</strong>
+                  <strong className={`accountStatusText tone-${diag?.entitlements_ok ? "ok" : "warn"}`}>
+                    {diag?.entitlements_ok ? "Verified" : "Not verified"}
+                  </strong>
                 </div>
                 <div className="accountDiagRow">
                   <span>Token status</span>
@@ -13782,6 +14436,9 @@ export default function App() {
       const datapackEntries = installedContentSummary.datapackEntries;
       const visibleInstalledMods = installedContentSummary.visibleInstalledMods;
       const runningForInstance = runningByInstanceId.get(inst.id) ?? [];
+      const quickPlayServersForInstance = quickPlayServers.filter(
+        (server) => (server.bound_instance_id ?? inst.id) === inst.id
+      );
       const hasRunningForInstance = runningForInstance.length > 0;
       const isLaunchBusyForInstance = launchBusyInstanceIds.includes(inst.id);
       const hasNativeRunningForInstance = runningForInstance.some(
@@ -13819,37 +14476,48 @@ export default function App() {
       const instanceActivity = instanceActivityById[inst.id] ?? [];
       const instanceHistory = instanceHistoryById[inst.id] ?? [];
       const timelineCutoffMs = Number(timelineClearedAtByInstance[inst.id] ?? 0);
-      const timelineEntries = [
+      const recentActivityFilter = recentActivityFilterByInstance[inst.id] ?? "all";
+      const recentRetentionCutoffMs = Date.now() - RECENT_ACTIVITY_WINDOW_HOURS * 60 * 60 * 1000;
+      const recentActivityEntriesRaw = [
         ...instanceActivity
-          .filter((entry) => Number(entry.at) > timelineCutoffMs)
-          .map((entry) => ({
-          id: `activity:${entry.id}`,
-          atMs: Number(entry.at) || 0,
-          tone: entry.tone,
-          message: entry.message,
-          meta: `${new Date(entry.at).toLocaleTimeString([], {
-            hour: "numeric",
-            minute: "2-digit",
-          })} · Live activity`,
-        })),
+          .filter((entry) => Number(entry.at) > timelineCutoffMs && Number(entry.at) >= recentRetentionCutoffMs)
+          .map((entry) =>
+            toRecentActivityEntry({
+              id: `activity:${entry.id}`,
+              atMs: Number(entry.at) || 0,
+              tone: entry.tone,
+              message: entry.message,
+              rawKind: "live_activity",
+              sourceLabel: "Live activity",
+            })
+          ),
         ...instanceHistory
-          .filter((event) => (parseDateLike(event.at)?.getTime() ?? 0) > timelineCutoffMs)
           .map((event) => ({
-          id: `history:${event.id}`,
-          atMs: parseDateLike(event.at)?.getTime() ?? 0,
-          tone: inferActivityTone(`${event.kind} ${event.summary}`),
-          message: event.summary,
-          meta: `${formatDateTime(event.at, "Unknown time")} · ${humanizeToken(event.kind)}`,
-        })),
-      ]
-        .sort((a, b) => b.atMs - a.atMs)
-        .slice(0, 12);
+            event,
+            atMs: parseDateLike(event.at)?.getTime() ?? 0,
+          }))
+          .filter(({ atMs }) => atMs > timelineCutoffMs && atMs >= recentRetentionCutoffMs)
+          .map(({ event, atMs }) =>
+            toRecentActivityEntry({
+              id: `history:${event.id}`,
+              atMs,
+              tone: inferActivityTone(`${event.kind} ${event.summary}`),
+              message: event.summary,
+              rawKind: event.kind,
+              sourceLabel: humanizeToken(event.kind),
+            })
+          ),
+      ].sort((a, b) => b.atMs - a.atMs);
+      const recentActivityRetentionLabel = `Shows latest changes (last ${RECENT_ACTIVITY_WINDOW_HOURS} hours or latest ${RECENT_ACTIVITY_LIMIT} events).`;
+      const showEarlierRecentActivityBucket = RECENT_ACTIVITY_WINDOW_HOURS > 48;
+      const isInstanceActivityPanelOpen = instanceActivityPanelOpenByInstance[inst.id] ?? true;
+      const showInstanceActivityPane = instanceTab !== "content" || isInstanceActivityPanelOpen;
       const selectedSnapshot =
         snapshots.find((s) => s.id === (rollbackSnapshotId ?? snapshots[0]?.id)) ?? snapshots[0] ?? null;
       const resolveSnapshotProjectLabel = (rawId: string, sourceHint?: "modrinth" | "curseforge" | null) => {
         const candidate = String(rawId ?? "").trim();
         if (!candidate) return null;
-        const byProjectId = installedMods.find((mod) => {
+        const byProjectId = scopedInstalledMods.find((mod) => {
           const projectId = String(mod.project_id ?? "").trim();
           if (!projectId) return false;
           if (projectId === candidate) return true;
@@ -13987,7 +14655,7 @@ export default function App() {
 
       return (
         <div className="page">
-          <div className="instanceLayout">
+          <div className={`instanceLayout ${showInstanceActivityPane ? "" : "activityCollapsed"}`}>
             <section className="instanceMainPane">
               <div className="breadcrumbRow">
                 <button className="crumbLink" onClick={() => setRoute("library")} aria-label="Back to Library">
@@ -14227,7 +14895,7 @@ export default function App() {
                       </button>
                     ) : null}
                     <button
-                      className={`btn ${friendLinkNeedsAttention ? "primary" : "subtle"} ${
+                      className={`btn ${friendLinkNeedsAttention ? "warning" : "subtle"} ${
                         compactHeroActions ? "instHeroIconBtn" : ""
                       }`}
                       onClick={() => setInstanceLinksOpen(true)}
@@ -14414,49 +15082,96 @@ export default function App() {
                 <div className="instTabsActions">
                   {instanceTab === "content" ? (
                     <>
+                      {/* Keep this dense surface to one primary action; route secondary tasks through menu + activity toggle. */}
                       <button className="btn primary installAction" onClick={() => setRoute("discover")}>
                         <span className="btnIcon">
                           <Icon name="plus" size={18} />
                         </span>
                         Install content
                       </button>
+                      <MenuSelect
+                        value="__menu"
+                        labelPrefix="Actions"
+                        buttonLabel="More"
+                        compact
+                        onChange={(value) => {
+                          const action = (value as InstanceContentBulkAction | null) ?? "__menu";
+                          if (action === "__menu") return;
+                          if (action === "add_local") {
+                            if (importingInstanceId === inst.id) {
+                              setInstallNotice("Local file import is already in progress for this instance.");
+                              return;
+                            }
+                            void onAddContentFromFile(inst, instanceContentType);
+                            return;
+                          }
+                          if (action === "identify_local") {
+                            if (localResolverBusyRef.current[inst.id]) {
+                              setInstallNotice("Identify local files is already running for this instance.");
+                              return;
+                            }
+                            void runLocalResolverBackfill(inst.id, "all", {
+                              silent: false,
+                              refreshListAfterResolve: true,
+                              contentTypes: [instanceContentTypeToBackend(instanceContentType)],
+                            });
+                            return;
+                          }
+                          if (action === "clean_missing") {
+                            if (
+                              cleanMissingBusyInstanceId === inst.id ||
+                              modsBusy ||
+                              Boolean(localResolverBusyRef.current[inst.id])
+                            ) {
+                              setInstallNotice("Clean missing entries is not available while other content tasks are running.");
+                              return;
+                            }
+                            void onCleanMissingInstalledEntries(inst, instanceContentType);
+                          }
+                        }}
+                        options={[
+                          { value: "__menu", label: "More" },
+                          {
+                            value: "add_local",
+                            label: importingInstanceId === inst.id ? "Add local file (busy)" : "Add local file",
+                          },
+                          {
+                            value: "identify_local",
+                            label: localResolverBusyRef.current[inst.id]
+                              ? "Identify local files (busy)"
+                              : "Identify local files",
+                          },
+                          {
+                            value: "clean_missing",
+                            label:
+                              cleanMissingBusyInstanceId === inst.id ||
+                              modsBusy ||
+                              Boolean(localResolverBusyRef.current[inst.id])
+                                ? "Clean missing entries (busy)"
+                                : "Clean missing entries",
+                          },
+                        ]}
+                        align="end"
+                      />
                       <button
                         className="btn subtle"
-                        onClick={() => onAddContentFromFile(inst, instanceContentType)}
-                        disabled={importingInstanceId === inst.id}
+                        onClick={() =>
+                          setInstanceActivityPanelOpenByInstance((prev) => ({
+                            ...prev,
+                            [inst.id]: !isInstanceActivityPanelOpen,
+                          }))
+                        }
+                        aria-pressed={isInstanceActivityPanelOpen}
+                        data-oj-tooltip={
+                          isInstanceActivityPanelOpen
+                            ? "Collapse the right-side activity panel."
+                            : "Show the right-side activity panel."
+                        }
                       >
                         <span className="btnIcon">
-                          <Icon name="upload" size={18} />
+                          <Icon name="layers" size={16} />
                         </span>
-                        {importingInstanceId === inst.id ? "Adding…" : "Add local file"}
-                      </button>
-                      <button
-                        className="btn"
-                        onClick={() =>
-                          void runLocalResolverBackfill(inst.id, "all", {
-                            silent: false,
-                            refreshListAfterResolve: true,
-                            contentTypes: [instanceContentTypeToBackend(instanceContentType)],
-                          })
-                        }
-                        disabled={Boolean(localResolverBusyRef.current[inst.id])}
-                        data-oj-tooltip="Try to match local files to Modrinth, CurseForge, and GitHub metadata."
-                      >
-                        Identify local files
-                      </button>
-                      <button
-                        className="btn"
-                        onClick={() =>
-                          void onCleanMissingInstalledEntries(inst, instanceContentType)
-                        }
-                        disabled={
-                          cleanMissingBusyInstanceId === inst.id ||
-                          modsBusy ||
-                          Boolean(localResolverBusyRef.current[inst.id])
-                        }
-                        data-oj-tooltip="Remove entries that are missing on disk from lock metadata for this section."
-                      >
-                        {cleanMissingBusyInstanceId === inst.id ? "Cleaning…" : "Clean missing entries"}
+                        {isInstanceActivityPanelOpen ? "Hide activity" : "Show activity"}
                       </button>
                     </>
                   ) : instanceTab === "worlds" ? (
@@ -14506,13 +15221,24 @@ export default function App() {
                   </div>
                   <div className="instToolbarRight">
                     <MenuSelect
-                      value={instanceFilterState}
+                      value={instanceFilterWarningsOnly ? "warnings" : instanceFilterState}
                       labelPrefix="State"
-                      onChange={(value) => setInstanceFilterState((value as any) ?? "all")}
+                      onChange={(value) => {
+                        if (value === "warnings") {
+                          setInstanceFilterWarningsOnly(true);
+                          setInstanceFilterState("all");
+                          return;
+                        }
+                        setInstanceFilterWarningsOnly(false);
+                        setInstanceFilterState((value as any) ?? "all");
+                      }}
                       options={[
                         { value: "all", label: "All" },
                         { value: "enabled", label: "Enabled" },
                         { value: "disabled", label: "Disabled" },
+                        ...(instanceContentType === "mods" && hasDependencyWarningsInScope
+                          ? [{ value: "warnings", label: "Warnings" }]
+                          : []),
                       ]}
                       align="start"
                     />
@@ -14556,12 +15282,13 @@ export default function App() {
                       align="start"
                     />
                     <button
-                      className="btn"
+                      className="btn subtle"
                       onClick={() => {
                         setInstanceQuery("");
                         setInstanceFilterState("all");
                         setInstanceFilterSource("all");
                         setInstanceFilterMissing("all");
+                        setInstanceFilterWarningsOnly(false);
                         setInstanceSort("name_asc");
                       }}
                     >
@@ -14750,7 +15477,7 @@ export default function App() {
                           ];
                           return (
                             <div
-                              key={m.version_id}
+                              key={`${inst.id}:${m.version_id}`}
                               className={`instanceModsRow ${m.enabled ? "" : "disabled"}`}
                               role="button"
                               tabIndex={0}
@@ -14793,15 +15520,17 @@ export default function App() {
                                     {!m.file_exists ? (
                                       <span className="instanceProviderBadge missing">Missing on disk</span>
                                     ) : null}
-                                    {Array.isArray(m.local_analysis?.warnings) &&
-                                    m.local_analysis!.warnings.length > 0 ? (
-                                      <span
-                                        className="instanceProviderBadge missing"
-                                        data-oj-tooltip={m.local_analysis!.warnings.join(" | ")}
-                                      >
-                                        Dependency warning
-                                      </span>
-                                    ) : null}
+                                    <DependencyBadge
+                                      warnings={m.local_analysis?.warnings ?? []}
+                                      busy={
+                                        Boolean(dependencyInstallBusyVersion) ||
+                                        toggleBusyVersion === m.version_id ||
+                                        toggleBusyVersion === "__bulk__" ||
+                                        providerSwitchBusyKey?.startsWith(`${m.version_id}:`) ||
+                                        pinBusyVersion === m.version_id
+                                      }
+                                      onClick={() => void onInstallMissingDependencies(inst, m)}
+                                    />
                                     {providerBadgeCandidates.map((candidate) => {
                                       const source = normalizeProviderSource(candidate.source);
                                       const label = providerSourceLabel(candidate.source);
@@ -14834,7 +15563,10 @@ export default function App() {
                                       return (
                                         <button
                                           key={`${candidate.source}:${candidate.project_id}:${candidate.version_id}`}
+                                          type="button"
                                           className={`instanceProviderBadge ${isActive ? "active" : ""} ${canSwitch ? "clickable" : ""}`}
+                                          data-row-action="true"
+                                          onPointerDown={(event) => event.stopPropagation()}
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             void onSetInstalledModProvider(inst, m, source);
@@ -14859,6 +15591,9 @@ export default function App() {
                                       className={`instanceProviderBadge clickable ${
                                         m.pinned_version ? "active" : ""
                                       }`}
+                                      type="button"
+                                      data-row-action="true"
+                                      onPointerDown={(event) => event.stopPropagation()}
                                       onClick={(event) => {
                                         event.stopPropagation();
                                         void onToggleInstalledModPin(inst, m);
@@ -14885,7 +15620,9 @@ export default function App() {
                                       activeProviderSource === "github") ? (
                                       <button
                                         className="instanceProviderBadge clickable"
+                                        type="button"
                                         data-row-action="true"
+                                        onPointerDown={(event) => event.stopPropagation()}
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           beginAttachInstalledModGithubRepo(inst, m);
@@ -15575,62 +16312,57 @@ export default function App() {
               </div>
             </section>
 
-            <aside className="instanceSidePane">
-              <div className="card instanceSideCard instanceActivityCard">
-                <div className="instanceActivityHead">
-                  <div className="librarySideTitle">Timeline</div>
-                  <div className="instanceActivityActions">
-                    {timelineEntries.length > 0 ? (
-                      <button
-                        className="btn"
-                        onClick={() => {
-                          const now = Date.now();
-                          setInstanceActivityById((prev) => ({
-                            ...prev,
-                            [inst.id]: [],
-                          }));
-                          setInstanceHistoryById((prev) => ({
-                            ...prev,
-                            [inst.id]: [],
-                          }));
-                          setTimelineClearedAtByInstance((prev) => ({
-                            ...prev,
-                            [inst.id]: now,
-                          }));
-                        }}
-                      >
-                        Clear timeline
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                {timelineEntries.length === 0 ? (
+            {showInstanceActivityPane ? (
+              <aside className="instanceSidePane">
+                <ActivityFeed
+                  entriesRaw={recentActivityEntriesRaw}
+                  loading={Boolean(instanceHistoryBusyById[inst.id])}
+                  filter={recentActivityFilter}
+                  onFilterChange={(value) =>
+                    setRecentActivityFilterByInstance((prev) => ({
+                      ...prev,
+                      [inst.id]: value,
+                    }))
+                  }
+                  retentionLabel={recentActivityRetentionLabel}
+                  onOpenFullHistory={() => openFullHistory(inst.id)}
+                  onClearRecent={() => {
+                    const now = Date.now();
+                    setInstanceActivityById((prev) => ({
+                      ...prev,
+                      [inst.id]: [],
+                    }));
+                    setInstanceHistoryById((prev) => ({
+                      ...prev,
+                      [inst.id]: [],
+                    }));
+                    setTimelineClearedAtByInstance((prev) => ({
+                      ...prev,
+                      [inst.id]: now,
+                    }));
+                  }}
+                  canClear={recentActivityEntriesRaw.length > 0}
+                  windowMs={RECENT_ACTIVITY_COALESCE_WINDOW_MS}
+                  limit={RECENT_ACTIVITY_LIMIT}
+                  showEarlierBucket={showEarlierRecentActivityBucket}
+                />
+              <div className="card instanceSideCard">
+                <div className="librarySideTitle">Runtime status</div>
+                {hasRunningForInstance ? (
                   <div className="muted">
-                    {instanceHistoryBusyById[inst.id]
-                      ? "Loading recent events…"
-                      : "Launch, install, and maintenance updates appear here."}
+                    {runningForInstance.length} running instance{runningForInstance.length === 1 ? "" : "s"}
                   </div>
                 ) : (
-                  <div className="instanceActivityList">
-                    {timelineEntries.map((entry) => (
-                      <div key={entry.id} className={`instanceActivityItem ${entry.tone}`}>
-                        <span className="instanceActivityDot" />
-                        <div className="instanceActivityContent">
-                          <div className="instanceActivityMessage">{entry.message}</div>
-                          <div className="instanceActivityTime">{entry.meta}</div>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="compactEmptyState">
+                    <span className="compactEmptyIcon" aria-hidden="true">
+                      <Icon name="play" size={14} />
+                    </span>
+                    <div className="compactEmptyBody">
+                      <div className="compactEmptyTitle">Nothing running right now</div>
+                      <div className="compactEmptyText">Hit Play on this instance to start.</div>
+                    </div>
                   </div>
                 )}
-              </div>
-              <div className="card instanceSideCard">
-                <div className="librarySideTitle">No instances running</div>
-                <div className="muted">
-                  {hasRunningForInstance
-                    ? `${runningForInstance.length} running instance${runningForInstance.length === 1 ? "" : "s"}`
-                    : "This instance is currently stopped."}
-                </div>
               </div>
               <div className="card instanceSideCard">
                 <div className="librarySideTitle">Playing as</div>
@@ -15666,10 +16398,10 @@ export default function App() {
               </div>
               <div className="card instanceSideCard">
                 <div className="librarySideTitle">Quick play</div>
-                <div className="muted" style={{ marginBottom: 8 }}>
+                <div className="muted quickPlaySub">
                   Launch straight into a server with this instance.
                 </div>
-                <div className="settingStack">
+                <div className="quickPlayForm">
                   <input
                     className="input"
                     placeholder="Server name"
@@ -15684,38 +16416,39 @@ export default function App() {
                     onChange={(e) => setQuickPlayDraftHost(e.target.value)}
                     disabled={quickPlayBusy}
                   />
-                  <div className="row">
+                  <div className="quickPlayMetaRow">
                     <input
-                      className="input"
+                      className="input quickPlayPortInput"
                       placeholder="Port"
                       value={quickPlayDraftPort}
                       onChange={(e) => setQuickPlayDraftPort(e.target.value)}
                       disabled={quickPlayBusy}
-                      style={{ maxWidth: 120 }}
                     />
-                    <MenuSelect
-                      value={quickPlayDraftBoundInstanceId}
-                      labelPrefix="Bind"
-                      options={[
-                        { value: "none", label: "Current instance" },
-                        ...instances.map((entry) => ({
-                          value: entry.id,
-                          label: entry.name || entry.id,
-                        })),
-                      ]}
-                      onChange={(value) => setQuickPlayDraftBoundInstanceId(String(value ?? "none"))}
-                    />
+                    <div className="quickPlayBind">
+                      <MenuSelect
+                        value={quickPlayDraftBoundInstanceId}
+                        labelPrefix="Bind"
+                        options={[
+                          { value: "none", label: "Current instance" },
+                          ...instances.map((entry) => ({
+                            value: entry.id,
+                            label: entry.name || entry.id,
+                          })),
+                        ]}
+                        onChange={(value) => setQuickPlayDraftBoundInstanceId(String(value ?? "none"))}
+                      />
+                    </div>
                   </div>
-                  <div className="row">
+                  <div className="quickPlayActions">
                     <button
-                      className="btn"
+                      className="btn primary quickPlaySaveBtn"
                       onClick={() => void onSaveQuickPlayServer(inst)}
                       disabled={quickPlayBusy}
                     >
                       {quickPlayBusy ? "Saving…" : "Save server"}
                     </button>
                     <button
-                      className="btn"
+                      className="btn subtle quickPlayRefreshBtn"
                       onClick={() => void refreshQuickPlayServers()}
                       disabled={quickPlayBusy}
                     >
@@ -15724,42 +16457,49 @@ export default function App() {
                   </div>
                 </div>
                 {quickPlayErr ? <div className="errorBox" style={{ marginTop: 8 }}>{quickPlayErr}</div> : null}
-                {quickPlayServers.length > 0 ? (
-                  <div className="settingListMini" style={{ marginTop: 10 }}>
-                    {quickPlayServers
-                      .filter((server) => (server.bound_instance_id ?? inst.id) === inst.id)
-                      .map((server) => (
-                        <div key={server.id} className="settingListMiniRow">
-                          <div style={{ minWidth: 0 }}>
-                            <div style={{ fontWeight: 900 }}>{server.name}</div>
-                            <div className="muted">
-                              {server.host}:{server.port}
-                            </div>
-                          </div>
-                          <div className="row">
-                            <button
-                              className="btn"
-                              onClick={() => void onLaunchQuickPlayServer(server, inst)}
-                              disabled={quickPlayBusy}
-                            >
-                              Play
-                            </button>
-                            <button
-                              className="btn danger"
-                              onClick={() => void onRemoveQuickPlayServer(server.id)}
-                              disabled={quickPlayBusy}
-                            >
-                              Remove
-                            </button>
+                {quickPlayServersForInstance.length > 0 ? (
+                  <div className="settingListMini quickPlayList">
+                    {quickPlayServersForInstance.map((server) => (
+                      <div key={server.id} className="settingListMiniRow">
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontWeight: 900 }}>{server.name}</div>
+                          <div className="muted">
+                            {server.host}:{server.port}
                           </div>
                         </div>
-                      ))}
+                        <div className="quickPlayServerActions">
+                          <button
+                            className="btn"
+                            onClick={() => void onLaunchQuickPlayServer(server, inst)}
+                            disabled={quickPlayBusy}
+                          >
+                            Play
+                          </button>
+                          <button
+                            className="btn danger"
+                            onClick={() => void onRemoveQuickPlayServer(server.id)}
+                            disabled={quickPlayBusy}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 ) : (
-                  <div className="muted" style={{ marginTop: 8 }}>No quick-play servers bound yet.</div>
+                  <div className="compactEmptyState compactEmptyStateInline" style={{ marginTop: 8 }}>
+                    <span className="compactEmptyIcon" aria-hidden="true">
+                      <Icon name="upload" size={14} />
+                    </span>
+                    <div className="compactEmptyBody">
+                      <div className="compactEmptyTitle">No quick-play servers yet</div>
+                      <div className="compactEmptyText">Save a server above for one-click launches.</div>
+                    </div>
+                  </div>
                 )}
               </div>
-            </aside>
+              </aside>
+            ) : null}
           </div>
 
           {instanceLinksOpen && (
@@ -16174,7 +16914,7 @@ export default function App() {
                                 {javaRuntimeCandidates.slice(0, 5).map((runtime) => (
                                   <div key={runtime.path} className="settingListMiniRow">
                                     <div style={{ minWidth: 0 }}>
-                                      <div style={{ fontWeight: 900 }}>Java {runtime.major}</div>
+                                      <div style={{ fontWeight: 900 }}>{javaRuntimeDisplayLabel(runtime)}</div>
                                       <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
                                     </div>
                                     <button
@@ -16572,6 +17312,9 @@ export default function App() {
                   <span className="accountSkinBeta">Beta</span>
                 </div>
                 <div className="accountSkinSub">Interactive 3D preview. Drag to rotate your player.</div>
+                <div className="accountSkinNamePlate" title={selectedLauncherAccount?.username ?? "No account connected"}>
+                  {selectedLauncherAccount?.username ?? "No account connected"}
+                </div>
                 <div
                   ref={accountSkinViewerStageRef}
                   className="accountSkinViewerStage"
@@ -16674,6 +17417,11 @@ export default function App() {
                         className={`accountSkinChoiceCard skinChoiceSaved skinChoiceSavedRef ${active ? "active" : ""}`}
                         onClick={() => setSelectedAccountSkinId(skin.id)}
                       >
+                        {active ? (
+                          <span className="accountSkinSelectedCheck" aria-hidden="true">
+                            <Icon name="check_circle" size={15} />
+                          </span>
+                        ) : null}
                         <div className="accountSkinChoiceThumb">
                           <div className="accountSkinChoiceThumbInner">
                             <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
@@ -16718,6 +17466,11 @@ export default function App() {
                         className={`accountSkinChoiceCard skinChoiceCompact skinChoiceCompactRef ${active ? "active" : ""}`}
                         onClick={() => setSelectedAccountSkinId(skin.id)}
                       >
+                        {active ? (
+                          <span className="accountSkinSelectedCheck" aria-hidden="true">
+                            <Icon name="check_circle" size={15} />
+                          </span>
+                        ) : null}
                         <div className="accountSkinChoiceThumb">
                           <div className="accountSkinChoiceThumbInner">
                             <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
@@ -16793,6 +17546,20 @@ export default function App() {
     })();
 
     const runningIds = new Set(runningInstances.map((run) => run.instance_id));
+    const recentlyPlayed = [...instances]
+      .map((inst) => {
+        const lastLaunchAt = instanceLastRunMetadataById[inst.id]?.lastLaunchAt ?? inst.created_at;
+        return { inst, lastLaunchAtMs: parseDateLike(lastLaunchAt)?.getTime() ?? 0 };
+      })
+      .sort((a, b) => b.lastLaunchAtMs - a.lastLaunchAtMs)
+      .slice(0, 3);
+    const knownDiskUsageBytes = Object.entries(instanceDiskUsageById)
+      .filter(([instanceId, bytes]) => instances.some((item) => item.id === instanceId) && Number.isFinite(bytes))
+      .reduce((sum, [, bytes]) => sum + Math.max(0, Number(bytes ?? 0)), 0);
+    const knownModsTotal = Object.entries(instanceModCountById)
+      .filter(([instanceId, count]) => instances.some((item) => item.id === instanceId) && Number.isFinite(count))
+      .reduce((sum, [, count]) => sum + Math.max(0, Number(count ?? 0)), 0);
+    const needsLibraryGrowthPrompt = instances.length < 3;
 
     return (
       <div className="page">
@@ -16819,7 +17586,7 @@ export default function App() {
                     <div className="libraryStatusText">
                       Connect your Minecraft account to launch with the native launcher.
                     </div>
-                    <button className="btn" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
+                    <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
                       {msLoginSessionId ? "Waiting for login..." : "Connect account"}
                     </button>
                   </div>
@@ -17004,7 +17771,15 @@ export default function App() {
               <div className="librarySideTitle">Instances running</div>
               <div className="libraryRunCount">{runningInstances.length}</div>
               {runningInstances.length === 0 ? (
-                <div className="muted">No instances running right now.</div>
+                <div className="compactEmptyState">
+                  <span className="compactEmptyIcon" aria-hidden="true">
+                    <Icon name="play" size={15} />
+                  </span>
+                  <div className="compactEmptyBody">
+                    <div className="compactEmptyTitle">Nothing running right now</div>
+                    <div className="compactEmptyText">Hit Play on any instance to launch Minecraft.</div>
+                  </div>
+                </div>
               ) : (
                 <div className="libraryRunList">
                   {runningInstances.slice(0, 5).map((run) => (
@@ -17016,6 +17791,49 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            <div className="card librarySideCard">
+              <div className="librarySideTitle">Recently played</div>
+              {recentlyPlayed.length === 0 ? (
+                <div className="muted">No launch history yet.</div>
+              ) : (
+                <div className="libraryRecentList">
+                  {recentlyPlayed.map((row) => (
+                    <button
+                      key={row.inst.id}
+                      className="libraryRecentRow"
+                      onClick={() => openInstance(row.inst.id)}
+                      title={formatDateTime(row.inst.created_at, "Unknown time")}
+                    >
+                      <span className="libraryRecentName">{row.inst.name}</span>
+                      <span className="libraryRecentMeta">{relativeTimeFromMs(row.lastLaunchAtMs)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="card librarySideCard">
+              <div className="librarySideTitle">Storage usage</div>
+              <div className="libraryStorageStat">{formatBytes(knownDiskUsageBytes)}</div>
+              <div className="muted">
+                {knownModsTotal.toLocaleString()} total mods across {instances.length} instance
+                {instances.length === 1 ? "" : "s"}.
+              </div>
+            </div>
+
+            {needsLibraryGrowthPrompt ? (
+              <div className="card librarySideCard libraryPromptCard">
+                <div className="librarySideTitle">Create your next instance</div>
+                <div className="muted">
+                  Try a Vanilla profile, a Fabric performance build, or a Creator Studio test instance.
+                </div>
+                <button className="btn primary" onClick={() => setShowCreate(true)}>
+                  <Icon name="plus" size={16} />
+                  Create instance
+                </button>
+              </div>
+            ) : null}
 
             <div className="card librarySideCard">
               <div className="librarySideTitle">Playing as</div>
@@ -17033,7 +17851,7 @@ export default function App() {
                 <>
                   <div className="muted">No Minecraft account connected.</div>
                   <div className="row" style={{ marginTop: 10 }}>
-                    <button className="btn" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
+                    <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
                       {msLoginSessionId ? "Waiting..." : "Sign in"}
                     </button>
                   </div>
@@ -17045,7 +17863,7 @@ export default function App() {
               <div className="librarySideTitle">Quick actions</div>
               <div className="libraryQuickActions">
                 <button className="btn" onClick={() => setRoute("discover")}>Discover mods</button>
-                <button className="btn" onClick={() => setShowCreate(true)}>Create instance</button>
+                <button className="btn primary" onClick={() => setShowCreate(true)}>Create instance</button>
               </div>
             </div>
           </aside>
@@ -17847,6 +18665,69 @@ export default function App() {
                 >
                   {launchFixApplyBusyInstanceId === inst.id ? "Applying…" : "Apply selected fixes"}
                 </button>
+              </div>
+            </Modal>
+          );
+        })()
+      ) : null}
+
+      {fullHistoryModalInstanceId ? (
+        (() => {
+          const inst = instances.find((item) => item.id === fullHistoryModalInstanceId);
+          if (!inst) return null;
+          const filter = fullHistoryFilterByInstance[inst.id] ?? "all";
+          const search = String(fullHistorySearchByInstance[inst.id] ?? "");
+          const busy = Boolean(fullHistoryBusyByInstance[inst.id]);
+          const hasMore = Boolean(fullHistoryHasMoreByInstance[inst.id]);
+          const rows = (fullHistoryByInstance[inst.id] ?? [])
+            .map((event) =>
+              toRecentActivityEntry({
+                id: `modal:${event.id}`,
+                atMs: parseDateLike(event.at)?.getTime() ?? 0,
+                tone: inferActivityTone(`${event.kind} ${event.summary}`),
+                message: event.summary,
+                rawKind: event.kind,
+                sourceLabel: humanizeToken(event.kind),
+              })
+            )
+            .filter((entry) => {
+              if (filter !== "all" && entry.category !== filter) return false;
+              const normalizedSearch = search.trim().toLowerCase();
+              if (!normalizedSearch) return true;
+              const text = `${entry.message} ${entry.target} ${entry.rawKind}`.toLowerCase();
+              return text.includes(normalizedSearch);
+            });
+          return (
+            <Modal
+              title={`Instance events · ${inst.name}`}
+              size="wide"
+              className="fullHistoryModal"
+              onClose={() => setFullHistoryModalInstanceId(null)}
+            >
+              <div className="modalBody">
+                <FullHistoryView
+                  rows={rows}
+                  filter={filter}
+                  onFilterChange={(value) =>
+                    setFullHistoryFilterByInstance((prev) => ({
+                      ...prev,
+                      [inst.id]: value,
+                    }))
+                  }
+                  search={search}
+                  onSearchChange={(value) =>
+                    setFullHistorySearchByInstance((prev) => ({
+                      ...prev,
+                      [inst.id]: value,
+                    }))
+                  }
+                  busy={busy}
+                  hasMore={hasMore}
+                  onRefresh={() => void loadFullHistoryPage(inst.id, { reset: true })}
+                  onLoadOlder={() => void loadFullHistoryPage(inst.id)}
+                  storeLimit={INSTANCE_HISTORY_STORE_LIMIT}
+                  coalesceWindowMs={RECENT_ACTIVITY_COALESCE_WINDOW_MS}
+                />
               </div>
             </Modal>
           );

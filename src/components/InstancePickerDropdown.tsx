@@ -57,7 +57,7 @@ export default function InstancePickerDropdown({
         disabled={disabled}
       >
         <span>{selected ? selected.name : placeholder ?? "No instances"}</span>
-        <span style={{ opacity: 0.7 }}>{disabled ? "" : "▾"}</span>
+        <span className="dropCaret" aria-hidden="true">{disabled ? "" : open ? "▴" : "▾"}</span>
       </button>
       {open ? (
         <div className="dropPanel">

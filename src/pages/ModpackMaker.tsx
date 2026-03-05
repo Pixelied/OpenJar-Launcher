@@ -236,6 +236,7 @@ export default function ModpackMaker({
   onNotice,
   onError,
 }: Props) {
+  // UI polish: emphasize the active entry in the list and mirror that selection in Inspector so edits feel anchored.
   const [view, setView] = useState<MakerView>("home");
   const [busy, setBusy] = useState(false);
   const [migrationPending, setMigrationPending] = useState(false);
@@ -1904,12 +1905,11 @@ export default function ModpackMaker({
                     return (
                       <div
                         key={row.key}
-                        className="card mpmEntryCard"
+                        className={`card mpmEntryCard ${active ? "active" : ""}`}
                         style={{
                           padding: 10,
                           borderRadius: 12,
                           textAlign: "left",
-                          borderColor: active ? "var(--accent-ring)" : undefined,
                           cursor: "pointer",
                         }}
                         onClick={() => setSelectedEntryKey(row.key)}
@@ -1959,7 +1959,12 @@ export default function ModpackMaker({
 
             <div className="card mpmInspectorPanel" style={{ padding: 12, borderRadius: 16 }}>
               <div className="rowBetween">
-                <div style={{ fontWeight: 900 }}>Inspector</div>
+                <div>
+                  <div style={{ fontWeight: 900 }}>Inspector</div>
+                  <div className="mpmInspectorEditingLabel">
+                    {selectedEntryRow ? `Editing: ${entryDisplayName(selectedEntryRow.entry)}` : "Editing: none"}
+                  </div>
+                </div>
                 {selectedEntryRow ? (
                   <button
                     className="btn subtle"
@@ -1973,8 +1978,11 @@ export default function ModpackMaker({
               </div>
 
               {!selectedEntryRow ? (
-                <div className="muted" style={{ marginTop: 8 }}>
-                  Select an entry from the center list to edit requirement, defaults, and advanced policies.
+                <div className="mpmInspectorEmptyState">
+                  <div className="mpmInspectorEmptyIcon" aria-hidden="true">[]</div>
+                  <div className="muted">
+                    Click an entry to inspect and edit it.
+                  </div>
                 </div>
               ) : (
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>

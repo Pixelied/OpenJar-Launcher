@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Icon from "../Icon";
 import usePortalDropdownLayout from "./usePortalDropdownLayout";
 
 export default function MultiSelectDropdown({
@@ -113,7 +114,9 @@ export default function MultiSelectDropdown({
         style={disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
       >
         <div>{label}</div>
-        <div style={{ opacity: 0.7 }}>▾</div>
+        <span className="dropCaret" aria-hidden="true">
+          <Icon name="chevron_down" size={11} />
+        </span>
       </div>
 
       {open && layout
@@ -130,69 +133,71 @@ export default function MultiSelectDropdown({
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              {showSearch ? (
-                <>
-                  <input
-                    className="input"
-                    value={q}
-                    onChange={(e) => setQ(e.target.value)}
-                    placeholder={searchPlaceholder}
-                    autoFocus
-                  />
+              <div className="dropPanelBody">
+                {showSearch ? (
+                  <>
+                    <input
+                      className="input"
+                      value={q}
+                      onChange={(e) => setQ(e.target.value)}
+                      placeholder={searchPlaceholder}
+                      autoFocus
+                    />
 
-                  <div style={{ height: 10 }} />
-                </>
-              ) : null}
+                    <div style={{ height: 10 }} />
+                  </>
+                ) : null}
 
-              {filtered.length === 0 ? (
-                <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>No matches</div>
-              ) : (
-                filtered.map((g) => (
-                  <div key={g.group}>
-                    {showGroupHeaders ? <div className="groupHdr">{g.group}</div> : null}
-                    {g.items.map((it) => {
-                      const checked = values.includes(it.id);
-                      return (
-                        <div
-                          key={it.id}
-                          className={`${itemVariant === "menu" ? "menuItem" : "dropItem"} ${checked ? "active" : ""}`}
-                          style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
-                          onClick={() => toggle(it.id)}
-                        >
-                          <div style={{ paddingRight: 12 }}>{it.label}</div>
-                          <div style={{ opacity: checked ? 1 : 0.35, fontWeight: 1000 }}>{checked ? "✓" : ""}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))
-              )}
+                {filtered.length === 0 ? (
+                  <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>No matches</div>
+                ) : (
+                  filtered.map((g) => (
+                    <div key={g.group}>
+                      {showGroupHeaders ? <div className="groupHdr">{g.group}</div> : null}
+                      {g.items.map((it) => {
+                        const checked = values.includes(it.id);
+                        return (
+                          <div
+                            key={it.id}
+                            className={`${itemVariant === "menu" ? "menuItem" : "dropItem"} ${checked ? "active" : ""}`}
+                            style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
+                            onClick={() => toggle(it.id)}
+                          >
+                            <div style={{ paddingRight: 12 }}>{it.label}</div>
+                            <div style={{ opacity: checked ? 1 : 0.35, fontWeight: 1000 }}>{checked ? "✓" : ""}</div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))
+                )}
 
-              <div style={{ height: 12 }} />
-              <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  className="dropMiniBtn"
-                  onClick={() => {
-                    if (onClear) {
-                      onClear();
-                    } else {
-                      onChange([]);
-                    }
-                    setQ("");
-                  }}
-                >
-                  {clearLabel}
-                </button>
-                <div style={{ flex: 1 }} />
-                <button
-                  className="dropMiniBtn"
-                  onClick={() => {
-                    setOpen(false);
-                    setQ("");
-                  }}
-                >
-                  Done
-                </button>
+                <div style={{ height: 12 }} />
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    className="dropMiniBtn"
+                    onClick={() => {
+                      if (onClear) {
+                        onClear();
+                      } else {
+                        onChange([]);
+                      }
+                      setQ("");
+                    }}
+                  >
+                    {clearLabel}
+                  </button>
+                  <div style={{ flex: 1 }} />
+                  <button
+                    className="dropMiniBtn"
+                    onClick={() => {
+                      setOpen(false);
+                      setQ("");
+                    }}
+                  >
+                    Done
+                  </button>
+                </div>
               </div>
             </div>,
             document.body

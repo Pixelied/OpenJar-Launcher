@@ -987,6 +987,10 @@ struct SetInstalledModEnabledArgs {
     instance_id: String,
     #[serde(alias = "versionId")]
     version_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
     enabled: bool,
 }
 
@@ -996,6 +1000,10 @@ struct SetInstalledModProviderArgs {
     instance_id: String,
     #[serde(alias = "versionId")]
     version_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
     source: String,
 }
 
@@ -1005,6 +1013,10 @@ struct AttachInstalledModGithubRepoArgs {
     instance_id: String,
     #[serde(alias = "versionId")]
     version_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
     #[serde(alias = "githubRepo", alias = "repo", alias = "projectId")]
     github_repo: String,
     #[serde(default)]
@@ -1017,6 +1029,10 @@ struct RemoveInstalledModArgs {
     instance_id: String,
     #[serde(alias = "versionId")]
     version_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1083,6 +1099,10 @@ struct SetInstalledModPinArgs {
     instance_id: String,
     #[serde(alias = "versionId")]
     version_id: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    filename: Option<String>,
     #[serde(default)]
     pin: Option<String>,
 }

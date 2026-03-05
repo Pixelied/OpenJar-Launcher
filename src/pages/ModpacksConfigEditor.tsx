@@ -109,6 +109,8 @@ export default function ModpacksConfigEditor({
   onManageInstances: () => void;
   runningInstanceIds: string[];
 }) {
+  // UI polish: this editor keeps one primary action (Save), elevates Fix issues as a warning-only action,
+  // and keeps utility actions secondary so critical remediation is easy to spot.
   const [scope, setScope] = useState<EditorScope>("instance");
   const [instanceFilesByInstance, setInstanceFilesByInstance] = useState<
     Record<string, InstanceConfigFileEntry[]>
@@ -1205,47 +1207,56 @@ export default function ModpacksConfigEditor({
                 </div>
               ) : null}
               <div className="configEditorToolsRow">
-                {canFixIssues || meaningfulIssueCount > 0 ? (
+                <div className="configEditorToolsMain">
                   <button
                     className="btn"
                     type="button"
-                    onClick={onFixIssues}
-                    disabled={!canFixIssues}
-                    title={
-                      fileReadOnly
-                        ? readOnlyMessage ?? "This file is read-only."
-                        : safeFixSupport?.blockingError
-                        ? safeFixSupport.blockingError
-                        : meaningfulIssueCount > 0
-                          ? "Applies conservative automatic fixes to known issues."
-                          : "Apply available safe cleanups."
-                    }
+                    onClick={() => {
+                      void onOpenInFinder();
+                    }}
+                    disabled={!activePath}
+                    title={openInFinderTitle}
                   >
-                    {meaningfulIssueCount > 0 ? `Fix issues (${meaningfulIssueCount})` : "Auto-fix"}
+                    Open location
                   </button>
-                ) : null}
-                <button
-                  className="btn"
-                  type="button"
-                  onClick={() => {
-                    void onOpenInFinder();
-                  }}
-                  disabled={!activePath}
-                  title={openInFinderTitle}
-                >
-                  Open location
-                </button>
-                {unsaved || showDiff ? (
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => setShowDiff((prev) => !prev)}
-                    disabled={!activePath || !activeRecord}
-                    aria-pressed={showDiff}
-                  >
-                    {showDiff ? "Hide diff" : "Preview diff"}
-                  </button>
-                ) : null}
+                  {unsaved || showDiff ? (
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => setShowDiff((prev) => !prev)}
+                      disabled={!activePath || !activeRecord}
+                      aria-pressed={showDiff}
+                    >
+                      {showDiff ? "Hide diff" : "Preview diff"}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="configEditorToolsDivider" aria-hidden="true" />
+                <div className="configEditorIssuesSlot">
+                  {meaningfulIssueCount > 0 ? (
+                    <button
+                      className="btn warning"
+                      type="button"
+                      onClick={onFixIssues}
+                      disabled={!canFixIssues}
+                      title={
+                        fileReadOnly
+                          ? readOnlyMessage ?? "This file is read-only."
+                          : safeFixSupport?.blockingError
+                            ? safeFixSupport.blockingError
+                            : "Applies conservative automatic fixes to known issues."
+                      }
+                    >
+                      <span className="configIssueWarningIcon" aria-hidden="true">!</span>
+                      Fix issues ({meaningfulIssueCount})
+                    </button>
+                  ) : (
+                    <span className="configIssuesOk">
+                      <span className="configIssuesOkDot" aria-hidden="true" />
+                      No issues
+                    </span>
+                  )}
+                </div>
               </div>
               <div className="configEditorUtilityRow">
                 <div className="configEditorSearchWrap">

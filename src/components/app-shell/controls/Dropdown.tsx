@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Icon from "../Icon";
 import usePortalDropdownLayout from "./usePortalDropdownLayout";
 
 type VersionItemLike = {
@@ -75,7 +76,9 @@ export default function Dropdown({
     <div className={`dropdown ${open ? "open" : ""}`} ref={rootRef}>
       <div className={`dropBtn ${value ? "value" : ""}`} onClick={() => setOpen((o) => !o)}>
         <div>{value ?? placeholder}</div>
-        <div style={{ opacity: 0.7 }}>▾</div>
+        <span className="dropCaret" aria-hidden="true">
+          <Icon name="chevron_down" size={11} />
+        </span>
       </div>
 
       {open && layout
@@ -92,55 +95,57 @@ export default function Dropdown({
               }}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              <input
-                className="input"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="Search versions…"
-                autoFocus
-              />
+              <div className="dropPanelBody">
+                <input
+                  className="input"
+                  value={q}
+                  onChange={(e) => setQ(e.target.value)}
+                  placeholder="Search versions…"
+                  autoFocus
+                />
 
-              <div style={{ height: 10 }} />
+                <div style={{ height: 10 }} />
 
-              {filtered.length === 0 ? (
-                <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>No matches</div>
-              ) : (
-                <>
-                  {includeAny ? (
-                    <div>
-                      <div className="groupHdr">General</div>
-                      <div
-                        className={`dropItem ${value === null ? "active" : ""}`}
-                        onClick={() => {
-                          onPick(null);
-                          setOpen(false);
-                          setQ("");
-                        }}
-                      >
-                        Any
-                      </div>
-                    </div>
-                  ) : null}
-                  {filtered.map((g) => (
-                    <div key={g.group}>
-                      <div className="groupHdr">{g.group}</div>
-                      {g.items.map((it) => (
+                {filtered.length === 0 ? (
+                  <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>No matches</div>
+                ) : (
+                  <>
+                    {includeAny ? (
+                      <div>
+                        <div className="groupHdr">General</div>
                         <div
-                          key={it.id}
-                          className={`dropItem ${it.id === value ? "active" : ""}`}
+                          className={`dropItem ${value === null ? "active" : ""}`}
                           onClick={() => {
-                            onPick(it.id);
+                            onPick(null);
                             setOpen(false);
                             setQ("");
                           }}
                         >
-                          {it.id}
+                          Any
                         </div>
-                      ))}
-                    </div>
-                  ))}
-                </>
-              )}
+                      </div>
+                    ) : null}
+                    {filtered.map((g) => (
+                      <div key={g.group}>
+                        <div className="groupHdr">{g.group}</div>
+                        {g.items.map((it) => (
+                          <div
+                            key={it.id}
+                            className={`dropItem ${it.id === value ? "active" : ""}`}
+                            onClick={() => {
+                              onPick(it.id);
+                              setOpen(false);
+                              setQ("");
+                            }}
+                          >
+                            {it.id}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
             </div>,
             document.body
           )

@@ -70,6 +70,128 @@ fn capture_run_report_best_effort(
     }
 }
 
+fn normalized_content_type_hint(raw: Option<&str>) -> Option<String> {
+    let value = raw.unwrap_or_default().trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(normalize_lock_content_type(value))
+    }
+}
+
+fn normalized_filename_hint(raw: Option<&str>) -> Option<String> {
+    let value = raw.unwrap_or_default().trim();
+    if value.is_empty() {
+        return None;
+    }
+    let safe = sanitize_filename(value);
+    if safe.is_empty() {
+        Some(value.to_ascii_lowercase())
+    } else {
+        Some(safe.to_ascii_lowercase())
+    }
+}
+
+fn find_lock_entry_index(
+    lock: &Lockfile,
+    version_id: &str,
+    content_type_hint: Option<&str>,
+    filename_hint: Option<&str>,
+) -> Result<usize, String> {
+    let mut candidates = lock
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.version_id == version_id)
+        .map(|(idx, _)| idx)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Err("installed mod entry not found".to_string());
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates[0]);
+    }
+
+    let content_hint = normalized_content_type_hint(content_type_hint);
+    if let Some(ref expected) = content_hint {
+        let filtered = candidates
+            .iter()
+            .copied()
+            .filter(|idx| normalize_lock_content_type(&lock.entries[*idx].content_type) == *expected)
+            .collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            candidates = filtered;
+        }
+    }
+
+    let filename_hint = normalized_filename_hint(filename_hint);
+    if let Some(ref expected) = filename_hint {
+        let filtered = candidates
+            .iter()
+            .copied()
+            .filter(|idx| sanitize_filename(&lock.entries[*idx].filename).to_ascii_lowercase() == *expected)
+            .collect::<Vec<_>>();
+        if !filtered.is_empty() {
+            candidates = filtered;
+        }
+    }
+
+    Ok(candidates[0])
+}
+
+fn collect_known_enabled_mod_ids_for_dependency_checks(
+    lock: &Lockfile,
+    instance_dir: &Path,
+    instance_loader: &str,
+) -> HashSet<String> {
+    let mut out = HashSet::<String>::new();
+
+    for entry in lock.entries.iter().filter(|entry| {
+        entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods"
+    }) {
+        for mod_id in entry
+            .local_analysis
+            .as_ref()
+            .map(|analysis| analysis.mod_ids.clone())
+            .unwrap_or_default()
+        {
+            if let Some(normalized) = normalize_local_mod_id(&mod_id) {
+                out.insert(normalized);
+            }
+        }
+
+        if let Some(normalized) = normalize_local_mod_id(&entry.project_id) {
+            out.insert(normalized);
+        }
+        for candidate in &entry.provider_candidates {
+            if let Some(normalized) = normalize_local_mod_id(&candidate.project_id) {
+                out.insert(normalized);
+            }
+        }
+
+        let has_local_ids = entry
+            .local_analysis
+            .as_ref()
+            .map(|analysis| !analysis.mod_ids.is_empty())
+            .unwrap_or(false);
+        if has_local_ids {
+            continue;
+        }
+        if let Ok(Some(path)) = local_entry_file_read_path(instance_dir, entry) {
+            if let Ok(bytes) = fs::read(&path) {
+                let scanned = analyze_local_mod_file(&entry.filename, &bytes, Some(instance_loader), None);
+                for mod_id in scanned.mod_ids {
+                    if let Some(normalized) = normalize_local_mod_id(&mod_id) {
+                        out.insert(normalized);
+                    }
+                }
+            }
+        }
+    }
+
+    out
+}
+
 const MINECRAFT_SETTINGS_SYNC_FILES: &[&str] = &[
     "options.txt",
     "optionsof.txt",
@@ -4535,19 +4657,8 @@ fn import_local_mod_file_inner(
                 && normalize_lock_content_type(&entry.content_type) == normalized_content_type
         })
         .and_then(|entry| entry.pinned_version.clone());
-    let known_mod_ids = lock
-        .entries
-        .iter()
-        .filter(|entry| entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods")
-        .flat_map(|entry| {
-            entry
-                .local_analysis
-                .as_ref()
-                .map(|analysis| analysis.mod_ids.clone())
-                .unwrap_or_default()
-                .into_iter()
-        })
-        .collect::<HashSet<_>>();
+    let known_mod_ids =
+        collect_known_enabled_mod_ids_for_dependency_checks(&lock, &instance_dir, &instance.loader);
     let local_analysis = if normalized_content_type == "mods" {
         Some(analyze_local_mod_file(
             &safe_filename,
@@ -4732,6 +4843,8 @@ fn resolve_local_mod_sources_inner(
     let mut warnings: Vec<String> = Vec::new();
     let mut changed = false;
 
+    let mut known_mod_ids =
+        collect_known_enabled_mod_ids_for_dependency_checks(&lock, &instance_dir, &instance.loader);
     for idx in 0..lock.entries.len() {
         let source = lock.entries[idx].source.trim().to_ascii_lowercase();
         let is_local = source == "local";
@@ -4781,27 +4894,17 @@ fn resolve_local_mod_sources_inner(
             }
         };
         if entry_content_type == "mods" {
-            let known_mod_ids = lock
-                .entries
-                .iter()
-                .filter(|entry| {
-                    entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods"
-                })
-                .flat_map(|entry| {
-                    entry
-                        .local_analysis
-                        .as_ref()
-                        .map(|analysis| analysis.mod_ids.clone())
-                        .unwrap_or_default()
-                        .into_iter()
-                })
-                .collect::<HashSet<_>>();
             let analysis = analyze_local_mod_file(
                 &filename,
                 &file_bytes,
                 Some(&instance.loader),
                 Some(&known_mod_ids),
             );
+            for mod_id in &analysis.mod_ids {
+                if let Some(normalized) = normalize_local_mod_id(mod_id) {
+                    known_mod_ids.insert(normalized);
+                }
+            }
             let had_analysis = lock.entries[idx].local_analysis.is_some();
             lock.entries[idx].local_analysis = Some(analysis);
             if !had_analysis {
@@ -5341,6 +5444,8 @@ fn update_all_instance_content_inner(
                         SetInstalledModEnabledArgs {
                             instance_id: args.instance_id.clone(),
                             version_id: installed.version_id,
+                            content_type: Some(installed.content_type),
+                            filename: Some(installed.filename),
                             enabled: false,
                         },
                     );
@@ -7343,11 +7448,12 @@ pub(crate) fn set_installed_mod_enabled(
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
-    let idx = lock
-        .entries
-        .iter()
-        .position(|e| e.version_id == args.version_id)
-        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let idx = find_lock_entry_index(
+        &lock,
+        &args.version_id,
+        args.content_type.as_deref(),
+        args.filename.as_deref(),
+    )?;
 
     let mut changed = false;
     {
@@ -7476,11 +7582,12 @@ pub(crate) fn set_installed_mod_pin(
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
-    let idx = lock
-        .entries
-        .iter()
-        .position(|e| e.version_id == args.version_id)
-        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let idx = find_lock_entry_index(
+        &lock,
+        &args.version_id,
+        args.content_type.as_deref(),
+        args.filename.as_deref(),
+    )?;
 
     let entry = &mut lock.entries[idx];
     let next_pin = match args.pin.as_ref() {
@@ -7526,11 +7633,12 @@ pub(crate) fn set_installed_mod_provider(
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
-    let idx = lock
-        .entries
-        .iter()
-        .position(|e| e.version_id == args.version_id)
-        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let idx = find_lock_entry_index(
+        &lock,
+        &args.version_id,
+        args.content_type.as_deref(),
+        args.filename.as_deref(),
+    )?;
 
     let requested_source = args.source.trim().to_ascii_lowercase();
     if requested_source.is_empty() {
@@ -7699,11 +7807,12 @@ pub(crate) fn attach_installed_mod_github_repo(
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let activate = args.activate.unwrap_or(true);
 
-    let idx = lock
-        .entries
-        .iter()
-        .position(|entry| entry.version_id == args.version_id)
-        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let idx = find_lock_entry_index(
+        &lock,
+        &args.version_id,
+        args.content_type.as_deref(),
+        args.filename.as_deref(),
+    )?;
 
     let github_repo = args.github_repo.trim();
     if github_repo.is_empty() {
@@ -7881,11 +7990,12 @@ pub(crate) fn remove_installed_mod(
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
 
-    let idx = lock
-        .entries
-        .iter()
-        .position(|e| e.version_id == args.version_id)
-        .ok_or_else(|| "installed mod entry not found".to_string())?;
+    let idx = find_lock_entry_index(
+        &lock,
+        &args.version_id,
+        args.content_type.as_deref(),
+        args.filename.as_deref(),
+    )?;
     let entry = lock.entries.remove(idx);
     let content_type = normalize_lock_content_type(&entry.content_type);
 

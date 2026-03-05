@@ -168,6 +168,8 @@ export function listInstalledMods(instanceId: string): Promise<InstalledMod[]> {
 export function setInstalledModEnabled(input: {
   instanceId: string;
   versionId: string;
+  contentType?: string;
+  filename?: string;
   enabled: boolean;
 }): Promise<InstalledMod> {
   return invoke("set_installed_mod_enabled", { args: input });
@@ -176,6 +178,8 @@ export function setInstalledModEnabled(input: {
 export function setInstalledModPin(input: {
   instanceId: string;
   versionId: string;
+  contentType?: string;
+  filename?: string;
   pin?: string | null;
 }): Promise<InstalledMod> {
   return invoke("set_installed_mod_pin", { args: input });
@@ -184,6 +188,8 @@ export function setInstalledModPin(input: {
 export function setInstalledModProvider(input: {
   instanceId: string;
   versionId: string;
+  contentType?: string;
+  filename?: string;
   source: string;
 }): Promise<InstalledMod> {
   return invoke("set_installed_mod_provider", { args: input });
@@ -192,6 +198,8 @@ export function setInstalledModProvider(input: {
 export function attachInstalledModGithubRepo(input: {
   instanceId: string;
   versionId: string;
+  contentType?: string;
+  filename?: string;
   githubRepo: string;
   activate?: boolean;
 }): Promise<InstalledMod> {
@@ -201,6 +209,8 @@ export function attachInstalledModGithubRepo(input: {
 export function removeInstalledMod(input: {
   instanceId: string;
   versionId: string;
+  contentType?: string;
+  filename?: string;
 }): Promise<InstalledMod> {
   return invoke("remove_installed_mod", { args: input });
 }
