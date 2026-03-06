@@ -12594,13 +12594,13 @@ export default function App() {
                     <div className="settingSub">Switch between dark and light.</div>
                     <div className="row">
                       <button
-                        className={`btn ${theme === "dark" ? "primary" : ""}`}
+                        className={`btn stateful ${theme === "dark" ? "active" : ""}`}
                         onClick={() => setTheme("dark")}
                       >
                         Dark
                       </button>
                       <button
-                        className={`btn ${theme === "light" ? "primary" : ""}`}
+                        className={`btn stateful ${theme === "light" ? "active" : ""}`}
                         onClick={() => setTheme("light")}
                       >
                         Light
@@ -12739,7 +12739,7 @@ export default function App() {
                                   <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
                                 </div>
                                 <button
-                                  className={`btn ${javaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
+                                  className={`btn stateful ${javaPathDraft.trim() === runtime.path.trim() ? "active" : ""}`}
                                   onClick={() => setJavaPathDraft(runtime.path)}
                                   disabled={launcherBusy}
                                 >
@@ -12821,7 +12821,7 @@ export default function App() {
                             </div>
                             <div className="settingsAccountActions">
                               <button
-                                className={`btn ${selectedAccount ? "primary" : ""}`}
+                                className={`btn stateful ${selectedAccount ? "active" : ""}`}
                                 onClick={() => onSelectAccount(acct.id)}
                                 disabled={launcherBusy}
                               >
@@ -12846,7 +12846,7 @@ export default function App() {
                                 Disconnect removes this account from this launcher on this device.
                               </div>
                               <button
-                                className="btn danger"
+                                className="btn accountDisconnectBtn"
                                 onClick={() => {
                                   if (!window.confirm(`Disconnect ${acct.username} from this launcher?`)) return;
                                   void onLogoutAccount(acct.id);
@@ -12899,7 +12899,7 @@ export default function App() {
                     {appUpdaterInstallBusy ? "Installing…" : "Install update + restart"}
                   </button>
                   <button
-                    className={`btn ${appUpdaterAutoCheck ? "primary" : ""}`}
+                    className={`btn stateful ${appUpdaterAutoCheck ? "active" : ""}`}
                     onClick={() => setAppUpdaterAutoCheck((prev) => !prev)}
                     disabled={appUpdaterBusy || appUpdaterInstallBusy}
                   >
@@ -12926,7 +12926,7 @@ export default function App() {
                     </div>
                     <div className="row">
                       <button
-                        className={`btn ${launcherSettings?.auto_identify_local_jars ? "primary" : ""}`}
+                        className={`btn stateful ${launcherSettings?.auto_identify_local_jars ? "active" : ""}`}
                         onClick={() => void onToggleAutoIdentifyLocalJars()}
                         disabled={autoIdentifyLocalJarsBusy}
                       >
@@ -12946,7 +12946,7 @@ export default function App() {
                     </div>
                     <div className="row">
                       <button
-                        className={`btn ${skinPreviewEnabled ? "primary" : ""}`}
+                        className={`btn stateful ${skinPreviewEnabled ? "active" : ""}`}
                         onClick={() => setSkinPreviewEnabled((prev) => !prev)}
                       >
                         {skinPreviewEnabled ? "Enabled" : "Disabled"}
@@ -12961,7 +12961,7 @@ export default function App() {
                     </div>
                     <div className="row">
                       <button
-                        className={`btn ${(launcherSettings?.discord_presence_enabled ?? true) ? "primary" : ""}`}
+                        className={`btn stateful ${(launcherSettings?.discord_presence_enabled ?? true) ? "active" : ""}`}
                         onClick={() => void onToggleDiscordPresenceEnabled()}
                         disabled={discordPresenceBusy}
                       >
@@ -13001,7 +13001,7 @@ export default function App() {
                       </div>
                       <div className="row">
                         <button
-                          className={`btn ${discoverAddTraySticky ? "primary" : ""}`}
+                          className={`btn stateful ${discoverAddTraySticky ? "active" : ""}`}
                           onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
                         >
                           Discover add tray pinned: {discoverAddTraySticky ? "On" : "Off"}
@@ -13038,7 +13038,7 @@ export default function App() {
                         </div>
                         <div className="row">
                           <button
-                            className={`btn ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "primary" : ""}`}
+                            className={`btn stateful ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "active" : ""}`}
                             onClick={() => void onToggleAutoMicPermissionPrompt()}
                             disabled={autoMicPromptSettingBusy}
                           >
@@ -13742,14 +13742,14 @@ export default function App() {
                         </div>
                         <div className="row" style={{ marginTop: 0 }}>
                           <button
-                            className={`btn ${selectedAccount ? "primary" : ""}`}
+                            className={`btn stateful ${selectedAccount ? "active" : ""}`}
                             onClick={() => onSelectAccount(acct.id)}
                             disabled={launcherBusy}
                           >
                             {selectedAccount ? "Selected" : "Use"}
                           </button>
                           <button
-                            className="btn danger"
+                            className="btn accountDisconnectBtn"
                             onClick={() => onLogoutAccount(acct.id)}
                             disabled={launcherBusy}
                           >
@@ -15543,7 +15543,7 @@ export default function App() {
                                           source === "curseforge" ||
                                           source === "github") &&
                                         source !== activeProviderSource;
-                                      const badgeLabel = isActive ? label : `${label} candidate`;
+                                      const badgeLabel = label;
                                       if (!canSwitch) {
                                         return (
                                           <span
@@ -15553,7 +15553,7 @@ export default function App() {
                                               candidateExplain ??
                                               (isActive
                                                 ? `${label} is currently active`
-                                                : `${label} candidate`)
+                                                : `${label} is available as a provider option`)
                                             }
                                           >
                                             {badgeLabel}
@@ -16918,7 +16918,7 @@ export default function App() {
                                       <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
                                     </div>
                                     <button
-                                      className={`btn ${instanceJavaPathDraft.trim() === runtime.path.trim() ? "primary" : ""}`}
+                                      className={`btn stateful ${instanceJavaPathDraft.trim() === runtime.path.trim() ? "active" : ""}`}
                                       onClick={() => {
                                         setInstanceJavaPathDraft(runtime.path);
                                         void persistInstanceChanges(
@@ -16975,7 +16975,7 @@ export default function App() {
                             {[2048, 4096, 6144, 8192].map((presetMb) => (
                               <button
                                 key={presetMb}
-                                className={`btn ${Number(instanceMemoryDraft) === presetMb ? "primary" : ""}`}
+                                className={`btn stateful ${Number(instanceMemoryDraft) === presetMb ? "active" : ""}`}
                                 onClick={() => {
                                   setInstanceMemoryDraft(String(presetMb));
                                   void persistInstanceChanges(

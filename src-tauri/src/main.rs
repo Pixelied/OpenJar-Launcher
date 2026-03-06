@@ -4366,6 +4366,28 @@ fn sanitize_filename(name: &str) -> String {
     out.trim().to_string()
 }
 
+fn github_release_query_hint(filename: &str, display_name: &str, repo: &GithubRepository) -> String {
+    let sanitized_filename = sanitize_filename(filename);
+    let filename_hint = sanitized_filename
+        .trim()
+        .trim_end_matches(".disabled")
+        .trim_end_matches(".jar")
+        .trim();
+    if !filename_hint.is_empty() {
+        return filename_hint.to_string();
+    }
+    if !display_name.trim().is_empty() {
+        return display_name.trim().to_string();
+    }
+    if !repo.name.trim().is_empty() {
+        return repo.name.trim().to_string();
+    }
+    if !repo.full_name.trim().is_empty() {
+        return repo.full_name.trim().to_string();
+    }
+    "github".to_string()
+}
+
 fn allowed_icon_extension(ext: &str) -> bool {
     matches!(ext, "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif")
 }
@@ -10772,16 +10794,12 @@ fn check_single_content_update_entry(
             return Ok((None, warnings));
         }
         let releases = fetch_github_releases(client, &owner, &repo_name)?;
-        let query_hint = if entry.name.trim().is_empty() {
-            repo.name.as_str()
-        } else {
-            entry.name.as_str()
-        };
+        let query_hint = github_release_query_hint(&entry.filename, &display_name, &repo);
         let mut repo_loader_hints: HashSet<String> = HashSet::new();
         let mut selection = select_github_release_with_asset(
             &repo,
             &releases,
-            query_hint,
+            &query_hint,
             Some(&instance.mc_version),
             Some(&instance.loader),
             None,
@@ -10797,7 +10815,7 @@ fn check_single_content_update_entry(
             selection = select_github_release_with_asset(
                 &repo,
                 &releases,
-                query_hint,
+                &query_hint,
                 Some(&instance.mc_version),
                 Some(&instance.loader),
                 None,
@@ -10813,7 +10831,7 @@ fn check_single_content_update_entry(
             let has_any_release = select_github_release_with_asset(
                 &repo,
                 &releases,
-                query_hint,
+                &query_hint,
                 None,
                 None,
                 None,
@@ -10835,7 +10853,13 @@ fn check_single_content_update_entry(
         };
 
         let latest_version_id = format!("gh_release:{}", selection.release.id);
-        if latest_version_id == current_version_id.trim() {
+        if github_release_selection_matches_current(
+            &selection,
+            &current_version_id,
+            &current_version_number,
+            &entry.hashes,
+        ) || latest_version_id == current_version_id.trim()
+        {
             return Ok((None, warnings));
         }
         let mut latest_hashes = extract_github_asset_digest(&selection.asset);
@@ -11758,15 +11782,32 @@ fn try_fast_install_content_update(
             }
             repo_full_name_hint = Some(repo.full_name.clone());
             let releases = fetch_github_releases(client, &owner, &repo_name)?;
-            let query_hint = if update.name.trim().is_empty() {
-                repo.name.as_str()
-            } else {
-                update.name.as_str()
-            };
+            let current_filename_hint = lock
+                .entries
+                .iter()
+                .find(|entry| {
+                    if normalize_lock_content_type(&entry.content_type) != normalized {
+                        return false;
+                    }
+                    if !entry.source.trim().eq_ignore_ascii_case("github") {
+                        return false;
+                    }
+                    if !update.current_version_id.trim().is_empty()
+                        && entry.version_id.trim() == update.current_version_id.trim()
+                    {
+                        return true;
+                    }
+                    let entry_repo = parse_github_project_id(&entry.project_id).ok();
+                    let update_repo = parse_github_project_id(&update.project_id).ok();
+                    entry_repo.is_some() && entry_repo == update_repo
+                })
+                .map(|entry| entry.filename.clone())
+                .unwrap_or_default();
+            let query_hint = github_release_query_hint(&current_filename_hint, &update.name, &repo);
             let mut selection = select_github_release_with_asset(
                 &repo,
                 &releases,
-                query_hint,
+                &query_hint,
                 Some(&instance.mc_version),
                 Some(&instance.loader),
                 None,
@@ -11782,7 +11823,7 @@ fn try_fast_install_content_update(
                 selection = select_github_release_with_asset(
                     &repo,
                     &releases,
-                    query_hint,
+                    &query_hint,
                     Some(&instance.mc_version),
                     Some(&instance.loader),
                     None,
@@ -12321,6 +12362,47 @@ fn github_release_version_label(release: &GithubRelease) -> String {
         }
     }
     format!("release-{}", release.id)
+}
+
+fn github_release_selection_matches_current(
+    selection: &GithubReleaseSelection,
+    current_version_id: &str,
+    current_version_number: &str,
+    current_hashes: &HashMap<String, String>,
+) -> bool {
+    let latest_version_id = format!("gh_release:{}", selection.release.id);
+    if latest_version_id.eq_ignore_ascii_case(current_version_id.trim()) {
+        return true;
+    }
+
+    let latest_version_label = github_release_version_label(&selection.release);
+    if !latest_version_label.trim().is_empty()
+        && !current_version_number.trim().is_empty()
+        && latest_version_label
+            .trim()
+            .eq_ignore_ascii_case(current_version_number.trim())
+    {
+        return true;
+    }
+
+    let latest_hashes = extract_github_asset_digest(&selection.asset);
+    for key in ["sha512", "sha256"] {
+        let current = current_hashes
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        let latest = latest_hashes
+            .get(key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        if let (Some(current), Some(latest)) = (current, latest) {
+            if current.eq_ignore_ascii_case(latest) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 fn github_release_sort_key(release: &GithubRelease) -> i64 {
@@ -18244,6 +18326,39 @@ mod github_provider_tests {
         assert_eq!(selected.release.id, 2);
         assert_eq!(selected.asset.name, "test-mod-1.1.0.jar");
         assert!(!selected.asset.name.contains("sources"));
+    }
+
+    #[test]
+    fn github_release_query_hint_prefers_installed_filename() {
+        let repo = sample_repo();
+        let hint = github_release_query_hint("test-mod-1.2.3.jar.disabled", "Pretty Mod Name", &repo);
+        assert_eq!(hint, "test-mod-1.2.3");
+    }
+
+    #[test]
+    fn github_release_selection_match_detects_same_release_label() {
+        let repo = sample_repo();
+        let releases = vec![release_with_assets(
+            7,
+            "2026-03-01T00:00:00Z",
+            vec!["test-mod-1.2.0.jar"],
+        )];
+        let selection = select_github_release_with_asset(
+            &repo,
+            &releases,
+            "test-mod-1.2.0",
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("expected selected release");
+        assert!(github_release_selection_matches_current(
+            &selection,
+            "gh_release:999",
+            "v7",
+            &HashMap::new(),
+        ));
     }
 
     #[test]

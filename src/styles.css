@@ -104,8 +104,8 @@
 }
 
 :root:not([data-theme="light"]) .btn.danger{
-  color: rgba(251, 146, 166, 0.98);
-  border-color: rgba(244, 63, 94, 0.42);
+  color: #fca5a5;
+  border-color: #ef4444;
   background: transparent;
 }
 
@@ -167,7 +167,7 @@
 
 :root:not([data-theme="light"]) .accountStatusBadge.tone-error,
 :root:not([data-theme="light"]) .accountStatusText.tone-error{
-  color: rgba(251, 113, 133, 0.98);
+  color: rgba(252, 165, 165, 0.98);
 }
 
 :root:not([data-theme="light"]) .accountStatusBadge.tone-warn,
@@ -181,48 +181,48 @@
 }
 
 :root:not([data-theme="light"]) .accountAuthBanner{
-  border-color: rgba(251, 113, 133, 0.44);
-  background: rgba(190, 24, 93, 0.2);
+  border-color: rgba(239, 68, 68, 0.42);
+  background: rgba(127, 29, 29, 0.22);
 }
 
 :root:not([data-theme="light"]) .accountAuthBannerTitle{
-  color: rgba(251, 113, 133, 0.98);
+  color: rgba(252, 165, 165, 0.98);
 }
 
 :root[data-theme="light"]{
-  --bg: #ececef;
-  --bg2: rgba(127, 127, 127, 0.08);
-  --panel: #f3f4f6;
-  --panel2: #f8f9fb;
-  --page-bg: #ececef;
+  --bg: #eeeff2;
+  --bg2: rgba(103, 112, 125, 0.07);
+  --panel: #f5f6f8;
+  --panel2: #fafbfc;
+  --page-bg: #eeeff2;
   --card-bg: #ffffff;
-  --section-bg: #f3f4f6;
+  --section-bg: #f4f6f8;
   --btn-neutral-bg: #ffffff;
-  --control-border: rgba(76, 82, 92, 0.20);
-  --control-border-hover: rgba(76, 82, 92, 0.30);
+  --control-border: rgba(68, 76, 88, 0.18);
+  --control-border-hover: rgba(68, 76, 88, 0.28);
   --btn-primary-bg: var(--accent-solid);
   --btn-primary-border: color-mix(in srgb, var(--accent-solid) 72%, rgba(31, 41, 55, 0.28));
   --btn-primary-text: var(--accent-on-solid, #ffffff);
   --btn-primary-bg-hover: color-mix(in srgb, var(--accent-solid) 92%, #ffffff 8%);
   --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 78%, rgba(17, 24, 39, 0.22));
-  --interactive-hover-bg: #f3f4f7;
-  --interactive-hover-border: rgba(58, 58, 58, 0.20);
-  --stroke: rgba(58, 58, 58, 0.14);
-  --stroke2: rgba(58, 58, 58, 0.22);
-  --text: rgba(22, 22, 22, 0.96);
-  --muted: rgba(74, 74, 74, 0.74);
-  --muted2: rgba(92, 92, 92, 0.60);
-  --shadow: 0 16px 42px rgba(20, 20, 20, 0.10);
-  --shadowSoft: 0 10px 26px rgba(20, 20, 20, 0.08);
+  --interactive-hover-bg: #f4f6f8;
+  --interactive-hover-border: rgba(68, 76, 88, 0.24);
+  --stroke: rgba(62, 68, 79, 0.15);
+  --stroke2: rgba(62, 68, 79, 0.24);
+  --text: rgba(24, 27, 31, 0.97);
+  --muted: rgba(77, 84, 94, 0.76);
+  --muted2: rgba(104, 110, 121, 0.62);
+  --shadow: 0 16px 34px rgba(18, 24, 32, 0.08);
+  --shadowSoft: 0 8px 20px rgba(18, 24, 32, 0.06);
   --tooltipBg: color-mix(in srgb, var(--surface) 94%, #ffffff 6%);
   --tooltipText: color-mix(in srgb, var(--text) 97%, #000000 3%);
-  --dropdown-bg-solid: #f8f9fb;
-  --dropdown-bg-soft-solid: #f0f1f4;
-  --surface: #f8f9fb;
-  --surface-2: #eff1f4;
+  --dropdown-bg-solid: #fbfbfc;
+  --dropdown-bg-soft-solid: #f3f5f7;
+  --surface: #ffffff;
+  --surface-2: #f3f5f7;
   --border: var(--stroke);
-  --shadow-xs: 0 2px 8px rgba(20, 20, 20, 0.06);
-  --shadow-sm: 0 8px 18px rgba(20, 20, 20, 0.08);
+  --shadow-xs: 0 2px 8px rgba(18, 24, 32, 0.045);
+  --shadow-sm: 0 8px 18px rgba(18, 24, 32, 0.065);
   --accent-base: rgba(130, 132, 138, 0.74);
   --accent-strong-base: rgba(102, 105, 111, 0.94);
   --accent-soft-base: rgba(124, 132, 149, 0.14);
@@ -680,10 +680,10 @@ button, input, select { font-family: inherit; }
   border: 1px solid var(--control-border);
   background: var(--btn-neutral-bg);
   padding: var(--density-control-pad-y) var(--density-control-pad-x);
-  border-radius: 14px;
+  border-radius: 15px;
   min-height: var(--density-control-h);
   font-weight: 900;
-  font-size: 13px;
+  font-size: 13.5px;
   cursor: pointer;
   color: var(--text);
   display: inline-flex;
@@ -693,6 +693,7 @@ button, input, select { font-family: inherit; }
   line-height: 1;
   position: relative;
   overflow: hidden;
+  box-shadow: none;
   transition: transform var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease), box-shadow var(--dur-med) var(--ease), color var(--dur-fast) var(--ease);
 }
 .btn::after{
@@ -702,27 +703,51 @@ button, input, select { font-family: inherit; }
   transform: translateY(var(--hover-lift));
   background: var(--interactive-hover-bg);
   border-color: var(--control-border-hover);
-  box-shadow: var(--shadowSoft);
+  box-shadow: var(--shadow-xs);
 }
 .btn:active{ transform: translateY(0px) scale(0.99); }
 .btn.primary{
   background: var(--btn-primary-bg);
   border-color: var(--btn-primary-border);
   color: var(--btn-primary-text);
-  box-shadow: var(--shadow-xs);
+  box-shadow: 0 1px 2px rgba(18, 24, 32, 0.08);
 }
 .btn.primary:hover{
   background: var(--btn-primary-bg-hover);
   border-color: var(--btn-primary-border-hover);
+  box-shadow: var(--shadow-xs);
 }
 .btn.danger{
-  background: transparent;
-  border-color: rgba(244, 63, 94, 0.34);
-  color: rgba(190, 24, 93, 0.96);
+  background: #fff7f7;
+  border-color: #ef4444;
+  color: #b91c1c;
 }
 .btn.danger:hover{
-  background: color-mix(in srgb, rgba(244, 63, 94, 0.08) 100%, transparent);
-  border-color: rgba(244, 63, 94, 0.48);
+  background: #feeaea;
+  border-color: #dc2626;
+  color: #991b1b;
+}
+.btn.accountDisconnectBtn{
+  background: color-mix(in srgb, #dc2626 6%, var(--surface));
+  border-color: color-mix(in srgb, #dc2626 52%, var(--control-border));
+  color: #b42318;
+  box-shadow: none;
+}
+.btn.accountDisconnectBtn:hover{
+  background: color-mix(in srgb, #dc2626 10%, var(--surface));
+  border-color: color-mix(in srgb, #dc2626 72%, var(--control-border-hover));
+  color: #991b1b;
+  box-shadow: none;
+}
+:root:not([data-theme="light"]) .btn.accountDisconnectBtn{
+  background: color-mix(in srgb, #ef4444 14%, var(--surface));
+  border-color: color-mix(in srgb, #ef4444 68%, var(--control-border));
+  color: #fecaca;
+}
+:root:not([data-theme="light"]) .btn.accountDisconnectBtn:hover{
+  background: color-mix(in srgb, #ef4444 20%, var(--surface));
+  border-color: color-mix(in srgb, #ef4444 78%, var(--control-border-hover));
+  color: #fee2e2;
 }
 .btn.warning{
   background: transparent;
@@ -733,11 +758,11 @@ button, input, select { font-family: inherit; }
   background: rgba(245, 158, 11, 0.08);
   border-color: rgba(245, 158, 11, 0.54);
 }
-.btn.dangerSolid{ background: #d72650; border-color: #b51f44; color: #fff; }
-.btn.dangerSolid:hover{ background: #e0315d; border-color: #c3264a; }
+.btn.dangerSolid{ background: #d92d20; border-color: #b42318; color: #fff; }
+.btn.dangerSolid:hover{ background: #ef4444; border-color: #d92d20; }
 .btn.subtle{
-  background: var(--btn-neutral-bg);
-  border-color: var(--control-border);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  border-color: color-mix(in srgb, var(--stroke) 84%, transparent);
   color: color-mix(in srgb, var(--text) 80%, var(--muted) 20%);
 }
 .btn.subtle:hover{
@@ -745,6 +770,27 @@ button, input, select { font-family: inherit; }
   border-color: var(--control-border-hover);
   color: var(--text);
   box-shadow: none;
+}
+.btn.stateful{
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  border-color: color-mix(in srgb, var(--stroke) 82%, transparent);
+  color: color-mix(in srgb, var(--text) 82%, var(--muted) 18%);
+}
+.btn.stateful:hover{
+  background: color-mix(in srgb, var(--surface) 84%, var(--surface-2) 16%);
+  border-color: color-mix(in srgb, var(--stroke2) 84%, transparent);
+  color: var(--text);
+  box-shadow: none;
+}
+.btn.stateful.active{
+  background: color-mix(in srgb, var(--surface) 90%, var(--accent-soft) 10%);
+  border-color: color-mix(in srgb, var(--accent-ring) 58%, var(--stroke2));
+  color: var(--text);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 56%, transparent);
+}
+.btn.stateful.active:hover{
+  background: color-mix(in srgb, var(--surface) 86%, var(--accent-soft) 14%);
+  border-color: color-mix(in srgb, var(--accent-ring) 68%, var(--stroke2));
 }
 .btn.ghost{
   background: transparent;
@@ -773,19 +819,19 @@ button, input, select { font-family: inherit; }
 .input{
   width: 100%;
   padding: var(--density-input-pad-y) var(--density-input-pad-x);
-  border-radius: 14px;
+  border-radius: 15px;
   border: 1px solid var(--stroke);
-  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
   color: var(--text);
   outline: none;
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 800;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
-.input::placeholder{ color: rgba(127,127,127,0.62); }
+.input::placeholder{ color: rgba(116, 123, 133, 0.74); }
 .input:focus{
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--surface) 90%, var(--accent-soft) 10%);
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ring) 70%, transparent);
 }
 
@@ -806,18 +852,22 @@ button, input, select { font-family: inherit; }
 }
 
 .chip{
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 950;
   padding: 4px 10px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
-  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--stroke) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
   color: color-mix(in srgb, var(--text) 76%, var(--muted) 24%);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
   white-space: nowrap;
+}
+.chip.subtle{
+  background: color-mix(in srgb, var(--surface) 78%, var(--surface-2) 22%);
+  color: var(--muted);
 }
 .chipButton{
   cursor: pointer;
@@ -1022,7 +1072,7 @@ button, input, select { font-family: inherit; }
   border: 1px solid var(--stroke);
   background: var(--card-bg);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-xs);
+  box-shadow: 0 1px 2px rgba(18, 24, 32, 0.03);
   transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-med) var(--ease), background var(--dur-fast) var(--ease);
 }
 
@@ -2510,19 +2560,19 @@ button, input, select { font-family: inherit; }
 .dropBtn{
   width: 100%;
   padding: var(--density-input-pad-y) var(--density-input-pad-x);
-  border-radius: 14px;
+  border-radius: 15px;
   border: 1px solid var(--control-border);
-  background: var(--btn-neutral-bg);
-  font-size: 13px;
-  font-weight: 950;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  font-size: 13.5px;
+  font-weight: 900;
   display:flex;
   align-items:center;
   justify-content:space-between;
   cursor:pointer;
   transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
 }
-.dropBtn:hover{ background: var(--interactive-hover-bg); border-color: var(--control-border-hover); transform: translateY(-1px); box-shadow: var(--shadow-xs); }
+.dropBtn:hover{ background: var(--interactive-hover-bg); border-color: var(--control-border-hover); transform: translateY(-1px); box-shadow: none; }
 .dropBtn.value{ color: var(--text); }
 .dropBtn > :first-child{
   min-width: 0;
@@ -3025,13 +3075,13 @@ button, input, select { font-family: inherit; }
   overflow-anchor: none;
 }
 .resultCard{
-  padding: 14px;
-  border-radius: 22px;
+  padding: 16px;
+  border-radius: 20px;
   border: 1px solid var(--stroke);
-  background: var(--panel);
+  background: var(--card-bg);
   display:flex;
-  gap: 14px;
-  align-items: flex-start;
+  gap: 16px;
+  align-items: center;
   cursor:pointer;
   transition: transform 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease);
 }
@@ -3042,6 +3092,8 @@ button, input, select { font-family: inherit; }
   display:flex;
   gap:8px;
   align-items:center;
+  justify-content:flex-end;
+  flex-wrap: wrap;
 }
 .resultActions .btn{
   min-width: 96px;
@@ -3049,7 +3101,7 @@ button, input, select { font-family: inherit; }
 }
 .resultCard:hover{
   transform: translateY(-1px);
-  background: rgba(127,127,127,0.10);
+  background: color-mix(in srgb, var(--card-bg) 92%, var(--surface-2) 8%);
   border-color: var(--stroke2);
 }
 .resultIcon{
@@ -3082,9 +3134,9 @@ button, input, select { font-family: inherit; }
 .resultDesc{
   margin-top: 6px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 750;
-  line-height: 1.25rem;
+  line-height: 1.35;
 }
 .resultMetaRow{
   margin-top: 10px;
@@ -3159,8 +3211,8 @@ button, input, select { font-family: inherit; }
   padding:4px;
   border-radius: 999px;
   border:1px solid var(--stroke);
-  background: var(--panel);
-  box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-2) 28%);
+  box-shadow: none;
   align-items:center;
   min-width: 0;
   position: relative;
@@ -3181,11 +3233,11 @@ button, input, select { font-family: inherit; }
   position: absolute;
   inset: 0;
   border-radius: inherit;
-  border: 1px solid color-mix(in srgb, var(--stroke2) 88%, transparent);
-  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  border: 1px solid color-mix(in srgb, var(--stroke2) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, #ffffff 28%, transparent),
-    0 1px 1px color-mix(in srgb, #000 8%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, #ffffff 34%, transparent),
+    0 1px 2px color-mix(in srgb, #000 6%, transparent);
   transform: scaleX(1);
 }
 .segmentedIndicator.stretch-right{
@@ -3238,20 +3290,20 @@ button, input, select { font-family: inherit; }
   max-width: 1340px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 12px;
 }
 .homeSpotlight{
   margin-top: 0;
-  padding: 14px;
-  border-radius: 18px;
+  padding: 18px;
+  border-radius: 22px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(260px, 300px);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+  gap: 14px;
   align-items: stretch;
   border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
   background:
-    linear-gradient(152deg, color-mix(in srgb, var(--accent-soft) 16%, transparent), transparent 56%),
-    var(--surface);
+    linear-gradient(152deg, color-mix(in srgb, var(--accent-soft) 12%, transparent), transparent 56%),
+    var(--card-bg);
 }
 .homeSpotlightMain{
   min-width: 0;
@@ -3301,13 +3353,13 @@ button, input, select { font-family: inherit; }
 .homeKpis{
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
 }
 .homeKpi{
   border: 1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
-  padding: 11px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%);
+  padding: 12px;
 }
 .homeKpiLabel{
   font-size: 11px;
@@ -3325,7 +3377,7 @@ button, input, select { font-family: inherit; }
 .homeMainGrid{
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
-  gap: 10px;
+  gap: 12px;
   align-items: start;
 }
 .homeMainCol,
@@ -3336,10 +3388,10 @@ button, input, select { font-family: inherit; }
   gap: 8px;
 }
 .homePanel{
-  padding: 10px;
-  border-radius: 16px;
+  padding: 12px;
+  border-radius: 18px;
   border: 1px solid color-mix(in srgb, var(--stroke) 70%, transparent);
-  background: color-mix(in srgb, var(--surface) 96%, var(--panel2) 4%);
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--surface-2) 4%);
 }
 .homeAttentionClear{
   padding: 10px 12px;
@@ -3353,7 +3405,7 @@ button, input, select { font-family: inherit; }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding-bottom: 4px;
+  padding-bottom: 8px;
   border-bottom: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
 }
 .homePanelHead .homeMeta{
@@ -3368,7 +3420,7 @@ button, input, select { font-family: inherit; }
   margin-top: 8px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .homePanelActions .btn{
@@ -3378,14 +3430,14 @@ button, input, select { font-family: inherit; }
   margin-top: 9px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 .homeLaunchAction{
   border: 1px solid color-mix(in srgb, var(--stroke2) 82%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 93%, var(--panel2) 7%);
-  min-height: 70px;
-  padding: 10px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  min-height: 76px;
+  padding: 12px;
   color: var(--text);
   cursor: pointer;
   display: flex;
@@ -3403,13 +3455,13 @@ button, input, select { font-family: inherit; }
   margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 .homeListRow{
   border: 1px solid color-mix(in srgb, var(--stroke) 62%, transparent);
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--surface) 95%, var(--panel2) 5%);
-  padding: 8px 10px;
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3450,9 +3502,9 @@ button, input, select { font-family: inherit; }
 }
 .homeAlertRow{
   border: 1px solid color-mix(in srgb, var(--stroke2) 78%, transparent);
-  border-radius: 12px;
-  background: var(--surface);
-  padding: 8px 9px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3487,8 +3539,8 @@ button, input, select { font-family: inherit; }
   display: none;
 }
 .homeSideCol .homePanel{
-  padding: 10px;
-  border-radius: 15px;
+  padding: 12px;
+  border-radius: 18px;
 }
 .homeSideCol .homeListRow{
   padding: 8px 9px;
@@ -3645,9 +3697,9 @@ button, input, select { font-family: inherit; }
 .librarySidePane{
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   position: sticky;
-  top: 6px;
+  top: 10px;
 }
 .libraryHeader{ display:flex; align-items:flex-end; justify-content:space-between; gap:14px; margin-bottom: 12px; }
 .libraryHeader{ align-items: center; }
@@ -3709,10 +3761,10 @@ button, input, select { font-family: inherit; }
   align-items:center;
   gap:10px;
   padding: 10px 12px;
-  border-radius: 14px;
+  border-radius: 16px;
   border:1px solid var(--stroke);
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  box-shadow: none;
   min-width: 220px;
   flex: 1 1 340px;
 }
@@ -3746,8 +3798,8 @@ button, input, select { font-family: inherit; }
   position: relative;
   border: 1px solid var(--stroke);
   border-radius: 18px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  background: var(--card-bg);
+  box-shadow: 0 1px 2px rgba(18, 24, 32, 0.03);
   padding: 12px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3852,8 +3904,9 @@ button, input, select { font-family: inherit; }
   align-items: center;
 }
 .librarySideCard{
-  padding: 12px;
-  border-radius: 18px;
+  padding: 14px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--surface-2) 4%);
 }
 .librarySideTitle{
   font-size: 14px;
@@ -3960,16 +4013,16 @@ button, input, select { font-family: inherit; }
 .quickPlayForm{
   margin-top: 2px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 .quickPlayMetaRow{
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
   gap: 8px;
 }
 .quickPlayPortInput{
-  width: 96px;
-  min-width: 96px;
+  width: 100%;
+  min-width: 0;
 }
 .quickPlayBind{
   min-width: 0;
@@ -3979,15 +4032,16 @@ button, input, select { font-family: inherit; }
   width: 100%;
 }
 .quickPlayActions{
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
 .quickPlaySaveBtn{
-  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
 }
 .quickPlayRefreshBtn{
-  flex: 0 0 auto;
+  min-width: 0;
 }
 .quickPlayList{
   margin-top: 8px;
@@ -4164,13 +4218,14 @@ button, input, select { font-family: inherit; }
 .instanceSidePane{
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   position: sticky;
-  top: 6px;
+  top: 10px;
 }
 .instanceSideCard{
-  padding: 12px;
-  border-radius: 18px;
+  padding: 14px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--surface-2) 4%);
 }
 .activityFeedCard{
   gap: 8px;
@@ -4880,11 +4935,11 @@ button, input, select { font-family: inherit; }
   align-items:center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px;
-  border-radius: 18px;
+  padding: 14px;
+  border-radius: 20px;
   border:1px solid color-mix(in srgb, var(--stroke2) 84%, transparent);
-  background: var(--panel2);
-  box-shadow: var(--shadow-xs);
+  background: var(--card-bg);
+  box-shadow: 0 1px 2px rgba(18, 24, 32, 0.03);
   margin-bottom: 12px;
 }
 .instHero{ display:flex; align-items:center; gap: 12px; min-width: 0; }
@@ -5202,7 +5257,7 @@ button, input, select { font-family: inherit; }
 }
 .instToolbar{ display:flex; align-items:center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
 .instToolbar{ position: relative; z-index: 20; }
-.instToolbarLeft{ display:flex; align-items:center; gap: 10px; padding: 10px 12px; border-radius: 14px; border:1px solid var(--stroke); background: var(--surface); box-shadow: var(--shadow-xs); min-width: 280px; flex: 1 1 360px; }
+.instToolbarLeft{ display:flex; align-items:center; gap: 10px; padding: 10px 12px; border-radius: 16px; border:1px solid var(--stroke); background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%); box-shadow: none; min-width: 280px; flex: 1 1 360px; }
 .instToolbarLeft .input{ border:none; background: transparent; padding:0; box-shadow:none; flex:1; }
 .instToolbarLeft .navIcon{ opacity: 0.75; }
 .instToolbarClearBtn{
@@ -6941,12 +6996,12 @@ button.instanceProviderBadge:disabled{
 .settingCard{
   border-radius: 18px;
   border: 1px solid var(--stroke);
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--surface-2) 4%);
   padding: var(--density-card-pad);
   animation: panelRise var(--dur-med) var(--ease) both;
 }
 .settingTitle{ font-weight: 900; letter-spacing: -0.02em; }
-.settingSub{ margin-top: 6px; color: var(--muted); font-size: 12.5px; line-height: 1.35; }
+.settingSub{ margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.42; }
 .settingCard.settingCardVersion .settingTitleAfterControl{ margin-top: 10px; }
 .settingListMini{
   margin-top: 10px;
@@ -6959,11 +7014,11 @@ button.instanceProviderBadge:disabled{
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 8px 10px;
-  border-radius: 12px;
+  padding: 10px 12px;
+  border-radius: 14px;
   border: 1px solid var(--stroke);
-  background: rgba(127,127,127,0.08);
-  font-size: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%);
+  font-size: 12.5px;
   font-weight: 850;
 }
 .settingStack{
@@ -6995,20 +7050,20 @@ button.instanceProviderBadge:disabled{
   font-size: 14px;
 }
 .settingsLayout{
-  margin-top: 14px;
+  margin-top: 16px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
   align-items: start;
 }
 .settingsCol{
   min-width: 0;
   display: grid;
-  gap: 12px;
+  gap: 16px;
 }
 .settingsSectionCard{
-  padding: 16px;
-  border-radius: 20px;
+  padding: 18px;
+  border-radius: 22px;
 }
 .settingAnchorFlash{
   outline: 2px solid var(--accent-ring);
@@ -7033,8 +7088,8 @@ button.instanceProviderBadge:disabled{
   margin-top: 6px;
   color: var(--muted);
   font-size: var(--settings-subheading-size);
-  font-weight: var(--settings-subheading-weight);
-  line-height: 1.35;
+  font-weight: 640;
+  line-height: 1.45;
 }
 .settingsPage .settingTitle{
   font-size: var(--settings-label-size);
@@ -7043,8 +7098,8 @@ button.instanceProviderBadge:disabled{
 }
 .settingsPage .settingSub{
   font-size: var(--settings-subheading-size);
-  font-weight: var(--settings-subheading-weight);
-  line-height: 1.42;
+  font-weight: 640;
+  line-height: 1.48;
 }
 .settingsSaveRow{
   display: flex;
@@ -7053,11 +7108,11 @@ button.instanceProviderBadge:disabled{
   flex-wrap: wrap;
 }
 .settingsSectionCard .settingStack{
-  margin-top: 10px;
-  gap: 10px;
+  margin-top: 14px;
+  gap: 14px;
 }
 .settingsSectionCard .settingStack > div{
-  padding-top: 10px;
+  padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
 }
 .settingsSectionCard .settingStack > div:first-child{
@@ -7067,8 +7122,8 @@ button.instanceProviderBadge:disabled{
 .settingsFoldSection{
   margin-top: 8px;
   border: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
   overflow: hidden;
 }
 .settingsFoldSummary{
@@ -7077,7 +7132,7 @@ button.instanceProviderBadge:disabled{
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   cursor: pointer;
 }
 .settingsFoldSummary::-webkit-details-marker{
@@ -7113,11 +7168,12 @@ button.instanceProviderBadge:disabled{
 }
 .settingsFoldBody{
   border-top: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
-  padding: 10px 12px 12px;
+  padding: 12px 14px 14px;
 }
 .settingsSectionCard .row{
-  margin-top: 8px;
-  gap: 8px;
+  margin-top: 10px;
+  gap: 10px;
+  align-items: flex-start;
 }
 .settingsSectionCard .btn{
   border-radius: 12px;
@@ -7125,8 +7181,8 @@ button.instanceProviderBadge:disabled{
 .settingsModeToggle{
   padding: 5px;
   border-color: color-mix(in srgb, var(--stroke2) 90%, transparent);
-  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 24%, transparent);
+  background: color-mix(in srgb, var(--surface) 72%, var(--surface-2) 28%);
+  box-shadow: none;
 }
 .settingsModeToggle .segBtn{
   min-height: 34px;
@@ -7229,8 +7285,8 @@ button.instanceProviderBadge:disabled{
   gap: 8px;
 }
 .settingsAccountCard{
-  padding: 10px;
-  border-radius: 14px;
+  padding: 12px;
+  border-radius: 16px;
 }
 .settingsAccountRow{
   display: flex;
@@ -7246,7 +7302,7 @@ button.instanceProviderBadge:disabled{
 }
 .settingsManageBtn.active{
   border-color: color-mix(in srgb, var(--stroke2) 82%, transparent);
-  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  background: color-mix(in srgb, var(--surface) 84%, var(--surface-2) 16%);
   color: var(--text);
 }
 .settingsAccountManagePanel{
@@ -7302,16 +7358,16 @@ button.instanceProviderBadge:disabled{
   }
 }
 .accountPage{
-  max-width: 1180px;
+  max-width: 1200px;
 }
 .accountHero{
-  margin-top: 14px;
+  margin-top: 16px;
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
-  gap: 14px;
+  gap: 16px;
   align-items: center;
-  padding: 16px;
-  border-radius: 20px;
+  padding: 18px;
+  border-radius: 22px;
 }
 .accountAvatarWrap{
   width: 88px;
@@ -7391,7 +7447,7 @@ button.instanceProviderBadge:disabled{
 }
 .accountStatusBadge.tone-error,
 .accountStatusText.tone-error{
-  color: rgba(190, 24, 93, 0.98);
+  color: rgba(185, 28, 28, 0.98);
 }
 .accountStatusBadge.tone-warn,
 .accountStatusText.tone-warn{
@@ -7409,17 +7465,17 @@ button.instanceProviderBadge:disabled{
   word-break: break-all;
 }
 .accountGrid{
-  margin-top: 12px;
+  margin-top: 14px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 .accountAuthBanner{
   margin-top: 10px;
-  padding: 12px;
-  border-radius: 16px;
-  border-color: rgba(244, 63, 94, 0.45);
-  background: rgba(244, 63, 94, 0.12);
+  padding: 14px 16px;
+  border-radius: 18px;
+  border-color: rgba(220, 38, 38, 0.28);
+  background: color-mix(in srgb, rgba(220, 38, 38, 0.10) 62%, var(--card-bg));
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -7433,18 +7489,18 @@ button.instanceProviderBadge:disabled{
   font-size: 14px;
   font-weight: 930;
   letter-spacing: -0.01em;
-  color: rgba(190, 24, 93, 0.98);
+  color: rgba(185, 28, 28, 0.96);
 }
 .accountAuthBannerText{
   margin-top: 4px;
-  color: color-mix(in srgb, var(--text) 86%, rgba(190, 24, 93, 0.14));
-  font-size: 12px;
+  color: color-mix(in srgb, var(--text) 86%, rgba(185, 28, 28, 0.12));
+  font-size: 12.5px;
   font-weight: 760;
   max-width: 64ch;
 }
 .accountCard{
-  padding: 14px;
-  border-radius: 18px;
+  padding: 16px;
+  border-radius: 20px;
 }
 .accountSkinsStudio{
   margin-top: 12px;
@@ -7984,7 +8040,7 @@ button.instanceProviderBadge:disabled{
   margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 .accountDiagRow{
   display: flex;
@@ -7992,10 +8048,10 @@ button.instanceProviderBadge:disabled{
   justify-content: space-between;
   gap: 10px;
   border: 1px solid var(--stroke);
-  border-radius: 12px;
-  padding: 8px 10px;
-  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  font-size: 12px;
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--surface) 86%, var(--surface-2) 14%);
+  font-size: 12.5px;
   font-weight: 860;
 }
 .accountDiagRow strong{
@@ -8010,9 +8066,9 @@ button.instanceProviderBadge:disabled{
 }
 .accountAccountRow{
   border: 1px solid var(--stroke);
-  border-radius: 14px;
-  padding: 10px;
-  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  border-radius: 16px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 86%, var(--surface-2) 14%);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -8464,18 +8520,18 @@ button.instanceProviderBadge:disabled{
 .configWorkspaceGrid{
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(460px, 1fr) minmax(240px, 320px);
-  gap: 12px;
+  gap: 14px;
   position: relative;
   z-index: 1;
 }
 .configWorkspacePanel{
   border: 1px solid var(--stroke);
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface) 84%, transparent);
-  padding: 10px;
+  background: color-mix(in srgb, var(--card-bg) 96%, var(--surface-2) 4%);
+  padding: 12px;
   display: grid;
   align-content: start;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   min-height: 520px;
 }
@@ -8603,8 +8659,8 @@ button.instanceProviderBadge:disabled{
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: start;
-  gap: 6px;
-  margin-top: 4px;
+  gap: 8px;
+  margin-top: 6px;
   min-width: 0;
 }
 .configEditorActions .btn,
@@ -8662,9 +8718,9 @@ button.instanceProviderBadge:disabled{
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
+  gap: 8px;
   flex-wrap: wrap;
-  padding-top: 6px;
+  padding-top: 8px;
   border-top: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
 }
 .configEditorToolsMain{
@@ -8927,8 +8983,8 @@ button.instanceProviderBadge:disabled{
 }
 .configInlinePanel{
   border: 1px solid var(--stroke);
-  border-radius: 12px;
-  padding: 10px;
+  border-radius: 14px;
+  padding: 12px;
   display: grid;
   gap: 9px;
 }
@@ -8942,9 +8998,9 @@ button.instanceProviderBadge:disabled{
 }
 .configSimpleRow{
   border: 1px solid var(--stroke);
-  border-radius: 12px;
-  padding: 8px;
-  background: color-mix(in srgb, var(--surface-2) 90%, transparent);
+  border-radius: 14px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%);
   display: grid;
   gap: 6px;
 }
@@ -9013,8 +9069,8 @@ button.instanceProviderBadge:disabled{
 }
 .configInspectorPreview{
   border: 1px solid var(--stroke);
-  border-radius: 12px;
-  padding: 10px;
+  border-radius: 14px;
+  padding: 12px;
   display: grid;
   gap: 8px;
 }
@@ -9100,6 +9156,21 @@ button.instanceProviderBadge:disabled{
     grid-template-columns: 1fr;
   }
   .configEditorUtilityRow{
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 1180px){
+  .resultCard{
+    align-items: flex-start;
+  }
+  .resultActions{
+    width: 100%;
+    margin-left: 0;
+  }
+}
+@media (max-width: 760px){
+  .quickPlayMetaRow,
+  .quickPlayActions{
     grid-template-columns: 1fr;
   }
 }
