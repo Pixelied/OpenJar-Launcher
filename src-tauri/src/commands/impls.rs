@@ -117,7 +117,9 @@ fn find_lock_entry_index(
         let filtered = candidates
             .iter()
             .copied()
-            .filter(|idx| normalize_lock_content_type(&lock.entries[*idx].content_type) == *expected)
+            .filter(|idx| {
+                normalize_lock_content_type(&lock.entries[*idx].content_type) == *expected
+            })
             .collect::<Vec<_>>();
         if !filtered.is_empty() {
             candidates = filtered;
@@ -129,7 +131,9 @@ fn find_lock_entry_index(
         let filtered = candidates
             .iter()
             .copied()
-            .filter(|idx| sanitize_filename(&lock.entries[*idx].filename).to_ascii_lowercase() == *expected)
+            .filter(|idx| {
+                sanitize_filename(&lock.entries[*idx].filename).to_ascii_lowercase() == *expected
+            })
             .collect::<Vec<_>>();
         if !filtered.is_empty() {
             candidates = filtered;
@@ -146,9 +150,11 @@ fn collect_known_enabled_mod_ids_for_dependency_checks(
 ) -> HashSet<String> {
     let mut out = HashSet::<String>::new();
 
-    for entry in lock.entries.iter().filter(|entry| {
-        entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods"
-    }) {
+    for entry in lock
+        .entries
+        .iter()
+        .filter(|entry| entry.enabled && normalize_lock_content_type(&entry.content_type) == "mods")
+    {
         for mod_id in entry
             .local_analysis
             .as_ref()
@@ -179,7 +185,8 @@ fn collect_known_enabled_mod_ids_for_dependency_checks(
         }
         if let Ok(Some(path)) = local_entry_file_read_path(instance_dir, entry) {
             if let Ok(bytes) = fs::read(&path) {
-                let scanned = analyze_local_mod_file(&entry.filename, &bytes, Some(instance_loader), None);
+                let scanned =
+                    analyze_local_mod_file(&entry.filename, &bytes, Some(instance_loader), None);
                 for mod_id in scanned.mod_ids {
                     if let Some(normalized) = normalize_local_mod_id(&mod_id) {
                         out.insert(normalized);
@@ -385,6 +392,18 @@ fn reconcile_runtime_session_minecraft_settings(
         copied += file_copied;
     }
     Ok(copied)
+}
+
+fn validate_concurrent_native_launch_policy(
+    existing_native_runs_for_instance: usize,
+) -> Result<(), String> {
+    if existing_native_runs_for_instance > 0 {
+        return Err(
+            "This instance already has a native game process running. OpenJar only syncs Minecraft settings back from isolated runtime sessions today, so concurrent native launches are blocked to avoid losing world or config changes. Stop the current run and try again."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 fn run_instance_settings_sync_before_launch(
@@ -5889,6 +5908,7 @@ pub(crate) async fn launch_instance(
                 clear_launch_cancel_request(&state, &instance.id)?;
                 return Err("Launch cancelled by user.".to_string());
             }
+            validate_concurrent_native_launch_policy(existing_native_runs_for_instance)?;
 
             run_instance_settings_sync_before_launch(
                 &app,
@@ -8678,5 +8698,16 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&instances_dir);
+    }
+
+    #[test]
+    fn concurrent_native_launch_policy_blocks_same_instance_parallel_runs() {
+        validate_concurrent_native_launch_policy(0)
+            .expect("single native launch should be allowed");
+
+        let err = validate_concurrent_native_launch_policy(1)
+            .expect_err("parallel native launch should be blocked");
+        assert!(err.contains("already has a native game process running"));
+        assert!(err.contains("avoid losing world or config changes"));
     }
 }

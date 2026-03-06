@@ -8819,6 +8819,36 @@ export default function App() {
       await onCancelPendingLaunch(inst);
       return;
     }
+    const runningForInstance = runningByInstanceId.get(inst.id) ?? [];
+    const hasNativeRunningForInstance = runningForInstance.some(
+      (run) => String(run.method ?? "").toLowerCase() === "native"
+    );
+    if (requestedMethod === "native" && hasNativeRunningForInstance) {
+      const reason =
+        "This instance already has a native game process running. Stop it before starting another native launch.";
+      setInstallNotice(reason);
+      setError(reason);
+      setLauncherErr(reason);
+      setLaunchFailureByInstance((prev) => ({
+        ...prev,
+        [inst.id]: {
+          status: "error",
+          method: "native",
+          message: reason,
+          updated_at: Date.now(),
+        },
+      }));
+      setLaunchStageByInstance((prev) => ({
+        ...prev,
+        [inst.id]: {
+          status: "error",
+          label: "Blocked",
+          message: reason,
+          updated_at: Date.now(),
+        },
+      }));
+      return;
+    }
     setError(null);
     setLauncherErr(null);
     setInstallNotice(null);
@@ -14444,11 +14474,11 @@ export default function App() {
       const hasNativeRunningForInstance = runningForInstance.some(
         (r) => String(r.method ?? "").toLowerCase() === "native"
       );
-      const canStartConcurrentNative = hasNativeRunningForInstance && launchMethodPick === "native";
+      const concurrentNativeBlocked = hasNativeRunningForInstance && launchMethodPick === "native";
       const launchActionTitle = isLaunchBusyForInstance
         ? "Cancel current launch"
-        : canStartConcurrentNative
-          ? "Launch in isolated native runtime session"
+        : concurrentNativeBlocked
+          ? "Stop the current native run before starting another native launch for this instance"
           : `Launch with ${launchMethodPick === "native" ? "native launcher" : "Prism Launcher"}`;
       const launchFailure = launchFailureByInstance[inst.id] ?? null;
       const hasLaunchFailure = Boolean(launchFailure);

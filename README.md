@@ -2,7 +2,7 @@
 
 **OpenJar Launcher** is a **good-looking, Mac-first Minecraft launcher** built with **Tauri (Rust)** + **React (Vite + TypeScript)**.
 
-It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge/GitHub, install & update content with lockfiles, edit configs with a real UI, and launch safely — even running multiple copies at once.
+It’s designed to feel clean and modern while still being powerful: manage instances, import from other launchers, browse Modrinth/CurseForge/GitHub, install & update content with lockfiles, edit configs with a real UI, and launch safely with explicit guardrails around risky filesystem/runtime behavior.
 
 Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
 
@@ -35,6 +35,7 @@ Security model and hardening notes live in [`SECURITY.md`](SECURITY.md).
 - [Where your data lives](#where-your-data-lives)
 - [Tech Stack](#tech-stack)
 - [Platform support & testing](#platform-support--testing)
+- [Release Checklist](docs/release-checklist.md)
 - [Dev Setup](#dev-setup)
 
 ---
@@ -83,7 +84,7 @@ Screenshots live in `readme-assets/images/` — click any image to view full siz
 - **Config Editor** experience (file browser + editors + helpers)
 - **Snapshots / rollback** tooling (for installed content)
 - **Native launching** + Microsoft account login
-- **Multi-launch support** using **isolated runtime sessions** (run many copies safely)
+- **Launch guardrails** around runtime/session behavior, snapshots, backups, and running-state checks
 
 ---
 
@@ -426,11 +427,10 @@ World rollback (restore a backup):
 - Restoring **replaces** `saves/<world>` with the backed-up copy
 - You must stop Minecraft before restoring a world
 
-Important nuance (multi-launch):
-- When OpenJar launches additional copies using an **isolated runtime session**,
-  it copies worlds/configs into a temporary folder so those extra sessions can’t corrupt
-  your main world.
-- In isolated mode, auto world backups are not run for that session.
+Important nuance:
+- OpenJar currently blocks starting a second **native** run of the same instance.
+- This is intentional: same-instance concurrent native sessions only copied Minecraft settings back cleanly, so world/config changes could be lost.
+- Auto world backups only run for the primary canonical instance launch, not disposable runtime-session clones from older builds.
 
 ---
 
@@ -468,17 +468,16 @@ How rollback works:
 
 ### Multi-Launch Explained (Isolated Runtime Sessions)
 
-When you launch a second (or third…) copy of the same instance, OpenJar creates a **runtime session** folder.
+OpenJar still contains isolated runtime session machinery, but current releases intentionally block starting a second **native** launch of the same instance.
 
 How it behaves:
 - Normal launch: the game runs directly from the canonical instance folder
-- Additional launches: OpenJar makes `runtime_sessions/<launch_id>/` and:
-  - clones the current instance state for a disposable isolated run
-  - rewires shared caches (`assets/libraries/versions`) to launcher cache
-- When the game closes, that runtime session folder is deleted automatically
+- Concurrent native same-instance launch: blocked up front with a clear error instead of risking silent data loss
+- Shared cache wiring is still used for the active runtime (`assets/libraries/versions`)
 
 Why it exists:
-- It avoids two Minecraft clients writing to the same world/config and corrupting things.
+- The old isolated-session flow reduced write collisions, but it did not reconcile full world/config changes back safely enough.
+- The current guardrail favors correctness over “it kind of works sometimes.”
 
 ---
 
@@ -617,12 +616,18 @@ CI runs a Tauri build matrix for all of the targets above and uploads artifacts 
 Contributor check:
 - Run `npm run verify:platform-support` before opening a PR if you change platform targets or support docs.
 - Run `npm run verify:tauri-command-contract` before opening a PR if you add/rename/remove Tauri commands.
+- Run `npm run build`, `cargo test`, and `cargo clippy --all-targets -- -D warnings` before cutting a release.
 - CI enforces both checks in `.github/workflows/ci-build.yml`.
+
+Release hardening:
+- Use the local release checklist in [`docs/release-checklist.md`](docs/release-checklist.md) before publishing a build.
+- The checklist includes smoke tests for launch/runtime behavior, content updates, settings sync, and account/auth recovery.
 
 Known limitations:
 - Windows CI runs on GitHub-hosted Windows Server images, not a full Windows 11 desktop session.
 - Linux desktop runtime depends on WebKitGTK/libsoup2 packages available on the target distro.
 - macOS receives the most day-to-day manual testing.
+- Same-instance concurrent native launch is intentionally blocked until full runtime-session reconciliation is implemented for worlds/configs.
 
 If you try Windows/Linux and run into issues, please open a GitHub Issue with:
 - OS + version (and whether it’s Intel/AMD or ARM)

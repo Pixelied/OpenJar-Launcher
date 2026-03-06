@@ -4366,7 +4366,11 @@ fn sanitize_filename(name: &str) -> String {
     out.trim().to_string()
 }
 
-fn github_release_query_hint(filename: &str, display_name: &str, repo: &GithubRepository) -> String {
+fn github_release_query_hint(
+    filename: &str,
+    display_name: &str,
+    repo: &GithubRepository,
+) -> String {
     let sanitized_filename = sanitize_filename(filename);
     let filename_hint = sanitized_filename
         .trim()
@@ -16328,6 +16332,7 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> Result<usize, String> {
     if !src.exists() {
         return Ok(0);
     }
+    ensure_not_symlink_path(src, "recursive counted copy source")?;
     fs::create_dir_all(dst).map_err(|e| format!("mkdir '{}' failed: {e}", dst.display()))?;
     let entries = fs::read_dir(src).map_err(|e| format!("read '{}' failed: {e}", src.display()))?;
     let mut copied = 0usize;
@@ -16335,9 +16340,7 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> Result<usize, String> {
         let ent = ent.map_err(|e| format!("read dir entry failed: {e}"))?;
         let src_path = ent.path();
         let dst_path = dst.join(ent.file_name());
-        let meta = ent
-            .metadata()
-            .map_err(|e| format!("read metadata '{}' failed: {e}", src_path.display()))?;
+        let meta = ensure_not_symlink_path(&src_path, "recursive counted copy entry")?;
         if meta.is_dir() {
             copied += copy_dir_recursive_count(&src_path, &dst_path)?;
         } else if meta.is_file() {
@@ -16358,8 +16361,24 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> Result<usize, String> {
     Ok(copied)
 }
 
+fn ensure_not_symlink_path(path: &Path, context: &str) -> Result<fs::Metadata, String> {
+    let meta = fs::symlink_metadata(path)
+        .map_err(|e| format!("read metadata '{}' failed: {e}", path.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(format!(
+            "refusing to follow symlinked path during {context}: {}",
+            path.display()
+        ));
+    }
+    Ok(meta)
+}
+
 fn copy_file_if_exists(src: &Path, dst: &Path) -> Result<usize, String> {
-    if !src.exists() || !src.is_file() {
+    if !src.exists() {
+        return Ok(0);
+    }
+    let meta = ensure_not_symlink_path(src, "file copy")?;
+    if !meta.is_file() {
         return Ok(0);
     }
     if let Some(parent) = dst.parent() {
@@ -16570,15 +16589,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     if !src.exists() {
         return Ok(());
     }
+    ensure_not_symlink_path(src, "recursive copy source")?;
     fs::create_dir_all(dst).map_err(|e| format!("mkdir '{}' failed: {e}", dst.display()))?;
     let entries = fs::read_dir(src).map_err(|e| format!("read '{}' failed: {e}", src.display()))?;
     for ent in entries {
         let ent = ent.map_err(|e| format!("read dir entry failed: {e}"))?;
         let src_path = ent.path();
         let dst_path = dst.join(ent.file_name());
-        let meta = ent
-            .metadata()
-            .map_err(|e| format!("read metadata '{}' failed: {e}", src_path.display()))?;
+        let meta = ensure_not_symlink_path(&src_path, "recursive copy entry")?;
         if meta.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else if meta.is_file() {
@@ -16599,8 +16617,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
 }
 
 fn copy_entry_recursive(src: &Path, dst: &Path) -> Result<(), String> {
-    let meta = fs::metadata(src)
-        .map_err(|e| format!("read source metadata '{}' failed: {e}", src.display()))?;
+    let meta = ensure_not_symlink_path(src, "entry copy")?;
     if meta.is_dir() {
         copy_dir_recursive(src, dst)
     } else if meta.is_file() {
@@ -16854,9 +16871,7 @@ fn clone_tree_recursive_with_exclusions(
         }
         let src_path = src_root.join(&rel);
         let dst_path = dst_root.join(&rel);
-        let meta = entry
-            .metadata()
-            .map_err(|e| format!("read metadata '{}' failed: {e}", src_path.display()))?;
+        let meta = ensure_not_symlink_path(&src_path, "isolated runtime clone")?;
         if meta.is_dir() {
             fs::create_dir_all(&dst_path)
                 .map_err(|e| format!("mkdir '{}' failed: {e}", dst_path.display()))?;
@@ -18331,7 +18346,8 @@ mod github_provider_tests {
     #[test]
     fn github_release_query_hint_prefers_installed_filename() {
         let repo = sample_repo();
-        let hint = github_release_query_hint("test-mod-1.2.3.jar.disabled", "Pretty Mod Name", &repo);
+        let hint =
+            github_release_query_hint("test-mod-1.2.3.jar.disabled", "Pretty Mod Name", &repo);
         assert_eq!(hint, "test-mod-1.2.3");
     }
 
@@ -19448,6 +19464,52 @@ mod runtime_and_playtime_tests {
         assert!(!isolated_dir.join("logs").join("launches").exists());
 
         let _ = fs::remove_dir_all(&instance_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn isolated_clone_rejects_symlinked_entries() {
+        use std::os::unix::fs::symlink;
+
+        let instance_dir = temp_path("isolated-clone-symlink");
+        let isolated_dir = instance_dir.join("runtime_sessions").join("launch");
+        let outside_dir = temp_path("isolated-clone-symlink-outside");
+        fs::create_dir_all(&instance_dir).expect("create instance dir");
+        fs::create_dir_all(&outside_dir).expect("create outside dir");
+        fs::write(outside_dir.join("outside.txt"), b"outside").expect("write outside file");
+        symlink(&outside_dir, instance_dir.join("linked-outside")).expect("create symlink");
+
+        let err = clone_instance_to_isolated_runtime(&instance_dir, &isolated_dir)
+            .expect_err("symlinked entry must be rejected");
+        assert!(err.to_ascii_lowercase().contains("symlink"));
+        assert!(!isolated_dir.join("linked-outside").exists());
+
+        let _ = fs::remove_dir_all(&instance_dir);
+        let _ = fs::remove_dir_all(&outside_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launcher_import_rejects_symlinked_content() {
+        use std::os::unix::fs::symlink;
+
+        let source_dir = temp_path("launcher-import-symlink-source");
+        let instance_dir = temp_path("launcher-import-symlink-instance");
+        let outside_file = temp_path("launcher-import-symlink-outside");
+        fs::create_dir_all(source_dir.join("mods")).expect("create source mods");
+        fs::create_dir_all(&instance_dir).expect("create instance dir");
+        fs::write(&outside_file, b"outside").expect("write outside file");
+        symlink(&outside_file, source_dir.join("mods").join("linked.jar"))
+            .expect("create linked mod");
+
+        let err = copy_launcher_source_into_instance(&source_dir, &instance_dir)
+            .expect_err("symlinked import content must be rejected");
+        assert!(err.to_ascii_lowercase().contains("symlink"));
+        assert!(!instance_dir.join("mods").join("linked.jar").exists());
+
+        let _ = fs::remove_dir_all(&source_dir);
+        let _ = fs::remove_dir_all(&instance_dir);
+        let _ = fs::remove_file(&outside_file);
     }
 
     #[test]
