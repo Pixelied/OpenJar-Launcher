@@ -118,12 +118,12 @@ fn internet_invite_defaults_to_short_lived_single_use() {
         .expect("parse expires")
         .with_timezone(&chrono::Utc);
     let minutes = (expires - chrono::Utc::now()).num_minutes();
-    assert!(minutes <= 10 && minutes >= 0);
+    assert!((0..=10).contains(&minutes));
 }
 
 #[test]
 fn allowlist_excludes_disallowed_prefixes() {
-    let normalized = normalize_allowlist(&vec![
+    let normalized = normalize_allowlist(&[
         "mods/**/*.jar".to_string(),
         "saves/**".to_string(),
         "config/**/*.json".to_string(),

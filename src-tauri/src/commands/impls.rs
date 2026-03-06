@@ -394,16 +394,8 @@ fn reconcile_runtime_session_minecraft_settings(
     Ok(copied)
 }
 
-fn validate_concurrent_native_launch_policy(
-    existing_native_runs_for_instance: usize,
-) -> Result<(), String> {
-    if existing_native_runs_for_instance > 0 {
-        return Err(
-            "This instance already has a native game process running. OpenJar only syncs Minecraft settings back from isolated runtime sessions today, so concurrent native launches are blocked to avoid losing world or config changes. Stop the current run and try again."
-                .to_string(),
-        );
-    }
-    Ok(())
+fn isolated_native_launch_success_message() -> &'static str {
+    "Native launch started in disposable isolated mode. This extra run uses a temporary copy of the instance; only Minecraft settings sync back on exit."
 }
 
 fn run_instance_settings_sync_before_launch(
@@ -830,6 +822,9 @@ pub(crate) fn set_launcher_settings(
         let parsed = LaunchMethod::parse(&method)
             .ok_or_else(|| "defaultLaunchMethod must be prism or native".to_string())?;
         settings.default_launch_method = parsed;
+    }
+    if let Some(app_language) = args.app_language {
+        settings.app_language = normalize_app_language(&app_language);
     }
     if let Some(java_path) = args.java_path {
         settings.java_path = java_path.trim().to_string();
@@ -2948,7 +2943,7 @@ fn get_github_project_detail_inner(
     let mut releases_raw = Vec::<GithubRelease>::new();
     match fetch_github_releases(&client, &owner, &repo_name) {
         Ok(mut value) => {
-            value.sort_by(|a, b| github_release_sort_key(b).cmp(&github_release_sort_key(a)));
+            value.sort_by_key(|release| std::cmp::Reverse(github_release_sort_key(release)));
             releases_raw = value;
         }
         Err(err) => {
@@ -4695,14 +4690,14 @@ fn import_local_mod_file_inner(
         .timeout(Duration::from_secs(4))
         .build()
         .ok()
-        .and_then(|client| {
-            Some(detect_provider_matches_for_local_mod(
+        .map(|client| {
+            detect_provider_matches_for_local_mod(
                 &client,
                 &file_bytes,
                 &safe_filename,
                 normalized_content_type == "mods",
                 None,
-            ))
+            )
         });
     let detected_provider_matches = detected_provider_matches.unwrap_or_default();
     let detected_provider =
@@ -4827,7 +4822,7 @@ fn resolve_local_mod_sources_inner(
     let instance = find_instance(&instances_dir, instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, instance_id)?;
     let mut lock = read_lockfile(&instances_dir, instance_id)?;
-    let strict_local_only = mode.trim().to_ascii_lowercase() != "all";
+    let strict_local_only = !mode.trim().eq_ignore_ascii_case("all");
     let content_types_filter: HashSet<String> = if let Some(requested) = requested_content_types {
         let mut allowed = requested
             .iter()
@@ -4840,7 +4835,7 @@ fn resolve_local_mod_sources_inner(
                 .map(|value| value.to_string())
                 .collect()
         } else {
-            allowed.drain().collect()
+            std::mem::take(&mut allowed)
         }
     } else {
         supported_local_content_types()
@@ -4951,7 +4946,7 @@ fn resolve_local_mod_sources_inner(
         let preferred_match =
             select_preferred_provider_match(&found_matches, preferred_source_hint);
         let preferred_is_activatable = preferred_match
-            .map(|item| provider_match_is_auto_activatable(item))
+            .map(provider_match_is_auto_activatable)
             .unwrap_or(false);
         let key_before = local_entry_key(&lock.entries[idx]);
         let from_source = lock.entries[idx].source.clone();
@@ -5041,7 +5036,7 @@ fn resolve_local_mod_sources_inner(
             || should_revalidate_github_in_all)
             && provider_match_is_auto_activatable(found)
         {
-            apply_provider_match_to_lock_entry(&mut lock.entries[idx], &found);
+            apply_provider_match_to_lock_entry(&mut lock.entries[idx], found);
         }
         if lock.entries[idx].provider_candidates.is_empty() {
             lock.entries[idx].provider_candidates =
@@ -5594,7 +5589,7 @@ fn update_all_modrinth_mods_inner(
         if !missing_required_dependencies_for_update(&current_lock, update).is_empty() {
             continue;
         }
-        match install_discover_content_inner(
+        if let Ok(_) = install_discover_content_inner(
             app.clone(),
             &InstallDiscoverContentArgs {
                 instance_id: args.instance_id.clone(),
@@ -5606,8 +5601,7 @@ fn update_all_modrinth_mods_inner(
             },
             None,
         ) {
-            Ok(_) => updated_mods += 1,
-            Err(_) => {}
+            updated_mods += 1;
         }
     }
     if updated_mods > 0 {
@@ -5908,8 +5902,6 @@ pub(crate) async fn launch_instance(
                 clear_launch_cancel_request(&state, &instance.id)?;
                 return Err("Launch cancelled by user.".to_string());
             }
-            validate_concurrent_native_launch_policy(existing_native_runs_for_instance)?;
-
             run_instance_settings_sync_before_launch(
                 &app,
                 &instances_dir,
@@ -6265,6 +6257,7 @@ pub(crate) async fn launch_instance(
                 instance_id: instance.id.clone(),
                 instance_name: instance.name.clone(),
                 method: "native".to_string(),
+                isolated: use_isolated_runtime_session,
                 pid,
                 started_at: now_iso(),
                 log_path: Some(log_path_text),
@@ -6296,7 +6289,7 @@ pub(crate) async fn launch_instance(
                 LaunchMethod::Native.as_str(),
                 "running",
                 if use_isolated_runtime_session {
-                    "Native launch started in isolated concurrent mode."
+                    isolated_native_launch_success_message()
                 } else {
                     "Native launch started."
                 },
@@ -6463,7 +6456,7 @@ pub(crate) async fn launch_instance(
                 prism_instance_id: None,
                 prism_root: None,
                 message: if use_isolated_runtime_session {
-                    "Native launch started in isolated concurrent mode. This run uses temporary saves/config and will auto-clean on exit.".to_string()
+                    isolated_native_launch_success_message().to_string()
                 } else if let Some(host) = quick_play_host.as_ref() {
                     format!(
                         "Native launch started (quick join {}:{}).",
@@ -8564,9 +8557,11 @@ mod tests {
         let target_b_dir = instance_dir_for_id(&instances_dir, &target_b.id).expect("target b dir");
         fs::create_dir_all(&target_b_dir).expect("create target b dir");
 
-        let mut all_targets = InstanceSettings::default();
-        all_targets.sync_minecraft_settings = true;
-        all_targets.sync_minecraft_settings_target = "all".to_string();
+        let all_targets = InstanceSettings {
+            sync_minecraft_settings: true,
+            sync_minecraft_settings_target: "all".to_string(),
+            ..InstanceSettings::default()
+        };
         let copied_all =
             sync_instance_minecraft_settings_before_launch(&instances_dir, &source, &all_targets)
                 .expect("sync all");
@@ -8594,9 +8589,11 @@ mod tests {
         fs::remove_file(target_b_dir.join("optionsof.txt")).expect("clear target b optionsof");
         fs::remove_file(target_b_dir.join("servers.dat")).expect("clear target b servers");
 
-        let mut specific_target = InstanceSettings::default();
-        specific_target.sync_minecraft_settings = true;
-        specific_target.sync_minecraft_settings_target = target_a.id.clone();
+        let specific_target = InstanceSettings {
+            sync_minecraft_settings: true,
+            sync_minecraft_settings_target: target_a.id.clone(),
+            ..InstanceSettings::default()
+        };
         let copied_specific = sync_instance_minecraft_settings_before_launch(
             &instances_dir,
             &source,
@@ -8639,9 +8636,11 @@ mod tests {
         let target_dir = instance_dir_for_id(&instances_dir, &target.id).expect("target dir");
         fs::create_dir_all(target_dir.join(".minecraft")).expect("create target .minecraft");
 
-        let mut settings = InstanceSettings::default();
-        settings.sync_minecraft_settings = true;
-        settings.sync_minecraft_settings_target = "all".to_string();
+        let settings = InstanceSettings {
+            sync_minecraft_settings: true,
+            sync_minecraft_settings_target: "all".to_string(),
+            ..InstanceSettings::default()
+        };
         let copied =
             sync_instance_minecraft_settings_before_launch(&instances_dir, &source, &settings)
                 .expect("sync from .minecraft source");
@@ -8701,13 +8700,10 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_native_launch_policy_blocks_same_instance_parallel_runs() {
-        validate_concurrent_native_launch_policy(0)
-            .expect("single native launch should be allowed");
-
-        let err = validate_concurrent_native_launch_policy(1)
-            .expect_err("parallel native launch should be blocked");
-        assert!(err.contains("already has a native game process running"));
-        assert!(err.contains("avoid losing world or config changes"));
+    fn isolated_native_launch_success_message_marks_runs_as_disposable() {
+        let message = isolated_native_launch_success_message();
+        assert!(message.contains("disposable isolated mode"));
+        assert!(message.contains("temporary copy of the instance"));
+        assert!(message.contains("only Minecraft settings sync back"));
     }
 }

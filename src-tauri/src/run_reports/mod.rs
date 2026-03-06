@@ -630,7 +630,7 @@ pub(crate) fn list_run_reports(
     Ok(store
         .reports
         .into_iter()
-        .take(limit.max(1).min(MAX_RUN_REPORTS))
+        .take(limit.clamp(1, MAX_RUN_REPORTS))
         .collect())
 }
 

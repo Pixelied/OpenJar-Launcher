@@ -314,6 +314,7 @@ export type UpdateApplyScope = "scheduled_only" | "scheduled_and_manual" | strin
 
 export type LauncherSettings = {
   default_launch_method: LaunchMethod;
+  app_language?: string;
   java_path: string;
   oauth_client_id: string;
   update_check_cadence: UpdateCheckCadence;
@@ -409,6 +410,7 @@ export type RunningInstance = {
   instance_id: string;
   instance_name: string;
   method: LaunchMethod | string;
+  isolated?: boolean | null;
   pid: number;
   started_at: string;
   log_path?: string | null;

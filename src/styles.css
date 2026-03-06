@@ -6593,6 +6593,24 @@ button.instanceProviderBadge:disabled{
   background: color-mix(in srgb, var(--panel2) 70%, transparent);
   flex: 0 0 30px;
 }
+.instSettingsNavMeta{
+  margin-top: 8px;
+  padding: 14px 14px 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 82%, transparent);
+  display: grid;
+  gap: 10px;
+}
+.instSettingsNavMetaLabel{
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.instSettingsNavMetaStatus{
+  display: grid;
+  gap: 6px;
+}
 .instSettingsNavFooter{ margin-top: auto; padding-top: 14px; border-top: 1px solid var(--stroke); }
 .instSettingsNavFooter .btn{ width: 100%; }
 .instSettingsBody{
@@ -6616,16 +6634,19 @@ button.instanceProviderBadge:disabled{
 }
 
 .instanceSettingsModal{
-  width: 980px;
-  max-width: min(1060px, 96vw);
+  width: 1020px;
+  max-width: min(1100px, 96vw);
   max-height: min(900px, calc(100vh - 40px));
-  border-radius: 20px;
-  border: 1px solid color-mix(in srgb, var(--stroke2) 78%, var(--stroke));
-  background: color-mix(in srgb, var(--panel2) 94%, var(--surface) 6%);
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 86%, var(--stroke));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--accent-soft) 4%), color-mix(in srgb, var(--panel2) 96%, transparent)),
+    var(--panel2);
   overflow: hidden;
 }
 .instanceSettingsModal .modalHeader{
-  padding: 14px 16px;
+  padding: 18px 18px 16px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
 }
 .instSettingsCrumb{
   display: flex;
@@ -6677,13 +6698,14 @@ button.instanceProviderBadge:disabled{
   border-radius: 0;
   border-right: 1px solid var(--stroke);
   box-shadow: none;
-  background: transparent;
-  padding: 14px 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%), color-mix(in srgb, var(--surface) 96%, transparent));
+  padding: 16px 12px;
 }
 .instanceSettingsModal .instSettingsNavItem{
-  min-height: 46px;
-  padding: 8px 12px;
-  border-radius: 12px;
+  min-height: 48px;
+  padding: 9px 12px;
+  border-radius: 14px;
   font-size: 14px;
   font-weight: 820;
 }
@@ -6691,6 +6713,7 @@ button.instanceProviderBadge:disabled{
   background: color-mix(in srgb, var(--accent-soft) 84%, var(--surface) 16%);
   border-color: var(--accent-ring);
   color: var(--accent-text);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 68%, transparent);
 }
 .instanceSettingsModal .navIco{
   width: 22px;
@@ -6709,33 +6732,47 @@ button.instanceProviderBadge:disabled{
 .instanceSettingsModal .instSettingsNavFooter{
   padding-top: 12px;
 }
+.instanceSettingsModal .instSettingsNavMeta{
+  margin-top: 10px;
+  padding: 14px 10px 0;
+}
+.instanceSettingsModal .instSettingsNavMeta .segmented{
+  width: 100%;
+}
+.instanceSettingsModal .instSettingsNavMeta .segBtn{
+  flex: 1 1 0;
+  justify-content: center;
+  text-align: center;
+}
 .instanceSettingsModal .instSettingsBody{
   border: none;
   border-radius: 0;
   box-shadow: none;
-  background: transparent;
-  padding: 16px 18px 20px;
-  gap: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, transparent), color-mix(in srgb, var(--panel2) 92%, transparent));
+  padding: 20px 22px 24px;
+  gap: 18px;
   overflow: visible;
 }
 .instanceSettingsModal .instSettingsStatusRow{
   display: none;
 }
 .instanceSettingsModal .sectionHead{
-  margin: 0 0 6px;
-  font-size: 20px;
+  margin: 0 0 8px;
+  font-size: 22px;
   font-weight: 970;
   letter-spacing: -0.02em;
 }
 .instanceSettingsModal .settingGrid{
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 14px;
 }
 .instanceSettingsModal .settingCard{
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 5%, transparent);
+  padding: 16px 16px 15px;
   animation: none;
 }
 .instanceSettingsModal .settingTitle{
@@ -6743,15 +6780,15 @@ button.instanceProviderBadge:disabled{
   font-weight: 920;
 }
 .instanceSettingsModal .settingSub{
-  margin-top: 4px;
-  font-size: 12.5px;
-  line-height: 1.3;
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 1.42;
   max-width: 720px;
 }
 .instanceSettingsModal .input,
 .instanceSettingsModal .textarea,
 .instanceSettingsModal .dropBtn{
-  border-radius: 12px;
+  border-radius: 14px;
   box-shadow: none;
 }
 .instanceSettingsModal .row{
@@ -7038,6 +7075,125 @@ button.instanceProviderBadge:disabled{
   --settings-label-size: 1.03rem;
   --settings-label-weight: 760;
 }
+.settingsShell{
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(250px, 292px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.settingsSidebar{
+  position: sticky;
+  top: 18px;
+  padding: 18px;
+  border-radius: 28px;
+  border-color: color-mix(in srgb, var(--stroke2) 84%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--accent-soft) 4%), color-mix(in srgb, var(--panel2) 98%, transparent)),
+    var(--panel2);
+  box-shadow: 0 18px 48px color-mix(in srgb, #000 8%, transparent);
+  display: grid;
+  gap: 16px;
+}
+.settingsSidebarHeader{
+  display: grid;
+  gap: 8px;
+}
+.settingsSidebarEyebrow{
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.settingsSidebarTitle{
+  font-size: clamp(1.7rem, 1.2rem + 0.9vw, 2.2rem);
+  font-weight: 980;
+  letter-spacing: -0.035em;
+}
+.settingsSidebarIntro{
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.settingsSidebarBlock{
+  display: grid;
+  gap: 10px;
+}
+.settingsSidebarLabel{
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+}
+.settingsRailList{
+  display: grid;
+  gap: 8px;
+}
+.settingsRailButton{
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 90%, var(--surface-2) 10%);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  padding: 11px 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.settingsRailButton:hover{
+  transform: translateY(var(--hover-lift-soft));
+  border-color: color-mix(in srgb, var(--accent-ring) 56%, var(--stroke2));
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--surface));
+}
+.settingsRailButton.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 80%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 86%, var(--surface) 14%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 64%, transparent);
+}
+.settingsRailButtonIcon{
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--surface) 60%, var(--surface-2) 40%);
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  color: inherit;
+}
+.settingsRailButton.active .settingsRailButtonIcon{
+  border-color: color-mix(in srgb, var(--accent-ring) 62%, transparent);
+  background: color-mix(in srgb, var(--surface) 28%, var(--accent-soft) 72%);
+}
+.settingsRailButtonText{
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.settingsRailButtonTitle{
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: -0.015em;
+}
+.settingsRailButtonMeta{
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 820;
+}
+.settingsSidebarFooter{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+.settingsMain{
+  min-width: 0;
+}
 .settingsPageTitle{
   margin: 0;
   font-size: var(--settings-page-title-size);
@@ -7050,7 +7206,7 @@ button.instanceProviderBadge:disabled{
   font-size: 14px;
 }
 .settingsLayout{
-  margin-top: 16px;
+  margin-top: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
@@ -7063,7 +7219,11 @@ button.instanceProviderBadge:disabled{
 }
 .settingsSectionCard{
   padding: 18px;
-  border-radius: 22px;
+  border-radius: 24px;
+  border-color: color-mix(in srgb, var(--stroke2) 78%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--accent-soft) 4%), color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%));
+  box-shadow: 0 14px 36px color-mix(in srgb, #000 6%, transparent);
 }
 .settingAnchorFlash{
   outline: 2px solid var(--accent-ring);
@@ -7185,10 +7345,13 @@ button.instanceProviderBadge:disabled{
   box-shadow: none;
 }
 .settingsModeToggle .segBtn{
+  flex: 1 1 0;
   min-height: 34px;
   padding: 8px 14px;
   font-size: 12px;
   font-weight: 900;
+  justify-content: center;
+  text-align: center;
 }
 .settingsModeToggle .segBtn.active{
   color: var(--text);
@@ -7322,11 +7485,20 @@ button.instanceProviderBadge:disabled{
   max-width: 52ch;
 }
 @media (max-width: 1120px){
+  .settingsShell{
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .settingsSidebar{
+    position: static;
+  }
   .settingsLayout{
     grid-template-columns: minmax(0, 1fr);
   }
 }
 @media (max-width: 700px){
+  .settingsSidebar{
+    padding: 16px;
+  }
   .settingsSectionCard .accentPicker{
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -8250,12 +8422,69 @@ button.instanceProviderBadge:disabled{
 .pathRow{ display:flex; gap: 10px; align-items:center; margin-top: 12px; flex-wrap: wrap; }
 .pathRow .input{ flex: 1; }
 
-.toggleRow{ display:flex; gap: 10px; align-items:center; margin-top: 12px; color: var(--text); }
+.toggleRow{
+  display:flex;
+  gap: 12px;
+  align-items:center;
+  margin-top: 12px;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+  line-height: 1.35;
+}
 .toggleRow input{ position:absolute; opacity:0; pointer-events:none; }
-.togglePill{ width: 38px; height: 22px; border-radius: 999px; border: 1px solid var(--stroke); background: rgba(0,0,0,0.06); box-shadow: inset 0 1px 0 rgba(255,255,255,0.9); position: relative; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
-.togglePill:after{ content:""; position:absolute; width: 18px; height: 18px; border-radius: 999px; left: 2px; top: 1px; background: rgba(255,255,255,0.95); border: 1px solid var(--stroke); box-shadow: 0 6px 16px rgba(0,0,0,0.10); transition: left var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
+.togglePill{
+  width: 40px;
+  height: 24px;
+  flex: 0 0 40px;
+  display: inline-block;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+  position: relative;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.togglePill:after{
+  content:"";
+  position:absolute;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255,255,255,0.96);
+  border: 1px solid var(--stroke);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.10);
+  transition: left var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
 .toggleRow input:checked + .togglePill{ background: var(--accent-soft); border-color: var(--accent-ring); }
-.toggleRow input:checked + .togglePill:after{ left: 18px; border-color: var(--accent); }
+.toggleRow input:checked + .togglePill:after{ left: 20px; border-color: var(--accent); }
+.toggleRow input:focus-visible + .togglePill{
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    0 0 0 3px color-mix(in srgb, var(--accent-ring) 26%, transparent);
+}
+.settingStackMini{
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+.settingsToggleRow{
+  margin-top: 0;
+}
+.settingsActionGrid{
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  align-items: start;
+}
+.settingsActionGrid .btn{
+  width: 100%;
+  justify-content: center;
+}
 
 .textarea{
   width:100%;

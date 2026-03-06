@@ -564,7 +564,7 @@ pub fn collect_sync_state(
     allowlist: &[String],
 ) -> Result<SyncState, String> {
     let mut lock_entries = read_lock_entries(instances_dir, instance_id)?;
-    lock_entries.sort_by(|a, b| lock_key_for(a).cmp(&lock_key_for(b)));
+    lock_entries.sort_by_key(lock_key_for);
 
     let config_files = collect_allowlisted_config_files(instances_dir, instance_id, allowlist)?;
 
@@ -693,7 +693,7 @@ pub fn write_lock_entries(
     let root = instance_dir(instances_dir, instance_id);
     let path = resolve_path_under_root_no_symlink(&root, "lock.json", true)?;
     let mut normalized_entries = entries.to_vec();
-    normalized_entries.sort_by(|a, b| lock_key_for(a).cmp(&lock_key_for(b)));
+    normalized_entries.sort_by_key(lock_key_for);
 
     let lock = LockFileRaw {
         version: 2,
@@ -781,9 +781,9 @@ fn classify_instance_config_path(raw: &str) -> Result<(String, InstanceConfigAcc
         InstanceConfigAccess::ReadOnly
     } else if lower.starts_with("config/") && lower.len() > "config/".len() {
         InstanceConfigAccess::ReadWrite
-    } else if lower.starts_with("resourcepacks/") && lower.len() > "resourcepacks/".len() {
-        InstanceConfigAccess::ReadOnly
-    } else if lower.starts_with("shaderpacks/") && lower.len() > "shaderpacks/".len() {
+    } else if (lower.starts_with("resourcepacks/") && lower.len() > "resourcepacks/".len())
+        || (lower.starts_with("shaderpacks/") && lower.len() > "shaderpacks/".len())
+    {
         InstanceConfigAccess::ReadOnly
     } else {
         return Err(
@@ -829,14 +829,14 @@ fn describe_non_editable_reason(path: &Path, sample: &[u8]) -> Option<String> {
     ) {
         return None;
     }
-    if sample.iter().any(|b| *b == 0u8) {
+    if sample.contains(&0u8) {
         return Some("Binary file cannot be edited here.".to_string());
     }
     None
 }
 
 fn preview_for_non_editable(reason: &str, sample: &[u8], size_bytes: u64) -> String {
-    if sample.iter().any(|byte| *byte == 0) {
+    if sample.contains(&0) {
         return format!(
             "{reason}\n\nDetected binary content ({size_bytes} bytes). Use Open location for binary files."
         );
@@ -981,7 +981,7 @@ pub fn read_instance_config_file(
 
     let kind = infer_file_kind(&normalized);
     if let Some(reason) = readonly_reason {
-        let preview_kind = if sample.iter().any(|byte| *byte == 0) {
+        let preview_kind = if sample.contains(&0) {
             "binary"
         } else {
             "text"

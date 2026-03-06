@@ -179,7 +179,7 @@ pub fn diff_entries(
         }
     }
 
-    added.sort_by(|a, b| entry_key_for(a).cmp(&entry_key_for(b)));
+    added.sort_by_key(entry_key_for);
     removed.sort_by(|a, b| {
         entry_key(&a.provider, &a.project_id, &a.content_type).cmp(&entry_key(
             &b.provider,
@@ -187,7 +187,7 @@ pub fn diff_entries(
             &b.content_type,
         ))
     });
-    overridden.sort_by(|a, b| entry_key_for(a).cmp(&entry_key_for(b)));
+    overridden.sort_by_key(entry_key_for);
 
     (added, removed, overridden)
 }

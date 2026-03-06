@@ -315,10 +315,7 @@ fn github_append_token_candidate(tokens: &mut Vec<String>, candidate: &str) {
 }
 
 fn github_parse_token_pool(raw: &str, tokens: &mut Vec<String>) {
-    for candidate in raw
-        .split(|ch| ch == ',' || ch == ';' || ch == '\n')
-        .map(|part| part.trim())
-    {
+    for candidate in raw.split([',', ';', '\n']).map(|part| part.trim()) {
         github_append_token_candidate(tokens, candidate);
     }
 }
@@ -1199,6 +1196,8 @@ struct LogoutMicrosoftAccountArgs {
 struct SetLauncherSettingsArgs {
     #[serde(alias = "defaultLaunchMethod", default)]
     default_launch_method: Option<String>,
+    #[serde(alias = "appLanguage", default)]
+    app_language: Option<String>,
     #[serde(alias = "javaPath", default)]
     java_path: Option<String>,
     #[serde(alias = "oauthClientId", default)]
@@ -2046,17 +2045,12 @@ struct SupportBundleResult {
     message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 enum LaunchMethod {
     Prism,
+    #[default]
     Native,
-}
-
-impl Default for LaunchMethod {
-    fn default() -> Self {
-        LaunchMethod::Native
-    }
 }
 
 impl LaunchMethod {
@@ -2081,6 +2075,8 @@ impl LaunchMethod {
 #[serde(default)]
 struct LauncherSettings {
     default_launch_method: LaunchMethod,
+    #[serde(default = "default_app_language")]
+    app_language: String,
     java_path: String,
     oauth_client_id: String,
     #[serde(default = "default_update_check_cadence")]
@@ -2103,6 +2099,7 @@ impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
             default_launch_method: LaunchMethod::Native,
+            app_language: default_app_language(),
             java_path: String::new(),
             oauth_client_id: String::new(),
             update_check_cadence: default_update_check_cadence(),
@@ -2114,6 +2111,22 @@ impl Default for LauncherSettings {
             discord_presence_enabled: true,
             discord_presence_detail_level: default_discord_presence_detail_level(),
         }
+    }
+}
+
+fn default_app_language() -> String {
+    "en-US".to_string()
+}
+
+fn normalize_app_language(input: &str) -> String {
+    let normalized = input.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "en" | "en-us" | "english" => "en-US".to_string(),
+        "es" | "es-es" | "es-419" | "spanish" | "espanol" | "español" => "es-ES".to_string(),
+        "fr" | "fr-fr" | "french" | "francais" | "français" => "fr-FR".to_string(),
+        "de" | "de-de" | "german" | "deutsch" => "de-DE".to_string(),
+        "pt" | "pt-br" | "portuguese" | "portugues" | "português" => "pt-BR".to_string(),
+        _ => "en-US".to_string(),
     }
 }
 
@@ -2172,6 +2185,8 @@ struct RunningInstance {
     instance_id: String,
     instance_name: String,
     method: String,
+    #[serde(default)]
+    isolated: bool,
     pid: u32,
     started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3112,6 +3127,7 @@ fn read_launcher_settings(app: &tauri::AppHandle) -> Result<LauncherSettings, St
     let raw = fs::read_to_string(&p).map_err(|e| format!("read launcher settings failed: {e}"))?;
     let mut settings: LauncherSettings =
         serde_json::from_str(&raw).map_err(|e| format!("parse launcher settings failed: {e}"))?;
+    settings.app_language = normalize_app_language(&settings.app_language);
     settings.update_check_cadence = normalize_update_check_cadence(&settings.update_check_cadence);
     settings.update_auto_apply_mode =
         normalize_update_auto_apply_mode(&settings.update_auto_apply_mode);
@@ -4641,7 +4657,7 @@ fn file_is_text_like(path: &Path, sample: &[u8]) -> bool {
                 | "log"
         );
     }
-    if sample.iter().any(|b| *b == 0) {
+    if sample.contains(&0) {
         return false;
     }
     std::str::from_utf8(sample).is_ok()
@@ -5500,7 +5516,7 @@ fn curseforge_fingerprint_candidates(bytes: &[u8]) -> Vec<u32> {
         out.push(curseforge_murmur2_fingerprint(&filtered));
     }
     let raw = curseforge_murmur2_fingerprint(bytes);
-    if !out.iter().any(|existing| *existing == raw) {
+    if !out.contains(&raw) {
         out.push(raw);
     }
     out
@@ -7495,7 +7511,7 @@ pub(crate) fn env_worker_cap_or_default(
 }
 
 fn retry_backoff_ms(attempt: usize) -> u64 {
-    let attempt = attempt.max(1).min(6) as u32;
+    let attempt = attempt.clamp(1, 6) as u32;
     let exp = 1_u64 << (attempt - 1);
     let base = 200_u64.saturating_mul(exp);
     let jitter = 35_u64 + ((attempt as u64 * 97) % 140);
@@ -7861,7 +7877,7 @@ fn reqwest_error_with_causes(err: &reqwest::Error) -> String {
 }
 
 fn trim_error_body(raw: &str) -> String {
-    let one_line = raw.replace('\n', " ").replace('\r', " ").trim().to_string();
+    let one_line = raw.replace(['\n', '\r'], " ").trim().to_string();
     if one_line.len() > 280 {
         format!("{}…", &one_line[..280])
     } else {
@@ -12583,7 +12599,7 @@ fn discover_query_variants(query: &str) -> Vec<String> {
 
     if tokens.len() >= 2 {
         let mut longest = tokens.clone();
-        longest.sort_by(|a, b| b.len().cmp(&a.len()));
+        longest.sort_by_key(|token| std::cmp::Reverse(token.len()));
         for token in longest.into_iter().take(3) {
             push(token, &mut variants, &mut seen);
         }
@@ -14734,7 +14750,7 @@ fn list_instance_world_names(instance_dir: &Path) -> Result<Vec<String>, String>
             out.push(name);
         }
     }
-    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    out.sort_by_key(|name| name.to_lowercase());
     Ok(out)
 }
 
@@ -19563,6 +19579,17 @@ mod runtime_and_playtime_tests {
         assert_eq!(summary.tracking_scope, "native_only");
 
         let _ = fs::remove_dir_all(&instances_dir);
+    }
+
+    #[test]
+    fn normalize_app_language_accepts_supported_aliases() {
+        assert_eq!(normalize_app_language(""), "en-US");
+        assert_eq!(normalize_app_language("en"), "en-US");
+        assert_eq!(normalize_app_language("es-419"), "es-ES");
+        assert_eq!(normalize_app_language("fr"), "fr-FR");
+        assert_eq!(normalize_app_language("deutsch"), "de-DE");
+        assert_eq!(normalize_app_language("pt"), "pt-BR");
+        assert_eq!(normalize_app_language("unknown"), "en-US");
     }
 }
 

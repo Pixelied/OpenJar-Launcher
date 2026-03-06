@@ -1059,15 +1059,14 @@ fn parse_invite(
     if payload.invite_version == 0 {
         payload.invite_version = INVITE_VERSION_LEGACY;
     }
-    if payload.invite_version >= INVITE_VERSION_V2 {
-        if payload
+    if payload.invite_version >= INVITE_VERSION_V2
+        && payload
             .invite_id
             .as_ref()
             .map(|value| value.trim().is_empty())
             .unwrap_or(true)
-        {
-            return Err("Invite is missing invite id metadata".to_string());
-        }
+    {
+        return Err("Invite is missing invite id metadata".to_string());
     }
     let expires = chrono::DateTime::parse_from_rfc3339(&payload.expires_at)
         .map_err(|e| format!("invalid invite expiration timestamp: {e}"))?;
@@ -1576,7 +1575,7 @@ fn build_friend_link_drift_preview(
                 trusted_peer: trusted_peers.contains(&peer.peer_id),
             };
             total_bytes_estimate =
-                total_bytes_estimate.saturating_add(remote_file.content.as_bytes().len() as u64);
+                total_bytes_estimate.saturating_add(remote_file.content.len() as u64);
             *prefix_counts
                 .entry(drift_item_top_prefix(&item))
                 .or_insert(0) += 1;
@@ -1603,7 +1602,7 @@ fn build_friend_link_drift_preview(
                     trusted_peer: trusted_peers.contains(&peer.peer_id),
                 };
                 total_bytes_estimate =
-                    total_bytes_estimate.saturating_add(local_file.content.as_bytes().len() as u64);
+                    total_bytes_estimate.saturating_add(local_file.content.len() as u64);
                 *prefix_counts
                     .entry(drift_item_top_prefix(&item))
                     .or_insert(0) += 1;

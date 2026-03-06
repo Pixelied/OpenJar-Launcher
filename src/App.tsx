@@ -181,7 +181,7 @@ import ModpackMaker from "./pages/ModpackMaker";
 import InstanceModpackCard from "./components/InstanceModpackCard";
 import DependencyBadge from "./components/DependencyBadge";
 import CommandPalette, { type CommandPaletteItem } from "./components/CommandPalette";
-import Icon from "./components/app-shell/Icon";
+import Icon, { type IconName } from "./components/app-shell/Icon";
 import NavButton from "./components/app-shell/NavButton";
 import Modal from "./components/app-shell/Modal";
 import GlobalTooltipLayer from "./components/app-shell/GlobalTooltipLayer";
@@ -215,6 +215,14 @@ import {
   formatPerfActionLabel,
   humanizeToken,
 } from "./app/utils/format";
+import {
+  APP_LANGUAGE_OPTIONS,
+  getAppLanguageOption,
+  normalizeAppLanguage,
+  translateAppText,
+  type AppLanguage,
+  type AppTranslationKey,
+} from "./lib/i18n";
 import {
   ACCOUNT_DIAGNOSTICS_CACHE_KEY,
   ACCOUNT_DIAGNOSTICS_TIMEOUT_MS,
@@ -615,6 +623,7 @@ function launchStageBadgeLabel(status?: string | null, message?: string | null) 
   if (state === "running") return "Running";
   if (state === "stopped") return "Stopped";
   if (state === "exited") return "Exited";
+  if (text.includes("isolated runtime session")) return "Disposable Runtime";
   if (text.includes("refreshing microsoft")) return "Auth";
   if (text.includes("installing game version")) return "Version";
   if (text.includes("installing assets")) return "Assets";
@@ -1654,6 +1663,7 @@ function sameRunningInstances(a: RunningInstance[], b: RunningInstance[]) {
       left.instance_id !== right.instance_id ||
       left.instance_name !== right.instance_name ||
       left.method !== right.method ||
+      Boolean(left.isolated) !== Boolean(right.isolated) ||
       left.pid !== right.pid ||
       left.started_at !== right.started_at
     ) {
@@ -4804,6 +4814,7 @@ export default function App() {
     ALL_UPDATABLE_CONTENT_TYPES
   );
   const [launcherSettings, setLauncherSettingsState] = useState<LauncherSettings | null>(null);
+  const [appLanguageBusy, setAppLanguageBusy] = useState(false);
   const [autoIdentifyLocalJarsBusy, setAutoIdentifyLocalJarsBusy] = useState(false);
   const [launcherAccounts, setLauncherAccounts] = useState<LauncherAccount[]>([]);
   const [settingsAccountManageId, setSettingsAccountManageId] = useState<string | null>(null);
@@ -4838,6 +4849,76 @@ export default function App() {
   const [devCurseforgeKeyBusy, setDevCurseforgeKeyBusy] = useState(false);
   const [devCurseforgeNotice, setDevCurseforgeNotice] = useState<string | null>(null);
   const [devCurseforgeNoticeIsError, setDevCurseforgeNoticeIsError] = useState(false);
+  const appLanguage = useMemo(
+    () => normalizeAppLanguage(launcherSettings?.app_language ?? null),
+    [launcherSettings?.app_language]
+  );
+  const t = useCallback(
+    (key: AppTranslationKey, vars?: Record<string, string | number>) =>
+      translateAppText(appLanguage, key, vars),
+    [appLanguage]
+  );
+  useEffect(() => {
+    document.documentElement.lang = appLanguage;
+  }, [appLanguage]);
+  const appLanguageMenuOptions = useMemo(
+    () =>
+      APP_LANGUAGE_OPTIONS.map((option) => ({
+        value: option.value,
+        label:
+          option.value === "en-US"
+            ? option.nativeLabel
+            : `${option.nativeLabel} · ${option.englishLabel}`,
+      })),
+    []
+  );
+  const settingsRailItems = useMemo<
+    Array<{ id: string; label: string; icon: IconName; advanced?: boolean }>
+  >(
+    () => [
+      { id: "global:appearance", label: t("settings.appearance.section_title"), icon: "sparkles" },
+      { id: "global:language", label: t("settings.language.section_title"), icon: "books" },
+      { id: "global:launch-method", label: t("settings.launch.section_title"), icon: "cpu" },
+      { id: "global:account", label: t("settings.account.section_title"), icon: "user" },
+      { id: "global:app-updates", label: t("settings.updates.section_title"), icon: "download" },
+      { id: "global:content-visuals", label: t("settings.content.section_title"), icon: "skin" },
+      ...(settingsMode === "advanced"
+        ? [
+            { id: "global:permissions", label: "Launch permissions", icon: "sliders" as IconName, advanced: true },
+            { id: "global:github-api", label: "GitHub API auth", icon: "layers" as IconName, advanced: true },
+          ]
+        : []),
+    ],
+    [settingsMode, t]
+  );
+  const [activeSettingsRail, setActiveSettingsRail] = useState("global:appearance");
+  useEffect(() => {
+    if (route !== "settings") return;
+    const elements = settingsRailItems
+      .map((item) => document.getElementById(`setting-anchor-${item.id}`))
+      .filter((element): element is HTMLElement => Boolean(element));
+    if (elements.length === 0) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+        const nextId = visible[0]?.target?.id?.replace(/^setting-anchor-/, "");
+        if (nextId) setActiveSettingsRail(nextId);
+      },
+      {
+        rootMargin: "-16% 0px -58% 0px",
+        threshold: [0.18, 0.35, 0.6],
+      }
+    );
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [route, settingsRailItems]);
+  useEffect(() => {
+    if (route !== "settings") return;
+    if (!pendingSettingAnchor?.startsWith("global:")) return;
+    setActiveSettingsRail(pendingSettingAnchor);
+  }, [pendingSettingAnchor, route]);
   const [curseforgeApiStatus, setCurseforgeApiStatus] = useState<CurseforgeApiStatus | null>(null);
   const [curseforgeApiBusy, setCurseforgeApiBusy] = useState(false);
   const [githubTokenPoolStatus, setGithubTokenPoolStatus] = useState<GithubTokenPoolStatus | null>(null);
@@ -8824,34 +8905,15 @@ export default function App() {
       (run) => String(run.method ?? "").toLowerCase() === "native"
     );
     if (requestedMethod === "native" && hasNativeRunningForInstance) {
-      const reason =
-        "This instance already has a native game process running. Stop it before starting another native launch.";
-      setInstallNotice(reason);
-      setError(reason);
-      setLauncherErr(reason);
-      setLaunchFailureByInstance((prev) => ({
-        ...prev,
-        [inst.id]: {
-          status: "error",
-          method: "native",
-          message: reason,
-          updated_at: Date.now(),
-        },
-      }));
-      setLaunchStageByInstance((prev) => ({
-        ...prev,
-        [inst.id]: {
-          status: "error",
-          label: "Blocked",
-          message: reason,
-          updated_at: Date.now(),
-        },
-      }));
-      return;
+      setInstallNotice(
+        "Starting another native run in disposable session mode. This extra run gets a temporary copy of the instance; only Minecraft settings sync back when it closes."
+      );
     }
     setError(null);
     setLauncherErr(null);
-    setInstallNotice(null);
+    if (!(requestedMethod === "native" && hasNativeRunningForInstance)) {
+      setInstallNotice(null);
+    }
     setLaunchFailureByInstance((prev) => {
       if (!prev[inst.id]) return prev;
       const next = { ...prev };
@@ -9139,11 +9201,35 @@ export default function App() {
       setUpdateCheckCadence(normalizeUpdateCheckCadence(next.update_check_cadence));
       setUpdateAutoApplyMode(normalizeUpdateAutoApplyMode(next.update_auto_apply_mode));
       setUpdateApplyScope(normalizeUpdateApplyScope(next.update_apply_scope));
-      setInstallNotice("Launcher settings saved.");
+      setInstallNotice(t("settings.launch.saved_notice"));
     } catch (e: any) {
       setLauncherErr(e?.toString?.() ?? String(e));
     } finally {
       setLauncherBusy(false);
+    }
+  }
+
+  async function onSetAppLanguage(nextLanguage: AppLanguage) {
+    if (nextLanguage === appLanguage) return;
+    setAppLanguageBusy(true);
+    setLauncherErr(null);
+    try {
+      const next = await setLauncherSettings({
+        appLanguage: nextLanguage,
+      });
+      setLauncherSettingsState(next);
+      const savedLanguage = normalizeAppLanguage(next.app_language ?? nextLanguage);
+      setInstallNotice(
+        translateAppText(savedLanguage, "settings.language.saved_notice", {
+          language: getAppLanguageOption(savedLanguage).nativeLabel,
+        })
+      );
+    } catch (e: any) {
+      const msg = e?.toString?.() ?? String(e);
+      setLauncherErr(msg);
+      setError(msg);
+    } finally {
+      setAppLanguageBusy(false);
     }
   }
 
@@ -12284,7 +12370,9 @@ export default function App() {
                     <div className="homeRowMain">
                       <div className="homeRowTitle">{run.instance_name}</div>
                       <div className="homeRowMeta">
-                        {humanizeToken(run.method)} • Started {formatDateTime(run.started_at, "just now")}
+                        {humanizeToken(run.method)}
+                        {run.isolated ? " • Disposable session" : ""}
+                        {" • "}Started {formatDateTime(run.started_at, "just now")}
                       </div>
                     </div>
                     <div className="homeRowActions">
@@ -12598,49 +12686,86 @@ export default function App() {
         : [];
       return (
         <div className="settingsPage">
-          <div className="settingsPageTitle">Settings</div>
-          <div className="settingsPageIntro">Appearance, account, and launcher behavior.</div>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <SegmentedControl
-              className="settingsModeToggle"
-              value={settingsMode}
-              onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
-              options={[
-                { value: "basic", label: "Basic mode" },
-                { value: "advanced", label: "Advanced mode" },
-              ]}
-            />
-          </div>
+          <div className="settingsShell">
+            <aside className="card settingsSidebar">
+              <div className="settingsSidebarHeader">
+                <div className="settingsSidebarEyebrow">Launcher settings</div>
+                <div className="settingsSidebarTitle">{t("settings.title")}</div>
+                <div className="settingsSidebarIntro">{t("settings.intro")}</div>
+              </div>
 
-          <div className="settingsLayout">
-            <section className="settingsCol">
+              <div className="settingsSidebarBlock">
+                <div className="settingsSidebarLabel">View mode</div>
+                <SegmentedControl
+                  className="settingsModeToggle"
+                  value={settingsMode}
+                  onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
+                  options={[
+                    { value: "basic", label: t("settings.mode.basic") },
+                    { value: "advanced", label: t("settings.mode.advanced") },
+                  ]}
+                />
+              </div>
+
+              <div className="settingsSidebarBlock">
+                <div className="settingsSidebarLabel">Sections</div>
+                <div className="settingsRailList">
+                  {settingsRailItems.map((item) => (
+                    <button
+                      key={item.id}
+                      className={`settingsRailButton ${activeSettingsRail === item.id ? "active" : ""}`}
+                      onClick={() => openSettingAnchor(item.id, { advanced: item.advanced, target: "global" })}
+                    >
+                      <span className="settingsRailButtonIcon" aria-hidden="true">
+                        <Icon name={item.icon} size={16} />
+                      </span>
+                      <span className="settingsRailButtonText">
+                        <span className="settingsRailButtonTitle">{item.label}</span>
+                        {item.advanced ? <span className="settingsRailButtonMeta">Advanced</span> : null}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="settingsSidebarFooter">
+                <span className="chip subtle">{getAppLanguageOption(appLanguage).nativeLabel}</span>
+                <span className="chip subtle">
+                  {settingsMode === "advanced" ? t("settings.mode.advanced") : t("settings.mode.basic")}
+                </span>
+              </div>
+            </aside>
+
+            <div className="settingsMain">
+              <div className="settingsLayout">
+                <section className="settingsCol">
               <div className="card settingsSectionCard" id="setting-anchor-global:appearance">
-                <div className="settingsSectionTitle">Appearance</div>
-                <div className="p settingsSectionSub">Tune the app look without changing layout behavior.</div>
+                <div className="settingsSectionTitle">{t("settings.appearance.section_title")}</div>
+                <div className="p settingsSectionSub">{t("settings.appearance.section_sub")}</div>
 
                 <div className="settingStack">
                   <div>
-                    <div className="settingTitle">Theme</div>
-                    <div className="settingSub">Switch between dark and light.</div>
+                    <div className="settingTitle">{t("settings.appearance.theme.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.theme.sub")}</div>
                     <div className="row">
                       <button
                         className={`btn stateful ${theme === "dark" ? "active" : ""}`}
                         onClick={() => setTheme("dark")}
                       >
-                        Dark
+                        {t("settings.appearance.theme.dark")}
                       </button>
                       <button
                         className={`btn stateful ${theme === "light" ? "active" : ""}`}
                         onClick={() => setTheme("light")}
                       >
-                        Light
+                        {t("settings.appearance.theme.light")}
                       </button>
                     </div>
                   </div>
 
                   <div>
-                    <div className="settingTitle">Accent</div>
-                    <div className="settingSub">Pick an accent. Neutral stays subtle, colors are bolder.</div>
+                    <div className="settingTitle">{t("settings.appearance.accent.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.accent.sub")}</div>
                     <div className="row accentPicker">
                       {ACCENT_OPTIONS.map((opt) => (
                         <button
@@ -12660,8 +12785,8 @@ export default function App() {
                   </div>
 
                   <div>
-                    <div className="settingTitle">Accent strength</div>
-                    <div className="settingSub">Adjust accent opacity and intensity from subtle to max.</div>
+                    <div className="settingTitle">{t("settings.appearance.accent_strength.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.accent_strength.sub")}</div>
                     <div className="row">
                       <SegmentedControl
                         value={accentStrength}
@@ -12673,8 +12798,8 @@ export default function App() {
                   </div>
 
                   <div>
-                    <div className="settingTitle">Motion profile</div>
-                    <div className="settingSub">Choose how animated the interface should feel.</div>
+                    <div className="settingTitle">{t("settings.appearance.motion.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.motion.sub")}</div>
                     <div className="row">
                       <SegmentedControl
                         value={motionPreset}
@@ -12685,8 +12810,8 @@ export default function App() {
                   </div>
 
                   <div>
-                    <div className="settingTitle">UI density</div>
-                    <div className="settingSub">Comfortable keeps more space, compact fits more on screen.</div>
+                    <div className="settingTitle">{t("settings.appearance.density.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.density.sub")}</div>
                     <div className="row">
                       <SegmentedControl
                         value={densityPreset}
@@ -12697,34 +12822,55 @@ export default function App() {
                   </div>
 
                   <div>
-                    <div className="settingTitle">Reset UI settings</div>
-                    <div className="settingSub">
-                      Restore theme, accent, accent strength, motion profile, and density to defaults.
-                    </div>
+                    <div className="settingTitle">{t("settings.appearance.reset.title")}</div>
+                    <div className="settingSub">{t("settings.appearance.reset.sub")}</div>
                     <div className="row">
                       <button className="btn" onClick={onResetUiSettings}>
-                        Reset appearance
+                        {t("settings.appearance.reset.button")}
                       </button>
                     </div>
                   </div>
                 </div>
               </div>
 
+              <div className="card settingsSectionCard" id="setting-anchor-global:language">
+                <div className="settingsSectionTitle">{t("settings.language.section_title")}</div>
+                <div className="p settingsSectionSub">{t("settings.language.section_sub")}</div>
+
+                <div className="settingStack">
+                  <div>
+                    <div className="settingTitle">{t("settings.language.preference.title")}</div>
+                    <div className="settingSub">{t("settings.language.preference.sub")}</div>
+                    <div className="row" style={{ alignItems: "center" }}>
+                      <MenuSelect
+                        value={appLanguage}
+                        labelPrefix={t("settings.language.preference.menu_prefix")}
+                        options={appLanguageMenuOptions}
+                        onChange={(value) => void onSetAppLanguage(value as AppLanguage)}
+                      />
+                      <span className="chip">{appLanguageBusy ? t("settings.language.saving") : getAppLanguageOption(appLanguage).nativeLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="settingSub">{t("settings.language.warning")}</div>
+                </div>
+              </div>
+
               <div className="card settingsSectionCard">
-                <div className="settingsSectionTitle">Launch configuration</div>
-                <div className="p settingsSectionSub">Set default launcher behavior and Java runtime.</div>
+                <div className="settingsSectionTitle">{t("settings.launch.section_title")}</div>
+                <div className="p settingsSectionSub">{t("settings.launch.section_sub")}</div>
 
                 <div className="settingStack">
                   <div id="setting-anchor-global:launch-method">
-                    <div className="settingTitle">Default launch method</div>
-                    <div className="settingSub">Use native launcher or Prism launcher by default.</div>
+                    <div className="settingTitle">{t("settings.launch.method.title")}</div>
+                    <div className="settingSub">{t("settings.launch.method.sub")}</div>
                     <div className="row">
                       <SegmentedControl
                         value={launchMethodPick}
                         onChange={(v) => setLaunchMethodPick((v ?? "native") as LaunchMethod)}
                         options={[
-                          { label: "Native", value: "native" },
-                          { label: "Prism", value: "prism" },
+                          { label: t("settings.launch.method.native"), value: "native" },
+                          { label: t("settings.launch.method.prism"), value: "prism" },
                         ]}
                       />
                     </div>
@@ -12733,31 +12879,31 @@ export default function App() {
                   {settingsMode === "advanced" ? (
                     <>
                       <div id="setting-anchor-global:java-path">
-                        <div className="settingTitle">Java executable</div>
-                        <div className="settingSub">
-                          Absolute path to Java, or leave blank to use `java` from PATH. Minecraft 1.20.5+ needs Java 21+.
-                        </div>
+                        <div className="settingTitle">{t("settings.launch.java.title")}</div>
+                        <div className="settingSub">{t("settings.launch.java.sub")}</div>
                         <input
                           className="input"
                           value={javaPathDraft}
                           onChange={(e) => setJavaPathDraft(e.target.value)}
                           placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
                         />
-                        <div className="row">
+                        <div className="settingsActionGrid">
                           <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
                             <span className="btnIcon">
                               <Icon name="upload" size={17} />
                             </span>
-                            Browse…
+                            {t("settings.launch.java.browse")}
                           </button>
                           <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
-                            {javaRuntimeBusy ? "Detecting…" : "Detect installed Java"}
+                            {javaRuntimeBusy
+                              ? t("settings.launch.java.detecting")
+                              : t("settings.launch.java.detect")}
                           </button>
                           <button
                             className="btn"
                             onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
                           >
-                            Get Java 21
+                            {t("settings.launch.java.get_java_21")}
                           </button>
                         </div>
                         {javaRuntimeCandidates.length > 0 ? (
@@ -12773,7 +12919,9 @@ export default function App() {
                                   onClick={() => setJavaPathDraft(runtime.path)}
                                   disabled={launcherBusy}
                                 >
-                                  {javaPathDraft.trim() === runtime.path.trim() ? "Selected" : "Use"}
+                                  {javaPathDraft.trim() === runtime.path.trim()
+                                    ? t("settings.launch.java.selected")
+                                    : t("settings.launch.java.use")}
                                 </button>
                               </div>
                             ))}
@@ -12782,31 +12930,29 @@ export default function App() {
                       </div>
 
                       <div id="setting-anchor-global:oauth-client">
-                        <div className="settingTitle">OAuth client ID override</div>
-                        <div className="settingSub">
-                          Client ID is a public identifier, not a secret API key. Leave blank to use the bundled default.
-                        </div>
+                        <div className="settingTitle">{t("settings.launch.oauth.title")}</div>
+                        <div className="settingSub">{t("settings.launch.oauth.sub")}</div>
                         <input
                           className="input"
                           value={oauthClientIdDraft}
                           onChange={(e) => setOauthClientIdDraft(e.target.value)}
-                          placeholder="Optional override client ID"
+                          placeholder={t("settings.launch.oauth.placeholder")}
                           style={{ marginTop: 8 }}
                         />
                       </div>
                     </>
                   ) : (
                     <div className="muted">
-                      Advanced Java and OAuth overrides are hidden in Basic mode.
+                      {t("settings.launch.basic_hidden")}
                       <button className="btn" style={{ marginLeft: 8 }} onClick={() => setSettingsMode("advanced")}>
-                        Switch to Advanced
+                        {t("settings.launch.switch_to_advanced")}
                       </button>
                     </div>
                   )}
 
                   <div className="settingsSaveRow">
                     <button className="btn primary" onClick={onSaveLauncherPrefs} disabled={launcherBusy}>
-                      {launcherBusy ? "Saving…" : "Save launcher settings"}
+                      {launcherBusy ? t("settings.launch.saving") : t("settings.launch.save")}
                     </button>
                   </div>
                 </div>
@@ -12815,10 +12961,8 @@ export default function App() {
 
             <section className="settingsCol">
               <div className="card settingsSectionCard" id="setting-anchor-global:account">
-                <div className="settingsSectionTitle">Microsoft account</div>
-                <div className="p settingsSectionSub">
-                  Connect the Microsoft account that owns Minecraft. You normally do not need to configure any client ID.
-                </div>
+                <div className="settingsSectionTitle">{t("settings.account.section_title")}</div>
+                <div className="p settingsSectionSub">{t("settings.account.section_sub")}</div>
 
                 <div className="row" style={{ marginTop: 8 }}>
                   <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
@@ -12895,7 +13039,7 @@ export default function App() {
               </div>
 
               <div className="card settingsSectionCard" id="setting-anchor-global:app-updates">
-                <div className="settingsSectionTitle">App updates</div>
+                <div className="settingsSectionTitle">{t("settings.updates.section_title")}</div>
                 <div className="p settingsSectionSub">
                   Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
                 </div>
@@ -12913,7 +13057,7 @@ export default function App() {
                     <span className="chip subtle">Up to date</span>
                   ) : null}
                 </div>
-                <div className="row" style={{ marginTop: 8 }}>
+                <div className="settingsActionGrid">
                   <button
                     className="btn"
                     onClick={() => void onCheckAppUpdate({ silent: false })}
@@ -12928,13 +13072,19 @@ export default function App() {
                   >
                     {appUpdaterInstallBusy ? "Installing…" : "Install update + restart"}
                   </button>
-                  <button
-                    className={`btn stateful ${appUpdaterAutoCheck ? "active" : ""}`}
-                    onClick={() => setAppUpdaterAutoCheck((prev) => !prev)}
-                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
-                  >
-                    Auto-check on launch: {appUpdaterAutoCheck ? "On" : "Off"}
-                  </button>
+                </div>
+                <div className="settingStackMini">
+                  <label className="toggleRow settingsToggleRow">
+                    <input
+                      type="checkbox"
+                      checked={appUpdaterAutoCheck}
+                      onChange={() => setAppUpdaterAutoCheck((prev) => !prev)}
+                      disabled={appUpdaterBusy || appUpdaterInstallBusy}
+                    />
+                    <span className="togglePill" />
+                    <span>Auto-check on launch</span>
+                  </label>
+                  <div className="settingSub">Checks for OpenJar Launcher releases when the app starts.</div>
                 </div>
                 {appUpdaterState?.release_notes ? (
                   <div className="muted" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
@@ -12945,7 +13095,7 @@ export default function App() {
               </div>
 
               <div className="card settingsSectionCard" id="setting-anchor-global:content-visuals">
-                <div className="settingsSectionTitle">Content and visuals</div>
+                <div className="settingsSectionTitle">{t("settings.content.section_title")}</div>
                 <div className="p settingsSectionSub">Quick toggles for launcher behavior outside game runtime.</div>
 
                 <div className="settingStack">
@@ -12954,19 +13104,16 @@ export default function App() {
                     <div className="settingSub">
                       When enabled, local file imports automatically run Identify local files in Instance and Creator Studio.
                     </div>
-                    <div className="row">
-                      <button
-                        className={`btn stateful ${launcherSettings?.auto_identify_local_jars ? "active" : ""}`}
-                        onClick={() => void onToggleAutoIdentifyLocalJars()}
+                    <label className="toggleRow settingsToggleRow">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(launcherSettings?.auto_identify_local_jars)}
+                        onChange={() => void onToggleAutoIdentifyLocalJars()}
                         disabled={autoIdentifyLocalJarsBusy}
-                      >
-                        {autoIdentifyLocalJarsBusy
-                          ? "Saving…"
-                          : launcherSettings?.auto_identify_local_jars
-                            ? "Enabled"
-                            : "Disabled"}
-                      </button>
-                    </div>
+                      />
+                      <span className="togglePill" />
+                      <span>{autoIdentifyLocalJarsBusy ? "Saving…" : "Identify local files automatically"}</span>
+                    </label>
                   </div>
 
                   <div>
@@ -12974,14 +13121,15 @@ export default function App() {
                     <div className="settingSub">
                       Disable this for faster Account and Skins page loads on lower-end hardware.
                     </div>
-                    <div className="row">
-                      <button
-                        className={`btn stateful ${skinPreviewEnabled ? "active" : ""}`}
-                        onClick={() => setSkinPreviewEnabled((prev) => !prev)}
-                      >
-                        {skinPreviewEnabled ? "Enabled" : "Disabled"}
-                      </button>
-                    </div>
+                    <label className="toggleRow settingsToggleRow">
+                      <input
+                        type="checkbox"
+                        checked={skinPreviewEnabled}
+                        onChange={() => setSkinPreviewEnabled((prev) => !prev)}
+                      />
+                      <span className="togglePill" />
+                      <span>Enable 3D skin preview</span>
+                    </label>
                   </div>
 
                   <div id="setting-anchor-global:discord-presence">
@@ -12989,18 +13137,17 @@ export default function App() {
                     <div className="settingSub">
                       Optional status sharing. Never includes server IP, username, world name, or file paths.
                     </div>
-                    <div className="row">
-                      <button
-                        className={`btn stateful ${(launcherSettings?.discord_presence_enabled ?? true) ? "active" : ""}`}
-                        onClick={() => void onToggleDiscordPresenceEnabled()}
+                    <label className="toggleRow settingsToggleRow">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(launcherSettings?.discord_presence_enabled ?? true)}
+                        onChange={() => void onToggleDiscordPresenceEnabled()}
                         disabled={discordPresenceBusy}
-                      >
-                        {discordPresenceBusy
-                          ? "Saving…"
-                          : (launcherSettings?.discord_presence_enabled ?? true)
-                            ? "Enabled"
-                            : "Disabled"}
-                      </button>
+                      />
+                      <span className="togglePill" />
+                      <span>{discordPresenceBusy ? "Saving…" : "Enable Discord Rich Presence"}</span>
+                    </label>
+                    <div className="row">
                       <MenuSelect
                         value={String(launcherSettings?.discord_presence_detail_level ?? "minimal")}
                         labelPrefix="Detail"
@@ -13019,9 +13166,9 @@ export default function App() {
                 </div>
               </div>
 
-              {settingsMode === "advanced" ? (
-                <div className="card settingsSectionCard">
-                  <div className="settingsSectionTitle">Advanced settings</div>
+                {settingsMode === "advanced" ? (
+                  <div className="card settingsSectionCard">
+                  <div className="settingsSectionTitle">{t("settings.advanced.section_title")}</div>
                   <div className="p settingsSectionSub">Power-user defaults and launch permission controls.</div>
                   <div className="settingStack">
                     <div>
@@ -13029,20 +13176,24 @@ export default function App() {
                       <div className="settingSub">
                         Extra launcher behavior toggles for advanced workflows.
                       </div>
-                      <div className="row">
-                        <button
-                          className={`btn stateful ${discoverAddTraySticky ? "active" : ""}`}
-                          onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
-                        >
-                          Discover add tray pinned: {discoverAddTraySticky ? "On" : "Off"}
-                        </button>
-                        <button
-                          className={`btn ${supportBundleIncludeRawLogs ? "danger" : ""}`}
-                          onClick={() => setSupportBundleIncludeRawLogs((prev) => !prev)}
-                        >
-                          Support bundle raw logs default: {supportBundleIncludeRawLogs ? "On" : "Off"}
-                        </button>
-                      </div>
+                      <label className="toggleRow settingsToggleRow">
+                        <input
+                          type="checkbox"
+                          checked={discoverAddTraySticky}
+                          onChange={() => setDiscoverAddTraySticky((prev) => !prev)}
+                        />
+                        <span className="togglePill" />
+                        <span>Keep Discover add tray pinned</span>
+                      </label>
+                      <label className="toggleRow settingsToggleRow">
+                        <input
+                          type="checkbox"
+                          checked={supportBundleIncludeRawLogs}
+                          onChange={() => setSupportBundleIncludeRawLogs((prev) => !prev)}
+                        />
+                        <span className="togglePill" />
+                        <span>Include raw logs by default in support bundles</span>
+                      </label>
                       <div className="row">
                         <MenuSelect
                           value={String(logMaxLines)}
@@ -13066,18 +13217,19 @@ export default function App() {
                         <div className="settingSub">
                           Voice chat instances can auto-trigger a Java microphone permission probe before launch.
                         </div>
-                        <div className="row">
-                          <button
-                            className={`btn stateful ${(launcherSettings?.auto_trigger_mic_permission_prompt ?? true) ? "active" : ""}`}
-                            onClick={() => void onToggleAutoMicPermissionPrompt()}
+                        <label className="toggleRow settingsToggleRow">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(launcherSettings?.auto_trigger_mic_permission_prompt ?? true)}
+                            onChange={() => void onToggleAutoMicPermissionPrompt()}
                             disabled={autoMicPromptSettingBusy}
-                          >
-                            {autoMicPromptSettingBusy
-                              ? "Saving…"
-                              : (launcherSettings?.auto_trigger_mic_permission_prompt ?? true)
-                                ? "Auto prompt enabled"
-                                : "Auto prompt disabled"}
-                          </button>
+                          />
+                          <span className="togglePill" />
+                          <span>
+                            {autoMicPromptSettingBusy ? "Saving…" : "Enable auto microphone prompt"}
+                          </span>
+                        </label>
+                        <div className="settingsActionGrid">
                           <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
                             Open microphone settings
                           </button>
@@ -13163,7 +13315,7 @@ export default function App() {
                             Paste tokens here and click Validate. We store them in secure Keychain storage only.
                           </div>
                         ) : null}
-                        <div className="row" style={{ marginTop: 8 }}>
+                        <div className="settingsActionGrid">
                           <button
                             className="btn primary"
                             onClick={() => void onSaveGithubTokenPool()}
@@ -13216,7 +13368,9 @@ export default function App() {
                   </div>
                 </div>
               ) : null}
-            </section>
+                </section>
+              </div>
+            </div>
           </div>
 
           {launcherErr ? <div className="errorBox" style={{ marginTop: 14 }}>{launcherErr}</div> : null}
@@ -14474,11 +14628,12 @@ export default function App() {
       const hasNativeRunningForInstance = runningForInstance.some(
         (r) => String(r.method ?? "").toLowerCase() === "native"
       );
-      const concurrentNativeBlocked = hasNativeRunningForInstance && launchMethodPick === "native";
+      const concurrentNativeLaunch = hasNativeRunningForInstance && launchMethodPick === "native";
+      const hasDisposableRuntimeSession = runningForInstance.some((run) => Boolean(run.isolated));
       const launchActionTitle = isLaunchBusyForInstance
         ? "Cancel current launch"
-        : concurrentNativeBlocked
-          ? "Stop the current native run before starting another native launch for this instance"
+        : concurrentNativeLaunch
+          ? "Start another native run in a disposable session. World, config, and mod changes from the extra run stay temporary; only Minecraft settings sync back."
           : `Launch with ${launchMethodPick === "native" ? "native launcher" : "Prism Launcher"}`;
       const launchFailure = launchFailureByInstance[inst.id] ?? null;
       const hasLaunchFailure = Boolean(launchFailure);
@@ -14906,6 +15061,11 @@ export default function App() {
                     <button
                       className="btn danger"
                       onClick={() => onStopRunning(runningForInstance[0].launch_id)}
+                      title={
+                        runningForInstance.length > 1
+                          ? "Stop the most recent running session for this instance"
+                          : undefined
+                      }
                     >
                       Stop
                     </button>
@@ -16379,9 +16539,16 @@ export default function App() {
               <div className="card instanceSideCard">
                 <div className="librarySideTitle">Runtime status</div>
                 {hasRunningForInstance ? (
-                  <div className="muted">
-                    {runningForInstance.length} running instance{runningForInstance.length === 1 ? "" : "s"}
-                  </div>
+                  <>
+                    <div className="muted">
+                      {runningForInstance.length} running session{runningForInstance.length === 1 ? "" : "s"}
+                    </div>
+                    {hasDisposableRuntimeSession ? (
+                      <div className="muted" style={{ marginTop: 8 }}>
+                        Extra native runs use disposable runtime sessions. Only Minecraft settings sync back.
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <div className="compactEmptyState">
                     <span className="compactEmptyIcon" aria-hidden="true">
@@ -16632,6 +16799,26 @@ export default function App() {
                       {s.label}
                     </button>
                     ))}
+
+                  <div className="instSettingsNavMeta">
+                    <div className="instSettingsNavMetaLabel">Editing mode</div>
+                    <SegmentedControl
+                      value={instanceSettingsMode}
+                      onChange={(value) =>
+                        setInstanceSettingsMode(((value ?? "basic") as SettingsMode))
+                      }
+                      options={[
+                        { value: "basic", label: "Basic" },
+                        { value: "advanced", label: "Advanced" },
+                      ]}
+                    />
+                    <div className="instSettingsNavMetaStatus">
+                      <span className={`chip ${instanceSettingsBusy ? "" : "subtle"}`}>
+                        {instanceSettingsBusy ? "Saving…" : "Auto-save on change"}
+                      </span>
+                      <div className="muted">Changes are saved as you edit this instance.</div>
+                    </div>
+                  </div>
 
                   <div className="instSettingsNavFooter">
                     <button
@@ -17815,7 +18002,10 @@ export default function App() {
                   {runningInstances.slice(0, 5).map((run) => (
                     <div key={run.launch_id} className="libraryRunRow">
                       <span>{run.instance_name}</span>
-                      <span className="chip subtle">{run.method}</span>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        <span className="chip subtle">{run.method}</span>
+                        {run.isolated ? <span className="chip subtle">Disposable</span> : null}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -17945,22 +18135,22 @@ export default function App() {
   return (
     <div className="appWrap">
       <aside className="navRail">
-        <NavButton active={route === "home"} label="Home" onClick={() => setRoute("home")}>
+        <NavButton active={route === "home"} label={t("nav.home")} onClick={() => setRoute("home")}>
           <Icon name="home" className="navIcon navHomeIcon" />
         </NavButton>
 
-        <NavButton active={route === "discover"} label="Discover content" onClick={() => setRoute("discover")}>
+        <NavButton active={route === "discover"} label={t("nav.discover")} onClick={() => setRoute("discover")}>
           <Icon name="compass" className="navIcon compassIcon navAnimCompass" />
         </NavButton>
 
-        <NavButton className="boxPulse" active={route === "modpacks"} label="Creator Studio" onClick={() => setRoute("modpacks")}>
+        <NavButton className="boxPulse" active={route === "modpacks"} label={t("nav.creator_studio")} onClick={() => setRoute("modpacks")}>
           <Icon name="box" className="navIcon navAnimBox" />
         </NavButton>
 
         <NavButton
           className="booksTilt"
           active={route === "library"}
-          label="Library"
+          label={t("nav.library")}
           onClick={() => setRoute("library")}
         >
           <Icon name="books" className="navIcon navAnimBooks" />
@@ -17968,7 +18158,7 @@ export default function App() {
 
         <NavButton
           active={route === "updates"}
-          label="Updates available"
+          label={t("nav.updates")}
           onClick={() => setRoute("updates")}
           badge={scheduledUpdatesAvailableTotal}
         >
@@ -17977,7 +18167,7 @@ export default function App() {
 
         <NavButton
           active={route === "skins"}
-          label="Skins"
+          label={t("nav.skins")}
           onClick={() => setRoute("skins")}
         >
           <Icon name="skin" className="navIcon" />
@@ -18016,7 +18206,7 @@ export default function App() {
         <NavButton
           className="plusJump"
           active={false}
-          label="Create new instance"
+          label={t("nav.create_instance")}
           onClick={() => setShowCreate(true)}
         >
           <Icon name="plus" className="navIcon plusIcon navAnimPlus" />
@@ -18024,14 +18214,14 @@ export default function App() {
 
         <div className="navBottom">
           {isDevMode ? (
-            <NavButton active={route === "dev"} label="Dev" onClick={() => setRoute("dev")}>
+            <NavButton active={route === "dev"} label={t("nav.dev")} onClick={() => setRoute("dev")}>
               <Icon name="sparkles" className="navIcon" />
             </NavButton>
           ) : null}
-          <NavButton className="profileBounce" active={route === "account"} label="Account" onClick={() => setRoute("account")}>
+          <NavButton className="profileBounce" active={route === "account"} label={t("nav.account")} onClick={() => setRoute("account")}>
             <Icon name="user" className="navIcon navAnimUser" />
           </NavButton>
-          <NavButton className="settingsSpin" active={route === "settings"} label="Settings" onClick={() => setRoute("settings")}>
+          <NavButton className="settingsSpin" active={route === "settings"} label={t("nav.settings")} onClick={() => setRoute("settings")}>
             <Icon name="gear" className="navIcon navAnimGear" />
           </NavButton>
         </div>

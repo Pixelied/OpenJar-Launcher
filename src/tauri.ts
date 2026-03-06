@@ -356,6 +356,7 @@ export function clearGithubTokenPool(): Promise<GithubTokenPoolStatus> {
 
 export function setLauncherSettings(input: {
   defaultLaunchMethod?: LaunchMethod;
+  appLanguage?: string;
   javaPath?: string;
   oauthClientId?: string;
   updateCheckCadence?: "off" | "hourly" | "every_3_hours" | "every_6_hours" | "every_12_hours" | "daily" | "weekly";
