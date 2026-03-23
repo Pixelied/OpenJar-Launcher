@@ -40,10 +40,15 @@ export default function ConfigEditorTopBar({
   return (
     <div className="configEditorTopBar">
       <div className="configEditorTitleWrap">
-        <div className="configEditorFileName">{filePath}</div>
-        {unsaved ? <span className="chip">Unsaved</span> : <span className="chip subtle">Saved</span>}
-        {readOnly ? <span className="chip subtle">Read-only</span> : null}
-        {virtualFile ? <span className="chip subtle">Virtual file</span> : null}
+        <div className="configEditorTitleBlock">
+          <div className="configEditorTitleLabel">Editing</div>
+          <div className="configEditorFileName">{filePath}</div>
+        </div>
+        <div className="configEditorStateChips">
+          {unsaved ? <span className="chip">Unsaved</span> : <span className="chip subtle">Saved</span>}
+          {readOnly ? <span className="chip subtle">Read-only</span> : null}
+          {virtualFile ? <span className="chip subtle">Virtual file</span> : null}
+        </div>
       </div>
 
       <div className="configEditorControlRow">

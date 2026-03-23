@@ -71,10 +71,16 @@ export default function ConfigFileList({
   return (
     <div className="configWorkspacePanel configFilesPanel">
       <div className="configPanelHead">
-        <div className="settingTitle">Files</div>
+        <div className="configPanelTitleBlock">
+          <div className="settingTitle">Files</div>
+          <div className="configPanelMeta">{filtered.length} files</div>
+        </div>
         <button className="btn" type="button" onClick={onNewFile} disabled={allowNewFile === false}>
           New file
         </button>
+      </div>
+      <div className="configPanelSubtleCopy">
+        Search files and switch focus quickly.
       </div>
       <input
         className="input"

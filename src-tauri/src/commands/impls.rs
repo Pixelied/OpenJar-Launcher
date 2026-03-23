@@ -1689,6 +1689,200 @@ pub(crate) async fn get_instance_disk_usage(
 }
 
 #[tauri::command]
+pub(crate) async fn get_storage_usage_overview(
+    app: tauri::AppHandle,
+) -> Result<StorageUsageOverview, String> {
+    run_blocking_task("get storage usage overview", move || Ok(scan_storage_usage_overview(&app)))
+        .await
+}
+
+#[tauri::command]
+pub(crate) async fn get_storage_usage_entries(
+    app: tauri::AppHandle,
+    args: GetStorageUsageEntriesArgs,
+) -> Result<Vec<StorageUsageEntry>, String> {
+    run_blocking_task("get storage usage entries", move || {
+        let scope = args.scope.trim().to_ascii_lowercase();
+        let mode = args.mode.trim().to_ascii_lowercase();
+        let limit = normalize_storage_detail_limit(args.limit);
+        let (root, path_kind, instance_id) =
+            storage_scope_root(&app, &scope, args.instance_id.as_deref())?;
+        let (base, _) = resolve_storage_base_path(&scope, &root, args.relative_path.as_deref())?;
+        match mode.as_str() {
+            "folders" => storage_collect_folder_entries(
+                &scope,
+                &root,
+                &base,
+                &path_kind,
+                instance_id.as_deref(),
+                limit,
+            ),
+            "files" => storage_collect_file_entries(
+                &scope,
+                &root,
+                &base,
+                &path_kind,
+                instance_id.as_deref(),
+                limit,
+            ),
+            _ => Err("storage mode must be folders or files".to_string()),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn run_storage_cleanup(
+    app: tauri::AppHandle,
+    args: RunStorageCleanupArgs,
+) -> Result<StorageCleanupResult, String> {
+    run_blocking_task("run storage cleanup", move || {
+        let mut reclaimed_bytes = 0u64;
+        let mut actions_run = 0usize;
+        let mut messages = Vec::new();
+        let mut seen = HashSet::<String>::new();
+
+        let instances_dir = app_instances_dir(&app)?;
+        let index = read_index(&instances_dir).unwrap_or_default();
+        let instances_by_id = index
+            .instances
+            .into_iter()
+            .map(|inst| (inst.id.clone(), inst))
+            .collect::<HashMap<_, _>>();
+        let mut selected_instance_ids = args
+            .instance_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        if selected_instance_ids.is_empty() {
+            selected_instance_ids = instances_by_id.keys().cloned().collect();
+        }
+
+        for raw_action in args.action_ids {
+            let action = raw_action.trim();
+            if action.is_empty() || !seen.insert(action.to_string()) {
+                continue;
+            }
+            if action == STORAGE_ACTION_CLEAR_SHARED_CACHE {
+                let cache_dir = launcher_cache_dir(&app)?;
+                let bytes = dir_total_size_bytes(&cache_dir);
+                remove_path_if_exists(&cache_dir)?;
+                fs::create_dir_all(&cache_dir).map_err(|e| {
+                    format!("recreate launcher cache '{}' failed: {e}", cache_dir.display())
+                })?;
+                reclaimed_bytes = reclaimed_bytes.saturating_add(bytes);
+                actions_run += 1;
+                messages.push(format!(
+                    "Cleared shared cache and reclaimed {}.",
+                    format_storage_size_label(bytes)
+                ));
+                continue;
+            }
+
+            let (action_kind, action_instance_ids) = if let Some(instance_id) =
+                action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS))
+            {
+                (STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS, vec![instance_id.to_string()])
+            } else if let Some(instance_id) =
+                action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_SNAPSHOTS))
+            {
+                (STORAGE_ACTION_PRUNE_SNAPSHOTS, vec![instance_id.to_string()])
+            } else if let Some(instance_id) =
+                action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_WORLD_BACKUPS))
+            {
+                (STORAGE_ACTION_PRUNE_WORLD_BACKUPS, vec![instance_id.to_string()])
+            } else if matches!(
+                action,
+                STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS
+                    | STORAGE_ACTION_PRUNE_SNAPSHOTS
+                    | STORAGE_ACTION_PRUNE_WORLD_BACKUPS
+            ) {
+                (action, selected_instance_ids.clone())
+            } else {
+                return Err(format!("Unknown storage cleanup action '{action}'"));
+            };
+
+            for instance_id in action_instance_ids {
+                let inst = instances_by_id
+                    .get(&instance_id)
+                    .ok_or_else(|| format!("Instance '{instance_id}' was not found"))?;
+                let instance_dir = instance_dir_for_instance(&instances_dir, inst);
+                let settings = normalize_instance_settings(inst.settings.clone());
+                let targets = match action_kind {
+                    STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS => storage_stale_runtime_session_targets(
+                        &instance_dir,
+                        Duration::from_secs(STALE_RUNTIME_SESSION_MAX_AGE_HOURS * 3600),
+                    )?,
+                    STORAGE_ACTION_PRUNE_SNAPSHOTS => storage_snapshot_cleanup_targets(
+                        &instance_dir,
+                        settings.snapshot_retention_count as usize,
+                        settings.snapshot_max_age_days as i64,
+                    )?,
+                    STORAGE_ACTION_PRUNE_WORLD_BACKUPS => storage_world_backup_cleanup_targets(
+                        &instance_dir,
+                        settings.world_backup_retention_count as usize,
+                    )?,
+                    _ => Vec::new(),
+                };
+                if targets.is_empty() {
+                    continue;
+                }
+                let bytes = targets.iter().map(|path| dir_total_size_bytes(path)).sum::<u64>();
+                for target in targets {
+                    remove_path_if_exists(&target)?;
+                }
+                reclaimed_bytes = reclaimed_bytes.saturating_add(bytes);
+                actions_run += 1;
+                let action_label = match action_kind {
+                    STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS => "Removed stale runtime sessions",
+                    STORAGE_ACTION_PRUNE_SNAPSHOTS => "Pruned old snapshots",
+                    STORAGE_ACTION_PRUNE_WORLD_BACKUPS => "Pruned old world backups",
+                    _ => "Cleaned storage",
+                };
+                messages.push(format!(
+                    "{} for {} and reclaimed {}.",
+                    action_label,
+                    inst.name,
+                    format_storage_size_label(bytes)
+                ));
+            }
+        }
+
+        Ok(StorageCleanupResult {
+            reclaimed_bytes,
+            actions_run,
+            messages,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn reveal_storage_usage_path(
+    app: tauri::AppHandle,
+    args: RevealStorageUsagePathArgs,
+) -> Result<StorageRevealResult, String> {
+    run_blocking_task("reveal storage usage path", move || {
+        let scope = args.scope.trim().to_ascii_lowercase();
+        let (root, _, _) = storage_scope_root(&app, &scope, args.instance_id.as_deref())?;
+        let (target, _) = resolve_storage_base_path(&scope, &root, args.relative_path.as_deref())?;
+        let (opened, revealed_file) = reveal_path_in_shell(&target, true)?;
+        Ok(StorageRevealResult {
+            opened_path: opened.display().to_string(),
+            revealed_file,
+            message: if revealed_file {
+                "Revealed file in your file manager.".to_string()
+            } else {
+                "Opened storage location in your file manager.".to_string()
+            },
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn get_instance_last_run_metadata(
     app: tauri::AppHandle,
     args: GetInstanceLastRunMetadataArgs,

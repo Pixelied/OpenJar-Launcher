@@ -84,6 +84,12 @@ const QUICK_PLAY_SERVERS_FILE: &str = "quick_play_servers.v1.json";
 const RUNTIME_RECONCILE_MARKER_FILE: &str = ".runtime_reconcile.v1.done";
 const RUNTIME_SESSION_ACTIVE_MARKER_FILE: &str = ".active_session.v1";
 const STALE_RUNTIME_SESSION_MAX_AGE_HOURS: u64 = 24;
+const STORAGE_ACTION_CLEAR_SHARED_CACHE: &str = "clear_shared_cache";
+const STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS: &str = "prune_runtime_sessions";
+const STORAGE_ACTION_PRUNE_SNAPSHOTS: &str = "prune_snapshots";
+const STORAGE_ACTION_PRUNE_WORLD_BACKUPS: &str = "prune_world_backups";
+const STORAGE_DETAIL_LIMIT_DEFAULT: usize = 16;
+const STORAGE_DETAIL_LIMIT_MAX: usize = 200;
 const GITHUB_DISCOVER_LOW_HITS_THRESHOLD: usize = 4;
 const GITHUB_DISCOVER_MAX_REPO_CANDIDATES: usize = 12;
 const GITHUB_DISCOVER_SOURCE_MAX_REPO_CANDIDATES: usize = 180;
@@ -1354,6 +1360,35 @@ struct GetInstanceDiskUsageArgs {
 }
 
 #[derive(Debug, Deserialize)]
+struct GetStorageUsageEntriesArgs {
+    scope: String,
+    #[serde(alias = "instanceId", default)]
+    instance_id: Option<String>,
+    #[serde(alias = "relativePath", default)]
+    relative_path: Option<String>,
+    mode: String,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunStorageCleanupArgs {
+    #[serde(alias = "actionIds")]
+    action_ids: Vec<String>,
+    #[serde(alias = "instanceIds", default)]
+    instance_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RevealStorageUsagePathArgs {
+    scope: String,
+    #[serde(alias = "instanceId", default)]
+    instance_id: Option<String>,
+    #[serde(alias = "relativePath", default)]
+    relative_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct GetInstanceLastRunMetadataArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
@@ -2357,6 +2392,86 @@ struct RevealConfigEditorFileResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct StorageBucketTotal {
+    key: String,
+    label: String,
+    bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageInstanceSummary {
+    instance_id: String,
+    instance_name: String,
+    total_bytes: u64,
+    reclaimable_bytes: u64,
+    reclaimable_runtime_sessions: u64,
+    reclaimable_snapshots: u64,
+    reclaimable_world_backups: u64,
+    mods: u64,
+    resourcepacks: u64,
+    shaderpacks: u64,
+    saves: u64,
+    config: u64,
+    snapshots: u64,
+    world_backups: u64,
+    logs: u64,
+    crash_reports: u64,
+    runtime_sessions: u64,
+    other: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageCleanupRecommendation {
+    action_id: String,
+    title: String,
+    description: String,
+    scope: String,
+    reclaimable_bytes: u64,
+    item_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageUsageOverview {
+    scanned_at: String,
+    total_bytes: u64,
+    app_bytes: u64,
+    shared_cache_bytes: u64,
+    instances_bytes: u64,
+    reclaimable_bytes: u64,
+    app_breakdown: Vec<StorageBucketTotal>,
+    instance_summaries: Vec<StorageInstanceSummary>,
+    cleanup_recommendations: Vec<StorageCleanupRecommendation>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageUsageEntry {
+    name: String,
+    path_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance_id: Option<String>,
+    relative_path: String,
+    is_dir: bool,
+    bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageCleanupResult {
+    reclaimed_bytes: u64,
+    actions_run: usize,
+    messages: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct StorageRevealResult {
+    opened_path: String,
+    revealed_file: bool,
+    message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct LogLineDto {
     raw: String,
     line_no: u64,
@@ -3007,6 +3122,21 @@ fn dir_total_size_bytes(path: &Path) -> u64 {
     total
 }
 
+fn format_storage_size_label(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let units = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit_idx = 0usize;
+    while value >= 1024.0 && unit_idx < units.len() - 1 {
+        value /= 1024.0;
+        unit_idx += 1;
+    }
+    let digits = if value >= 100.0 || unit_idx == 0 { 0 } else { 1 };
+    format!("{value:.digits$} {}", units[unit_idx], digits = digits)
+}
+
 fn lock_path(instances_dir: &Path, instance_id: &str) -> PathBuf {
     instance_dir_for_id(instances_dir, instance_id)
         .unwrap_or_else(|_| instances_dir.join(instance_id))
@@ -3048,6 +3178,683 @@ fn launcher_token_debug_fallback_path(app: &tauri::AppHandle) -> Result<PathBuf,
 
 fn launcher_cache_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(launcher_dir(app)?.join("cache"))
+}
+
+fn storage_bucket_label(key: &str) -> &'static str {
+    match key {
+        "shared_cache_assets" => "Shared cache/assets",
+        "shared_cache_libraries" => "Shared cache/libraries",
+        "shared_cache_versions" => "Shared cache/versions",
+        "shared_cache_other" => "Shared cache/other",
+        "launcher_metadata" => "Launcher metadata/settings",
+        "other_launcher" => "Other launcher files",
+        "mods" => "Mods",
+        "resourcepacks" => "Resource packs",
+        "shaderpacks" => "Shaders",
+        "saves" => "World saves",
+        "config" => "Config",
+        "snapshots" => "Snapshots",
+        "world_backups" => "World backups",
+        "logs" => "Logs",
+        "crash_reports" => "Crash reports",
+        "runtime_sessions" => "Runtime sessions",
+        "other" => "Other",
+        _ => "Storage",
+    }
+}
+
+fn storage_bucket_total(key: &str, bytes: u64) -> StorageBucketTotal {
+    StorageBucketTotal {
+        key: key.to_string(),
+        label: storage_bucket_label(key).to_string(),
+        bytes,
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn storage_known_launcher_metadata_name(name: &str) -> bool {
+    matches!(
+        name,
+        "settings.json"
+            | QUICK_PLAY_SERVERS_FILE
+            | "accounts.json"
+            | LAUNCHER_TOKEN_FALLBACK_FILE
+            | LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE
+            | "dev_curseforge_api_key.txt"
+    )
+}
+
+#[cfg(debug_assertions)]
+fn storage_known_launcher_metadata_name(name: &str) -> bool {
+    matches!(
+        name,
+        "settings.json"
+            | QUICK_PLAY_SERVERS_FILE
+            | "accounts.json"
+            | LAUNCHER_TOKEN_FALLBACK_FILE
+            | LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE
+            | LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE
+            | "dev_curseforge_api_key.txt"
+    )
+}
+
+fn storage_modified_at(meta: &fs::Metadata) -> Option<i64> {
+    meta.modified()
+        .ok()
+        .and_then(|stamp| stamp.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|dur| dur.as_millis() as i64)
+}
+
+fn storage_instance_bucket_key(name: &str) -> &'static str {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "mods" => "mods",
+        "resourcepacks" => "resourcepacks",
+        "shaderpacks" => "shaderpacks",
+        "saves" => "saves",
+        "config" => "config",
+        "snapshots" => "snapshots",
+        "world_backups" => "world_backups",
+        "logs" => "logs",
+        "crash-reports" | "crash_reports" => "crash_reports",
+        "runtime_sessions" => "runtime_sessions",
+        _ => "other",
+    }
+}
+
+fn storage_summary_for_instance(
+    instances_dir: &Path,
+    inst: &Instance,
+) -> Result<StorageInstanceSummary, String> {
+    let instance_dir = instance_dir_for_instance(instances_dir, inst);
+    if !instance_dir.exists() {
+        return Ok(StorageInstanceSummary {
+            instance_id: inst.id.clone(),
+            instance_name: inst.name.clone(),
+            total_bytes: 0,
+            reclaimable_bytes: 0,
+            reclaimable_runtime_sessions: 0,
+            reclaimable_snapshots: 0,
+            reclaimable_world_backups: 0,
+            mods: 0,
+            resourcepacks: 0,
+            shaderpacks: 0,
+            saves: 0,
+            config: 0,
+            snapshots: 0,
+            world_backups: 0,
+            logs: 0,
+            crash_reports: 0,
+            runtime_sessions: 0,
+            other: 0,
+        });
+    }
+
+    let mut buckets: HashMap<&'static str, u64> = HashMap::new();
+    let entries = fs::read_dir(&instance_dir).map_err(|e| {
+        format!(
+            "read instance storage '{}' failed: {e}",
+            instance_dir.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read instance storage entry failed: {e}"))?;
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| format!("read metadata '{}' failed: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let bucket = storage_instance_bucket_key(&entry.file_name().to_string_lossy());
+        let size = if meta.is_file() {
+            meta.len()
+        } else if meta.is_dir() {
+            dir_total_size_bytes(&path)
+        } else {
+            0
+        };
+        *buckets.entry(bucket).or_insert(0) =
+            buckets.get(bucket).copied().unwrap_or(0).saturating_add(size);
+    }
+
+    let settings = normalize_instance_settings(inst.settings.clone());
+    let runtime_sessions =
+        buckets.get("runtime_sessions").copied().unwrap_or(0);
+    let reclaimable_runtime = storage_stale_runtime_session_targets(
+        &instance_dir,
+        Duration::from_secs(STALE_RUNTIME_SESSION_MAX_AGE_HOURS * 3600),
+    )?
+    .iter()
+    .map(|path| dir_total_size_bytes(path))
+    .sum::<u64>();
+    let reclaimable_snapshots = storage_snapshot_cleanup_targets(
+        &instance_dir,
+        settings.snapshot_retention_count as usize,
+        settings.snapshot_max_age_days as i64,
+    )?
+    .iter()
+    .map(|path| dir_total_size_bytes(path))
+    .sum::<u64>();
+    let reclaimable_world_backups = storage_world_backup_cleanup_targets(
+        &instance_dir,
+        settings.world_backup_retention_count as usize,
+    )?
+    .iter()
+    .map(|path| dir_total_size_bytes(path))
+    .sum::<u64>();
+
+    let summary = StorageInstanceSummary {
+        instance_id: inst.id.clone(),
+        instance_name: inst.name.clone(),
+        total_bytes: dir_total_size_bytes(&instance_dir),
+        reclaimable_bytes: reclaimable_runtime
+            .saturating_add(reclaimable_snapshots)
+            .saturating_add(reclaimable_world_backups),
+        reclaimable_runtime_sessions: reclaimable_runtime,
+        reclaimable_snapshots,
+        reclaimable_world_backups,
+        mods: buckets.get("mods").copied().unwrap_or(0),
+        resourcepacks: buckets.get("resourcepacks").copied().unwrap_or(0),
+        shaderpacks: buckets.get("shaderpacks").copied().unwrap_or(0),
+        saves: buckets.get("saves").copied().unwrap_or(0),
+        config: buckets.get("config").copied().unwrap_or(0),
+        snapshots: buckets.get("snapshots").copied().unwrap_or(0),
+        world_backups: buckets.get("world_backups").copied().unwrap_or(0),
+        logs: buckets.get("logs").copied().unwrap_or(0),
+        crash_reports: buckets.get("crash_reports").copied().unwrap_or(0),
+        runtime_sessions,
+        other: buckets.get("other").copied().unwrap_or(0),
+    };
+    Ok(summary)
+}
+
+fn storage_snapshot_cleanup_targets(
+    instance_dir: &Path,
+    keep: usize,
+    max_age_days: i64,
+) -> Result<Vec<PathBuf>, String> {
+    let metas = list_snapshots(instance_dir)?;
+    let root = snapshots_dir(instance_dir);
+    let cutoff = Utc::now()
+        .timestamp()
+        .saturating_sub(max_age_days.max(0).saturating_mul(86_400));
+    let mut targets = Vec::new();
+    for (idx, meta) in metas.iter().enumerate() {
+        let created_at = created_at_sort_key(&meta.created_at);
+        let over_count = keep > 0 && idx >= keep;
+        let over_age = created_at > 0 && created_at < cutoff;
+        if !over_count && !over_age {
+            continue;
+        }
+        let dir = root.join(&meta.id);
+        if dir.exists() {
+            targets.push(dir);
+        }
+    }
+    Ok(targets)
+}
+
+fn storage_world_backup_cleanup_targets(
+    instance_dir: &Path,
+    keep_per_world: usize,
+) -> Result<Vec<PathBuf>, String> {
+    if keep_per_world == 0 {
+        return Ok(Vec::new());
+    }
+    let metas = list_world_backups(instance_dir)?;
+    let root = world_backups_dir(instance_dir);
+    let mut seen_by_world: HashMap<String, usize> = HashMap::new();
+    let mut targets = Vec::new();
+    for meta in metas {
+        let seen = seen_by_world.entry(meta.world_id.clone()).or_insert(0);
+        *seen += 1;
+        if *seen <= keep_per_world {
+            continue;
+        }
+        let dir = root.join(&meta.id);
+        if dir.exists() {
+            targets.push(dir);
+        }
+    }
+    Ok(targets)
+}
+
+fn storage_stale_runtime_session_targets(
+    instance_dir: &Path,
+    max_age: Duration,
+) -> Result<Vec<PathBuf>, String> {
+    let sessions_root = instance_dir.join("runtime_sessions");
+    if !sessions_root.exists() || !sessions_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut targets = Vec::new();
+    let now = std::time::SystemTime::now();
+    let entries = fs::read_dir(&sessions_root).map_err(|e| {
+        format!(
+            "read runtime sessions '{}' failed: {e}",
+            sessions_root.display()
+        )
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read runtime session entry failed: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let marker = runtime_session_active_marker_path(&path);
+        if marker.exists() {
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let age = now
+            .duration_since(modified)
+            .unwrap_or_else(|_| Duration::from_secs(0));
+        if age < max_age {
+            continue;
+        }
+        targets.push(path);
+    }
+    Ok(targets)
+}
+
+fn storage_app_breakdown(launcher_dir: &Path) -> Result<(u64, u64, Vec<StorageBucketTotal>), String> {
+    if !launcher_dir.exists() {
+        return Ok((
+            0,
+            0,
+            vec![
+                storage_bucket_total("shared_cache_assets", 0),
+                storage_bucket_total("shared_cache_libraries", 0),
+                storage_bucket_total("shared_cache_versions", 0),
+                storage_bucket_total("shared_cache_other", 0),
+                storage_bucket_total("launcher_metadata", 0),
+                storage_bucket_total("other_launcher", 0),
+            ],
+        ));
+    }
+
+    let cache_dir = launcher_dir.join("cache");
+    let cache_assets = dir_total_size_bytes(&cache_dir.join("assets"));
+    let cache_libraries = dir_total_size_bytes(&cache_dir.join("libraries"));
+    let cache_versions = dir_total_size_bytes(&cache_dir.join("versions"));
+    let shared_cache_total = dir_total_size_bytes(&cache_dir);
+    let cache_other = shared_cache_total
+        .saturating_sub(cache_assets)
+        .saturating_sub(cache_libraries)
+        .saturating_sub(cache_versions);
+
+    let mut launcher_metadata = 0u64;
+    let mut other_launcher = 0u64;
+    let entries = fs::read_dir(launcher_dir)
+        .map_err(|e| format!("read launcher storage '{}' failed: {e}", launcher_dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read launcher storage entry failed: {e}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == "cache" {
+            continue;
+        }
+        let path = entry.path();
+        let meta = fs::symlink_metadata(&path)
+            .map_err(|e| format!("read metadata '{}' failed: {e}", path.display()))?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let size = if meta.is_file() {
+            meta.len()
+        } else if meta.is_dir() {
+            dir_total_size_bytes(&path)
+        } else {
+            0
+        };
+        if storage_known_launcher_metadata_name(&name) || meta.is_file() {
+            launcher_metadata = launcher_metadata.saturating_add(size);
+        } else {
+            other_launcher = other_launcher.saturating_add(size);
+        }
+    }
+    let app_bytes = launcher_metadata.saturating_add(other_launcher);
+    Ok((
+        app_bytes,
+        shared_cache_total,
+        vec![
+            storage_bucket_total("shared_cache_assets", cache_assets),
+            storage_bucket_total("shared_cache_libraries", cache_libraries),
+            storage_bucket_total("shared_cache_versions", cache_versions),
+            storage_bucket_total("shared_cache_other", cache_other),
+            storage_bucket_total("launcher_metadata", launcher_metadata),
+            storage_bucket_total("other_launcher", other_launcher),
+        ],
+    ))
+}
+
+fn storage_recommendations_for_overview(
+    shared_cache_bytes: u64,
+    instance_summaries: &[StorageInstanceSummary],
+) -> Vec<StorageCleanupRecommendation> {
+    let mut out = Vec::new();
+    if shared_cache_bytes > 0 {
+        out.push(StorageCleanupRecommendation {
+            action_id: STORAGE_ACTION_CLEAR_SHARED_CACHE.to_string(),
+            title: "Clear shared cache".to_string(),
+            description: "Remove cached launcher downloads and metadata that OpenJar can rebuild later.".to_string(),
+            scope: "cache".to_string(),
+            reclaimable_bytes: shared_cache_bytes,
+            item_count: 1,
+        });
+    }
+    for summary in instance_summaries {
+        if summary.reclaimable_runtime_sessions > 0 {
+            out.push(StorageCleanupRecommendation {
+                action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS, summary.instance_id),
+                title: format!("Clean stale runtime sessions for {}", summary.instance_name),
+                description: "Remove old disposable runtime copies left behind by previous launches.".to_string(),
+                scope: format!("instance:{}", summary.instance_id),
+                reclaimable_bytes: summary.reclaimable_runtime_sessions,
+                item_count: 1,
+            });
+        }
+        if summary.reclaimable_snapshots > 0 {
+            out.push(StorageCleanupRecommendation {
+                action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_SNAPSHOTS, summary.instance_id),
+                title: format!("Prune old snapshots for {}", summary.instance_name),
+                description: "Delete snapshots that exceed the instance retention count or max-age.".to_string(),
+                scope: format!("instance:{}", summary.instance_id),
+                reclaimable_bytes: summary.reclaimable_snapshots,
+                item_count: 1,
+            });
+        }
+        if summary.reclaimable_world_backups > 0 {
+            out.push(StorageCleanupRecommendation {
+                action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_WORLD_BACKUPS, summary.instance_id),
+                title: format!("Prune old world backups for {}", summary.instance_name),
+                description: "Trim world backups that exceed the instance retention count.".to_string(),
+                scope: format!("instance:{}", summary.instance_id),
+                reclaimable_bytes: summary.reclaimable_world_backups,
+                item_count: 1,
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        b.reclaimable_bytes
+            .cmp(&a.reclaimable_bytes)
+            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+    });
+    out
+}
+
+fn scan_storage_usage_overview(app: &tauri::AppHandle) -> StorageUsageOverview {
+    let mut warnings = Vec::new();
+
+    let (app_bytes, shared_cache_bytes, app_breakdown) = match launcher_dir(app) {
+        Ok(path) => match storage_app_breakdown(&path) {
+            Ok(result) => result,
+            Err(err) => {
+                warnings.push(err);
+                (0, 0, Vec::new())
+            }
+        },
+        Err(err) => {
+            warnings.push(format!("Launcher storage scan unavailable: {err}"));
+            (0, 0, Vec::new())
+        }
+    };
+
+    let mut instance_summaries = Vec::new();
+    match app_instances_dir(app) {
+        Ok(instances_dir) => match read_index(&instances_dir) {
+            Ok(index) => {
+                for inst in index.instances {
+                    match storage_summary_for_instance(&instances_dir, &inst) {
+                        Ok(summary) => instance_summaries.push(summary),
+                        Err(err) => warnings.push(format!(
+                            "Failed to scan instance '{}' storage: {}",
+                            inst.name, err
+                        )),
+                    }
+                }
+            }
+            Err(err) => warnings.push(format!("Instance storage scan unavailable: {err}")),
+        },
+        Err(err) => warnings.push(format!("Instance storage root unavailable: {err}")),
+    }
+
+    instance_summaries.sort_by(|a, b| {
+        b.total_bytes
+            .cmp(&a.total_bytes)
+            .then_with(|| a.instance_name.to_lowercase().cmp(&b.instance_name.to_lowercase()))
+    });
+    let instances_bytes = instance_summaries
+        .iter()
+        .map(|summary| summary.total_bytes)
+        .sum::<u64>();
+    let recommendations =
+        storage_recommendations_for_overview(shared_cache_bytes, &instance_summaries);
+    let reclaimable_bytes = recommendations
+        .iter()
+        .map(|item| item.reclaimable_bytes)
+        .sum::<u64>();
+    StorageUsageOverview {
+        scanned_at: now_iso(),
+        total_bytes: app_bytes
+            .saturating_add(shared_cache_bytes)
+            .saturating_add(instances_bytes),
+        app_bytes,
+        shared_cache_bytes,
+        instances_bytes,
+        reclaimable_bytes,
+        app_breakdown,
+        instance_summaries,
+        cleanup_recommendations: recommendations,
+        warnings,
+    }
+}
+
+fn normalize_storage_detail_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(STORAGE_DETAIL_LIMIT_DEFAULT)
+        .clamp(1, STORAGE_DETAIL_LIMIT_MAX)
+}
+
+fn resolve_storage_base_path(
+    scope: &str,
+    root: &Path,
+    relative_path: Option<&str>,
+) -> Result<(PathBuf, String), String> {
+    if !root.exists() {
+        return Ok((root.to_path_buf(), String::new()));
+    }
+    let Some(raw_relative) = relative_path
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok((root.to_path_buf(), String::new()));
+    };
+    let normalized = normalize_relative_file_path(raw_relative)?;
+    if scope == "app" && normalized == "cache" {
+        return Err("Use the shared cache scope to inspect cache files.".to_string());
+    }
+    let candidate = root.join(&normalized);
+    if !candidate.exists() {
+        return Err("Storage path was not found.".to_string());
+    }
+    let resolved_root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let resolved = fs::canonicalize(&candidate)
+        .map_err(|e| format!("resolve storage path '{}' failed: {e}", candidate.display()))?;
+    let relative = resolved
+        .strip_prefix(&resolved_root)
+        .map_err(|_| "Storage path escapes the selected scope".to_string())?;
+    let normalized_relative = relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_matches('/')
+        .to_string();
+    if scope == "app" && normalized_relative == "cache" {
+        return Err("Use the shared cache scope to inspect cache files.".to_string());
+    }
+    Ok((resolved, normalized_relative))
+}
+
+fn storage_entry_relative_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .ok()
+        .map(|value| value.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+fn storage_scope_excludes_path(scope: &str, root: &Path, path: &Path) -> bool {
+    if scope != "app" {
+        return false;
+    }
+    let rel = storage_entry_relative_path(root, path);
+    rel == "cache" || rel.starts_with("cache/")
+}
+
+fn storage_collect_folder_entries(
+    scope: &str,
+    root: &Path,
+    base: &Path,
+    path_kind: &str,
+    instance_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<StorageUsageEntry>, String> {
+    if !base.exists() || !base.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut entries = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        let children = fs::read_dir(&current)
+            .map_err(|e| format!("read storage directory '{}' failed: {e}", current.display()))?;
+        for child in children {
+            let child = child.map_err(|e| format!("read storage entry failed: {e}"))?;
+            let path = child.path();
+            if storage_scope_excludes_path(scope, root, &path) {
+                continue;
+            }
+            let meta = fs::symlink_metadata(&path)
+                .map_err(|e| format!("read metadata '{}' failed: {e}", path.display()))?;
+            if meta.file_type().is_symlink() || !meta.is_dir() {
+                continue;
+            }
+            entries.push(StorageUsageEntry {
+                name: child.file_name().to_string_lossy().to_string(),
+                path_kind: path_kind.to_string(),
+                instance_id: instance_id.map(|value| value.to_string()),
+                relative_path: storage_entry_relative_path(root, &path),
+                is_dir: true,
+                bytes: dir_total_size_bytes(&path),
+                modified_at: storage_modified_at(&meta),
+            });
+            stack.push(path);
+        }
+    }
+    entries.sort_by(|a, b| {
+        b.bytes
+            .cmp(&a.bytes)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    entries.truncate(limit);
+    Ok(entries)
+}
+
+fn storage_collect_file_entries(
+    scope: &str,
+    root: &Path,
+    base: &Path,
+    path_kind: &str,
+    instance_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<StorageUsageEntry>, String> {
+    if !base.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let mut stack = vec![base.to_path_buf()];
+    while let Some(current) = stack.pop() {
+        if storage_scope_excludes_path(scope, root, &current) {
+            continue;
+        }
+        let meta = match fs::symlink_metadata(&current) {
+            Ok(meta) => meta,
+            Err(err) => {
+                eprintln!(
+                    "storage file listing metadata failed for '{}': {}",
+                    current.display(),
+                    err
+                );
+                continue;
+            }
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_file() {
+            out.push(StorageUsageEntry {
+                name: current
+                    .file_name()
+                    .map(|value| value.to_string_lossy().to_string())
+                    .unwrap_or_else(|| current.display().to_string()),
+                path_kind: path_kind.to_string(),
+                instance_id: instance_id.map(|value| value.to_string()),
+                relative_path: storage_entry_relative_path(root, &current),
+                is_dir: false,
+                bytes: meta.len(),
+                modified_at: storage_modified_at(&meta),
+            });
+            continue;
+        }
+        if !meta.is_dir() {
+            continue;
+        }
+        let children = match fs::read_dir(&current) {
+            Ok(children) => children,
+            Err(err) => {
+                eprintln!(
+                    "storage file listing read_dir failed for '{}': {}",
+                    current.display(),
+                    err
+                );
+                continue;
+            }
+        };
+        for child in children.flatten() {
+            stack.push(child.path());
+        }
+    }
+    out.sort_by(|a, b| {
+        b.bytes
+            .cmp(&a.bytes)
+            .then_with(|| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()))
+    });
+    out.truncate(limit);
+    Ok(out)
+}
+
+fn storage_scope_root(
+    app: &tauri::AppHandle,
+    scope: &str,
+    instance_id: Option<&str>,
+) -> Result<(PathBuf, String, Option<String>), String> {
+    match scope {
+        "app" => Ok((launcher_dir(app)?, "app".to_string(), None)),
+        "cache" => Ok((launcher_cache_dir(app)?, "cache".to_string(), None)),
+        "instance" => {
+            let instance_id = instance_id
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "instanceId is required for instance storage scope".to_string())?;
+            let instances_dir = app_instances_dir(app)?;
+            let _ = find_instance(&instances_dir, instance_id)?;
+            Ok((
+                instance_dir_for_id(&instances_dir, instance_id)?,
+                "instance".to_string(),
+                Some(instance_id.to_string()),
+            ))
+        }
+        _ => Err("storage scope must be app, cache, or instance".to_string()),
+    }
 }
 
 fn launcher_dev_curseforge_key_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -17703,6 +18510,10 @@ fn main() {
             commands::list_instance_snapshots,
             commands::list_instance_worlds,
             commands::get_instance_disk_usage,
+            commands::get_storage_usage_overview,
+            commands::get_storage_usage_entries,
+            commands::run_storage_cleanup,
+            commands::reveal_storage_usage_path,
             commands::get_instance_playtime,
             commands::get_instance_last_run_metadata,
             commands::get_instance_last_run_report,
@@ -19634,5 +20445,103 @@ mod instance_health_tests {
         assert!(size >= 192, "size should include both regular files");
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod storage_usage_tests {
+    use super::*;
+
+    fn temp_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("openjar-storage-tests-{label}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn storage_folder_entries_include_nested_directories_by_recursive_size() {
+        let root = temp_path("folders-recursive");
+        fs::create_dir_all(root.join("mods").join("cache")).expect("create nested cache dir");
+        fs::create_dir_all(root.join("logs")).expect("create logs dir");
+        fs::write(root.join("mods").join("a.jar"), vec![0_u8; 80]).expect("write mod");
+        fs::write(root.join("mods").join("cache").join("big.bin"), vec![0_u8; 240])
+            .expect("write nested big file");
+        fs::write(root.join("logs").join("latest.log"), vec![0_u8; 32]).expect("write log");
+
+        let rows = storage_collect_folder_entries("instance", &root, &root, "instance", Some("inst"), 10)
+            .expect("collect folder entries");
+        let rels = rows
+            .iter()
+            .map(|row| row.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert!(rels.contains(&"mods"));
+        assert!(rels.contains(&"mods/cache"));
+        assert!(rels.contains(&"logs"));
+        assert_eq!(rows.first().map(|row| row.relative_path.as_str()), Some("mods"));
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.relative_path == "mods/cache")
+                .map(|row| row.bytes),
+            Some(240)
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn storage_app_breakdown_keeps_shared_cache_out_of_app_total() {
+        let launcher_root = temp_path("app-breakdown");
+        fs::create_dir_all(launcher_root.join("cache").join("assets")).expect("create cache assets");
+        fs::create_dir_all(launcher_root.join("profiles")).expect("create profiles");
+        fs::write(launcher_root.join("cache").join("assets").join("idx.bin"), vec![0_u8; 128])
+            .expect("write cache file");
+        fs::write(launcher_root.join("settings.json"), vec![0_u8; 24]).expect("write settings");
+        fs::write(launcher_root.join("profiles").join("profile.json"), vec![0_u8; 64])
+            .expect("write profile");
+
+        let (app_bytes, shared_cache_bytes, breakdown) =
+            storage_app_breakdown(&launcher_root).expect("scan app breakdown");
+
+        assert_eq!(shared_cache_bytes, 128);
+        assert_eq!(app_bytes, 88);
+        assert_eq!(
+            breakdown
+                .iter()
+                .find(|row| row.key == "launcher_metadata")
+                .map(|row| row.bytes),
+            Some(24)
+        );
+        assert_eq!(
+            breakdown
+                .iter()
+                .find(|row| row.key == "other_launcher")
+                .map(|row| row.bytes),
+            Some(64)
+        );
+
+        let _ = fs::remove_dir_all(&launcher_root);
+    }
+
+    #[test]
+    fn storage_app_scope_entries_do_not_list_cache_paths() {
+        let launcher_root = temp_path("app-scope");
+        fs::create_dir_all(launcher_root.join("cache").join("versions")).expect("create cache versions");
+        fs::create_dir_all(launcher_root.join("profiles")).expect("create profiles");
+        fs::write(launcher_root.join("cache").join("versions").join("v.json"), vec![0_u8; 32])
+            .expect("write cache version file");
+        fs::write(launcher_root.join("profiles").join("profile.json"), vec![0_u8; 16])
+            .expect("write profile file");
+
+        let folder_rows =
+            storage_collect_folder_entries("app", &launcher_root, &launcher_root, "app", None, 10)
+                .expect("collect app folder entries");
+        let file_rows =
+            storage_collect_file_entries("app", &launcher_root, &launcher_root, "app", None, 10)
+                .expect("collect app file entries");
+
+        assert!(folder_rows.iter().all(|row| !row.relative_path.starts_with("cache")));
+        assert!(file_rows.iter().all(|row| !row.relative_path.starts_with("cache")));
+        assert!(folder_rows.iter().any(|row| row.relative_path == "profiles"));
+
+        let _ = fs::remove_dir_all(&launcher_root);
     }
 }

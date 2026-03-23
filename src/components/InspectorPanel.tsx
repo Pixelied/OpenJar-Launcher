@@ -73,7 +73,15 @@ export default function InspectorPanel({
 
   return (
     <div className="configWorkspacePanel configInspectorPanel">
-      <div className="settingTitle">Inspector</div>
+      <div className="configPanelHead configInspectorHead">
+        <div className="configPanelTitleBlock">
+          <div className="settingTitle">Inspector</div>
+          <div className="configPanelMeta">Selection details</div>
+        </div>
+        <button className="btn subtle" type="button" onClick={onCopyPath} disabled={!copyPathText}>
+          Copy
+        </button>
+      </div>
       <div className="configInspectorRows">
         <div className="configInspectorRow">
           <span>File</span>
@@ -93,10 +101,6 @@ export default function InspectorPanel({
         <div className="configInspectorLabel">Value preview</div>
         <pre>{valuePreview}</pre>
       </div>
-
-      <button className="btn" type="button" onClick={onCopyPath} disabled={!copyPathText}>
-        Copy path
-      </button>
 
       <div className="configInspectorWarnings">
         <div className="configInspectorLabel">Warnings</div>

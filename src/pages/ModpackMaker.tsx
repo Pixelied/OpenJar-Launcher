@@ -1088,6 +1088,7 @@ export default function ModpackMaker({
           <div className="card mpmShellCard mpmHomeCard" style={{ position: "relative", zIndex: 4 }}>
             <div className="mpmHomeHeader">
               <div className="mpmHeaderBlock">
+                <div className="mpmEyebrow">Layered pack builder</div>
                 <div className="h2">Modpacks</div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Build modpack specs, then preview and apply with clear results.
@@ -1270,6 +1271,15 @@ export default function ModpackMaker({
                 title="Search by name, description, or tags."
               />
             </div>
+            <div className="mpmHomeSummary">
+              <span className="chip subtle">{specs.length} total packs</span>
+              <span className="chip subtle">
+                {specs.reduce((sum, spec) => sum + spec.layers.length, 0)} total layers
+              </span>
+              <span className="chip subtle">
+                {specs.reduce((sum, spec) => sum + spec.layers.reduce((inner, layer) => inner + layer.entries_delta.add.length, 0), 0)} total entries
+              </span>
+            </div>
           </div>
 
           <div className="card mpmShellCard">
@@ -1285,13 +1295,11 @@ export default function ModpackMaker({
                   return (
                     <div
                       key={spec.id}
-                      className="card"
+                      className={`card mpmHomeSpecCard ${isSelected ? "active" : ""}`}
                       style={{
                         padding: 12,
                         borderRadius: 12,
                         textAlign: "left",
-                        borderColor: isSelected ? "var(--accent-ring)" : undefined,
-                        boxShadow: isSelected ? "0 0 0 1px color-mix(in srgb, var(--accent-ring) 55%, transparent)" : undefined,
                         cursor: "pointer",
                       }}
                       onClick={() => setSelectedSpecId(spec.id)}
@@ -1380,44 +1388,53 @@ export default function ModpackMaker({
               </div>
             </div>
             <div className="mpmEditorHeader">
+              <div className="mpmEyebrow">Unified modpack workspace</div>
               <div style={{ minWidth: 0 }}>
                 <div className="h2">{editorSpec.name || "Untitled modpack"}</div>
                 <div className="muted" style={{ marginTop: 4 }}>
-                  3-panel editor: layers, unified entries list, and entry inspector.
+                  Shape the pack in layers, scan every entry in one list, and refine rules in the inspector.
                 </div>
               </div>
             </div>
             <div className="mpmEditorMetaGrid">
-              <input
-                className="input"
-                value={editorSpec.name}
-                onChange={(e) => setEditorSpec({ ...editorSpec, name: e.target.value })}
-                placeholder="Modpack name"
-                title="Name shown in modpack home and apply wizard."
-              />
-              <input
-                className="input"
-                value={editorSpec.tags?.join(", ") ?? ""}
-                onChange={(e) =>
-                  setEditorSpec({
-                    ...editorSpec,
-                    tags: e.target.value
-                      .split(",")
-                      .map((tag) => tag.trim())
-                      .filter(Boolean),
-                  })
-                }
-                placeholder="Tags (comma separated)"
-                title="Optional tags for quick search/grouping."
-              />
-              <textarea
-                className="textarea"
-                style={{ gridColumn: "1 / -1" }}
-                value={editorSpec.description ?? ""}
-                onChange={(e) => setEditorSpec({ ...editorSpec, description: e.target.value })}
-                placeholder="Description"
-                title="Short summary of this modpack."
-              />
+              <label className="mpmFieldBlock">
+                <span className="mpmFieldLabel">Pack name</span>
+                <input
+                  className="input"
+                  value={editorSpec.name}
+                  onChange={(e) => setEditorSpec({ ...editorSpec, name: e.target.value })}
+                  placeholder="Modpack name"
+                  title="Name shown in modpack home and apply wizard."
+                />
+              </label>
+              <label className="mpmFieldBlock">
+                <span className="mpmFieldLabel">Tags</span>
+                <input
+                  className="input"
+                  value={editorSpec.tags?.join(", ") ?? ""}
+                  onChange={(e) =>
+                    setEditorSpec({
+                      ...editorSpec,
+                      tags: e.target.value
+                        .split(",")
+                        .map((tag) => tag.trim())
+                        .filter(Boolean),
+                    })
+                  }
+                  placeholder="Tags (comma separated)"
+                  title="Optional tags for quick search/grouping."
+                />
+              </label>
+              <label className="mpmFieldBlock mpmFieldBlockFull">
+                <span className="mpmFieldLabel">Description</span>
+                <textarea
+                  className="textarea"
+                  value={editorSpec.description ?? ""}
+                  onChange={(e) => setEditorSpec({ ...editorSpec, description: e.target.value })}
+                  placeholder="Describe what this pack is for, who it is for, and what makes it distinct."
+                  title="Short summary of this modpack."
+                />
+              </label>
             </div>
             <div className="mpmPackSummaryRow">
               <span className="muted">
@@ -1455,7 +1472,10 @@ export default function ModpackMaker({
           >
             <div className="card mpmLayersPanel" style={{ padding: 12, borderRadius: 16 }}>
               <div className="rowBetween mpmLayersHeader">
-                <div className="mpmPanelTitle">Layers</div>
+                <div className="mpmPanelTitleBlock">
+                  <div className="mpmPanelTitle">Layers</div>
+                  <div className="mpmPanelSub">Stack order, source snapshots, and override intent.</div>
+                </div>
                 <button
                   className="btn mpmLayersAddBtn"
                   title="Add another layer. Later layers can override earlier ones."
@@ -1718,7 +1738,10 @@ export default function ModpackMaker({
             <div className="card mpmEntriesPanel" style={{ padding: 12, borderRadius: 16 }}>
               <div className="mpmEntriesTop">
                 <div className="rowBetween mpmEntriesHead">
-                  <div className="h3">Entries</div>
+                  <div className="mpmPanelTitleBlock">
+                    <div className="h3">Entries</div>
+                    <div className="mpmPanelSub">Unified content list across every layer.</div>
+                  </div>
                   <div className="mpmInlineActions mpmEntriesPrimaryActions">
                     <button className="btn" onClick={openAddModal} title="Add content directly by id/slug.">
                       Add in-place
@@ -1960,7 +1983,7 @@ export default function ModpackMaker({
             <div className="card mpmInspectorPanel" style={{ padding: 12, borderRadius: 16 }}>
               <div className="rowBetween">
                 <div>
-                  <div style={{ fontWeight: 900 }}>Inspector</div>
+                  <div className="mpmPanelTitle">Inspector</div>
                   <div className="mpmInspectorEditingLabel">
                     {selectedEntryRow ? `Editing: ${entryDisplayName(selectedEntryRow.entry)}` : "Editing: none"}
                   </div>

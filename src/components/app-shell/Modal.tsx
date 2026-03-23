@@ -13,7 +13,7 @@ export default function Modal({
   titleNode?: ReactNode;
   onClose: () => void;
   children: ReactNode;
-  size?: "default" | "wide";
+  size?: "default" | "wide" | "xwide";
   className?: string;
 }) {
   useEffect(() => {
@@ -26,7 +26,10 @@ export default function Modal({
 
   const modalNode = (
     <div className="modalOverlay" onMouseDown={onClose}>
-      <div className={`modal ${size === "wide" ? "wide" : ""} ${className ?? ""}`} onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        className={`modal ${size === "wide" ? "wide" : ""} ${size === "xwide" ? "xwide" : ""} ${className ?? ""}`}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
         <div className="modalHeader">
           {titleNode ?? <div className="modalTitle">{title}</div>}
           <button className="iconBtn" onClick={onClose} aria-label="Close">

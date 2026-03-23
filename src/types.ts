@@ -466,6 +466,77 @@ export type RevealConfigEditorFileResult = {
   message: string;
 };
 
+export type StorageBucketTotal = {
+  key: string;
+  label: string;
+  bytes: number;
+};
+
+export type StorageInstanceSummary = {
+  instance_id: string;
+  instance_name: string;
+  total_bytes: number;
+  reclaimable_bytes: number;
+  reclaimable_runtime_sessions: number;
+  reclaimable_snapshots: number;
+  reclaimable_world_backups: number;
+  mods: number;
+  resourcepacks: number;
+  shaderpacks: number;
+  saves: number;
+  config: number;
+  snapshots: number;
+  world_backups: number;
+  logs: number;
+  crash_reports: number;
+  runtime_sessions: number;
+  other: number;
+};
+
+export type StorageCleanupRecommendation = {
+  action_id: string;
+  title: string;
+  description: string;
+  scope: string;
+  reclaimable_bytes: number;
+  item_count: number;
+};
+
+export type StorageUsageOverview = {
+  scanned_at: string;
+  total_bytes: number;
+  app_bytes: number;
+  shared_cache_bytes: number;
+  instances_bytes: number;
+  reclaimable_bytes: number;
+  app_breakdown: StorageBucketTotal[];
+  instance_summaries: StorageInstanceSummary[];
+  cleanup_recommendations: StorageCleanupRecommendation[];
+  warnings: string[];
+};
+
+export type StorageUsageEntry = {
+  name: string;
+  path_kind: "app" | "cache" | "instance" | string;
+  instance_id?: string | null;
+  relative_path: string;
+  is_dir: boolean;
+  bytes: number;
+  modified_at?: number | null;
+};
+
+export type StorageCleanupResult = {
+  reclaimed_bytes: number;
+  actions_run: number;
+  messages: string[];
+};
+
+export type StorageRevealResult = {
+  opened_path: string;
+  revealed_file: boolean;
+  message: string;
+};
+
 export type CreateInstanceFromModpackFileResult = {
   instance: Instance;
   imported_files: number;

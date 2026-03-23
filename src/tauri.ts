@@ -51,6 +51,10 @@ import type {
   SpecIoResult,
   SnapshotMeta,
   ModpackSpec,
+  StorageCleanupResult,
+  StorageRevealResult,
+  StorageUsageEntry,
+  StorageUsageOverview,
   LayerDiffResult,
   ResolutionPlan,
   ModpackApplyResult,
@@ -542,6 +546,35 @@ export function getInstanceDiskUsage(input: {
   instanceId: string;
 }): Promise<number> {
   return invoke("get_instance_disk_usage", { args: input });
+}
+
+export function getStorageUsageOverview(): Promise<StorageUsageOverview> {
+  return invoke("get_storage_usage_overview");
+}
+
+export function getStorageUsageEntries(input: {
+  scope: "app" | "cache" | "instance" | string;
+  instanceId?: string;
+  relativePath?: string;
+  mode: "folders" | "files";
+  limit?: number;
+}): Promise<StorageUsageEntry[]> {
+  return invoke("get_storage_usage_entries", { args: input });
+}
+
+export function runStorageCleanup(input: {
+  actionIds: string[];
+  instanceIds?: string[];
+}): Promise<StorageCleanupResult> {
+  return invoke("run_storage_cleanup", { args: input });
+}
+
+export function revealStorageUsagePath(input: {
+  scope: "app" | "cache" | "instance" | string;
+  instanceId?: string;
+  relativePath?: string;
+}): Promise<StorageRevealResult> {
+  return invoke("reveal_storage_usage_path", { args: input });
 }
 
 export function getInstanceLastRunMetadata(input: {

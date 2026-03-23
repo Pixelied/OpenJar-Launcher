@@ -1,0 +1,203 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - button "Home" [ref=e5] [cursor=pointer]:
+      - img [ref=e6]
+      - generic: Home
+    - button "Discover content" [ref=e10] [cursor=pointer]:
+      - img [ref=e11]
+      - generic: Discover content
+    - button "Creator Studio" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+      - generic: Creator Studio
+    - button "Library" [ref=e18] [cursor=pointer]:
+      - img [ref=e19]
+      - generic: Library
+    - button "Updates available" [ref=e23] [cursor=pointer]:
+      - img [ref=e24]
+      - generic: Updates available
+    - button "Skins" [ref=e27] [cursor=pointer]:
+      - img [ref=e28]
+      - generic: Skins
+    - button "Create new instance" [ref=e32] [cursor=pointer]:
+      - img [ref=e33]
+      - generic: Create new instance
+    - generic [ref=e34]:
+      - button "Account" [ref=e35] [cursor=pointer]:
+        - img [ref=e36]
+        - generic: Account
+      - button "Settings" [active] [ref=e39] [cursor=pointer]:
+        - img [ref=e40]
+        - generic: Settings
+  - main [ref=e43]:
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]: Checking for OpenJar Launcher updates…
+        - generic [ref=e47]: Use Check now to verify updates.
+      - generic [ref=e48]:
+        - button "Checking…" [disabled] [ref=e49]
+        - button "Dismiss" [disabled] [ref=e50]
+    - generic [ref=e55]:
+      - generic [ref=e160]:
+        - complementary [ref=e161]:
+          - generic [ref=e162]:
+            - generic [ref=e163]: Launcher settings
+            - generic [ref=e164]: Settings
+            - generic [ref=e165]: Appearance, account, and launcher behavior.
+          - generic [ref=e166]:
+            - generic [ref=e167]: View mode
+            - generic [ref=e168]:
+              - button "Basic mode" [ref=e169] [cursor=pointer]
+              - button "Advanced mode" [ref=e170] [cursor=pointer]
+          - generic [ref=e171]:
+            - generic [ref=e172]: Sections
+            - generic [ref=e173]:
+              - button "Appearance" [ref=e174] [cursor=pointer]:
+                - img [ref=e176]
+                - generic [ref=e181]: Appearance
+              - button "Language" [ref=e182] [cursor=pointer]:
+                - img [ref=e184]
+                - generic [ref=e189]: Language
+              - button "Launch configuration" [ref=e190] [cursor=pointer]:
+                - img [ref=e192]
+                - generic [ref=e199]: Launch configuration
+              - button "Microsoft account" [ref=e200] [cursor=pointer]:
+                - img [ref=e202]
+                - generic [ref=e206]: Microsoft account
+              - button "App updates" [ref=e207] [cursor=pointer]:
+                - img [ref=e209]
+                - generic [ref=e212]: App updates
+              - button "Content and visuals" [ref=e213] [cursor=pointer]:
+                - img [ref=e215]
+                - generic [ref=e219]: Content and visuals
+          - generic [ref=e220]:
+            - generic [ref=e221]: English (United States)
+            - generic [ref=e222]: Basic mode
+        - generic [ref=e224]:
+          - generic [ref=e225]:
+            - generic [ref=e226]:
+              - generic [ref=e227]: Appearance
+              - generic [ref=e228]: Tune the app look without changing layout behavior.
+              - generic [ref=e229]:
+                - generic [ref=e230]:
+                  - generic [ref=e231]: Theme
+                  - generic [ref=e232]: Switch between dark and light.
+                  - generic [ref=e233]:
+                    - button "Dark" [ref=e234] [cursor=pointer]
+                    - button "Light" [ref=e235] [cursor=pointer]
+                - generic [ref=e236]:
+                  - generic [ref=e237]: Accent
+                  - generic [ref=e238]: Pick an accent. Neutral stays subtle, colors are bolder.
+                  - generic [ref=e239]:
+                    - button "Neutral" [pressed] [ref=e240] [cursor=pointer]:
+                      - generic [ref=e242]: Neutral
+                      - generic [ref=e243]: ✓
+                    - button "Blue" [ref=e244] [cursor=pointer]:
+                      - generic [ref=e246]: Blue
+                    - button "Emerald" [ref=e247] [cursor=pointer]:
+                      - generic [ref=e249]: Emerald
+                    - button "Amber" [ref=e250] [cursor=pointer]:
+                      - generic [ref=e252]: Amber
+                    - button "Rose" [ref=e253] [cursor=pointer]:
+                      - generic [ref=e255]: Rose
+                    - button "Violet" [ref=e256] [cursor=pointer]:
+                      - generic [ref=e258]: Violet
+                    - button "Teal" [ref=e259] [cursor=pointer]:
+                      - generic [ref=e261]: Teal
+                - generic [ref=e262]:
+                  - generic [ref=e263]: Accent strength
+                  - generic [ref=e264]: Adjust accent opacity and intensity from subtle to max.
+                  - generic [ref=e266]:
+                    - button "Subtle" [ref=e267] [cursor=pointer]
+                    - button "Normal" [ref=e268] [cursor=pointer]
+                    - button "Vivid" [ref=e269] [cursor=pointer]
+                    - button "Max" [ref=e270] [cursor=pointer]
+                - generic [ref=e271]:
+                  - generic [ref=e272]: Motion profile
+                  - generic [ref=e273]: Choose how animated the interface should feel.
+                  - generic [ref=e275]:
+                    - button "Calm" [ref=e276] [cursor=pointer]
+                    - button "Standard" [ref=e277] [cursor=pointer]
+                    - button "Expressive" [ref=e278] [cursor=pointer]
+                - generic [ref=e279]:
+                  - generic [ref=e280]: UI density
+                  - generic [ref=e281]: Comfortable keeps more space, compact fits more on screen.
+                  - generic [ref=e283]:
+                    - button "Comfortable" [ref=e284] [cursor=pointer]
+                    - button "Compact" [ref=e285] [cursor=pointer]
+                - generic [ref=e286]:
+                  - generic [ref=e287]: Reset UI settings
+                  - generic [ref=e288]: Restore theme, accent, accent strength, motion profile, and density to defaults.
+                  - button "Reset appearance" [ref=e290] [cursor=pointer]
+            - generic [ref=e291]:
+              - generic [ref=e292]: Language
+              - generic [ref=e293]: Choose the language used by OpenJar Launcher.
+              - generic [ref=e294]:
+                - generic [ref=e295]:
+                  - generic [ref=e296]: App language
+                  - generic [ref=e297]: Changes apply immediately and fall back to English for any untranslated copy.
+                  - generic [ref=e298]:
+                    - generic [ref=e300] [cursor=pointer]:
+                      - generic [ref=e301]: "Language: English (United States)"
+                      - img [ref=e303]
+                    - generic [ref=e305]: English (United States)
+                - generic [ref=e306]: This first localization pass covers navigation and the main Settings experience. Untranslated areas continue in English for now.
+            - generic [ref=e307]:
+              - generic [ref=e308]: Launch configuration
+              - generic [ref=e309]: Set default launcher behavior and Java runtime.
+              - generic [ref=e310]:
+                - generic [ref=e311]:
+                  - generic [ref=e312]: Default launch method
+                  - generic [ref=e313]: Use native launcher or Prism launcher by default.
+                  - generic [ref=e315]:
+                    - button "Native" [ref=e316] [cursor=pointer]
+                    - button "Prism" [ref=e317] [cursor=pointer]
+                - generic [ref=e318]:
+                  - text: Advanced Java and OAuth overrides are hidden in Basic mode.
+                  - button "Switch to Advanced" [ref=e319] [cursor=pointer]
+                - button "Save launcher settings" [ref=e321] [cursor=pointer]
+          - generic [ref=e322]:
+            - generic [ref=e323]:
+              - generic [ref=e324]: Microsoft account
+              - generic [ref=e325]: Connect the Microsoft account that owns Minecraft. You normally do not need to configure any client ID.
+              - generic [ref=e326]:
+                - button "Connect Microsoft" [ref=e327] [cursor=pointer]
+                - button "Open account page" [ref=e328] [cursor=pointer]
+              - generic [ref=e330]: No connected account yet.
+            - generic [ref=e331]:
+              - generic [ref=e332]: App updates
+              - generic [ref=e333]: Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
+              - generic [ref=e335]: "Current: vunknown"
+              - generic [ref=e336]:
+                - button "Checking…" [disabled] [ref=e337]
+                - button "Install update + restart" [disabled] [ref=e338]
+              - generic [ref=e339]:
+                - generic [ref=e340] [cursor=pointer]:
+                  - checkbox "Auto-check on launch" [checked] [disabled]
+                  - generic [ref=e342]: Auto-check on launch
+                - generic [ref=e343]: Checks for OpenJar Launcher releases when the app starts.
+            - generic [ref=e344]:
+              - generic [ref=e345]: Content and visuals
+              - generic [ref=e346]: Quick toggles for launcher behavior outside game runtime.
+              - generic [ref=e347]:
+                - generic [ref=e348]:
+                  - generic [ref=e349]: Automatic identify local files
+                  - generic [ref=e350]: When enabled, local file imports automatically run Identify local files in Instance and Creator Studio.
+                  - generic [ref=e351] [cursor=pointer]:
+                    - checkbox "Identify local files automatically"
+                    - generic [ref=e353]: Identify local files automatically
+                - generic [ref=e354]:
+                  - generic [ref=e355]: 3D skin preview
+                  - generic [ref=e356]: Disable this for faster Account and Skins page loads on lower-end hardware.
+                  - generic [ref=e357] [cursor=pointer]:
+                    - checkbox "Enable 3D skin preview" [checked]
+                    - generic [ref=e359]: Enable 3D skin preview
+                - generic [ref=e360]:
+                  - generic [ref=e361]: Discord Rich Presence
+                  - generic [ref=e362]: Optional status sharing. Never includes server IP, username, world name, or file paths.
+                  - generic [ref=e363] [cursor=pointer]:
+                    - checkbox "Enable Discord Rich Presence" [checked]
+                    - generic [ref=e365]: Enable Discord Rich Presence
+                  - generic [ref=e368] [cursor=pointer]:
+                    - generic [ref=e369]: "Detail: Minimal"
+                    - img [ref=e371]
+      - generic [ref=e373]: "TypeError: window.__TAURI_IPC__ is not a function"

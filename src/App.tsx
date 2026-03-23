@@ -79,6 +79,12 @@ import type {
   QuickPlayServerEntry,
   ModpackSpec,
   SnapshotMeta,
+  StorageBucketTotal,
+  StorageCleanupRecommendation,
+  StorageCleanupResult,
+  StorageInstanceSummary,
+  StorageUsageEntry,
+  StorageUsageOverview,
   SupportPerfAction,
 } from "./types";
 import {
@@ -98,6 +104,8 @@ import {
   getGithubTokenPoolStatus,
   getCurseforgeProjectDetail,
   getGithubProjectDetail,
+  getStorageUsageEntries,
+  getStorageUsageOverview,
   getSelectedAccountDiagnostics,
   getInstanceDiskUsage,
   getInstanceLastRunMetadata,
@@ -154,7 +162,9 @@ import {
   syncFriendLinkSelected,
   stopRunningInstance,
   resolveLocalModSources,
+  revealStorageUsagePath,
   attachInstalledModGithubRepo,
+  runStorageCleanup,
   upsertModpackSpec,
   detectJavaRuntimes,
   updateAllInstanceContent,
@@ -376,6 +386,15 @@ type ScheduledUpdateCheckEntry = {
   error?: string | null;
 };
 
+type ScheduledAppliedUpdateEntry = {
+  instance_id: string;
+  instance_name: string;
+  applied_at: string;
+  updated_entries: number;
+  updates: ContentUpdateInfo[];
+  warnings: string[];
+};
+
 type AppUpdaterState = {
   checked_at: string;
   current_version: string;
@@ -474,6 +493,15 @@ const CRASH_OUTCOME_RE = /\b(crash|exception|fatal|sigsegv|exit code -1)\b/i;
 function isLikelyCriticalUpdate(update: ContentUpdateInfo) {
   const haystack = `${update.project_id} ${update.name}`.toLowerCase();
   return CRITICAL_UPDATE_TOKENS.some((token) => haystack.includes(token));
+}
+
+function pickAppliedUpdatesFromCheck(
+  check: ContentUpdateCheckResult,
+  updatedEntries: number
+): ContentUpdateInfo[] {
+  const applied = Math.max(0, Number(updatedEntries) || 0);
+  if (applied === 0) return [];
+  return check.updates.slice(0, Math.min(check.updates.length, applied));
 }
 
 function healthScoreGrade(score: number): InstanceHealthScore["grade"] {
@@ -823,6 +851,70 @@ function hasGithubRateLimitWarning(warnings: string[]): boolean {
     const text = String(warning ?? "").toLowerCase();
     return text.includes("github") && text.includes("rate limit");
   });
+}
+
+type StorageManagerSelection = "overview" | "app" | "cache" | `instance:${string}`;
+type StorageManagerScope = "overview" | "app" | "cache" | "instance";
+type StorageDetailMode = "folders" | "files";
+
+function storageSelectionForInstance(instanceId: string): StorageManagerSelection {
+  return `instance:${instanceId}`;
+}
+
+function parseStorageSelection(selection: StorageManagerSelection): {
+  scope: StorageManagerScope;
+  instanceId?: string;
+} {
+  if (selection === "overview" || selection === "app" || selection === "cache") {
+    return { scope: selection };
+  }
+  if (selection.startsWith("instance:")) {
+    return { scope: "instance", instanceId: selection.slice("instance:".length) };
+  }
+  return { scope: "overview" };
+}
+
+function storageRequestKey(
+  selection: StorageManagerSelection,
+  mode: StorageDetailMode,
+  relativePath: string
+): string {
+  return `${selection}:${mode}:${relativePath.trim()}`;
+}
+
+function storageInstanceBreakdown(summary: StorageInstanceSummary): StorageBucketTotal[] {
+  return [
+    { key: "mods", label: "Mods", bytes: Number(summary.mods ?? 0) },
+    { key: "resourcepacks", label: "Resource packs", bytes: Number(summary.resourcepacks ?? 0) },
+    { key: "shaderpacks", label: "Shaderpacks", bytes: Number(summary.shaderpacks ?? 0) },
+    { key: "saves", label: "Saves", bytes: Number(summary.saves ?? 0) },
+    { key: "config", label: "Config", bytes: Number(summary.config ?? 0) },
+    { key: "snapshots", label: "Snapshots", bytes: Number(summary.snapshots ?? 0) },
+    { key: "world_backups", label: "World backups", bytes: Number(summary.world_backups ?? 0) },
+    { key: "logs", label: "Logs", bytes: Number(summary.logs ?? 0) },
+    { key: "crash_reports", label: "Crash reports", bytes: Number(summary.crash_reports ?? 0) },
+    { key: "runtime_sessions", label: "Runtime sessions", bytes: Number(summary.runtime_sessions ?? 0) },
+    { key: "other", label: "Other", bytes: Number(summary.other ?? 0) },
+  ];
+}
+
+function storageAppBreakdownForScope(
+  overview: StorageUsageOverview | null,
+  scope: "app" | "cache"
+): StorageBucketTotal[] {
+  const rows = overview?.app_breakdown ?? [];
+  return rows.filter((row) =>
+    scope === "cache" ? row.key.startsWith("shared_cache_") : !row.key.startsWith("shared_cache_")
+  );
+}
+
+function storageCleanupRecommendationLabel(recommendation: StorageCleanupRecommendation): string {
+  const bytes = Number(recommendation.reclaimable_bytes ?? 0);
+  return bytes > 0 ? `${recommendation.title} · ${formatBytes(bytes)}` : recommendation.title;
+}
+
+function storageRevealActionLabel() {
+  return isMacDesktopPlatform() ? "Reveal in Finder" : "Reveal in file manager";
 }
 
 type MicrosoftCodePrompt = {
@@ -2484,8 +2576,8 @@ async function renderMinecraftSkinThumb3d(args: {
         canvas,
         width: size,
         height: size,
-        zoom: 1.02,
-        fov: 34,
+        zoom: 0.82,
+        fov: 38,
       });
       const renderer = (viewer as unknown as {
         renderer?: { setPixelRatio?: (ratio: number) => void };
@@ -2495,9 +2587,9 @@ async function renderMinecraftSkinThumb3d(args: {
       viewer.globalLight.intensity = 1.18;
       viewer.cameraLight.intensity = 1.06;
       viewer.controls.enabled = false;
-      viewer.playerWrapper.position.y = 0.48;
+      viewer.playerWrapper.position.y = 0.18;
       viewer.playerWrapper.rotation.y = view === "back" ? Math.PI + 0.42 : -0.42;
-      viewer.controls.target.set(0, 11.25, 0);
+      viewer.controls.target.set(0, 9.8, 0);
       viewer.controls.update();
       await withTimeout(viewer.loadSkin(src, { model: "auto-detect" }), SKIN_VIEWER_LOAD_TIMEOUT_MS);
       if (cape) {
@@ -2539,25 +2631,6 @@ function normalizeTimeOfDay(input: number) {
   let value = input % 24;
   if (value < 0) value += 24;
   return value;
-}
-
-function formatTimeOfDay(input: number) {
-  const normalized = normalizeTimeOfDay(input);
-  const minutesTotal = Math.round(normalized * 60);
-  const hour24 = Math.floor(minutesTotal / 60) % 24;
-  const minutes = minutesTotal % 60;
-  const hour12 = hour24 % 12 || 12;
-  const suffix = hour24 >= 12 ? "PM" : "AM";
-  return `${hour12}:${String(minutes).padStart(2, "0")} ${suffix}`;
-}
-
-function describeTimeOfDay(input: number) {
-  const t = normalizeTimeOfDay(input);
-  if (t < 5) return "Night";
-  if (t < 8) return "Dawn";
-  if (t < 17) return "Day";
-  if (t < 20) return "Sunset";
-  return "Night";
 }
 
 function minecraftAvatarSources(uuid?: string | null) {
@@ -3816,6 +3889,27 @@ export default function App() {
   const [creatorDraft, setCreatorDraft] = useState<UserPreset | null>(null);
   const [instanceWorlds, setInstanceWorlds] = useState<InstanceWorld[]>([]);
   const [instanceDiskUsageById, setInstanceDiskUsageById] = useState<Record<string, number>>({});
+  const [storageOverview, setStorageOverview] = useState<StorageUsageOverview | null>(null);
+  const [storageOverviewBusy, setStorageOverviewBusy] = useState(false);
+  const [storageOverviewError, setStorageOverviewError] = useState<string | null>(null);
+  const storageOverviewRef = useRef<StorageUsageOverview | null>(null);
+  const storageOverviewBusyRef = useRef(false);
+  const [storageManagerSelection, setStorageManagerSelection] =
+    useState<StorageManagerSelection | null>(null);
+  const [storageManagerPathBySelection, setStorageManagerPathBySelection] = useState<
+    Record<string, string>
+  >({});
+  const [storageDetailMode, setStorageDetailMode] = useState<StorageDetailMode>("folders");
+  const [storageEntriesByKey, setStorageEntriesByKey] = useState<Record<string, StorageUsageEntry[]>>(
+    {}
+  );
+  const [storageEntriesBusyKey, setStorageEntriesBusyKey] = useState<string | null>(null);
+  const [storageEntriesErrorByKey, setStorageEntriesErrorByKey] = useState<Record<string, string>>(
+    {}
+  );
+  const [storageCleanupBusy, setStorageCleanupBusy] = useState(false);
+  const [storageActionBusyId, setStorageActionBusyId] = useState<string | null>(null);
+  const [storageManagerNotice, setStorageManagerNotice] = useState<string | null>(null);
   const [instanceLastRunMetadataById, setInstanceLastRunMetadataById] = useState<
     Record<string, InstanceLastRunMetadata>
   >({});
@@ -3836,6 +3930,177 @@ export default function App() {
   const [templateOffset, setTemplateOffset] = useState(0);
   const [templateBusy, setTemplateBusy] = useState(false);
   const [templateErr, setTemplateErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    storageOverviewRef.current = storageOverview;
+  }, [storageOverview]);
+
+  useEffect(() => {
+    storageOverviewBusyRef.current = storageOverviewBusy;
+  }, [storageOverviewBusy]);
+
+  const refreshStorageOverview = useCallback(
+    async (options?: { force?: boolean; clearEntries?: boolean }) => {
+      if (storageOverviewBusyRef.current && !options?.force) {
+        return storageOverviewRef.current;
+      }
+      setStorageOverviewBusy(true);
+      setStorageOverviewError(null);
+      try {
+        const overview = await getStorageUsageOverview();
+        setStorageOverview(overview);
+        setInstanceDiskUsageById((prev) => {
+          const next = { ...prev };
+          for (const summary of overview.instance_summaries ?? []) {
+            next[summary.instance_id] = Number(summary.total_bytes ?? 0);
+          }
+          return next;
+        });
+        if (options?.clearEntries) {
+          setStorageEntriesByKey({});
+          setStorageEntriesErrorByKey({});
+        }
+        return overview;
+      } catch (e: any) {
+        const message = e?.toString?.() ?? String(e);
+        setStorageOverviewError(message);
+        return null;
+      } finally {
+        setStorageOverviewBusy(false);
+      }
+    },
+    []
+  );
+
+  const openStorageManager = useCallback(
+    (selection: StorageManagerSelection = "overview") => {
+      setStorageManagerSelection(selection);
+      setStorageManagerNotice(null);
+      void refreshStorageOverview({ force: true });
+    },
+    [refreshStorageOverview]
+  );
+
+  const loadStorageEntries = useCallback(
+    async (
+      selection: StorageManagerSelection,
+      mode: StorageDetailMode,
+      relativePath: string,
+      options?: { force?: boolean }
+    ) => {
+      const requestKey = storageRequestKey(selection, mode, relativePath);
+      if (!options?.force && storageEntriesByKey[requestKey]) {
+        return storageEntriesByKey[requestKey];
+      }
+      const parsed = parseStorageSelection(selection);
+      if (parsed.scope === "overview") return [];
+      setStorageEntriesBusyKey(requestKey);
+      setStorageEntriesErrorByKey((prev) => {
+        if (!prev[requestKey]) return prev;
+        const next = { ...prev };
+        delete next[requestKey];
+        return next;
+      });
+      try {
+        const rows = await getStorageUsageEntries({
+          scope: parsed.scope,
+          instanceId: parsed.instanceId,
+          relativePath: relativePath || undefined,
+          mode,
+          limit: mode === "files" ? 18 : 16,
+        });
+        setStorageEntriesByKey((prev) => ({ ...prev, [requestKey]: rows }));
+        return rows;
+      } catch (e: any) {
+        const message = e?.toString?.() ?? String(e);
+        setStorageEntriesErrorByKey((prev) => ({ ...prev, [requestKey]: message }));
+        return [];
+      } finally {
+        setStorageEntriesBusyKey((prev) => (prev === requestKey ? null : prev));
+      }
+    },
+    [storageEntriesByKey]
+  );
+
+  const revealStoragePath = useCallback(
+    async (selection: StorageManagerSelection, relativePath?: string) => {
+      const parsed = parseStorageSelection(selection);
+      if (parsed.scope === "overview") return;
+      try {
+        const result = await revealStorageUsagePath({
+          scope: parsed.scope,
+          instanceId: parsed.instanceId,
+          relativePath,
+        });
+        setStorageManagerNotice(result.message);
+      } catch (e: any) {
+        setStorageManagerNotice(e?.toString?.() ?? String(e));
+      }
+    },
+    []
+  );
+
+  const performStorageCleanup = useCallback(
+    async (
+      actionIds: string[],
+      options?: {
+        instanceIds?: string[];
+        description?: string;
+        buttonId?: string;
+      }
+    ): Promise<StorageCleanupResult | null> => {
+      const cleanActionIds = actionIds
+        .map((value) => String(value ?? "").trim())
+        .filter((value) => value.length > 0);
+      if (cleanActionIds.length === 0) return null;
+      const recommendationMap = new Map(
+        (storageOverview?.cleanup_recommendations ?? []).map((item) => [item.action_id, item])
+      );
+      const reclaimableBytes = cleanActionIds.reduce((sum, actionId) => {
+        return sum + Number(recommendationMap.get(actionId)?.reclaimable_bytes ?? 0);
+      }, 0);
+      const confirmMessage =
+        options?.description ??
+        `Run safe cleanup${reclaimableBytes > 0 ? ` and reclaim about ${formatBytes(reclaimableBytes)}` : ""}?`;
+      if (!window.confirm(confirmMessage)) return null;
+      setStorageCleanupBusy(true);
+      setStorageActionBusyId(options?.buttonId ?? "all");
+      setStorageManagerNotice(null);
+      try {
+        const result = await runStorageCleanup({
+          actionIds: cleanActionIds,
+          instanceIds: options?.instanceIds,
+        });
+        setStorageManagerNotice(
+          result.messages?.length
+            ? result.messages.join(" ")
+            : result.reclaimed_bytes > 0
+              ? `Reclaimed ${formatBytes(result.reclaimed_bytes)}.`
+              : "No cleanup was needed."
+        );
+        await refreshStorageOverview({ force: true, clearEntries: true });
+        if (storageManagerSelection && storageManagerSelection !== "overview") {
+          const path = storageManagerPathBySelection[storageManagerSelection] ?? "";
+          await loadStorageEntries(storageManagerSelection, storageDetailMode, path, { force: true });
+        }
+        return result;
+      } catch (e: any) {
+        setStorageManagerNotice(e?.toString?.() ?? String(e));
+        return null;
+      } finally {
+        setStorageCleanupBusy(false);
+        setStorageActionBusyId(null);
+      }
+    },
+    [
+      loadStorageEntries,
+      refreshStorageOverview,
+      storageDetailMode,
+      storageManagerPathBySelection,
+      storageManagerSelection,
+      storageOverview?.cleanup_recommendations,
+    ]
+  );
 
   useEffect(() => {
     if (creatorDraft) return;
@@ -4061,7 +4326,18 @@ export default function App() {
   }
 
   function onPlaySkinViewerEmote() {
-    skinViewerEmoteTriggerRef.current?.("random");
+    skinViewerEmoteTriggerRef.current?.("play");
+  }
+
+  function onRenameSelectedCustomSkin() {
+    if (!selectedAccountSkin || selectedAccountSkin.origin !== "custom") return;
+    const nextLabel = skinRenameDraft.trim();
+    if (!nextLabel) return;
+    const token = selectedAccountSkin.id.replace(/^custom:/, "");
+    setCustomSkins((prev) =>
+      prev.map((row) => (row.id === token ? { ...row, label: nextLabel } : row))
+    );
+    setInstallNotice(`Renamed skin to "${nextLabel}".`);
   }
 
   async function onApplySelectedAppearance() {
@@ -4898,6 +5174,19 @@ export default function App() {
       .map((item) => document.getElementById(`setting-anchor-${item.id}`))
       .filter((element): element is HTMLElement => Boolean(element));
     if (elements.length === 0) return;
+    const findScrollContainer = (start: HTMLElement) => {
+      let current: HTMLElement | null = start.parentElement;
+      while (current) {
+        const style = window.getComputedStyle(current);
+        const overflowY = style.overflowY;
+        if ((overflowY === "auto" || overflowY === "scroll") && current.scrollHeight > current.clientHeight + 4) {
+          return current;
+        }
+        current = current.parentElement;
+      }
+      return document.querySelector(".content") as HTMLElement | null;
+    };
+    const scrollContainer = findScrollContainer(elements[0]);
     const observer = new IntersectionObserver(
       (entries) => {
         const visible = entries
@@ -4907,6 +5196,7 @@ export default function App() {
         if (nextId) setActiveSettingsRail(nextId);
       },
       {
+        root: scrollContainer,
         rootMargin: "-16% 0px -58% 0px",
         threshold: [0.18, 0.35, 0.6],
       }
@@ -5006,7 +5296,7 @@ export default function App() {
   const [accountSkinThumbs, setAccountSkinThumbs] = useState<Record<string, AccountSkinThumbSet>>(
     {}
   );
-  const [previewTimeOfDay, setPreviewTimeOfDay] = useState<number>(() => {
+  const [previewTimeOfDay] = useState<number>(() => {
     try {
       const raw = localStorage.getItem("mpm.skinPreview.time_of_day.v1");
       if (!raw) return 14;
@@ -5033,13 +5323,14 @@ export default function App() {
   const [skinViewerPreparing, setSkinViewerPreparing] = useState(false);
   const [skinViewerBusy, setSkinViewerBusy] = useState(false);
   const [accountAppearanceBusy, setAccountAppearanceBusy] = useState(false);
+  const [skinRenameDraft, setSkinRenameDraft] = useState("");
   const [skinViewerEpoch, setSkinViewerEpoch] = useState(0);
   const accountSkinViewerStageRef = useRef<HTMLDivElement | null>(null);
   const accountSkinViewerCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const accountSkinViewerRef = useRef<SkinViewer | null>(null);
   const accountSkinViewerResizeRef = useRef<ResizeObserver | null>(null);
   const skinViewerInputCleanupRef = useRef<(() => void) | null>(null);
-  const skinViewerEmoteTriggerRef = useRef<((mode?: "random" | "celebrate") => void) | null>(null);
+  const skinViewerEmoteTriggerRef = useRef<((mode?: "play" | "celebrate") => void) | null>(null);
   const skinTextureCacheRef = useRef<Map<string, string>>(new Map());
   const capeTextureCacheRef = useRef<Map<string, string>>(new Map());
   const skinViewerNameTagTextRef = useRef<string | null>(null);
@@ -5099,6 +5390,57 @@ export default function App() {
       return {};
     }
   });
+  const [scheduledAppliedUpdatesByInstance, setScheduledAppliedUpdatesByInstance] = useState<
+    Record<string, ScheduledAppliedUpdateEntry>
+  >(() => {
+    try {
+      const raw = localStorage.getItem("mpm.scheduledUpdates.applied.v1");
+      if (!raw) return {};
+      const parsed = JSON.parse(raw) as Record<string, any>;
+      if (!parsed || typeof parsed !== "object") return {};
+      const next: Record<string, ScheduledAppliedUpdateEntry> = {};
+      for (const [instanceId, row] of Object.entries(parsed)) {
+        if (!row || typeof row !== "object") continue;
+        const updatesRaw = Array.isArray((row as any).updates) ? (row as any).updates : [];
+        const updates: ContentUpdateInfo[] = updatesRaw
+          .filter((item: any) => item && typeof item === "object")
+          .map((item: any) => ({
+            source: String(item.source ?? "modrinth"),
+            content_type: String(item.content_type ?? "mods"),
+            project_id: String(item.project_id ?? ""),
+            name: String(item.name ?? ""),
+            current_version_id: String(item.current_version_id ?? ""),
+            current_version_number: String(item.current_version_number ?? ""),
+            latest_version_id: String(item.latest_version_id ?? ""),
+            latest_version_number: String(item.latest_version_number ?? ""),
+            enabled: item.enabled !== false,
+            target_worlds: Array.isArray(item.target_worlds)
+              ? item.target_worlds.map((w: any) => String(w ?? "")).filter(Boolean)
+              : [],
+            compatibility_status: item.compatibility_status
+              ? String(item.compatibility_status)
+              : undefined,
+            compatibility_notes: Array.isArray(item.compatibility_notes)
+              ? item.compatibility_notes.map((note: any) => String(note ?? "")).filter(Boolean)
+              : [],
+          }))
+          .filter((item) => Boolean(item.project_id));
+        next[instanceId] = {
+          instance_id: String((row as any).instance_id ?? instanceId),
+          instance_name: String((row as any).instance_name ?? "Instance"),
+          applied_at: String((row as any).applied_at ?? new Date(0).toISOString()),
+          updated_entries: Number((row as any).updated_entries ?? updates.length),
+          updates,
+          warnings: Array.isArray((row as any).warnings)
+            ? (row as any).warnings.map((warning: any) => String(warning ?? "")).filter(Boolean)
+            : [],
+        };
+      }
+      return next;
+    } catch {
+      return {};
+    }
+  });
   const [scheduledUpdateLastRunAt, setScheduledUpdateLastRunAt] = useState<string | null>(() => {
     try {
       const raw = localStorage.getItem("mpm.scheduledUpdates.lastRunAt");
@@ -5112,6 +5454,7 @@ export default function App() {
   const [scheduledUpdateBusy, setScheduledUpdateBusy] = useState(false);
   const [scheduledUpdateErr, setScheduledUpdateErr] = useState<string | null>(null);
   const [updatePrefsBusy, setUpdatePrefsBusy] = useState(false);
+  const [updatePrefsSavedFlash, setUpdatePrefsSavedFlash] = useState(false);
   const scheduledUpdateRunningRef = useRef(false);
   const [installPlanPreview, setInstallPlanPreview] = useState<
     Record<string, InstallPlanPreview>
@@ -5261,6 +5604,19 @@ export default function App() {
   const updatesPageInstancesWithUpdatesCount = useMemo(
     () => updatesPageVisibleEntries.filter((row) => (row.update_count ?? 0) > 0).length,
     [updatesPageVisibleEntries]
+  );
+  const scheduledAppliedUpdates = useMemo(
+    () =>
+      Object.values(scheduledAppliedUpdatesByInstance).sort(
+        (a, b) =>
+          toTimestamp(b.applied_at) - toTimestamp(a.applied_at) ||
+          a.instance_name.localeCompare(b.instance_name)
+      ),
+    [scheduledAppliedUpdatesByInstance]
+  );
+  const scheduledAppliedUpdatesRecent = useMemo(
+    () => scheduledAppliedUpdates.slice(0, 6),
+    [scheduledAppliedUpdates]
   );
   const perfActionMetrics = useMemo(() => {
     if (perfActions.length === 0) return null;
@@ -5503,6 +5859,13 @@ export default function App() {
   }, [scheduledUpdateEntriesByInstance]);
 
   useEffect(() => {
+    localStorage.setItem(
+      "mpm.scheduledUpdates.applied.v1",
+      JSON.stringify(scheduledAppliedUpdatesByInstance)
+    );
+  }, [scheduledAppliedUpdatesByInstance]);
+
+  useEffect(() => {
     localStorage.setItem(LAUNCH_OUTCOMES_KEY, JSON.stringify(launchOutcomesByInstance));
   }, [launchOutcomesByInstance]);
 
@@ -5628,6 +5991,24 @@ export default function App() {
       }
       return changed ? next : prev;
     });
+    setScheduledAppliedUpdatesByInstance((prev) => {
+      let changed = false;
+      const next: Record<string, ScheduledAppliedUpdateEntry> = {};
+      for (const [instanceId, entry] of Object.entries(prev)) {
+        if (!nameById.has(instanceId)) {
+          changed = true;
+          continue;
+        }
+        const name = nameById.get(instanceId) ?? entry.instance_name;
+        if (name !== entry.instance_name) {
+          next[instanceId] = { ...entry, instance_name: name };
+          changed = true;
+        } else {
+          next[instanceId] = entry;
+        }
+      }
+      return changed ? next : prev;
+    });
   }, [instances]);
 
   useEffect(() => {
@@ -5637,6 +6018,14 @@ export default function App() {
       localStorage.removeItem("mpm.scheduledUpdates.lastRunAt");
     }
   }, [scheduledUpdateLastRunAt]);
+
+  useEffect(() => {
+    if (!updatePrefsSavedFlash) return;
+    const timer = window.setTimeout(() => {
+      setUpdatePrefsSavedFlash(false);
+    }, 1600);
+    return () => window.clearTimeout(timer);
+  }, [updatePrefsSavedFlash]);
 
   useEffect(() => {
     if (!launcherSettings) return;
@@ -6005,6 +6394,14 @@ export default function App() {
       setSelectedAccountCapeId(capeOptions[0].id);
     }
   }, [capeOptions, selectedAccountCapeId]);
+
+  useEffect(() => {
+    if (selectedAccountSkin?.origin === "custom") {
+      setSkinRenameDraft(selectedAccountSkin.label ?? "");
+    } else {
+      setSkinRenameDraft("");
+    }
+  }, [selectedAccountSkin?.id, selectedAccountSkin?.label, selectedAccountSkin?.origin]);
 
   const libraryContextTarget = useMemo(
     () =>
@@ -9168,6 +9565,7 @@ export default function App() {
     applyScope?: SchedulerApplyScope;
   }) {
     setUpdatePrefsBusy(true);
+    setUpdatePrefsSavedFlash(false);
     setScheduledUpdateErr(null);
     try {
       const settings = await setLauncherSettings({
@@ -9179,6 +9577,7 @@ export default function App() {
       setUpdateCheckCadence(normalizeUpdateCheckCadence(settings.update_check_cadence));
       setUpdateAutoApplyMode(normalizeUpdateAutoApplyMode(settings.update_auto_apply_mode));
       setUpdateApplyScope(normalizeUpdateApplyScope(settings.update_apply_scope));
+      setUpdatePrefsSavedFlash(true);
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setScheduledUpdateErr(msg);
@@ -9540,6 +9939,27 @@ export default function App() {
     }));
   }
 
+  function storeScheduledAppliedUpdateResult(
+    inst: Instance,
+    updates: ContentUpdateInfo[],
+    appliedAtIso?: string,
+    warnings?: string[] | null
+  ) {
+    if (updates.length === 0) return;
+    const appliedAt = appliedAtIso ?? new Date().toISOString();
+    setScheduledAppliedUpdatesByInstance((prev) => ({
+      ...prev,
+      [inst.id]: {
+        instance_id: inst.id,
+        instance_name: inst.name,
+        applied_at: appliedAt,
+        updated_entries: updates.length,
+        updates,
+        warnings: (warnings ?? []).map((warning) => String(warning ?? "")).filter(Boolean),
+      },
+    }));
+  }
+
   async function runScheduledUpdateChecks(
     reason: "manual" | "scheduled" = "manual",
     options?: { contentTypes?: string[] }
@@ -9595,6 +10015,10 @@ export default function App() {
               instanceId: inst.id,
               ...(hasContentTypeFilter ? { contentTypes } : {}),
             });
+            const appliedUpdates = pickAppliedUpdatesFromCheck(
+              result,
+              applyResult.updated_entries ?? 0
+            );
             autoAppliedInstances += 1;
             autoAppliedEntries += Math.max(0, applyResult.updated_entries ?? 0);
             const estimatedAfterApply = estimatePostApplyUpdateCheck(
@@ -9602,6 +10026,12 @@ export default function App() {
               applyResult.updated_entries ?? 0
             );
             storeScheduledUpdateResult(inst, estimatedAfterApply, checkedAt, null);
+            storeScheduledAppliedUpdateResult(
+              inst,
+              appliedUpdates,
+              checkedAt,
+              applyResult.warnings ?? []
+            );
             if (route === "instance" && selectedId === inst.id) {
               setUpdateCheck(estimatedAfterApply);
               await refreshInstalledMods(inst.id);
@@ -10303,6 +10733,22 @@ export default function App() {
   }, [route, instances, instanceModCountById, instanceDiskUsageById]);
 
   useEffect(() => {
+    if (route !== "library") return;
+    void refreshStorageOverview({ force: true });
+  }, [route, refreshStorageOverview]);
+
+  useEffect(() => {
+    if (!storageManagerSelection || storageManagerSelection === "overview") return;
+    const relativePath = storageManagerPathBySelection[storageManagerSelection] ?? "";
+    void loadStorageEntries(storageManagerSelection, storageDetailMode, relativePath);
+  }, [
+    loadStorageEntries,
+    storageDetailMode,
+    storageManagerPathBySelection,
+    storageManagerSelection,
+  ]);
+
+  useEffect(() => {
     const valid = new Set(
       installedMods.map((m) => m.version_id)
     );
@@ -10587,14 +11033,6 @@ export default function App() {
     () => normalizeTimeOfDay(previewTimeOfDay),
     [previewTimeOfDay]
   );
-  const previewTimeLabel = useMemo(
-    () => describeTimeOfDay(normalizedPreviewTimeOfDay),
-    [normalizedPreviewTimeOfDay]
-  );
-  const previewTimeText = useMemo(
-    () => formatTimeOfDay(normalizedPreviewTimeOfDay),
-    [normalizedPreviewTimeOfDay]
-  );
   const skinViewerShadowStyle = useMemo(() => {
     const t = normalizedPreviewTimeOfDay / 24;
     const azimuth = t * Math.PI * 2;
@@ -10626,7 +11064,7 @@ export default function App() {
       ? "Preparing 3D preview…"
       : skinViewerBusy
         ? "Loading 3D preview…"
-        : "Drag to rotate/tilt, scroll to zoom, click to punch, idle for emotes";
+        : "Drag to rotate, scroll to zoom, click to punch, use Play emote for gestures";
 
   const resolveViewerTexture = async (
     src: string | null,
@@ -11130,8 +11568,8 @@ export default function App() {
           canvas,
           width: Math.max(220, Math.round(rect.width)),
           height: Math.max(280, Math.round(rect.height)),
-          zoom: 0.64,
-          fov: 40,
+          zoom: 0.56,
+          fov: 46,
         });
         setSkinViewerErr(null);
       } catch (error) {
@@ -11149,18 +11587,18 @@ export default function App() {
       renderer?.setPixelRatio?.(Math.min(window.devicePixelRatio || 1, 1.5));
       viewer.globalLight.intensity = 1.15;
       viewer.cameraLight.intensity = 1.05;
-      viewer.playerWrapper.position.y = 1.14;
+      viewer.playerWrapper.position.y = 1.12;
       viewer.controls.enablePan = false;
       viewer.controls.enableZoom = true;
       viewer.controls.enableDamping = true;
       viewer.controls.dampingFactor = 0.09;
       viewer.controls.rotateSpeed = 0.68;
       viewer.controls.zoomSpeed = 0.88;
-      viewer.controls.minDistance = 22;
-      viewer.controls.maxDistance = 80;
+      viewer.controls.minDistance = 24;
+      viewer.controls.maxDistance = 88;
       viewer.controls.minPolarAngle = 0.24;
       viewer.controls.maxPolarAngle = Math.PI - 0.24;
-      viewer.controls.target.set(0, 11.2, 0);
+      viewer.controls.target.set(0, 10.8, 0);
       viewer.controls.update();
       viewer.autoRotate = false;
 
@@ -11175,7 +11613,7 @@ export default function App() {
         amount: 1,
         arm: "right" as "right" | "left",
       };
-      const emoteNames = [
+      const idleEmoteNames = [
         "wave",
         "nod",
         "celebrate",
@@ -11183,18 +11621,24 @@ export default function App() {
         "salute",
         "shrug",
         "stretch",
-        "bouncy",
-        "twist",
         "bow",
-        "headPop",
+      ] as const;
+      const playEmoteNames = [
+        "wave",
+        "salute",
+        "nod",
+        "lookAround",
+        "stretch",
+        "bow",
       ] as const;
       const emoteState = {
-        name: null as (typeof emoteNames)[number] | null,
+        name: null as (typeof idleEmoteNames)[number] | null,
         startedAt: 0,
         durationMs: 0,
         nextAt: performance.now() + 7000 + Math.random() * 5000,
         lastInteractionAt: performance.now(),
       };
+      let playEmoteIdx = 0;
       const queueNextEmote = (now: number, minDelayMs = 5600) => {
         emoteState.nextAt = now + minDelayMs + Math.random() * 6800;
       };
@@ -11203,7 +11647,7 @@ export default function App() {
         emoteState.lastInteractionAt = now;
         if (!emoteState.name) queueNextEmote(now, minDelayMs);
       };
-      const startEmote = (next: (typeof emoteNames)[number]) => {
+      const startEmote = (next: (typeof idleEmoteNames)[number]) => {
         emoteState.name = next;
         emoteState.startedAt = performance.now();
         emoteState.durationMs =
@@ -11219,24 +11663,23 @@ export default function App() {
                     ? 1700
                     : next === "stretch"
                       ? 1900
-                      : next === "bouncy"
-                        ? 2100
-                        : next === "twist"
-                          ? 1900
-                          : next === "headPop"
-                            ? 2400
-                          : 1400;
+                      : 1400;
       };
       const startRandomEmote = () => {
-        const next = emoteNames[Math.floor(Math.random() * emoteNames.length)] ?? "wave";
+        const next = idleEmoteNames[Math.floor(Math.random() * idleEmoteNames.length)] ?? "wave";
         startEmote(next);
       };
-      skinViewerEmoteTriggerRef.current = (mode = "random") => {
+      const playNextEmote = () => {
+        const next = playEmoteNames[playEmoteIdx % playEmoteNames.length] ?? "wave";
+        playEmoteIdx = (playEmoteIdx + 1) % playEmoteNames.length;
+        startEmote(next);
+      };
+      skinViewerEmoteTriggerRef.current = (mode = "play") => {
         markInteraction(2200);
         if (mode === "celebrate") {
           startEmote("celebrate");
         } else {
-          startRandomEmote();
+          playNextEmote();
         }
       };
       const tapState = {
@@ -11398,57 +11841,11 @@ export default function App() {
           emoteLeftZ = 0.12 * emotePeak;
           emoteBodyPitch = -0.13 * emotePeak;
           emoteLift = 0.04 * emotePeak;
-        } else if (emoteState.name === "bouncy") {
-          const hop = Math.abs(Math.sin(emoteProgress * Math.PI * 3.3));
-          emoteLift = hop * 0.095;
-          emoteRightX = -0.46 * hop + emotePulse * 0.22 * emotePeak;
-          emoteLeftX = -0.46 * hop - emotePulse * 0.22 * emotePeak;
-          emoteLegRightX = -0.12 * hop + emotePulse * 0.14 * emotePeak;
-          emoteLegLeftX = -0.12 * hop - emotePulse * 0.14 * emotePeak;
-        } else if (emoteState.name === "twist") {
-          const twist = Math.sin(emoteProgress * Math.PI * 2.4) * 0.24 * emotePeak;
-          emoteBodyYaw = twist;
-          emoteHeadY = -twist * 0.75;
-          emoteRightX = -0.24 * emotePeak;
-          emoteLeftX = -0.24 * emotePeak;
-          emoteRootYaw = twist * 0.3;
         } else if (emoteState.name === "bow") {
           emoteBodyPitch = 0.22 * emotePeak;
           emoteHeadX = 0.28 * emotePeak;
           emoteRightX = -0.22 * emotePeak;
           emoteLeftX = -0.22 * emotePeak;
-        } else if (emoteState.name === "headPop") {
-          const t = Math.max(0, Math.min(1, emoteProgress));
-          const easeOut = (v: number) => 1 - Math.pow(1 - v, 2.2);
-          const easeIn = (v: number) => Math.pow(v, 2.1);
-          let pop = 0;
-          let hold = 0;
-          let catchPhase = 0;
-          let settle = 0;
-          if (t < 0.22) {
-            pop = easeOut(t / 0.22);
-          } else if (t < 0.54) {
-            pop = 1;
-            hold = (t - 0.22) / 0.32;
-          } else if (t < 0.84) {
-            catchPhase = (t - 0.54) / 0.3;
-            pop = 1 - easeIn(catchPhase);
-          } else {
-            settle = (t - 0.84) / 0.16;
-          }
-          const hoverBob = Math.sin(hold * Math.PI * 2.4) * 0.06;
-          const settleBounce = Math.sin(Math.PI * settle) * Math.exp(-4.2 * settle);
-          emoteHeadLift = pop * 1.72 + hoverBob + settleBounce * 0.12;
-          emoteHeadForward = pop * 0.18 + Math.sin(hold * Math.PI * 2.1) * 0.035;
-          emoteHeadY = Math.sin(t * Math.PI * 5.8) * 0.2 * pop;
-          emoteHeadX = -0.04 * pop + settleBounce * 0.07;
-          const reach = Math.max(pop * 0.9, Math.sin(catchPhase * Math.PI) * 1.08);
-          emoteRightX = -1.16 * reach;
-          emoteLeftX = -1.16 * reach;
-          emoteRightZ = -0.14 * reach;
-          emoteLeftZ = 0.14 * reach;
-          emoteBodyPitch = -0.09 * pop + 0.1 * Math.sin(catchPhase * Math.PI) * (catchPhase > 0 ? 1 : 0);
-          emoteLift = 0.04 * pop;
         }
 
         let punchWindup = 0;
@@ -11589,7 +11986,7 @@ export default function App() {
       repaintAfterLoaded: true,
     });
     if (viewer.nameTag) {
-      viewer.nameTag.position.y = 20.3;
+      viewer.nameTag.position.y = 18.6;
     }
     skinViewerNameTagTextRef.current = text;
   }, [showSkinViewer, skinViewerEpoch, skinViewerNameTag]);
@@ -13541,6 +13938,11 @@ export default function App() {
                   </div>
                 </div>
                 <div className="updatesScreenSummaryActions">
+                  {updatePrefsBusy ? (
+                    <span className="chip">Saving…</span>
+                  ) : updatePrefsSavedFlash ? (
+                    <span className="chip subtle">Saved</span>
+                  ) : null}
                   <button
                     className="btn primary"
                     onClick={() =>
@@ -13613,13 +14015,45 @@ export default function App() {
                   }}
                   options={UPDATE_APPLY_SCOPE_OPTIONS}
                 />
-                {updatePrefsBusy ? <span className="chip">Saving…</span> : <span className="chip subtle">Saved</span>}
               </div>
               <div className="updatesScreenStatsRow">
                 <span className="chip subtle">{updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} with updates</span>
                 <span className="chip">{updatesPageUpdatesAvailableTotal} total update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"}</span>
                 <span className="chip subtle">{updatesPageVisibleEntries.length} checked instance{updatesPageVisibleEntries.length === 1 ? "" : "s"}</span>
               </div>
+              {scheduledAppliedUpdatesRecent.length > 0 ? (
+                <div className="updatesScreenAppliedSummary">
+                  <div className="updatesCardTitle">Last scheduled auto-updates</div>
+                  <div className="updatesList">
+                    {scheduledAppliedUpdatesRecent.map((entry) => (
+                      <div key={`applied:${entry.instance_id}:${entry.applied_at}`} className="updatesListRow">
+                        <div className="updatesListName">
+                          {entry.instance_name}
+                          <span className="chip subtle" style={{ marginLeft: 8 }}>
+                            {entry.updated_entries} updated
+                          </span>
+                        </div>
+                        <div className="updatesListMeta">
+                          {formatDateTime(entry.applied_at, "Unknown time")}
+                        </div>
+                        <div className="updatesScreenAppliedNames">
+                          {entry.updates.slice(0, 5).map((u) => (
+                            <span
+                              key={`applied-chip:${entry.instance_id}:${u.source}:${u.content_type}:${u.project_id}`}
+                              className="chip subtle"
+                            >
+                              {u.name}
+                            </span>
+                          ))}
+                          {entry.updates.length > 5 ? (
+                            <span className="chip subtle">+{entry.updates.length - 5} more</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
               {scheduledUpdateErr ? <div className="errorBox" style={{ marginTop: 10 }}>{scheduledUpdateErr}</div> : null}
             </div>
 
@@ -13634,7 +14068,9 @@ export default function App() {
               </div>
             ) : (
               <div className="updatesScreenList">
-                {updatesPageVisibleEntries.map((row) => (
+                {updatesPageVisibleEntries.map((row) => {
+                  const appliedEntry = scheduledAppliedUpdatesByInstance[row.instance_id] ?? null;
+                  return (
                   <div key={row.instance_id} className="card updatesScreenItemCard">
                     <div className="updatesScreenItemHead">
                       <div>
@@ -13665,6 +14101,32 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    {appliedEntry ? (
+                      <div className="updatesScreenAppliedInstance">
+                        <div className="updatesCardTitle">
+                          Last scheduled auto-update
+                          <span className="chip subtle" style={{ marginLeft: 8 }}>
+                            {appliedEntry.updated_entries} updated
+                          </span>
+                        </div>
+                        <div className="updatesListMeta">
+                          {formatDateTime(appliedEntry.applied_at, "Unknown time")}
+                        </div>
+                        <div className="updatesScreenAppliedNames">
+                          {appliedEntry.updates.slice(0, 6).map((u) => (
+                            <span
+                              key={`applied-instance-chip:${row.instance_id}:${u.source}:${u.content_type}:${u.project_id}`}
+                              className="chip subtle"
+                            >
+                              {u.name}
+                            </span>
+                          ))}
+                          {appliedEntry.updates.length > 6 ? (
+                            <span className="chip subtle">+{appliedEntry.updates.length - 6} more</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                     {row.error ? (
                       <div className="errorBox" style={{ marginTop: 8 }}>{row.error}</div>
                     ) : row.update_count === 0 ? (
@@ -13699,7 +14161,7 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                ))}
+                )})}
               </div>
             )}
           </div>
@@ -13982,26 +14444,30 @@ export default function App() {
 
     if (route === "modpacks") {
       return (
-        <div style={{ maxWidth: 1320 }}>
-          <div className="h1">Creator Studio</div>
-          <div className="p">
-            Build and maintain packs in Creator, or edit real instance/world config files in Config Editor. Preview changes before apply with rollback safety.
-          </div>
-
-          <div className="topRow" style={{ marginTop: 12 }}>
-            <SegmentedControl
-              value={modpacksStudioTab === "config" ? "config" : "creator"}
-              onChange={(v) => setModpacksStudioTab((v as any) ?? "creator")}
-              options={[
-                { value: "creator", label: "Creator" },
-                { value: "config", label: "Config Editor" },
-              ]}
-              variant="scroll"
-            />
+        <div className="creatorStudioRoute" style={{ maxWidth: 1380 }}>
+          <div className="creatorStudioIntro card">
+            <div className="creatorStudioIntroCopy">
+              <div className="creatorStudioEyebrow">Creator Studio</div>
+              <div className="h1">Build packs and edit live config.</div>
+              <div className="p">
+                Creator handles layered modpack assembly and apply previews. Config Editor works directly against instance and world files with rollback safety.
+              </div>
+              <div className="creatorStudioTabs">
+                <SegmentedControl
+                  value={modpacksStudioTab === "config" ? "config" : "creator"}
+                  onChange={(v) => setModpacksStudioTab((v as any) ?? "creator")}
+                  options={[
+                    { value: "creator", label: "Creator" },
+                    { value: "config", label: "Config Editor" },
+                  ]}
+                  variant="scroll"
+                />
+              </div>
+            </div>
           </div>
 
           {modpacksStudioTab === "config" ? (
-            <div style={{ marginTop: 14 }}>
+            <div className="creatorStudioPanelWrap">
               <ModpacksConfigEditor
                 instances={instances}
                 selectedInstanceId={selectedId}
@@ -14011,7 +14477,7 @@ export default function App() {
               />
             </div>
           ) : (
-            <div style={{ marginTop: 14 }}>
+            <div className="creatorStudioPanelWrap">
               <ModpackMaker
                 instances={instances}
                 selectedInstanceId={selectedId}
@@ -14940,9 +15406,14 @@ export default function App() {
                     </div>
                   </div>
                   <div className="row" style={{ marginTop: 10, gap: 8, flexWrap: "wrap" }}>
-                    <span className="chip subtle" title="Total size of this instance folder on disk.">
+                    <button
+                      className="chip subtle chipButton"
+                      type="button"
+                      title="Total size of this instance folder on disk. Open the storage manager for details."
+                      onClick={() => openStorageManager(storageSelectionForInstance(inst.id))}
+                    >
                       Disk {formatFileSize(instanceDiskUsageBytes)}
-                    </span>
+                    </button>
                     <span className="chip subtle" title="Timestamp captured when launch starts.">
                       Last launch {instanceLastLaunchAt ? formatDateTime(instanceLastLaunchAt) : "Never"}
                     </span>
@@ -15668,7 +16139,9 @@ export default function App() {
                           return (
                             <div
                               key={`${inst.id}:${m.version_id}`}
-                              className={`instanceModsRow ${m.enabled ? "" : "disabled"}`}
+                              className={`instanceModsRow ${m.enabled ? "" : "disabled"} ${
+                                selectedModVersionIdSet.has(m.version_id) ? "selected" : ""
+                              }`}
                               role="button"
                               tabIndex={0}
                               onClick={(event) => {
@@ -16566,7 +17039,7 @@ export default function App() {
                 {selectedLauncherAccount ? (
                   <>
                     <div className="libraryAccountName">{selectedLauncherAccount.username}</div>
-                    <div className="muted">{selectedLauncherAccount.id}</div>
+                    <div className="libraryAccountId muted">{selectedLauncherAccount.id}</div>
                   </>
                 ) : (
                   <div className="muted">Select account in Settings or Account page.</div>
@@ -17573,21 +18046,6 @@ export default function App() {
                     </button>
                   ) : null}
                 </div>
-                <div className="accountSkinLightingControl">
-                  <div className="accountSkinLightingMeta">
-                    <span>{previewTimeLabel}</span>
-                    <span>{previewTimeText}</span>
-                  </div>
-                  <input
-                    className="accountSkinLightingSlider"
-                    type="range"
-                    min={0}
-                    max={24}
-                    step={0.1}
-                    value={normalizedPreviewTimeOfDay}
-                    onChange={(event) => setPreviewTimeOfDay(Number(event.target.value))}
-                  />
-                </div>
                 <div className="accountSkinViewerHint">
                   Cape: {selectedAccountCape?.label ?? "No cape"}
                 </div>
@@ -17612,6 +18070,32 @@ export default function App() {
                         ? "Profile"
                         : "Default"}
                   </span>
+                  {selectedAccountSkin?.origin === "custom" ? (
+                    <div className="skinsLibraryRenameRow">
+                      <input
+                        className="input skinsLibraryRenameInput"
+                        value={skinRenameDraft}
+                        onChange={(event) => setSkinRenameDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            onRenameSelectedCustomSkin();
+                          }
+                        }}
+                        placeholder="Rename selected skin"
+                      />
+                      <button
+                        className="btn"
+                        onClick={onRenameSelectedCustomSkin}
+                        disabled={
+                          !skinRenameDraft.trim() ||
+                          skinRenameDraft.trim() === (selectedAccountSkin.label ?? "").trim()
+                        }
+                      >
+                        Rename
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="accountSkinCardGrid accountSkinCardGridSaved skinsRefSavedGrid">
@@ -17770,12 +18254,15 @@ export default function App() {
       })
       .sort((a, b) => b.lastLaunchAtMs - a.lastLaunchAtMs)
       .slice(0, 3);
-    const knownDiskUsageBytes = Object.entries(instanceDiskUsageById)
-      .filter(([instanceId, bytes]) => instances.some((item) => item.id === instanceId) && Number.isFinite(bytes))
-      .reduce((sum, [, bytes]) => sum + Math.max(0, Number(bytes ?? 0)), 0);
     const knownModsTotal = Object.entries(instanceModCountById)
       .filter(([instanceId, count]) => instances.some((item) => item.id === instanceId) && Number.isFinite(count))
       .reduce((sum, [, count]) => sum + Math.max(0, Number(count ?? 0)), 0);
+    const libraryStorageDisplay = storageOverview
+      ? formatBytes(Number(storageOverview.total_bytes ?? 0))
+      : storageOverviewError
+        ? "Unavailable"
+        : "Scanning…";
+    const storageOverviewWarnings = storageOverview?.warnings ?? [];
     const needsLibraryGrowthPrompt = instances.length < 3;
 
     return (
@@ -18033,14 +18520,35 @@ export default function App() {
               )}
             </div>
 
-            <div className="card librarySideCard">
-              <div className="librarySideTitle">Storage usage</div>
-              <div className="libraryStorageStat">{formatBytes(knownDiskUsageBytes)}</div>
-              <div className="muted">
-                {knownModsTotal.toLocaleString()} total mods across {instances.length} instance
-                {instances.length === 1 ? "" : "s"}.
+            <button
+              className="card librarySideCard libraryStorageCard"
+              onClick={() => openStorageManager("overview")}
+              type="button"
+            >
+              <div className="libraryStorageCardMain">
+                <div className="librarySideTitle">Storage usage</div>
+                <div className="libraryStorageStat">{libraryStorageDisplay}</div>
+                <div className="muted">
+                  {storageOverviewError
+                    ? "Storage scan failed. Open the manager for details."
+                    : storageOverviewBusy && !storageOverview
+                    ? "Scanning launcher + instance storage…"
+                    : `${knownModsTotal.toLocaleString()} total mods across ${instances.length} instance${instances.length === 1 ? "" : "s"}.`}
+                </div>
               </div>
-            </div>
+              <div className="libraryStorageCardMeta">
+                {storageOverview ? (
+                  <>
+                    <span className="chip subtle">Reclaimable {formatBytes(storageOverview.reclaimable_bytes)}</span>
+                    {storageOverviewWarnings.length > 0 ? (
+                      <span className="chip subtle">{storageOverviewWarnings.length} warning{storageOverviewWarnings.length === 1 ? "" : "s"}</span>
+                    ) : null}
+                  </>
+                ) : (
+                  <span className="chip subtle">{storageOverviewBusy ? "Scanning…" : "Open manager"}</span>
+                )}
+              </div>
+            </button>
 
             {needsLibraryGrowthPrompt ? (
               <div className="card librarySideCard libraryPromptCard">
@@ -18060,7 +18568,7 @@ export default function App() {
               {selectedLauncherAccount ? (
                 <>
                   <div className="libraryAccountName">{selectedLauncherAccount.username}</div>
-                  <div className="muted">{selectedLauncherAccount.id}</div>
+                  <div className="libraryAccountId muted">{selectedLauncherAccount.id}</div>
                   <div className="row" style={{ marginTop: 10 }}>
                     <button className="btn" onClick={() => setRoute("account")}>
                       Account page
@@ -18453,6 +18961,454 @@ export default function App() {
             document.body
           )
         : null}
+
+      {storageManagerSelection ? (
+        (() => {
+          const selection = storageManagerSelection;
+          const parsed = parseStorageSelection(selection);
+          const overview = storageOverview;
+          const instanceSummary =
+            parsed.scope === "instance"
+              ? overview?.instance_summaries.find((item) => item.instance_id === parsed.instanceId) ?? null
+              : null;
+          const relativePath = storageManagerPathBySelection[selection] ?? "";
+          const requestKey = storageRequestKey(selection, storageDetailMode, relativePath);
+          const entryRows = storageEntriesByKey[requestKey] ?? [];
+          const entryError = storageEntriesErrorByKey[requestKey] ?? null;
+          const entryBusy = storageEntriesBusyKey === requestKey;
+          const revealLabel = storageRevealActionLabel();
+          const railItems = [
+            { key: "overview" as StorageManagerSelection, label: "Overview", meta: formatBytes(overview?.total_bytes ?? 0) },
+            { key: "app" as StorageManagerSelection, label: "App storage", meta: formatBytes(overview?.app_bytes ?? 0) },
+            { key: "cache" as StorageManagerSelection, label: "Shared cache", meta: formatBytes(overview?.shared_cache_bytes ?? 0) },
+            ...((overview?.instance_summaries ?? []).map((summary) => ({
+              key: storageSelectionForInstance(summary.instance_id),
+              label: summary.instance_name,
+              meta: formatBytes(summary.total_bytes),
+            })) as Array<{ key: StorageManagerSelection; label: string; meta: string }>),
+          ];
+          const breakdownRows =
+            parsed.scope === "app"
+              ? storageAppBreakdownForScope(overview, "app")
+              : parsed.scope === "cache"
+                ? storageAppBreakdownForScope(overview, "cache")
+                : parsed.scope === "instance" && instanceSummary
+                  ? storageInstanceBreakdown(instanceSummary)
+                  : [
+                      { key: "total", label: "Total", bytes: Number(overview?.total_bytes ?? 0) },
+                      { key: "app", label: "App storage", bytes: Number(overview?.app_bytes ?? 0) },
+                      { key: "cache", label: "Shared cache", bytes: Number(overview?.shared_cache_bytes ?? 0) },
+                      { key: "instances", label: "Instances", bytes: Number(overview?.instances_bytes ?? 0) },
+                    ];
+          const visibleBreakdownRows = breakdownRows.filter((row) => Number(row.bytes ?? 0) > 0);
+          const selectedTotal =
+            parsed.scope === "overview"
+              ? Number(overview?.total_bytes ?? 0)
+              : parsed.scope === "app"
+                ? Number(overview?.app_bytes ?? 0)
+                : parsed.scope === "cache"
+                  ? Number(overview?.shared_cache_bytes ?? 0)
+                  : Number(instanceSummary?.total_bytes ?? 0);
+          const selectionTitle =
+            parsed.scope === "overview"
+              ? "Overview"
+              : parsed.scope === "app"
+                ? "App storage"
+                : parsed.scope === "cache"
+                  ? "Shared cache"
+                  : instanceSummary?.instance_name ?? "Instance storage";
+          const recommendationRows =
+            parsed.scope === "overview"
+              ? overview?.cleanup_recommendations ?? []
+              : parsed.scope === "cache"
+                ? (overview?.cleanup_recommendations ?? []).filter((item) => item.scope === "cache")
+                : parsed.scope === "instance" && parsed.instanceId
+                  ? (overview?.cleanup_recommendations ?? []).filter(
+                      (item) => item.scope === `instance:${parsed.instanceId}`
+                    )
+                  : [];
+          const breadcrumbParts = relativePath ? relativePath.split("/").filter(Boolean) : [];
+          return (
+            <Modal
+              title="Storage manager"
+              size="xwide"
+              className="storageManagerModal"
+              onClose={() => setStorageManagerSelection(null)}
+            >
+              <div className="modalBody storageManagerBody">
+                <div className="storageManagerHero">
+                  <div>
+                    <div className="storageManagerEyebrow">OpenJar managed storage</div>
+                    <div className="storageManagerTotal">{formatBytes(overview?.total_bytes ?? 0)}</div>
+                    <div className="muted">
+                      {overview
+                        ? `Last scanned ${formatDateTime(overview.scanned_at, "just now")}`
+                        : storageOverviewBusy
+                          ? "Scanning storage…"
+                          : "Run a scan to see launcher + instance usage."}
+                    </div>
+                  </div>
+                  <div className="storageManagerHeroActions">
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => void refreshStorageOverview({ force: true, clearEntries: true })}
+                      disabled={storageOverviewBusy}
+                    >
+                      {storageOverviewBusy ? "Refreshing…" : "Refresh"}
+                    </button>
+                    <button
+                      className="btn primary"
+                      type="button"
+                      disabled={storageCleanupBusy || recommendationRows.length === 0}
+                      onClick={() =>
+                        void performStorageCleanup(
+                          recommendationRows.map((item) => item.action_id),
+                          {
+                            description: `Run safe cleanup${recommendationRows.length > 0 ? ` and reclaim about ${formatBytes(
+                              recommendationRows.reduce(
+                                (sum, item) => sum + Number(item.reclaimable_bytes ?? 0),
+                                0
+                              )
+                            )}` : ""}?`,
+                            buttonId: "all",
+                          }
+                        )
+                      }
+                    >
+                      {storageCleanupBusy && storageActionBusyId === "all" ? "Cleaning…" : "Run safe cleanup"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="storageSummaryStrip">
+                  <div className="storageSummaryCard">
+                    <div className="storageSummaryLabel">Total</div>
+                    <div className="storageSummaryValue">{formatBytes(overview?.total_bytes ?? 0)}</div>
+                  </div>
+                  <div className="storageSummaryCard">
+                    <div className="storageSummaryLabel">App storage</div>
+                    <div className="storageSummaryValue">{formatBytes(overview?.app_bytes ?? 0)}</div>
+                  </div>
+                  <div className="storageSummaryCard">
+                    <div className="storageSummaryLabel">Instances</div>
+                    <div className="storageSummaryValue">{formatBytes(overview?.instances_bytes ?? 0)}</div>
+                  </div>
+                  <div className="storageSummaryCard">
+                    <div className="storageSummaryLabel">Reclaimable now</div>
+                    <div className="storageSummaryValue">{formatBytes(overview?.reclaimable_bytes ?? 0)}</div>
+                  </div>
+                </div>
+
+                {storageManagerNotice ? <div className="noticeBox">{storageManagerNotice}</div> : null}
+                {storageOverviewError ? <div className="errorBox">{storageOverviewError}</div> : null}
+                {overview?.warnings?.length ? (
+                  <div className="warningBox">{summarizeWarnings(overview.warnings, 4)}</div>
+                ) : null}
+
+                <div className="storageManagerLayout">
+                  <aside className="storageManagerRail">
+                    {railItems.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        className={`storageRailItem ${selection === item.key ? "active" : ""}`}
+                        onClick={() => {
+                          setStorageManagerSelection(item.key);
+                          setStorageManagerNotice(null);
+                        }}
+                      >
+                        <span>{item.label}</span>
+                        <span className="storageRailMeta">{item.meta}</span>
+                      </button>
+                    ))}
+                  </aside>
+
+                  <section className="storageManagerPane">
+                    <div className="storagePaneHeader">
+                      <div>
+                        <div className="storagePaneTitle">{selectionTitle}</div>
+                        <div className="muted">
+                          {parsed.scope === "overview"
+                            ? "Track the biggest storage consumers across the launcher and your instances."
+                            : parsed.scope === "instance"
+                              ? `${instanceSummary?.instance_name ?? "Instance"} is using ${formatBytes(
+                                  instanceSummary?.total_bytes ?? 0
+                                )}.`
+                              : `${selectionTitle} is using ${formatBytes(selectedTotal)}.`}
+                        </div>
+                      </div>
+                      {parsed.scope !== "overview" ? (
+                        <div className="storagePaneActions">
+                          <SegmentedControl
+                            value={storageDetailMode}
+                            onChange={(value) => setStorageDetailMode((value ?? "folders") as StorageDetailMode)}
+                            options={[
+                              { label: "Largest folders", value: "folders" },
+                              { label: "Largest files", value: "files" },
+                            ]}
+                          />
+                          <button
+                            className="btn"
+                            type="button"
+                            onClick={() => void revealStoragePath(selection, relativePath || undefined)}
+                          >
+                            {revealLabel}
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {parsed.scope !== "overview" ? (
+                      <div className="storageBreadcrumbRow">
+                        <button
+                          className="chip subtle chipButton"
+                          type="button"
+                          onClick={() =>
+                            setStorageManagerPathBySelection((prev) => ({ ...prev, [selection]: "" }))
+                          }
+                        >
+                          Root
+                        </button>
+                        {breadcrumbParts.map((part, index) => {
+                          const nextPath = breadcrumbParts.slice(0, index + 1).join("/");
+                          return (
+                            <button
+                              key={nextPath}
+                              className="chip subtle chipButton"
+                              type="button"
+                              onClick={() =>
+                                setStorageManagerPathBySelection((prev) => ({
+                                  ...prev,
+                                  [selection]: nextPath,
+                                }))
+                              }
+                            >
+                              {part}
+                            </button>
+                          );
+                        })}
+                        {relativePath ? (
+                          <button
+                            className="chip subtle chipButton"
+                            type="button"
+                            onClick={() => {
+                              const nextParts = breadcrumbParts.slice(0, -1);
+                              setStorageManagerPathBySelection((prev) => ({
+                                ...prev,
+                                [selection]: nextParts.join("/"),
+                              }));
+                            }}
+                          >
+                            Up one level
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="storagePaneGrid">
+                      <div className="storagePaneCard">
+                        <div className="storageSectionHeader">
+                          <div className="storageSectionTitle">Breakdown</div>
+                          <span className="chip subtle">{formatBytes(selectedTotal)}</span>
+                        </div>
+                        <div className="storageBreakdownList">
+                          {(visibleBreakdownRows.length > 0 ? visibleBreakdownRows : breakdownRows).map((row) => {
+                            const percent =
+                              selectedTotal > 0 ? (Number(row.bytes ?? 0) / selectedTotal) * 100 : 0;
+                            return (
+                              <div key={row.key} className="storageBreakdownRow">
+                                <div className="storageBreakdownMeta">
+                                  <div className="storageBreakdownLabel">{row.label}</div>
+                                  <div className="storageBreakdownValue">{formatBytes(row.bytes)}</div>
+                                </div>
+                                <div className="storageBreakdownBar">
+                                  <div
+                                    className="storageBreakdownBarFill"
+                                    style={{ width: `${Math.max(2, Math.min(100, percent || 0))}%` }}
+                                  />
+                                </div>
+                                <div className="storageBreakdownPercent">{formatPercent(percent)}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="storagePaneCard">
+                        <div className="storageSectionHeader">
+                          <div className="storageSectionTitle">
+                            {parsed.scope === "overview"
+                              ? "Top cleanup ideas"
+                              : storageDetailMode === "folders"
+                                ? "Largest folders"
+                                : "Largest files"}
+                          </div>
+                          {parsed.scope !== "overview" ? (
+                            <button
+                              className="btn subtle"
+                              type="button"
+                              onClick={() =>
+                                void loadStorageEntries(selection, storageDetailMode, relativePath, {
+                                  force: true,
+                                })
+                              }
+                            >
+                              Refresh list
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {parsed.scope === "overview" ? (
+                          <div className="storageRecommendationList">
+                            {recommendationRows.length === 0 ? (
+                              <div className="muted">No safe cleanup actions are available right now.</div>
+                            ) : (
+                              recommendationRows.slice(0, 8).map((recommendation) => (
+                                <div key={recommendation.action_id} className="storageRecommendationRow">
+                                  <div>
+                                    <div className="storageRecommendationTitle">
+                                      {storageCleanupRecommendationLabel(recommendation)}
+                                    </div>
+                                    <div className="muted">{recommendation.description}</div>
+                                  </div>
+                                  <button
+                                    className="btn"
+                                    type="button"
+                                    disabled={storageCleanupBusy}
+                                    onClick={() =>
+                                      void performStorageCleanup([recommendation.action_id], {
+                                        description: `Run "${recommendation.title}" and reclaim about ${formatBytes(
+                                          recommendation.reclaimable_bytes
+                                        )}?`,
+                                        buttonId: recommendation.action_id,
+                                      })
+                                    }
+                                  >
+                                    {storageCleanupBusy && storageActionBusyId === recommendation.action_id
+                                      ? "Cleaning…"
+                                      : "Run"}
+                                  </button>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        ) : entryError ? (
+                          <div className="errorBox">{entryError}</div>
+                        ) : entryBusy && entryRows.length === 0 ? (
+                          <div className="muted">Scanning {storageDetailMode === "folders" ? "folders" : "files"}…</div>
+                        ) : entryRows.length === 0 ? (
+                          <div className="muted">Nothing notable in this location yet.</div>
+                        ) : (
+                          <div className="storageEntryList">
+                            {entryRows.map((row) => (
+                              <div key={`${row.relative_path}:${row.bytes}`} className="storageEntryRow">
+                                <button
+                                  className={`storageEntryMain ${row.is_dir ? "isDir" : ""}`}
+                                  type="button"
+                                  onClick={() => {
+                                    if (row.is_dir && storageDetailMode === "folders") {
+                                      setStorageManagerPathBySelection((prev) => ({
+                                        ...prev,
+                                        [selection]: row.relative_path,
+                                      }));
+                                      return;
+                                    }
+                                    void revealStoragePath(selection, row.relative_path);
+                                  }}
+                                >
+                                  <div className="storageEntryLabel">{row.name}</div>
+                                  <div className="storageEntryMeta">
+                                    <span>{formatBytes(row.bytes)}</span>
+                                    {row.modified_at ? (
+                                      <span>Updated {formatDateTime(new Date(row.modified_at).toISOString())}</span>
+                                    ) : null}
+                                  </div>
+                                  <div className="storageEntryPath">{row.relative_path || row.name}</div>
+                                </button>
+                                <button
+                                  className="btn subtle"
+                                  type="button"
+                                  onClick={() => void revealStoragePath(selection, row.relative_path)}
+                                >
+                                  Reveal
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {parsed.scope === "overview" ? (
+                      <div className="storagePaneCard">
+                        <div className="storageSectionHeader">
+                          <div className="storageSectionTitle">Heaviest instances</div>
+                        </div>
+                        <div className="storageInstanceOverviewList">
+                          {(overview?.instance_summaries ?? []).slice(0, 8).map((summary) => (
+                            <button
+                              key={summary.instance_id}
+                              className="storageInstanceOverviewRow"
+                              type="button"
+                              onClick={() =>
+                                setStorageManagerSelection(storageSelectionForInstance(summary.instance_id))
+                              }
+                            >
+                              <div>
+                                <div className="storageRecommendationTitle">{summary.instance_name}</div>
+                                <div className="muted">
+                                  Reclaimable {formatBytes(summary.reclaimable_bytes)} • Mods {formatBytes(summary.mods)}
+                                </div>
+                              </div>
+                              <span className="chip subtle">{formatBytes(summary.total_bytes)}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : recommendationRows.length > 0 ? (
+                      <div className="storagePaneCard">
+                        <div className="storageSectionHeader">
+                          <div className="storageSectionTitle">Safe cleanup</div>
+                        </div>
+                        <div className="storageRecommendationList">
+                          {recommendationRows.map((recommendation) => (
+                            <div key={recommendation.action_id} className="storageRecommendationRow">
+                              <div>
+                                <div className="storageRecommendationTitle">
+                                  {storageCleanupRecommendationLabel(recommendation)}
+                                </div>
+                                <div className="muted">{recommendation.description}</div>
+                              </div>
+                              <button
+                                className="btn"
+                                type="button"
+                                disabled={storageCleanupBusy}
+                                onClick={() =>
+                                  void performStorageCleanup([recommendation.action_id], {
+                                    description: `Run "${recommendation.title}" and reclaim about ${formatBytes(
+                                      recommendation.reclaimable_bytes
+                                    )}?`,
+                                    buttonId: recommendation.action_id,
+                                  })
+                                }
+                              >
+                                {storageCleanupBusy && storageActionBusyId === recommendation.action_id
+                                  ? "Cleaning…"
+                                  : "Run"}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </section>
+                </div>
+              </div>
+            </Modal>
+          );
+        })()
+      ) : null}
 
       {friendConflictResult && friendConflictInstanceId ? (
         <Modal

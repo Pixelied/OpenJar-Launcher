@@ -1067,6 +1067,7 @@ export default function ModpacksConfigEditor({
     <div className="configWorkspace">
       <div className="card configWorkspaceHeader">
         <div className="configHeaderLeft">
+          <div className="configHeaderEyebrow">Live config workspace</div>
           <div className="settingTitle">Config Editor</div>
           <div className="settingSub">
             Choose target, edit, and save. Instance files auto-back up before every write.
@@ -1129,6 +1130,13 @@ export default function ModpacksConfigEditor({
                 {scope === "world" && activeWorld ? ` • ${activeWorld.name}` : ""}
               </span>
             </div>
+          </div>
+          <div className="configHeaderStatusStrip">
+            <span className="chip subtle">{files.length} files</span>
+            <span className="chip subtle">{scope === "instance" ? "Instance scope" : "World scope"}</span>
+            <span className={`chip subtle ${runningInstanceIds.includes(activeInstance.id) ? "" : "configHeaderStatusMuted"}`}>
+              {runningInstanceIds.includes(activeInstance.id) ? "Instance running" : "Instance stopped"}
+            </span>
           </div>
         </div>
       </div>
