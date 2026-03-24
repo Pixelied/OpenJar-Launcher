@@ -2836,6 +2836,27 @@ const MOTION_OPTIONS: { value: MotionPreset; label: string }[] = [
   { value: "expressive", label: "Expressive" },
 ];
 
+const MOTION_PROFILE_DETAILS: Record<
+  MotionPreset,
+  { label: string; summary: string; traits: string[] }
+> = {
+  calm: {
+    label: "Quiet workspace",
+    summary: "Gentler hover states and softer panel movement.",
+    traits: ["Soft lift", "Slow icons", "Low contrast motion"],
+  },
+  standard: {
+    label: "Balanced motion",
+    summary: "A restrained default with clear feedback and quick transitions.",
+    traits: ["Balanced lift", "Clear panel motion", "Responsive nav"],
+  },
+  expressive: {
+    label: "Sharper feedback",
+    summary: "More pronounced lift, panel reveals, and icon motion without going noisy.",
+    traits: ["Stronger lift", "Livelier panels", "Bolder nav motion"],
+  },
+};
+
 const DENSITY_OPTIONS: { value: DensityPreset; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
   { value: "compact", label: "Compact" },
@@ -3483,6 +3504,7 @@ export default function App() {
   const [densityPreset, setDensityPreset] = useState<DensityPreset>(uiSettingsSeed.densityPreset);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.style.colorScheme = theme;
   }, [theme]);
   useEffect(() => {
     document.documentElement.setAttribute("data-accent", accentPreset);
@@ -13203,6 +13225,17 @@ export default function App() {
                         options={MOTION_OPTIONS}
                         onChange={(v) => setMotionPreset((v ?? "standard") as MotionPreset)}
                       />
+                    </div>
+                    <div className="settingsMotionNote" aria-live="polite">
+                      <span className="chip subtle">{MOTION_PROFILE_DETAILS[motionPreset].label}</span>
+                      {MOTION_PROFILE_DETAILS[motionPreset].traits.map((trait) => (
+                        <span key={trait} className="chip subtle">
+                          {trait}
+                        </span>
+                      ))}
+                      <span className="settingsMotionNoteText">
+                        {MOTION_PROFILE_DETAILS[motionPreset].summary}
+                      </span>
                     </div>
                   </div>
 

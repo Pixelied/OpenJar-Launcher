@@ -115,8 +115,8 @@ jobs:
             s/"targets"\s*:\s*"dmg"/"targets": ["app", "updater"]/g;
           ' "$CONF"
 
-      - name: Setup Rust (stable) + target
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust (1.93.1) + target
+        uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: ${{ matrix.target }}
 
