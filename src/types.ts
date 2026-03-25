@@ -67,12 +67,20 @@ export type ProviderCandidate = {
   version_number: string;
   confidence?: string;
   reason?: string;
+  verification_status?: "verified" | "deferred" | "manual_unverified" | "unavailable" | string;
 };
 
 export type InstallProgressEvent = {
   instance_id: string;
   project_id: string;
-  stage: "resolving" | "downloading" | "completed" | "error";
+  stage:
+    | "snapshotting"
+    | "resolving"
+    | "downloading"
+    | "installing"
+    | "finalizing"
+    | "completed"
+    | "error";
   downloaded: number;
   total?: number | null;
   percent?: number | null;
@@ -884,6 +892,8 @@ export type DiscoverSearchHit = {
   reason?: string | null;
   install_supported?: boolean | null;
   install_note?: string | null;
+  verification_status?: "verified" | "deferred" | "manual_unverified" | "unavailable" | string | null;
+  compatibility_status?: "compatible" | "incompatible" | "unknown" | string | null;
 };
 
 export type DiscoverSearchResult = {
@@ -959,6 +969,10 @@ export type GithubProjectDetail = {
   readme_source_url?: string | null;
   releases: GithubProjectReleaseDetail[];
   warning?: string | null;
+  compatibility_status?: "compatible" | "incompatible" | "unknown" | string | null;
+  install_supported?: boolean | null;
+  compatible_release_id?: string | null;
+  compatible_release_name?: string | null;
 };
 
 export type PresetsJsonIoResult = {

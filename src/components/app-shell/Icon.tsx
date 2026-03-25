@@ -170,12 +170,17 @@ export default function Icon(props: { name: IconName; size?: number; className?:
       );
     case "trash":
       return (
-        <svg {...common}>
-          <path d="M3 6h18" />
-          <path d="M9 6V4.6A1.6 1.6 0 0 1 10.6 3h2.8A1.6 1.6 0 0 1 15 4.6V6" />
-          <path d="M6.5 6l.8 12.7A2 2 0 0 0 9.3 20.6h5.4a2 2 0 0 0 2-1.9L17.5 6" />
-          <path d="M10 10.2v6.4" />
-          <path d="M14 10.2v6.4" />
+        <svg {...common} strokeWidth="1.55">
+          <g className="trashIconLid" transform="translate(0 0.55)">
+            <rect x="5.55" y="5.55" width="12.9" height="2.05" rx="1.02" />
+            <path d="M10.18 5.32v-.46A1.1 1.1 0 0 1 11.28 3.76h1.44a1.1 1.1 0 0 1 1.1 1.1v.46" />
+          </g>
+          <g className="trashIconBody" transform="translate(0 0.55)">
+            <path d="M7.32 8.18h9.36l-.7 10.5a1.86 1.86 0 0 1-1.86 1.7h-4.24a1.86 1.86 0 0 1-1.86-1.7L7.32 8.18Z" />
+            <path d="M9.9 10.55l.26 6.1" strokeWidth="1.22" />
+            <path d="M12 10.35v6.3" strokeWidth="1.22" />
+            <path d="M14.1 10.55l-.26 6.1" strokeWidth="1.22" />
+          </g>
         </svg>
       );
     case "sliders":

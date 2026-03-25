@@ -105,8 +105,8 @@ const GITHUB_LOCAL_IDENTIFY_MAX_QUERY_HINTS: usize = 6;
 const GITHUB_LOCAL_IDENTIFY_MAX_REPO_CANDIDATES: usize = 28;
 const GITHUB_LOCAL_IDENTIFY_MAX_RELEASE_FETCHES: usize = 10;
 const GITHUB_LOCAL_IDENTIFY_UNAUTH_MAX_RELEASE_FETCHES: usize = 4;
-const GITHUB_API_CACHE_TTL_SECS: u64 = 120;
-const GITHUB_API_CACHE_MAX_ENTRIES: usize = 256;
+const GITHUB_API_CACHE_TTL_SECS: u64 = 600;
+const GITHUB_API_CACHE_MAX_ENTRIES: usize = 512;
 const GITHUB_TOKEN_UNAUTHORIZED_COOLDOWN_SECS: u64 = 30 * 60;
 const GITHUB_TOKEN_RATE_LIMIT_FALLBACK_COOLDOWN_SECS: u64 = 90;
 const GITHUB_TOKEN_POOL_CACHE_TTL_SECS: u64 = 60;
@@ -804,6 +804,8 @@ struct ProviderCandidate {
     confidence: Option<String>,
     #[serde(default)]
     reason: Option<String>,
+    #[serde(default)]
+    verification_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1567,6 +1569,8 @@ struct SearchDiscoverContentArgs {
     limit: usize,
     offset: usize,
     source: String, // modrinth | curseforge | all
+    #[serde(default)]
+    sources: Vec<String>, // optional subset for multi-source discover search
     #[serde(alias = "contentType")]
     content_type: String, // mods | modpacks | resourcepacks | datapacks | shaders
 }
@@ -2279,6 +2283,10 @@ struct DiscoverSearchHit {
     install_supported: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     install_note: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatibility_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2375,6 +2383,14 @@ struct GithubProjectDetail {
     releases: Vec<GithubProjectReleaseDetail>,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatibility_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_supported: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatible_release_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compatible_release_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5547,6 +5563,7 @@ struct LocalImportedProviderMatch {
     hashes: HashMap<String, String>,
     confidence: String,
     reason: String,
+    verification_status: String,
 }
 
 impl LocalImportedProviderMatch {
@@ -5559,6 +5576,7 @@ impl LocalImportedProviderMatch {
             version_number: self.version_number.clone(),
             confidence: Some(self.confidence.clone()),
             reason: Some(self.reason.clone()),
+            verification_status: Some(self.verification_status.clone()),
         }
     }
 }
@@ -5643,6 +5661,23 @@ fn provider_candidate_confidence_rank(candidate: &ProviderCandidate) -> i32 {
     }
 }
 
+fn provider_candidate_verification_rank(candidate: &ProviderCandidate) -> i32 {
+    match candidate
+        .verification_status
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "verified" => 4,
+        "deferred" => 3,
+        "manual_unverified" => 2,
+        "unavailable" => 1,
+        _ => 0,
+    }
+}
+
 fn provider_candidate_version_rank(candidate: &ProviderCandidate) -> i32 {
     let version_id = candidate.version_id.trim().to_ascii_lowercase();
     if version_id.starts_with("gh_release:") || version_id.starts_with("cf_file:") {
@@ -5679,6 +5714,11 @@ fn provider_candidate_is_better(
     let existing_confidence = provider_candidate_confidence_rank(existing);
     if candidate_confidence != existing_confidence {
         return candidate_confidence > existing_confidence;
+    }
+    let candidate_verification = provider_candidate_verification_rank(candidate);
+    let existing_verification = provider_candidate_verification_rank(existing);
+    if candidate_verification != existing_verification {
+        return candidate_verification > existing_verification;
     }
     let candidate_version = provider_candidate_version_rank(candidate);
     let existing_version = provider_candidate_version_rank(existing);
@@ -6432,6 +6472,117 @@ fn parse_toml_assignment(text: &str, key: &str) -> Option<String> {
     None
 }
 
+fn parse_colon_assignment(text: &str, key: &str) -> Option<String> {
+    let key_lower = key.trim().to_ascii_lowercase();
+    if key_lower.is_empty() {
+        return None;
+    }
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if !lower.starts_with(&format!("{key_lower}:")) {
+            continue;
+        }
+        let idx = line.find(':')?;
+        let value = line[idx + 1..]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn parse_xml_tag_value(text: &str, tags: &[&str]) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    for tag in tags {
+        let open = format!("<{}>", tag.trim().to_ascii_lowercase());
+        let close = format!("</{}>", tag.trim().to_ascii_lowercase());
+        let start = lower.find(&open)?;
+        let end = lower[start + open.len()..].find(&close)?;
+        let value = text[start + open.len()..start + open.len() + end].trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn merge_local_metadata_hint(target: &mut LocalMetadataHint, incoming: LocalMetadataHint) {
+    if target.project_hint.is_none() {
+        target.project_hint = incoming.project_hint;
+    }
+    if target.display_name_hint.is_none() {
+        target.display_name_hint = incoming.display_name_hint;
+    }
+    if target.github_repo_hint.is_none() {
+        target.github_repo_hint = incoming.github_repo_hint;
+    }
+}
+
+fn parse_manifest_metadata_hint(raw: &str) -> LocalMetadataHint {
+    LocalMetadataHint {
+        project_hint: parse_colon_assignment(raw, "Automatic-Module-Name")
+            .or_else(|| parse_colon_assignment(raw, "Implementation-Title"))
+            .map(|value| normalize_hint_token(&value))
+            .filter(|value| !value.is_empty()),
+        display_name_hint: parse_colon_assignment(raw, "Implementation-Title")
+            .or_else(|| parse_colon_assignment(raw, "Specification-Title")),
+        github_repo_hint: [
+            "Implementation-URL",
+            "Implementation-Url",
+            "Homepage",
+            "Repository",
+            "Repository-URL",
+            "GitHub",
+            "GitHub-Repo",
+        ]
+        .iter()
+        .find_map(|key| parse_colon_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value)))
+        .or_else(|| extract_github_repo_slug(raw)),
+    }
+}
+
+fn parse_properties_metadata_hint(raw: &str) -> LocalMetadataHint {
+    LocalMetadataHint {
+        project_hint: parse_toml_assignment(raw, "artifactId")
+            .or_else(|| parse_toml_assignment(raw, "modid"))
+            .map(|value| normalize_hint_token(&value))
+            .filter(|value| !value.is_empty()),
+        display_name_hint: parse_toml_assignment(raw, "name"),
+        github_repo_hint: ["url", "homepage", "scm.url", "scm.connection", "scmConnection"]
+            .iter()
+            .find_map(|key| parse_toml_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value)))
+            .or_else(|| extract_github_repo_slug(raw)),
+    }
+}
+
+fn parse_pom_xml_metadata_hint(raw: &str) -> LocalMetadataHint {
+    LocalMetadataHint {
+        project_hint: parse_xml_tag_value(raw, &["artifactId"])
+            .map(|value| normalize_hint_token(&value))
+            .filter(|value| !value.is_empty()),
+        display_name_hint: parse_xml_tag_value(raw, &["name"]),
+        github_repo_hint: parse_xml_tag_value(raw, &["url"])
+            .and_then(|value| extract_github_repo_slug(&value))
+            .or_else(|| extract_github_repo_slug(raw)),
+    }
+}
+
+fn parse_generic_text_metadata_hint(raw: &str) -> LocalMetadataHint {
+    LocalMetadataHint {
+        project_hint: None,
+        display_name_hint: None,
+        github_repo_hint: extract_github_repo_slug(raw),
+    }
+}
+
 fn parse_json_hint(raw: &str, id_keys: &[&str], name_keys: &[&str]) -> LocalMetadataHint {
     let mut hint = LocalMetadataHint::default();
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
@@ -6507,6 +6658,8 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
         "fabric.mod.json",
         "quilt.mod.json",
         "META-INF/mods.toml",
+        "META-INF/neoforge.mods.toml",
+        "META-INF/MANIFEST.MF",
         "mcmod.info",
     ];
     let mut merged = LocalMetadataHint::default();
@@ -6526,6 +6679,8 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
                 &["id", "modid", "slug", "project_id", "projectid"],
                 &["name", "displayname", "title"],
             )
+        } else if path.ends_with("manifest.mf") {
+            parse_manifest_metadata_hint(&raw)
         } else if path.ends_with("mcmod.info") {
             parse_json_hint(
                 &raw,
@@ -6545,20 +6700,54 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
         } else {
             LocalMetadataHint::default()
         };
-        if merged.project_hint.is_none() {
-            merged.project_hint = hint.project_hint;
-        }
-        if merged.display_name_hint.is_none() {
-            merged.display_name_hint = hint.display_name_hint;
-        }
-        if merged.github_repo_hint.is_none() {
-            merged.github_repo_hint = hint.github_repo_hint;
-        }
+        merge_local_metadata_hint(&mut merged, hint);
         if merged.project_hint.is_some()
             && merged.display_name_hint.is_some()
             && merged.github_repo_hint.is_some()
         {
             break;
+        }
+    }
+
+    if merged.project_hint.is_none() || merged.display_name_hint.is_none() || merged.github_repo_hint.is_none() {
+        for idx in 0..archive.len() {
+            let mut file = match archive.by_index(idx) {
+                Ok(file) => file,
+                Err(_) => continue,
+            };
+            if file.is_dir() || file.size() > 128 * 1024 {
+                continue;
+            }
+            let entry_name = file.name().to_ascii_lowercase();
+            let parseable = entry_name.ends_with("pom.properties")
+                || entry_name.ends_with("pom.xml")
+                || entry_name.ends_with(".properties")
+                || entry_name.ends_with(".mf")
+                || entry_name.ends_with(".txt")
+                || entry_name.ends_with(".md");
+            if !parseable {
+                continue;
+            }
+            let mut raw = String::new();
+            if file.read_to_string(&mut raw).is_err() || raw.trim().is_empty() {
+                continue;
+            }
+            let hint = if entry_name.ends_with("pom.properties") || entry_name.ends_with(".properties") {
+                parse_properties_metadata_hint(&raw)
+            } else if entry_name.ends_with("pom.xml") {
+                parse_pom_xml_metadata_hint(&raw)
+            } else if entry_name.ends_with(".mf") {
+                parse_manifest_metadata_hint(&raw)
+            } else {
+                parse_generic_text_metadata_hint(&raw)
+            };
+            merge_local_metadata_hint(&mut merged, hint);
+            if merged.project_hint.is_some()
+                && merged.display_name_hint.is_some()
+                && merged.github_repo_hint.is_some()
+            {
+                break;
+            }
         }
     }
 
@@ -6623,6 +6812,7 @@ fn detect_provider_from_metadata_hint(
             hashes,
             confidence: "high".to_string(),
             reason: "Metadata hint + exact filename match on Modrinth.".to_string(),
+            verification_status: "verified".to_string(),
         }];
     }
 
@@ -7241,6 +7431,7 @@ fn github_unverified_manual_candidate(
         hashes,
         confidence: "manual".to_string(),
         reason,
+        verification_status: "manual_unverified".to_string(),
     }
 }
 
@@ -7434,18 +7625,30 @@ fn detect_provider_from_github_release_assets(
                 continue;
             }
         };
+        let has_mod_jar_assets = releases.iter().any(|release| {
+            release
+                .assets
+                .iter()
+                .any(|asset| github_release_asset_looks_like_mod_jar(&asset.name))
+        });
         let Some(selection) =
             select_github_release_for_local_file(&repo, &releases, safe_filename, &query_hint)
         else {
             if has_direct_repo_hint {
+                let reason = if !has_mod_jar_assets {
+                    "GitHub local identify manual candidate: direct metadata repo hint matched, but the repository does not expose a downloadable mod jar asset in releases."
+                        .to_string()
+                } else {
+                    "GitHub local identify manual candidate: direct metadata repo hint matched, but a release was found without a compatible jar asset for the local file."
+                        .to_string()
+                };
                 matches.push(github_unverified_manual_candidate(
                     &owner,
                     &repo_name,
                     &github_repo_title(&repo),
                     sha256,
                     sha512,
-                    "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
-                        .to_string(),
+                    reason,
                 ));
             }
             continue;
@@ -7482,6 +7685,7 @@ fn detect_provider_from_github_release_assets(
             hashes,
             confidence,
             reason,
+            verification_status: "verified".to_string(),
         });
     }
 
@@ -7635,6 +7839,7 @@ fn detect_provider_matches_for_local_mod(
                 hashes,
                 confidence: "deterministic".to_string(),
                 reason: "Exact CurseForge fingerprint match.".to_string(),
+                verification_status: "verified".to_string(),
             });
         }
     }
@@ -7684,6 +7889,7 @@ fn detect_provider_matches_for_local_mod(
                 hashes,
                 confidence: "deterministic".to_string(),
                 reason: "Exact Modrinth SHA-512 match.".to_string(),
+                verification_status: "verified".to_string(),
             });
         }
     }
@@ -7754,6 +7960,7 @@ mod local_provider_preference_tests {
             hashes: HashMap::new(),
             confidence: confidence.to_string(),
             reason: "test".to_string(),
+            verification_status: "verified".to_string(),
         }
     }
 
@@ -7800,6 +8007,7 @@ mod local_provider_preference_tests {
             hashes: HashMap::new(),
             confidence: "manual".to_string(),
             reason: "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached).".to_string(),
+            verification_status: "manual_unverified".to_string(),
         };
         assert!(provider_match_is_auto_activatable(&github_manual));
     }
@@ -7815,6 +8023,7 @@ mod local_provider_preference_tests {
                 version_number: "unverified".to_string(),
                 confidence: Some("manual".to_string()),
                 reason: Some("manual".to_string()),
+                verification_status: Some("manual_unverified".to_string()),
             },
             ProviderCandidate {
                 source: "github".to_string(),
@@ -7824,6 +8033,7 @@ mod local_provider_preference_tests {
                 version_number: "v1.2.3".to_string(),
                 confidence: Some("high".to_string()),
                 reason: Some("verified".to_string()),
+                verification_status: Some("verified".to_string()),
             },
         ]);
         assert_eq!(compacted.len(), 1);
@@ -7853,6 +8063,7 @@ mod local_provider_preference_tests {
                 version_number: "v1.0.0".to_string(),
                 confidence: Some("high".to_string()),
                 reason: Some("verified".to_string()),
+                verification_status: Some("verified".to_string()),
             }],
             local_analysis: None,
         };
@@ -7888,6 +8099,7 @@ mod local_provider_preference_tests {
                     "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
                         .to_string(),
                 ),
+                verification_status: Some("manual_unverified".to_string()),
             }],
             local_analysis: None,
         };
@@ -8110,6 +8322,17 @@ fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
             version_number: entry.version_number.clone(),
             confidence: None,
             reason: None,
+            verification_status: if source == "github" {
+                if entry.version_id.trim().to_ascii_lowercase().starts_with("gh_release:") {
+                    Some("verified".to_string())
+                } else if entry.version_id.trim().eq_ignore_ascii_case("gh_repo_unverified") {
+                    Some("manual_unverified".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
         });
     }
     compact_provider_candidates(candidates)
@@ -8458,6 +8681,7 @@ struct StreamDownloadProfile {
 
 #[derive(Debug, Clone)]
 struct StreamDownloadResult {
+    sha256: String,
     sha512: String,
     profile: StreamDownloadProfile,
 }
@@ -8555,6 +8779,7 @@ where
         on_progress(0, total_bytes);
         let mut out = File::create(temp_path)
             .map_err(|e| format!("create temp file failed for {label}: {e}"))?;
+        let mut sha256_hasher = Sha256::new();
         let mut hasher = Sha512::new();
         let mut downloaded_bytes: u64 = 0;
         let mut buf = vec![0_u8; 1024 * 1024];
@@ -8580,6 +8805,7 @@ where
             }
             out.write_all(&buf[..n])
                 .map_err(|e| format!("write download stream failed for {label}: {e}"))?;
+            sha256_hasher.update(&buf[..n]);
             hasher.update(&buf[..n]);
             downloaded_bytes += n as u64;
             on_progress(downloaded_bytes, total_bytes);
@@ -8599,6 +8825,11 @@ where
         let transfer_ms = first_byte_at
             .map(|ts| Instant::now().duration_since(ts).as_millis())
             .unwrap_or(0);
+        let sha256_digest = sha256_hasher.finalize();
+        let mut sha256 = String::with_capacity(sha256_digest.len() * 2);
+        for byte in sha256_digest {
+            sha256.push_str(&format!("{byte:02x}"));
+        }
         let digest = hasher.finalize();
         let mut sha512 = String::with_capacity(digest.len() * 2);
         for byte in digest {
@@ -8615,7 +8846,11 @@ where
             bytes_downloaded: downloaded_bytes,
             content_length: total_bytes,
         };
-        return Ok(StreamDownloadResult { sha512, profile });
+        return Ok(StreamDownloadResult {
+            sha256,
+            sha512,
+            profile,
+        });
     }
 }
 
@@ -11311,6 +11546,17 @@ fn effective_updatable_provider_for_entry(
             version_number: entry.version_number.clone(),
             confidence: None,
             reason: None,
+            verification_status: if active_source == "github" {
+                if entry.version_id.trim().to_ascii_lowercase().starts_with("gh_release:") {
+                    Some("verified".to_string())
+                } else if entry.version_id.trim().eq_ignore_ascii_case("gh_repo_unverified") {
+                    Some("manual_unverified".to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
         };
         if active_source != "github"
             || parse_github_project_id(&active_candidate.project_id).is_ok()
@@ -12432,6 +12678,7 @@ fn try_fast_install_content_update(
                 version_number: latest_version_number.clone(),
                 confidence: None,
                 reason: None,
+                verification_status: None,
             }],
             local_analysis: None,
         };
@@ -12569,6 +12816,7 @@ fn try_fast_install_content_update(
                 version_number: latest_version_number.clone(),
                 confidence: None,
                 reason: None,
+                verification_status: None,
             }],
             local_analysis: None,
         };
@@ -12767,6 +13015,7 @@ fn try_fast_install_content_update(
                 },
                 confidence: None,
                 reason: None,
+                verification_status: Some("verified".to_string()),
             }],
             local_analysis: None,
         };
@@ -13318,6 +13567,19 @@ fn normalized_discover_tokens(input: &str) -> Vec<String> {
         .collect()
 }
 
+fn collapse_repeated_ascii_chars(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut prev: Option<char> = None;
+    for ch in token.chars() {
+        if prev == Some(ch) {
+            continue;
+        }
+        out.push(ch);
+        prev = Some(ch);
+    }
+    out
+}
+
 fn github_name_similarity_score(name: &str, query: &str) -> i64 {
     let normalized_name = normalize_provider_match_key(name);
     let normalized_query = normalize_provider_match_key(query);
@@ -13404,17 +13666,79 @@ fn discover_query_variants(query: &str) -> Vec<String> {
         }
     };
 
+    let mut repaired_tokens: Vec<String> = Vec::with_capacity(tokens.len());
+    for token in &tokens {
+        let collapsed = collapse_repeated_ascii_chars(token);
+        let repaired = if collapsed.len() >= 3 { collapsed } else { token.clone() };
+        repaired_tokens.push(repaired.clone());
+        if repaired != *token {
+            push(repaired.clone(), &mut variants, &mut seen);
+        }
+        if repaired.len() >= 6 {
+            let prefix = repaired
+                .chars()
+                .take(repaired.len().saturating_sub(1))
+                .collect::<String>();
+            push(prefix, &mut variants, &mut seen);
+        }
+        if repaired.len() >= 8 {
+            let shorter = repaired
+                .chars()
+                .take(repaired.len().saturating_sub(2))
+                .collect::<String>();
+            push(shorter, &mut variants, &mut seen);
+        }
+    }
+
     if tokens.len() >= 2 {
         let mut longest = tokens.clone();
         longest.sort_by_key(|token| std::cmp::Reverse(token.len()));
         for token in longest.into_iter().take(3) {
             push(token, &mut variants, &mut seen);
         }
+        let strongest_pair = tokens
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut strongest_pair_sorted = strongest_pair.clone();
+        strongest_pair_sorted.sort_by_key(|token| std::cmp::Reverse(token.len()));
+        if strongest_pair_sorted.len() >= 2 {
+            push(
+                format!("{} {}", strongest_pair_sorted[0], strongest_pair_sorted[1]),
+                &mut variants,
+                &mut seen,
+            );
+        }
+        if repaired_tokens.len() >= 2 {
+            let mut repaired_sorted = repaired_tokens.clone();
+            repaired_sorted.sort_by_key(|token| std::cmp::Reverse(token.len()));
+            push(
+                format!("{} {}", repaired_sorted[0], repaired_sorted[1]),
+                &mut variants,
+                &mut seen,
+            );
+        }
         let joined = tokens.join(" ");
         push(joined, &mut variants, &mut seen);
+        let repaired_joined = repaired_tokens.join(" ");
+        push(repaired_joined, &mut variants, &mut seen);
         if tokens.len() >= 3 {
             push(
                 format!("{} {}", tokens[0], tokens[1]),
+                &mut variants,
+                &mut seen,
+            );
+            push(
+                format!("{} {}", tokens[tokens.len() - 2], tokens[tokens.len() - 1]),
+                &mut variants,
+                &mut seen,
+            );
+            push(
+                format!(
+                    "{} {}",
+                    repaired_tokens[0],
+                    repaired_tokens[repaired_tokens.len() - 1]
+                ),
                 &mut variants,
                 &mut seen,
             );
@@ -13429,7 +13753,24 @@ fn discover_query_variants(query: &str) -> Vec<String> {
         }
     }
 
-    variants.truncate(4);
+    for token in tokens.iter().take(2) {
+        if token.len() >= 6 {
+            let prefix = token
+                .chars()
+                .take(token.len().saturating_sub(1))
+                .collect::<String>();
+            push(prefix, &mut variants, &mut seen);
+        }
+        if token.len() >= 7 {
+            let chars = token.chars().collect::<Vec<_>>();
+            let middle = chars[1..chars.len().saturating_sub(1)]
+                .iter()
+                .collect::<String>();
+            push(middle, &mut variants, &mut seen);
+        }
+    }
+
+    variants.truncate(10);
     variants
 }
 
@@ -13550,6 +13891,45 @@ fn select_github_release_with_asset(
         .into_iter()
         .next()
         .map(|item| item.2)
+}
+
+fn github_select_release_with_repo_hints(
+    client: &Client,
+    repo: &GithubRepository,
+    releases: &[GithubRelease],
+    query: &str,
+    required_game_version: Option<&str>,
+    required_loader: Option<&str>,
+    discover_filters: Option<&SearchDiscoverContentArgs>,
+) -> (Option<GithubReleaseSelection>, HashSet<String>) {
+    let mut repo_loader_hints = HashSet::new();
+    let mut selection = select_github_release_with_asset(
+        repo,
+        releases,
+        query,
+        required_game_version,
+        required_loader,
+        discover_filters,
+        None,
+    );
+    if selection.is_none() {
+        repo_loader_hints = fetch_github_repo_loader_hints(client, repo);
+        let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+            None
+        } else {
+            Some(&repo_loader_hints)
+        };
+        selection = select_github_release_with_asset(
+            repo,
+            releases,
+            query,
+            required_game_version,
+            required_loader,
+            discover_filters,
+            repo_loader_hints_opt,
+        );
+    }
+    (selection, repo_loader_hints)
 }
 
 fn github_discover_confidence_score(
@@ -14367,11 +14747,20 @@ fn github_discover_search_queries(
         return vec![];
     }
     let primary = variants[0].clone();
-    let fallback = variants
+    let normalized_primary_tokens = normalized_discover_tokens(&primary);
+    let strongest_single = normalized_primary_tokens
         .iter()
-        .skip(1)
-        .find(|value| !value.trim().is_empty())
-        .cloned();
+        .max_by_key(|token| token.len())
+        .cloned()
+        .unwrap_or_else(|| primary.clone());
+    let strongest_pair = if normalized_primary_tokens.len() >= 2 {
+        let mut pair = normalized_primary_tokens.clone();
+        pair.sort_by_key(|token| std::cmp::Reverse(token.len()));
+        Some(format!("{} {}", pair[0], pair[1]))
+    } else {
+        None
+    };
+    let fallback = variants.iter().skip(1).find(|value| !value.trim().is_empty()).cloned();
     let mut queries: Vec<String> = Vec::new();
     let mut seen_queries: HashSet<String> = HashSet::new();
     let push = |value: String, queries: &mut Vec<String>, seen_queries: &mut HashSet<String>| {
@@ -14382,43 +14771,37 @@ fn github_discover_search_queries(
         queries.push(value);
     };
 
+    push(format!("{primary} in:name,description"), &mut queries, &mut seen_queries);
     push(
-        format!("{primary} in:name,description"),
+        format!("{strongest_single} in:name,description"),
         &mut queries,
         &mut seen_queries,
     );
     push(
-        format!("{primary} minecraft mod in:name,description"),
+        format!("{strongest_single} minecraft mod"),
         &mut queries,
         &mut seen_queries,
     );
+    if let Some(pair) = strongest_pair {
+        push(
+            format!("{pair} minecraft"),
+            &mut queries,
+            &mut seen_queries,
+        );
+    }
     if let Some(fallback_query) = fallback {
         push(
             format!("{fallback_query} in:name,description"),
             &mut queries,
             &mut seen_queries,
         );
-        push(
-            format!("{fallback_query} minecraft mod in:name,description"),
-            &mut queries,
-            &mut seen_queries,
-        );
     }
-    push(
-        format!("{primary} topic:minecraft"),
-        &mut queries,
-        &mut seen_queries,
-    );
-    push(
-        format!("{primary} minecraft fabric forge neoforge quilt"),
-        &mut queries,
-        &mut seen_queries,
-    );
+    push(format!("{strongest_single} topic:minecraft"), &mut queries, &mut seen_queries);
 
     queries.truncate(if has_configured_auth_tokens {
-        8
+        5
     } else {
-        GITHUB_UNAUTH_MAX_SEARCH_QUERIES
+        GITHUB_UNAUTH_MAX_SEARCH_QUERIES.min(3)
     });
     queries
 }
@@ -14472,15 +14855,20 @@ fn github_release_to_discover_hit(
         reason: Some(github_discover_reason(repo, selection, confidence_score)),
         install_supported: Some(true),
         install_note: None,
+        verification_status: Some("verified".to_string()),
+        compatibility_status: Some("compatible".to_string()),
     }
 }
 
-fn github_repo_without_release_hit(
+fn github_repo_partial_discover_hit(
     repo: &GithubRepository,
     query: &str,
     install_note: &str,
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
+    verification_status: &str,
+    compatibility_status: &str,
+    install_supported: bool,
 ) -> DiscoverSearchHit {
     let similarity = github_repo_query_similarity(repo, query);
     let confidence_score =
@@ -14522,8 +14910,10 @@ fn github_repo_without_release_hit(
             repo.stargazers_count,
             github_confidence_label(confidence_score)
         )),
-        install_supported: Some(false),
+        install_supported: Some(install_supported),
         install_note: Some(install_note.to_string()),
+        verification_status: Some(verification_status.to_string()),
+        compatibility_status: Some(compatibility_status.to_string()),
     }
 }
 
@@ -14534,10 +14924,54 @@ fn github_repo_deferred_release_hit(
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
 ) -> DiscoverSearchHit {
-    let mut hit =
-        github_repo_without_release_hit(repo, query, install_note, icon_url, detected_loader_hints);
-    hit.install_supported = Some(true);
-    hit
+    github_repo_partial_discover_hit(
+        repo,
+        query,
+        install_note,
+        icon_url,
+        detected_loader_hints,
+        "deferred",
+        "unknown",
+        true,
+    )
+}
+
+fn github_repo_unavailable_release_hit(
+    repo: &GithubRepository,
+    query: &str,
+    install_note: &str,
+    icon_url: Option<String>,
+    detected_loader_hints: Option<&HashSet<String>>,
+) -> DiscoverSearchHit {
+    github_repo_partial_discover_hit(
+        repo,
+        query,
+        install_note,
+        icon_url,
+        detected_loader_hints,
+        "unavailable",
+        "unknown",
+        false,
+    )
+}
+
+fn github_repo_incompatible_release_hit(
+    repo: &GithubRepository,
+    query: &str,
+    install_note: &str,
+    icon_url: Option<String>,
+    detected_loader_hints: Option<&HashSet<String>>,
+) -> DiscoverSearchHit {
+    github_repo_partial_discover_hit(
+        repo,
+        query,
+        install_note,
+        icon_url,
+        detected_loader_hints,
+        "verified",
+        "incompatible",
+        false,
+    )
 }
 
 fn search_github_discover(
@@ -14655,16 +15089,44 @@ fn search_github_discover(
             continue;
         }
         if strict_asset_filters && release_fetches >= release_fetch_budget {
-            break;
+            let hit = github_repo_deferred_release_hit(
+                &repo,
+                query,
+                "Compatibility could not be verified in fast mode. Open this result to verify the release before installing.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            );
+            let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+            if seen_hits.insert(dedupe_key) {
+                hits.push(hit);
+            }
+            if hits.len() >= desired_pool {
+                break;
+            }
+            continue;
         }
         release_fetches = release_fetches.saturating_add(1);
         let releases = match fetch_github_releases(client, &owner, &repo_name) {
             Ok(value) => value,
-            Err(_) => {
+            Err(err) => {
                 if strict_asset_filters || requires_release_validation {
+                    let hit = github_repo_unavailable_release_hit(
+                        &repo,
+                        query,
+                        &format!(
+                            "GitHub release verification is unavailable right now ({}). Retry later or configure GitHub tokens for higher limits.",
+                            err
+                        ),
+                        icon_url,
+                        repo_tree_loader_hints_opt,
+                    );
+                    let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
+                    if seen_hits.insert(dedupe_key) {
+                        hits.push(hit);
+                    }
                     continue;
                 }
-                let hit = github_repo_without_release_hit(
+                let hit = github_repo_unavailable_release_hit(
                     &repo,
                     query,
                     "Repository found, but GitHub release metadata is unavailable right now.",
@@ -14678,15 +15140,16 @@ fn search_github_discover(
                 continue;
             }
         };
-        if let Some(selection) = select_github_release_with_asset(
+        let (selection, repo_loader_hints) = github_select_release_with_repo_hints(
+            client,
             &repo,
             &releases,
             query,
             None,
             None,
             Some(args),
-            repo_tree_loader_hints_opt,
-        ) {
+        );
+        if let Some(selection) = selection {
             let combined_text = format!(
                 "{} {} {} {} {} {} {}",
                 repo.name,
@@ -14698,7 +15161,12 @@ fn search_github_discover(
                 selection.asset.name
             );
             let mut detected_loader_hints = github_loader_hints_from_text(&combined_text);
-            if let Some(extra) = repo_tree_loader_hints_opt {
+            let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
+                repo_tree_loader_hints_opt
+            } else {
+                Some(&repo_loader_hints)
+            };
+            if let Some(extra) = repo_loader_hints_opt {
                 detected_loader_hints.extend(extra.iter().cloned());
             }
             let loader_hints_opt = if detected_loader_hints.is_empty() {
@@ -14723,16 +15191,23 @@ fn search_github_discover(
             continue;
         }
 
-        if strict_asset_filters || requires_release_validation {
-            continue;
-        }
-        let hit = github_repo_deferred_release_hit(
-            &repo,
-            query,
-            "Repository match found. Release compatibility is checked when you open/install.",
-            icon_url,
-            repo_tree_loader_hints_opt,
-        );
+        let hit = if strict_asset_filters || requires_release_validation {
+            github_repo_incompatible_release_hit(
+                &repo,
+                query,
+                "Repository found, but no compatible GitHub release asset matched the requested filters.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            )
+        } else {
+            github_repo_deferred_release_hit(
+                &repo,
+                query,
+                "Repository match found. Release compatibility is checked when you open/install.",
+                icon_url,
+                repo_tree_loader_hints_opt,
+            )
+        };
         let dedupe_key = hit.project_id.trim().to_ascii_lowercase();
         if seen_hits.insert(dedupe_key) {
             hits.push(hit);
@@ -14862,11 +15337,24 @@ fn search_github_discover_fallback(
         release_fetches = release_fetches.saturating_add(1);
         let releases = match fetch_github_releases(client, &owner, &repo_name) {
             Ok(value) => value,
-            Err(_) => {
+            Err(err) => {
                 if strict_asset_filters || requires_release_validation {
+                    let hit = github_repo_unavailable_release_hit(
+                        &repo,
+                        query,
+                        &format!(
+                            "GitHub release verification is unavailable right now ({}). Retry later or configure GitHub tokens for higher limits.",
+                            err
+                        ),
+                        icon_url,
+                        repo_tree_loader_hints_opt,
+                    );
+                    if dedupe.insert(hit.project_id.trim().to_ascii_lowercase()) {
+                        out.push(hit);
+                    }
                     continue;
                 }
-                let hit = github_repo_without_release_hit(
+                let hit = github_repo_unavailable_release_hit(
                     &repo,
                     query,
                     "Repository found, but release metadata is currently unavailable.",
@@ -14879,15 +15367,17 @@ fn search_github_discover_fallback(
                 continue;
             }
         };
-        let hit = if let Some(selection) = select_github_release_with_asset(
+        let hit = if let Some(selection) = github_select_release_with_repo_hints(
+            client,
             &repo,
             &releases,
             query,
             None,
             None,
             Some(args),
-            repo_tree_loader_hints_opt,
-        ) {
+        )
+        .0
+        {
             let combined_text = format!(
                 "{} {} {} {} {} {} {}",
                 repo.name,
@@ -14910,15 +15400,22 @@ fn search_github_discover_fallback(
             github_release_to_discover_hit(&repo, &selection, query, icon_url, loader_hints_opt)
         } else {
             if strict_asset_filters || requires_release_validation {
-                continue;
+                github_repo_incompatible_release_hit(
+                    &repo,
+                    query,
+                    "Repository found, but no compatible GitHub release asset matched the requested filters.",
+                    icon_url,
+                    repo_tree_loader_hints_opt,
+                )
+            } else {
+                github_repo_deferred_release_hit(
+                    &repo,
+                    query,
+                    "Repository match found. Release compatibility is checked when you open/install.",
+                    icon_url,
+                    repo_tree_loader_hints_opt,
+                )
             }
-            github_repo_deferred_release_hit(
-                &repo,
-                query,
-                "Repository match found. Release compatibility is checked when you open/install.",
-                icon_url,
-                repo_tree_loader_hints_opt,
-            )
         };
         if dedupe.insert(hit.project_id.trim().to_ascii_lowercase()) {
             out.push(hit);
@@ -14932,24 +15429,6 @@ fn sha256_bytes_hex(bytes: &[u8]) -> String {
     hasher.update(bytes);
     let digest = hasher.finalize();
     format!("{:x}", digest)
-}
-
-fn sha256_file_hex(path: &Path) -> Result<String, String> {
-    let mut file = File::open(path)
-        .map_err(|e| format!("open file '{}' for sha256 failed: {e}", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|e| format!("read file '{}' for sha256 failed: {e}", path.display()))?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let digest = hasher.finalize();
-    Ok(format!("{:x}", digest))
 }
 
 fn parse_cf_hashes(file: &CurseforgeFile) -> HashMap<String, String> {
@@ -15820,6 +16299,7 @@ where
             version_number: version.version_number.clone(),
             confidence: None,
             reason: None,
+            verification_status: None,
         }],
         local_analysis: None,
     };
@@ -15957,6 +16437,7 @@ where
             },
             confidence: None,
             reason: None,
+            verification_status: None,
         }],
         local_analysis: None,
     };
@@ -15964,7 +16445,7 @@ where
     Ok(new_entry)
 }
 
-fn install_github_content_inner<F>(
+fn install_github_content_inner<S, F>(
     instance: &Instance,
     instance_dir: &Path,
     lock: &mut Lockfile,
@@ -15973,9 +16454,11 @@ fn install_github_content_inner<F>(
     project_title: Option<&str>,
     content_type: &str,
     target_worlds: &[String],
+    mut on_stage: S,
     mut on_progress: F,
 ) -> Result<LockEntry, String>
 where
+    S: FnMut(&str, &str, Option<f64>),
     F: FnMut(u64, Option<u64>),
 {
     let normalized = normalize_lock_content_type(content_type);
@@ -15987,42 +16470,45 @@ where
     }
 
     let (owner, repo_name) = parse_github_project_id(project_id)?;
+    on_stage("resolving", "Checking GitHub repository…", Some(8.0));
     let repo = fetch_github_repo(client, &owner, &repo_name)?;
     if let Some(reason) = github_repo_policy_rejection_reason(&repo) {
         return Err(format!(
             "GitHub repository rejected by safety policy: {reason}."
         ));
     }
+    on_stage("resolving", "Fetching GitHub releases…", Some(16.0));
     let releases = fetch_github_releases(client, &owner, &repo_name)?;
-    let repo_loader_hints = fetch_github_repo_loader_hints(client, &repo);
-    let repo_loader_hints_opt = if repo_loader_hints.is_empty() {
-        None
-    } else {
-        Some(&repo_loader_hints)
-    };
     let query_hint = project_title
         .map(|value| value.trim())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| repo.name.trim());
-    let selection = if let Some(selection) = select_github_release_with_asset(
+    on_stage(
+        "resolving",
+        "Selecting compatible GitHub release…",
+        Some(26.0),
+    );
+    let (selection, _) = github_select_release_with_repo_hints(
+        client,
         &repo,
         &releases,
         query_hint,
         Some(&instance.mc_version),
         Some(&instance.loader),
         None,
-        repo_loader_hints_opt,
-    ) {
+    );
+    let selection = if let Some(selection) = selection {
         selection
-    } else if select_github_release_with_asset(
+    } else if github_select_release_with_repo_hints(
+        client,
         &repo,
         &releases,
         query_hint,
         None,
         None,
         None,
-        repo_loader_hints_opt,
     )
+    .0
     .is_some()
     {
         return Err(format!(
@@ -16038,6 +16524,7 @@ where
         return Err("Resolved GitHub release filename is invalid".to_string());
     }
 
+    on_stage("resolving", "Preparing GitHub download…", Some(34.0));
     let tmp_dir = instance_dir.join(".openjar_downloads");
     fs::create_dir_all(&tmp_dir)
         .map_err(|e| format!("mkdir '{}' failed: {e}", tmp_dir.display()))?;
@@ -16049,8 +16536,8 @@ where
         &tmp_path,
         |downloaded_bytes, total_bytes| on_progress(downloaded_bytes, total_bytes),
     )?;
-    let sha256 = sha256_file_hex(&tmp_path)?;
 
+    on_stage("installing", "Installing downloaded GitHub mod…", None);
     let post_process_started = Instant::now();
     write_staged_download_to_content_targets(
         instance_dir,
@@ -16065,6 +16552,7 @@ where
         &stream_result.profile,
     );
 
+    on_stage("finalizing", "Updating installed content metadata…", None);
     let project_key = github_project_key(&owner, &repo_name);
     remove_replaced_entries_for_content(lock, instance_dir, &project_key, &normalized)?;
     if project_id.trim() != project_key {
@@ -16072,7 +16560,7 @@ where
     }
 
     let mut hashes = extract_github_asset_digest(&selection.asset);
-    hashes.insert("sha256".to_string(), sha256);
+    hashes.insert("sha256".to_string(), stream_result.sha256.clone());
     if !stream_result.sha512.trim().is_empty() {
         hashes
             .entry("sha512".to_string())
@@ -16119,6 +16607,7 @@ where
             version_number,
             confidence: None,
             reason: Some("GitHub release asset (policy-filtered)".to_string()),
+            verification_status: Some("verified".to_string()),
         }],
         local_analysis: None,
     };
@@ -16533,6 +17022,8 @@ fn search_modrinth_discover(
                 reason: None,
                 install_supported: None,
                 install_note: None,
+                verification_status: None,
+                compatibility_status: None,
             });
         }
     }
@@ -16664,6 +17155,8 @@ fn search_curseforge_discover(
                 reason: None,
                 install_supported: None,
                 install_note: None,
+                verification_status: None,
+                compatibility_status: None,
             });
         }
     }
@@ -18838,6 +19331,8 @@ mod discover_ranking_tests {
             reason: None,
             install_supported: None,
             install_note: None,
+            verification_status: None,
+            compatibility_status: None,
         }
     }
 
@@ -18937,6 +19432,13 @@ mod discover_ranking_tests {
         let variants = discover_query_variants("meteor client hacks");
         assert!(!variants.is_empty());
         assert!(variants.iter().any(|value| value.contains("meteor")));
+    }
+
+    #[test]
+    fn discover_query_variants_include_repeat_collapsed_typos() {
+        let variants = discover_query_variants("sodiuumm modd");
+        assert!(variants.iter().any(|value| value.contains("sodium")));
+        assert!(variants.iter().any(|value| value.contains("mod")));
     }
 
     #[test]
@@ -19596,6 +20098,7 @@ mod github_provider_tests {
             hashes: HashMap::new(),
             confidence: "deterministic".to_string(),
             reason: "invalid".to_string(),
+            verification_status: "verified".to_string(),
         };
         assert!(!provider_match_is_auto_activatable(&invalid_match));
 
@@ -19607,6 +20110,7 @@ mod github_provider_tests {
             version_number: "1.0.0".to_string(),
             confidence: Some("deterministic".to_string()),
             reason: Some("invalid".to_string()),
+            verification_status: Some("verified".to_string()),
         };
         assert!(!provider_candidate_is_auto_activatable(&invalid_candidate));
     }

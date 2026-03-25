@@ -277,6 +277,7 @@ export function searchDiscoverContent(input: {
   limit: number;
   offset: number;
   source: DiscoverSource;
+  sources?: DiscoverSource[];
   contentType: DiscoverContentType;
 }): Promise<DiscoverSearchResult> {
   return invoke("search_discover_content", { args: input });

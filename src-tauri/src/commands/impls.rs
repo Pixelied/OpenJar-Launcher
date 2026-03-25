@@ -1,5 +1,5 @@
 use crate::*;
-use chrono::Local;
+use chrono::{Local, Utc};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -58,6 +58,35 @@ fn create_instance_snapshot_with_event_best_effort(
             );
         }
     }
+}
+
+const PREINSTALL_SNAPSHOT_REUSE_WINDOW_SECS: i64 = 120;
+
+fn maybe_create_preinstall_snapshot_with_event_best_effort(
+    app: &tauri::AppHandle,
+    instances_dir: &Path,
+    instance_id: &str,
+    reason: &str,
+) -> bool {
+    if reason.trim().starts_with("before-install-") {
+        if let Ok(instance_dir) = instance_dir_for_id(instances_dir, instance_id) {
+            if let Ok(existing) = list_snapshots(&instance_dir) {
+                if let Some(latest) = existing.first() {
+                    let created_at = created_at_sort_key(&latest.created_at);
+                    let age_secs = Utc::now().timestamp().saturating_sub(created_at);
+                    if created_at > 0
+                        && age_secs >= 0
+                        && age_secs <= PREINSTALL_SNAPSHOT_REUSE_WINDOW_SECS
+                        && latest.reason.trim().starts_with("before-install-")
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    create_instance_snapshot_with_event_best_effort(app, instances_dir, instance_id, reason);
+    true
 }
 
 fn capture_run_report_best_effort(
@@ -2289,32 +2318,47 @@ fn install_discover_content_inner(
                     stage: "resolving".to_string(),
                     downloaded: 0,
                     total: Some(1),
-                    percent: None,
+                    percent: Some(4.0),
                     message: Some("Resolving compatible GitHub release…".to_string()),
                 },
             );
 
             if let Some(reason) = snapshot_reason {
-                create_instance_snapshot_with_event_best_effort(
+                emit_install_progress(
+                    &app,
+                    InstallProgressEvent {
+                        instance_id: args.instance_id.clone(),
+                        project_id: args.project_id.clone(),
+                        stage: "snapshotting".to_string(),
+                        downloaded: 0,
+                        total: None,
+                        percent: None,
+                        message: Some("Creating safety snapshot before install…".to_string()),
+                    },
+                );
+                let created = maybe_create_preinstall_snapshot_with_event_best_effort(
                     &app,
                     &instances_dir,
                     &args.instance_id,
                     reason,
                 );
+                emit_install_progress(
+                    &app,
+                    InstallProgressEvent {
+                        instance_id: args.instance_id.clone(),
+                        project_id: args.project_id.clone(),
+                        stage: "resolving".to_string(),
+                        downloaded: 0,
+                        total: Some(1),
+                        percent: Some(4.0),
+                        message: Some(if created {
+                            "Snapshot ready. Resolving compatible GitHub release…".to_string()
+                        } else {
+                            "Reusing recent snapshot. Resolving compatible GitHub release…".to_string()
+                        }),
+                    },
+                );
             }
-
-            emit_install_progress(
-                &app,
-                InstallProgressEvent {
-                    instance_id: args.instance_id.clone(),
-                    project_id: args.project_id.clone(),
-                    stage: "downloading".to_string(),
-                    downloaded: 0,
-                    total: Some(1),
-                    percent: Some(0.8),
-                    message: Some("Starting GitHub mod download…".to_string()),
-                },
-            );
 
             let new_entry = install_github_content_inner(
                 &instance,
@@ -2325,15 +2369,29 @@ fn install_discover_content_inner(
                 args.project_title.as_deref(),
                 &content_type,
                 &args.target_worlds,
+                |stage, message, percent| {
+                    emit_install_progress(
+                        &app,
+                        InstallProgressEvent {
+                            instance_id: args.instance_id.clone(),
+                            project_id: args.project_id.clone(),
+                            stage: stage.to_string(),
+                            downloaded: 0,
+                            total: Some(1),
+                            percent,
+                            message: Some(message.to_string()),
+                        },
+                    );
+                },
                 |downloaded_bytes, total_bytes| {
                     let ratio = match total_bytes {
                         Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
                         _ => unknown_progress_ratio(downloaded_bytes),
                     };
                     let visible_percent = if downloaded_bytes > 0 {
-                        (ratio * 100.0).max(0.8)
+                        35.0 + ratio * 64.0
                     } else {
-                        0.8
+                        35.0
                     };
                     emit_install_progress(
                         &app,
@@ -2343,7 +2401,7 @@ fn install_discover_content_inner(
                             stage: "downloading".to_string(),
                             downloaded: downloaded_bytes,
                             total: total_bytes,
-                            percent: Some(visible_percent.clamp(0.0, 99.4)),
+                            percent: Some(visible_percent.clamp(35.0, 99.4)),
                             message: Some(format!(
                                 "Downloading GitHub mod… · {}",
                                 format_download_meter(downloaded_bytes, total_bytes)
@@ -2354,6 +2412,18 @@ fn install_discover_content_inner(
             )?;
             lock.entries
                 .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "finalizing".to_string(),
+                    downloaded: 0,
+                    total: None,
+                    percent: None,
+                    message: Some("Finalizing GitHub install…".to_string()),
+                },
+            );
             write_lockfile(&instances_dir, &args.instance_id, &lock)?;
             log_instance_event_best_effort(
                 &app,
@@ -2426,26 +2496,45 @@ fn install_discover_content_inner(
     );
 
     if let Some(reason) = snapshot_reason {
-        create_instance_snapshot_with_event_best_effort(
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "snapshotting".to_string(),
+                downloaded: 0,
+                total: None,
+                percent: None,
+                message: Some(format!(
+                    "Creating safety snapshot before installing {content_label}…"
+                )),
+            },
+        );
+        let created = maybe_create_preinstall_snapshot_with_event_best_effort(
             &app,
             &instances_dir,
             &args.instance_id,
             reason,
         );
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "resolving".to_string(),
+                downloaded: 0,
+                total: Some(1),
+                percent: None,
+                message: Some(if created {
+                    format!("Snapshot ready. Resolving compatible {source_label} {content_label} file…")
+                } else {
+                    format!(
+                        "Reusing recent snapshot. Resolving compatible {source_label} {content_label} file…"
+                    )
+                }),
+            },
+        );
     }
-
-    emit_install_progress(
-        &app,
-        InstallProgressEvent {
-            instance_id: args.instance_id.clone(),
-            project_id: args.project_id.clone(),
-            stage: "downloading".to_string(),
-            downloaded: 0,
-            total: Some(1),
-            percent: Some(0.8),
-            message: Some(format!("Starting {source_label} {content_label} download…")),
-        },
-    );
 
     let new_entry = if source == "curseforge" {
         let api_key = curseforge_api_key().ok_or_else(missing_curseforge_key_message)?;
@@ -2461,14 +2550,12 @@ fn install_discover_content_inner(
             &args.target_worlds,
             None,
             |downloaded_bytes, total_bytes| {
-                let ratio = match total_bytes {
-                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
-                    _ => unknown_progress_ratio(downloaded_bytes),
-                };
-                let visible_percent = if downloaded_bytes > 0 {
-                    (ratio * 100.0).max(0.8)
-                } else {
-                    0.8
+                let visible_percent = match total_bytes {
+                    Some(total) if total > 0 => {
+                        let ratio = downloaded_bytes as f64 / total as f64;
+                        Some((28.0 + ratio * 60.0).clamp(28.0, 98.4))
+                    }
+                    _ => None,
                 };
                 emit_install_progress(
                     &app,
@@ -2478,7 +2565,7 @@ fn install_discover_content_inner(
                         stage: "downloading".to_string(),
                         downloaded: downloaded_bytes,
                         total: total_bytes,
-                        percent: Some(visible_percent.clamp(0.0, 99.4)),
+                        percent: visible_percent,
                         message: Some(format!(
                             "Downloading {source_label} {content_label}… · {}",
                             format_download_meter(downloaded_bytes, total_bytes)
@@ -2498,14 +2585,12 @@ fn install_discover_content_inner(
             &content_type,
             &args.target_worlds,
             |downloaded_bytes, total_bytes| {
-                let ratio = match total_bytes {
-                    Some(total) if total > 0 => downloaded_bytes as f64 / total as f64,
-                    _ => unknown_progress_ratio(downloaded_bytes),
-                };
-                let visible_percent = if downloaded_bytes > 0 {
-                    (ratio * 100.0).max(0.8)
-                } else {
-                    0.8
+                let visible_percent = match total_bytes {
+                    Some(total) if total > 0 => {
+                        let ratio = downloaded_bytes as f64 / total as f64;
+                        Some((28.0 + ratio * 60.0).clamp(28.0, 98.4))
+                    }
+                    _ => None,
                 };
                 emit_install_progress(
                     &app,
@@ -2515,7 +2600,7 @@ fn install_discover_content_inner(
                         stage: "downloading".to_string(),
                         downloaded: downloaded_bytes,
                         total: total_bytes,
-                        percent: Some(visible_percent.clamp(0.0, 99.4)),
+                        percent: visible_percent,
                         message: Some(format!(
                             "Downloading {source_label} {content_label}… · {}",
                             format_download_meter(downloaded_bytes, total_bytes)
@@ -2528,6 +2613,18 @@ fn install_discover_content_inner(
 
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    emit_install_progress(
+        &app,
+        InstallProgressEvent {
+            instance_id: args.instance_id.clone(),
+            project_id: args.project_id.clone(),
+            stage: "finalizing".to_string(),
+            downloaded: 0,
+            total: None,
+            percent: None,
+            message: Some(format!("Finalizing {source_label} {content_label} install…")),
+        },
+    );
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
     log_instance_event_best_effort(
         &app,
@@ -2802,10 +2899,43 @@ fn gather_provider_hits_with_query_variants(
     Ok((hits, total_hits))
 }
 
+fn normalized_discover_sources(args: &SearchDiscoverContentArgs) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let raw_values: Vec<String> = if !args.sources.is_empty() {
+        args.sources.clone()
+    } else {
+        vec![args.source.clone()]
+    };
+    for raw in raw_values {
+        let normalized = raw.trim().to_ascii_lowercase();
+        if normalized == "all" || normalized.is_empty() {
+            continue;
+        }
+        if normalized != "modrinth" && normalized != "curseforge" && normalized != "github" {
+            continue;
+        }
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    }
+    if out.is_empty() {
+        vec![
+            "modrinth".to_string(),
+            "curseforge".to_string(),
+            "github".to_string(),
+        ]
+    } else {
+        out
+    }
+}
+
 fn search_discover_content_inner(
     args: SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
     let source = args.source.trim().to_lowercase();
+    let selected_sources = normalized_discover_sources(&args);
+    let explicit_source_subset = !args.sources.is_empty();
     let normalized_content_type = normalize_discover_content_type(&args.content_type);
     let client = build_http_client()?;
 
@@ -2816,12 +2946,12 @@ fn search_discover_content_inner(
         .max(args.limit)
         .max(24);
 
-    if source == "modrinth" {
+    if selected_sources.len() == 1 && selected_sources[0] == "modrinth" {
         let (hits, total_hits) = gather_provider_hits_with_query_variants(
             &client,
             &args,
             pool_limit,
-            2,
+            5,
             false,
             search_modrinth_discover,
         )?;
@@ -2837,12 +2967,12 @@ fn search_discover_content_inner(
             total_hits,
         });
     }
-    if source == "curseforge" {
+    if selected_sources.len() == 1 && selected_sources[0] == "curseforge" {
         let (hits, total_hits) = gather_provider_hits_with_query_variants(
             &client,
             &args,
             pool_limit,
-            2,
+            4,
             false,
             search_curseforge_discover,
         )?;
@@ -2858,17 +2988,12 @@ fn search_discover_content_inner(
             total_hits,
         });
     }
-    if source == "github" {
-        let max_query_variants = if crate::github_has_configured_tokens() {
-            1
-        } else {
-            0
-        };
+    if selected_sources.len() == 1 && selected_sources[0] == "github" {
         let (hits, total_hits) = gather_provider_hits_with_query_variants(
             &client,
             &args,
             pool_limit.max(GITHUB_DISCOVER_MIN_RESULT_POOL),
-            max_query_variants,
+            0,
             false,
             search_github_discover,
         )?;
@@ -2889,20 +3014,29 @@ fn search_discover_content_inner(
     sub.offset = 0;
     sub.limit = pool_limit.max(GITHUB_DISCOVER_MIN_RESULT_POOL / 2);
 
-    let (modrinth_hits, modrinth_total) = gather_provider_hits_with_query_variants(
-        &client,
-        &sub,
-        sub.limit,
-        2,
-        true,
-        search_modrinth_discover,
-    )?;
-    let (curseforge_hits, curseforge_total) = if curseforge_api_key().is_some() {
+    let include_modrinth = selected_sources.iter().any(|value| value == "modrinth");
+    let include_curseforge = selected_sources.iter().any(|value| value == "curseforge");
+    let include_github = selected_sources.iter().any(|value| value == "github");
+
+    let (modrinth_hits, modrinth_total) = if include_modrinth {
         gather_provider_hits_with_query_variants(
             &client,
             &sub,
             sub.limit,
-            2,
+            4,
+            true,
+            search_modrinth_discover,
+        )?
+    } else {
+        (Vec::new(), 0)
+    };
+    let (curseforge_hits, curseforge_total) = if include_curseforge && curseforge_api_key().is_some()
+    {
+        gather_provider_hits_with_query_variants(
+            &client,
+            &sub,
+            sub.limit,
+            3,
             true,
             search_curseforge_discover,
         )?
@@ -2912,36 +3046,34 @@ fn search_discover_content_inner(
 
     let mut merged = modrinth_hits;
     merge_discover_hits_in_place(&mut merged, curseforge_hits, args.query.trim());
-    if source == "all"
-        && normalized_content_type == "mods"
-        && merged.len() < GITHUB_DISCOVER_LOW_HITS_THRESHOLD
-    {
-        let mut github_fallback_hits = search_github_discover_fallback(&client, &sub, &merged);
-        if !github_fallback_hits.is_empty() {
-            merge_discover_hits_in_place(&mut merged, github_fallback_hits, args.query.trim());
-        }
-        if !args.query.trim().is_empty() && merged.len() < pool_limit {
-            for variant in discover_query_variants(&args.query).into_iter().take(2) {
-                let mut variant_sub = sub.clone();
-                variant_sub.query = variant;
-                github_fallback_hits =
-                    search_github_discover_fallback(&client, &variant_sub, &merged);
-                if github_fallback_hits.is_empty() {
-                    continue;
-                }
+    let mut github_total = 0usize;
+    if include_github && normalized_content_type == "mods" {
+        if explicit_source_subset {
+            let (github_hits, total) = gather_provider_hits_with_query_variants(
+                &client,
+                &sub,
+                sub.limit.max(GITHUB_DISCOVER_MIN_RESULT_POOL),
+                0,
+                true,
+                search_github_discover,
+            )?;
+            github_total = total;
+            merge_discover_hits_in_place(&mut merged, github_hits, args.query.trim());
+        } else if source == "all" && merged.len() < GITHUB_DISCOVER_LOW_HITS_THRESHOLD {
+            let github_fallback_hits = search_github_discover_fallback(&client, &sub, &merged);
+            if !github_fallback_hits.is_empty() {
+                github_total = github_fallback_hits.len();
                 merge_discover_hits_in_place(&mut merged, github_fallback_hits, args.query.trim());
-                if merged.len() >= pool_limit {
-                    break;
-                }
             }
         }
     }
     sort_discover_hits(&mut merged, &args.index, Some(args.query.trim()));
-    if source == "all" && normalized_content_type == "mods" {
+    if source == "all" && !explicit_source_subset && normalized_content_type == "mods" {
         merged = blend_discover_hits_prefer_modrinth(merged);
     }
     let mut total_hits = modrinth_total
         .saturating_add(curseforge_total)
+        .saturating_add(github_total)
         .max(merged.len());
     if source == "all" && normalized_content_type == "mods" {
         total_hits = total_hits.max(merged.len());
@@ -3135,10 +3267,12 @@ fn get_github_project_detail_inner(
     };
 
     let mut releases_raw = Vec::<GithubRelease>::new();
+    let mut release_list_available = false;
     match fetch_github_releases(&client, &owner, &repo_name) {
         Ok(mut value) => {
             value.sort_by_key(|release| std::cmp::Reverse(github_release_sort_key(release)));
             releases_raw = value;
+            release_list_available = true;
         }
         Err(err) => {
             let lower = err.to_ascii_lowercase();
@@ -3213,6 +3347,38 @@ fn get_github_project_detail_inner(
                 })
                 .unwrap_or_default()
         });
+    let compatibility_seed = repo
+        .as_ref()
+        .map(github_repo_title)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| repo_name.clone());
+    let (compatible_release, _) = if let Some(repo_ref) = repo.as_ref() {
+        github_select_release_with_repo_hints(
+            &client,
+            repo_ref,
+            &releases_raw,
+            &compatibility_seed,
+            None,
+            None,
+            None,
+        )
+    } else {
+        (None, HashSet::new())
+    };
+    let compatibility_status = if compatible_release.is_some() {
+        Some("compatible".to_string())
+    } else if release_list_available {
+        Some("incompatible".to_string())
+    } else {
+        Some("unknown".to_string())
+    };
+    let install_supported = Some(compatible_release.is_some());
+    let compatible_release_id = compatible_release
+        .as_ref()
+        .map(|selection| format!("gh_release:{}", selection.release.id));
+    let compatible_release_name = compatible_release
+        .as_ref()
+        .map(|selection| github_release_version_label(&selection.release));
 
     let releases = releases_raw
         .into_iter()
@@ -3333,6 +3499,10 @@ fn get_github_project_detail_inner(
         readme_source_url,
         releases,
         warning,
+        compatibility_status,
+        install_supported,
+        compatible_release_id,
+        compatible_release_name,
     })
 }
 
@@ -4229,11 +4399,39 @@ fn install_modrinth_mod_inner(
 
     if total_actions > 0 {
         if let Some(reason) = snapshot_reason {
-            create_instance_snapshot_with_event_best_effort(
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "snapshotting".into(),
+                    downloaded: 0,
+                    total: None,
+                    percent: None,
+                    message: Some("Creating safety snapshot before install…".into()),
+                },
+            );
+            let created = maybe_create_preinstall_snapshot_with_event_best_effort(
                 &app,
                 &instances_dir,
                 &args.instance_id,
                 reason,
+            );
+            emit_install_progress(
+                &app,
+                InstallProgressEvent {
+                    instance_id: args.instance_id.clone(),
+                    project_id: args.project_id.clone(),
+                    stage: "resolving".into(),
+                    downloaded: 0,
+                    total: Some(total_actions as u64),
+                    percent: Some(if total_actions == 0 { 100.0 } else { 2.0 }),
+                    message: Some(if created {
+                        "Snapshot ready. Install plan ready.".into()
+                    } else {
+                        "Reusing recent snapshot. Install plan ready.".into()
+                    }),
+                },
             );
         }
     }
@@ -4257,6 +4455,7 @@ fn install_modrinth_mod_inner(
     let mut root_installed: Option<InstalledMod> = None;
     let mut completed_actions: usize = 0;
     let mut removed_local_conflicts: Vec<String> = Vec::new();
+    let mut lock_changed = false;
 
     for item in plan {
         let safe_filename =
@@ -4336,6 +4535,18 @@ fn install_modrinth_mod_inner(
         if final_path.exists() {
             fs::remove_file(&final_path).map_err(|e| format!("remove old mod file failed: {e}"))?;
         }
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "installing".into(),
+                downloaded: completed_actions as u64,
+                total: Some(total_actions as u64),
+                percent: None,
+                message: Some(format!("Installing {} into the instance…", safe_filename)),
+            },
+        );
         let post_process_started = Instant::now();
         fs::rename(&tmp_path, &final_path).map_err(|e| format!("move mod file failed: {e}"))?;
         stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
@@ -4407,14 +4618,13 @@ fn install_modrinth_mod_inner(
                 version_number: item.version.version_number.clone(),
                 confidence: None,
                 reason: None,
+                verification_status: None,
             }],
             local_analysis: None,
         };
 
         lock.entries.push(new_entry.clone());
-        lock.entries
-            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+        lock_changed = true;
 
         if item.project_id == args.project_id {
             root_installed = Some(lock_entry_to_installed(&instance_dir, &new_entry));
@@ -4435,6 +4645,24 @@ fn install_modrinth_mod_inner(
 
     let root_installed =
         root_installed.ok_or_else(|| "Root mod was not installed in lockfile".to_string())?;
+
+    if lock_changed {
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "finalizing".into(),
+                downloaded: completed_actions as u64,
+                total: Some(total_actions as u64),
+                percent: None,
+                message: Some("Finalizing installed mod metadata…".into()),
+            },
+        );
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    }
 
     emit_install_progress(
         &app,
@@ -4575,11 +4803,39 @@ fn install_curseforge_mod_inner(
     let total_actions = install_plan.len().max(1);
 
     if let Some(reason) = snapshot_reason {
-        create_instance_snapshot_with_event_best_effort(
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "snapshotting".to_string(),
+                downloaded: 0,
+                total: None,
+                percent: None,
+                message: Some("Creating safety snapshot before install…".to_string()),
+            },
+        );
+        let created = maybe_create_preinstall_snapshot_with_event_best_effort(
             &app,
             &instances_dir,
             &args.instance_id,
             reason,
+        );
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "resolving".to_string(),
+                downloaded: 0,
+                total: Some(total_actions as u64),
+                percent: Some(34.0),
+                message: Some(if created {
+                    "Snapshot ready. Preparing CurseForge downloads…".to_string()
+                } else {
+                    "Reusing recent snapshot. Preparing CurseForge downloads…".to_string()
+                }),
+            },
         );
     }
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
@@ -4663,6 +4919,26 @@ fn install_curseforge_mod_inner(
                 );
             },
         )?;
+        emit_install_progress(
+            &app,
+            InstallProgressEvent {
+                instance_id: args.instance_id.clone(),
+                project_id: args.project_id.clone(),
+                stage: "installing".to_string(),
+                downloaded: idx as u64,
+                total: Some(total_actions as u64),
+                percent: None,
+                message: Some(if is_root {
+                    format!("Installing {} into the instance…", entry.filename)
+                } else {
+                    format!(
+                        "Installing dependency {}/{} into the instance…",
+                        idx + 1,
+                        total_actions
+                    )
+                }),
+            },
+        );
         let removed = remove_conflicting_local_mod_entries_for_filename(
             &mut lock,
             &instance_dir,
@@ -4678,6 +4954,18 @@ fn install_curseforge_mod_inner(
 
     lock.entries
         .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    emit_install_progress(
+        &app,
+        InstallProgressEvent {
+            instance_id: args.instance_id.clone(),
+            project_id: args.project_id.clone(),
+            stage: "finalizing".to_string(),
+            downloaded: total_actions as u64,
+            total: Some(total_actions as u64),
+            percent: None,
+            message: Some("Finalizing installed content metadata…".to_string()),
+        },
+    );
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
 
     let entry =
@@ -7936,6 +8224,12 @@ fn validate_provider_switch(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    let verification_status = candidate
+        .verification_status
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
     let reason = candidate
         .reason
         .as_deref()
@@ -7944,7 +8238,11 @@ fn validate_provider_switch(
         .to_ascii_lowercase();
     let activation_safe = provider_candidate_is_auto_activatable(candidate);
     let manual_verified = confidence == "manual" && !reason.contains("unverified");
-    if confidence == "manual" && reason.contains("unverified") && !explicit_local_override {
+    let pending_verification = matches!(
+        verification_status.as_str(),
+        "manual_unverified" | "unavailable" | "deferred"
+    ) || (confidence == "manual" && reason.contains("unverified"));
+    if pending_verification && !explicit_local_override {
         return Err(
             "This GitHub repository mapping is pending verification. Re-run Attach GitHub when GitHub API is available before switching providers.".to_string()
         );
@@ -7983,16 +8281,6 @@ fn upsert_provider_candidate(entry: &mut LockEntry, candidate: ProviderCandidate
         entry.provider_candidates.push(candidate);
     }
     entry.provider_candidates = compact_provider_candidates(entry.provider_candidates.clone());
-}
-
-fn local_hash_match_confidence(digest_match: Option<bool>, exact_filename_match: bool) -> String {
-    if digest_match == Some(true) {
-        "deterministic".to_string()
-    } else if exact_filename_match {
-        "high".to_string()
-    } else {
-        "manual".to_string()
-    }
 }
 
 fn lock_entry_allows_manual_github_attach(entry: &LockEntry) -> bool {
@@ -8065,7 +8353,7 @@ pub(crate) fn attach_installed_mod_github_repo(
         let mut candidate = ProviderCandidate {
             source: "github".to_string(),
             project_id: project_key.clone(),
-            version_id: entry.version_id.clone(),
+            version_id: "gh_repo_unverified".to_string(),
             name: if entry.name.trim().is_empty() {
                 repo_for_title
                     .as_ref()
@@ -8081,10 +8369,16 @@ pub(crate) fn attach_installed_mod_github_repo(
             },
             confidence: Some("manual".to_string()),
             reason: Some(if repo_for_title.is_some() {
-                "Manual GitHub repository attachment.".to_string()
+                "Manual GitHub repository attachment saved pending release verification."
+                    .to_string()
             } else {
                 "Manual GitHub repository attachment (unverified; GitHub API unavailable)."
                     .to_string()
+            }),
+            verification_status: Some(if repo_for_title.is_some() {
+                "manual_unverified".to_string()
+            } else {
+                "unavailable".to_string()
             }),
         };
 
@@ -8096,68 +8390,43 @@ pub(crate) fn attach_installed_mod_github_repo(
                     read_path.display()
                 )
             })?;
-            let sha256 = sha256_bytes_hex(&file_bytes);
-            let sha512 = sha512_hex(&file_bytes);
-            if let Ok(releases) = fetch_github_releases(&client, &owner, &repo_name) {
-                let query_hint = core_mod_name_from_filename(&entry.filename)
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or_else(|| infer_local_name(&entry.filename));
-                if let Some(repo) = repo_for_title.as_ref() {
-                    if let Some(selection) = select_github_release_for_local_file(
-                        repo,
-                        &releases,
-                        &entry.filename,
-                        &query_hint,
-                    ) {
-                        let mut hashes = extract_github_asset_digest(&selection.asset);
-                        let digest_match =
-                            github_asset_digest_matches_local_hashes(&hashes, &sha256, &sha512);
-                        if digest_match != Some(false) {
-                            hashes
-                                .entry("sha256".to_string())
-                                .or_insert_with(|| sha256.to_string());
-                            hashes
-                                .entry("sha512".to_string())
-                                .or_insert_with(|| sha512.to_string());
-                            if selection.has_checksum_sidecar {
-                                hashes
-                                    .entry("checksum_sidecar".to_string())
-                                    .or_insert_with(|| "present".to_string());
-                            }
-                            let exact_filename_match = sanitize_filename(&selection.asset.name)
-                                .eq_ignore_ascii_case(&sanitize_filename(&entry.filename));
-                            candidate.version_id = format!("gh_release:{}", selection.release.id);
-                            candidate.version_number =
-                                github_release_version_label(&selection.release);
-                            candidate.confidence = Some(local_hash_match_confidence(
-                                digest_match,
-                                exact_filename_match,
-                            ));
-                            candidate.reason = if digest_match == Some(true) {
-                                Some(format!(
-                                    "Manual attach verified with GitHub release asset checksum for '{}'.",
-                                    entry.filename
-                                ))
-                            } else if exact_filename_match {
-                                Some(format!(
-                                    "Manual attach matched GitHub release asset filename '{}'.",
-                                    entry.filename
-                                ))
-                            } else {
-                                Some(format!(
-                                    "Manual attach matched GitHub release asset '{}' to local '{}'.",
-                                    selection.asset.name, entry.filename
-                                ))
-                            };
-                            matched_hashes = Some(hashes);
-                        }
-                    }
+            let github_matches = detect_provider_matches_for_local_mod(
+                &client,
+                &file_bytes,
+                &entry.filename,
+                true,
+                Some(&project_key),
+            )
+            .into_iter()
+            .filter(|found| {
+                found.source.trim().eq_ignore_ascii_case("github")
+                    && found.project_id.trim().eq_ignore_ascii_case(&project_key)
+            })
+            .collect::<Vec<_>>();
+            if let Some(found) = select_preferred_provider_match(&github_matches, Some("github")) {
+                candidate = found.to_provider_candidate();
+                if !found.hashes.is_empty() {
+                    matched_hashes = Some(found.hashes.clone());
                 }
+            } else if let Some(reason) =
+                provider_matches_have_transient_github_verification_issue(&github_matches)
+            {
+                candidate.reason = Some(format!(
+                    "Manual GitHub repository attachment saved, but release verification is unavailable right now ({}).",
+                    reason
+                ));
+                candidate.verification_status = Some("unavailable".to_string());
+            } else {
+                candidate.reason = Some(
+                    "Manual GitHub repository attachment saved, but no verified release asset matched the local file yet."
+                        .to_string(),
+                );
+                candidate.verification_status = Some("manual_unverified".to_string());
             }
         }
 
         upsert_provider_candidate(entry, candidate.clone());
-        if can_activate {
+        if can_activate && provider_candidate_is_auto_activatable(&candidate) {
             apply_provider_candidate_to_lock_entry(entry, &candidate);
         }
         if let Some(hashes) = matched_hashes {
@@ -8166,6 +8435,15 @@ pub(crate) fn attach_installed_mod_github_repo(
         entry.name.clone()
     };
 
+    let activation_applied = can_activate
+        && lock.entries[idx]
+            .source
+            .trim()
+            .eq_ignore_ascii_case("github")
+        && lock.entries[idx]
+            .project_id
+            .trim()
+            .eq_ignore_ascii_case(&project_key);
     write_lockfile(&instances_dir, &args.instance_id, &lock)?;
     log_instance_event_best_effort(
         &app,
@@ -8175,7 +8453,7 @@ pub(crate) fn attach_installed_mod_github_repo(
             "Attached GitHub repository '{}' to '{}'{}.",
             project_key,
             attached_name,
-            if can_activate {
+            if activation_applied {
                 ""
             } else {
                 " (pending verification before provider activation)"
@@ -8353,6 +8631,7 @@ mod tests {
             hashes: HashMap::new(),
             confidence: confidence.to_string(),
             reason: reason.to_string(),
+            verification_status: "manual_unverified".to_string(),
         }
     }
 
@@ -8435,6 +8714,7 @@ mod tests {
             version_number: "1.0.0".to_string(),
             confidence: Some("deterministic".to_string()),
             reason: Some("legacy invalid mapping".to_string()),
+            verification_status: Some("verified".to_string()),
         }];
         assert!(lock_entry_has_untrusted_github_mapping(&invalid_entry));
 
@@ -8448,6 +8728,7 @@ mod tests {
             version_number: "1.0.0".to_string(),
             confidence: Some("deterministic".to_string()),
             reason: Some("verified".to_string()),
+            verification_status: Some("verified".to_string()),
         }];
         assert!(!lock_entry_has_untrusted_github_mapping(&valid_entry));
     }
@@ -8466,6 +8747,7 @@ mod tests {
                 "GitHub local identify manual candidate: direct metadata repo hint matched, but release evidence is currently unverified."
                     .to_string(),
             ),
+            verification_status: Some("manual_unverified".to_string()),
         };
         entry.provider_candidates = vec![candidate.clone()];
         let selected = select_provider_candidate_for_source(&entry, "github")
@@ -8487,6 +8769,7 @@ mod tests {
                 "GitHub local identify manual candidate: direct metadata repo hint matched, but release evidence is currently unverified."
                     .to_string(),
             ),
+            verification_status: Some("manual_unverified".to_string()),
         };
         entry.provider_candidates = vec![candidate.clone()];
         let selected = select_provider_candidate_for_source(&entry, "github")
@@ -8508,6 +8791,7 @@ mod tests {
                 version_number: "1".to_string(),
                 confidence: Some("high".to_string()),
                 reason: Some("test".to_string()),
+                verification_status: Some("verified".to_string()),
             },
             ProviderCandidate {
                 source: "github".to_string(),
@@ -8517,6 +8801,7 @@ mod tests {
                 version_number: "1".to_string(),
                 confidence: Some("high".to_string()),
                 reason: Some("test".to_string()),
+                verification_status: Some("verified".to_string()),
             },
         ];
         let err = select_provider_candidate_for_source(&entry, "github")

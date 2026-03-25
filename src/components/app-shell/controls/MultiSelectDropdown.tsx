@@ -104,7 +104,7 @@ export default function MultiSelectDropdown({
   };
 
   return (
-    <div className={`dropdown ${open ? "open" : ""}`} ref={rootRef}>
+    <div className={`dropdown multiSelectDropdown ${open ? "open" : ""}`} ref={rootRef}>
       <div
         className={`dropBtn ${values.length ? "value" : ""}`}
         onClick={() => {
@@ -123,7 +123,7 @@ export default function MultiSelectDropdown({
         ? createPortal(
             <div
               ref={panelRef}
-              className={`dropPanel portal ${layout.placement === "top" ? "top" : ""}`}
+              className={`dropPanel portal multiSelectPanel ${layout.placement === "top" ? "top" : ""} ${showSearch ? "hasSearch" : "noSearch"}`}
               style={{
                 top: layout.top,
                 left: layout.left,
@@ -149,10 +149,10 @@ export default function MultiSelectDropdown({
                 ) : null}
 
                 {filtered.length === 0 ? (
-                  <div style={{ padding: 10, color: "var(--muted)", fontWeight: 900 }}>No matches</div>
+                  <div className="multiSelectEmptyState">No matches</div>
                 ) : (
                   filtered.map((g) => (
-                    <div key={g.group}>
+                    <div key={g.group} className="multiSelectGroup">
                       {showGroupHeaders ? <div className="groupHdr">{g.group}</div> : null}
                       {g.items.map((it) => {
                         const checked = values.includes(it.id);
@@ -172,8 +172,8 @@ export default function MultiSelectDropdown({
                   ))
                 )}
 
-                <div style={{ height: 12 }} />
-                <div style={{ display: "flex", gap: 10 }}>
+                <div style={{ height: 8 }} />
+                <div className="multiSelectFooter">
                   <button
                     className="dropMiniBtn"
                     onClick={() => {
@@ -187,7 +187,7 @@ export default function MultiSelectDropdown({
                   >
                     {clearLabel}
                   </button>
-                  <div style={{ flex: 1 }} />
+                  <div className="multiSelectFooterSpacer" />
                   <button
                     className="dropMiniBtn"
                     onClick={() => {

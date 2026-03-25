@@ -23,17 +23,19 @@ export default function ActivityFilters(props: ActivityFiltersProps) {
     return <FilterChips options={OPTIONS} value={props.value} onChange={props.onChange} className="activityFilters" />;
   }
 
+  const activeOption = OPTIONS.find((option) => option.id === props.value) ?? OPTIONS[0];
+
   return (
     <div className="activityFilters activityFiltersCompactSingle">
       <MenuSelect
         value={props.value}
         labelPrefix="Filter"
-        buttonLabel="Filter:"
+        buttonLabel={activeOption.label}
         options={OPTIONS.map((option) => ({ value: option.id, label: option.label }))}
         onChange={(value) => props.onChange(value as RecentActivityFilter)}
         align="start"
         compact
-        compactPanelMinWidth={186}
+        compactPanelMinWidth={170}
       />
     </div>
   );

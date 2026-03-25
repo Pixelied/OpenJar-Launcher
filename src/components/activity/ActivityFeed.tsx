@@ -2,7 +2,6 @@
 import { useMemo, useState } from "react";
 import ActivityCoalescer from "./ActivityCoalescer";
 import ActivityEmptyState from "./ActivityEmptyState";
-import ActivityFilters from "./ActivityFilters";
 import ActivitySidebarHeader from "./ActivitySidebarHeader";
 import ActivitySidebarList from "./ActivitySidebarList";
 import type { RecentActivityFeedEntry, RecentActivityFilter } from "./types";
@@ -29,12 +28,12 @@ export default function ActivityFeed(props: ActivityFeedProps) {
     <div className="card instanceSideCard activityFeedCard">
       <ActivitySidebarHeader
         retentionLabel={props.retentionLabel}
+        filter={props.filter}
+        onFilterChange={props.onFilterChange}
         onOpenFullHistory={props.onOpenFullHistory}
         onClearRecent={props.onClearRecent}
         canClear={props.canClear}
       />
-
-      <ActivityFilters value={props.filter} onChange={props.onFilterChange} compact />
 
       {!hasAny ? (
         <ActivityEmptyState loading={props.loading} />
