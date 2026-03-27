@@ -1,4 +1,3 @@
-// Full history rows are intentionally flat and neutral, with icon-only type color and a strict 3-line text hierarchy.
 import Icon from "../app-shell/Icon";
 import type { RecentActivityFeedEntry } from "./types";
 

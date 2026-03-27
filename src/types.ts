@@ -872,6 +872,7 @@ export type WorldRollbackResult = {
 
 export type DiscoverSource = "modrinth" | "curseforge" | "github" | "all";
 export type DiscoverContentType = "mods" | "shaderpacks" | "resourcepacks" | "datapacks" | "modpacks";
+export type GithubInstallState = "ready" | "checking" | "unsupported" | string;
 
 export type DiscoverSearchHit = {
   source: "modrinth" | "curseforge" | "github" | string;
@@ -890,10 +891,8 @@ export type DiscoverSearchHit = {
   external_url?: string | null;
   confidence?: string | null;
   reason?: string | null;
-  install_supported?: boolean | null;
-  install_note?: string | null;
-  verification_status?: "verified" | "deferred" | "manual_unverified" | "unavailable" | string | null;
-  compatibility_status?: "compatible" | "incompatible" | "unknown" | string | null;
+  install_state?: GithubInstallState | null;
+  install_summary?: string | null;
 };
 
 export type DiscoverSearchResult = {
@@ -969,10 +968,8 @@ export type GithubProjectDetail = {
   readme_source_url?: string | null;
   releases: GithubProjectReleaseDetail[];
   warning?: string | null;
-  compatibility_status?: "compatible" | "incompatible" | "unknown" | string | null;
-  install_supported?: boolean | null;
-  compatible_release_id?: string | null;
-  compatible_release_name?: string | null;
+  install_state?: GithubInstallState | null;
+  install_summary?: string | null;
 };
 
 export type PresetsJsonIoResult = {

@@ -1,4 +1,3 @@
-// Coalesces repeated actions into compact rows, then filters and buckets so dense activity remains easy to scan.
 import { useMemo, type ReactNode } from "react";
 import type {
   ActivityBucket,

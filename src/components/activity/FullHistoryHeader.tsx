@@ -1,4 +1,3 @@
-// Full history header keeps controls calm and structured so scanning starts with the log, not decorative UI.
 import ActivityFilters from "./ActivityFilters";
 import type { RecentActivityFilter } from "./types";
 

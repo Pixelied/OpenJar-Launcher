@@ -18,6 +18,7 @@ export default function MultiSelectDropdown({
   itemVariant = "drop",
   panelMinWidth = 300,
   panelEstimatedHeight = 420,
+  allSelectedLabel,
 }: {
   values: string[];
   placeholder: string;
@@ -33,6 +34,7 @@ export default function MultiSelectDropdown({
   itemVariant?: "drop" | "menu";
   panelMinWidth?: number;
   panelEstimatedHeight?: number;
+  allSelectedLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -88,13 +90,17 @@ export default function MultiSelectDropdown({
 
   const label = useMemo(() => {
     if (!values || values.length === 0) return placeholder;
+    const totalOptionCount = groups.reduce((count, group) => count + group.items.length, 0);
+    if (allSelectedLabel && totalOptionCount > 0 && values.length >= totalOptionCount) {
+      return allSelectedLabel;
+    }
     const map = new Map<string, string>();
     for (const g of groups) for (const it of g.items) map.set(it.id, it.label);
     const labels = values.map((v) => map.get(v) ?? v).filter(Boolean);
     if (labels.length === 1) return labels[0];
     if (labels.length === 2) return `${labels[0]}, ${labels[1]}`;
     return `${labels[0]} +${labels.length - 1}`;
-  }, [groups, placeholder, values]);
+  }, [allSelectedLabel, groups, placeholder, values]);
 
   const toggle = (id: string) => {
     const set = new Set(values);

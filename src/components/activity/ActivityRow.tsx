@@ -1,4 +1,3 @@
-// Each row enforces clear hierarchy: action line, muted context line, and concise time with exact hover timestamp.
 import { formatDateTime } from "../../app/utils/format";
 import Icon from "../app-shell/Icon";
 import type { RecentActivityFeedEntry } from "./types";

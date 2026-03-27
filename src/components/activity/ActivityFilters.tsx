@@ -1,4 +1,3 @@
-// Activity filter chips are routed through the shared FilterChips control to keep emphasis subtle and consistent.
 import MenuSelect from "../app-shell/controls/MenuSelect";
 import FilterChips from "./FilterChips";
 import type { RecentActivityFilter } from "./types";
@@ -30,7 +29,7 @@ export default function ActivityFilters(props: ActivityFiltersProps) {
       <MenuSelect
         value={props.value}
         labelPrefix="Filter"
-        buttonLabel={activeOption.label}
+        buttonLabel={`Filter: ${activeOption.label}`}
         options={OPTIONS.map((option) => ({ value: option.id, label: option.label }))}
         onChange={(value) => props.onChange(value as RecentActivityFilter)}
         align="start"

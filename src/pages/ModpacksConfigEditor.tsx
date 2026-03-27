@@ -109,8 +109,6 @@ export default function ModpacksConfigEditor({
   onManageInstances: () => void;
   runningInstanceIds: string[];
 }) {
-  // UI polish: this editor keeps one primary action (Save), elevates Fix issues as a warning-only action,
-  // and keeps utility actions secondary so critical remediation is easy to spot.
   const [scope, setScope] = useState<EditorScope>("instance");
   const [instanceFilesByInstance, setInstanceFilesByInstance] = useState<
     Record<string, InstanceConfigFileEntry[]>

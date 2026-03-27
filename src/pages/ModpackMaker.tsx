@@ -236,7 +236,6 @@ export default function ModpackMaker({
   onNotice,
   onError,
 }: Props) {
-  // UI polish: emphasize the active entry in the list and mirror that selection in Inspector so edits feel anchored.
   const [view, setView] = useState<MakerView>("home");
   const [busy, setBusy] = useState(false);
   const [migrationPending, setMigrationPending] = useState(false);

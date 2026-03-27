@@ -1,4 +1,3 @@
-// Full history view composes lightweight header/list/footer blocks so the modal stays calm while preserving behavior.
 import FullHistoryFooter from "./FullHistoryFooter";
 import FullHistoryHeader from "./FullHistoryHeader";
 import FullHistoryList from "./FullHistoryList";

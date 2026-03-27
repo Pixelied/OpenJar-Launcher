@@ -1568,9 +1568,10 @@ struct SearchDiscoverContentArgs {
     index: String, // relevance | downloads | follows | updated | newest
     limit: usize,
     offset: usize,
-    source: String, // modrinth | curseforge | all
     #[serde(default)]
-    sources: Vec<String>, // optional subset for multi-source discover search
+    sources: Vec<String>, // selected providers
+    #[serde(default)]
+    source: Option<String>, // legacy fallback: modrinth | curseforge | all
     #[serde(alias = "contentType")]
     content_type: String, // mods | modpacks | resourcepacks | datapacks | shaders
 }
@@ -2280,13 +2281,9 @@ struct DiscoverSearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    install_supported: Option<bool>,
+    install_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    install_note: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verification_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compatibility_status: Option<String>,
+    install_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2384,13 +2381,9 @@ struct GithubProjectDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    compatibility_status: Option<String>,
+    install_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    install_supported: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compatible_release_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compatible_release_name: Option<String>,
+    install_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -14853,22 +14846,18 @@ fn github_release_to_discover_hit(
         external_url: Some(github_repo_external_url(repo)),
         confidence: Some(github_confidence_label(confidence_score)),
         reason: Some(github_discover_reason(repo, selection, confidence_score)),
-        install_supported: Some(true),
-        install_note: None,
-        verification_status: Some("verified".to_string()),
-        compatibility_status: Some("compatible".to_string()),
+        install_state: Some("ready".to_string()),
+        install_summary: None,
     }
 }
 
 fn github_repo_partial_discover_hit(
     repo: &GithubRepository,
     query: &str,
-    install_note: &str,
+    install_summary: &str,
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
-    verification_status: &str,
-    compatibility_status: &str,
-    install_supported: bool,
+    install_state: &str,
 ) -> DiscoverSearchHit {
     let similarity = github_repo_query_similarity(repo, query);
     let confidence_score =
@@ -14910,67 +14899,59 @@ fn github_repo_partial_discover_hit(
             repo.stargazers_count,
             github_confidence_label(confidence_score)
         )),
-        install_supported: Some(install_supported),
-        install_note: Some(install_note.to_string()),
-        verification_status: Some(verification_status.to_string()),
-        compatibility_status: Some(compatibility_status.to_string()),
+        install_state: Some(install_state.to_string()),
+        install_summary: Some(install_summary.to_string()),
     }
 }
 
 fn github_repo_deferred_release_hit(
     repo: &GithubRepository,
     query: &str,
-    install_note: &str,
+    install_summary: &str,
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
 ) -> DiscoverSearchHit {
     github_repo_partial_discover_hit(
         repo,
         query,
-        install_note,
+        install_summary,
         icon_url,
         detected_loader_hints,
-        "deferred",
-        "unknown",
-        true,
+        "checking",
     )
 }
 
 fn github_repo_unavailable_release_hit(
     repo: &GithubRepository,
     query: &str,
-    install_note: &str,
+    install_summary: &str,
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
 ) -> DiscoverSearchHit {
     github_repo_partial_discover_hit(
         repo,
         query,
-        install_note,
+        install_summary,
         icon_url,
         detected_loader_hints,
-        "unavailable",
-        "unknown",
-        false,
+        "checking",
     )
 }
 
 fn github_repo_incompatible_release_hit(
     repo: &GithubRepository,
     query: &str,
-    install_note: &str,
+    install_summary: &str,
     icon_url: Option<String>,
     detected_loader_hints: Option<&HashSet<String>>,
 ) -> DiscoverSearchHit {
     github_repo_partial_discover_hit(
         repo,
         query,
-        install_note,
+        install_summary,
         icon_url,
         detected_loader_hints,
-        "verified",
-        "incompatible",
-        false,
+        "unsupported",
     )
 }
 
@@ -17020,10 +17001,8 @@ fn search_modrinth_discover(
                 external_url: slug.map(|s| format!("https://modrinth.com/project/{s}")),
                 confidence: None,
                 reason: None,
-                install_supported: None,
-                install_note: None,
-                verification_status: None,
-                compatibility_status: None,
+                install_state: None,
+                install_summary: None,
             });
         }
     }
@@ -17153,10 +17132,8 @@ fn search_curseforge_discover(
                 )),
                 confidence: None,
                 reason: None,
-                install_supported: None,
-                install_note: None,
-                verification_status: None,
-                compatibility_status: None,
+                install_state: None,
+                install_summary: None,
             });
         }
     }
@@ -19329,10 +19306,8 @@ mod discover_ranking_tests {
             external_url: None,
             confidence: None,
             reason: None,
-            install_supported: None,
-            install_note: None,
-            verification_status: None,
-            compatibility_status: None,
+            install_state: None,
+            install_summary: None,
         }
     }
 

@@ -1,4 +1,3 @@
-// Reusable neutral chip row keeps filters lightweight; active chips use outline emphasis without filled backgrounds.
 export type FilterChipOption<T extends string = string> = {
   id: T;
   label: string;
@@ -34,4 +33,3 @@ export default function FilterChips<T extends string = string>(props: FilterChip
     </div>
   );
 }
-

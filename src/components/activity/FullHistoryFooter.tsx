@@ -1,4 +1,3 @@
-// Full history footer demotes actions to calm utility controls so content remains the primary focus.
 export interface FullHistoryFooterProps {
   busy: boolean;
   hasMore: boolean;
@@ -18,4 +17,3 @@ export default function FullHistoryFooter(props: FullHistoryFooterProps) {
     </div>
   );
 }
-

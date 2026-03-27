@@ -1,4 +1,3 @@
-// Sidebar rows are flattened into log-style entries with icon-only type color and clear 3-line text hierarchy.
 import { formatDateTime } from "../../app/utils/format";
 import Icon from "../app-shell/Icon";
 import type { RecentActivityFeedEntry } from "./types";

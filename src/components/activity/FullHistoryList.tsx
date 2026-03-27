@@ -1,4 +1,3 @@
-// Full history list reuses the same grouped/expandable timeline treatment as the sidebar for consistency.
 import { useState } from "react";
 import Icon from "../app-shell/Icon";
 import ActivityCoalescer from "./ActivityCoalescer";

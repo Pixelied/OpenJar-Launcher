@@ -1,7 +1,5 @@
 import ActivityFilters from "./ActivityFilters";
 import type { RecentActivityFilter } from "./types";
-
-// Sidebar header keeps retention/context visible while keeping controls quiet so the log remains the visual priority.
 export interface ActivitySidebarHeaderProps {
   retentionLabel: string;
   filter: RecentActivityFilter;
@@ -24,7 +22,7 @@ export default function ActivitySidebarHeader(props: ActivitySidebarHeaderProps)
             onClick={props.onOpenFullHistory}
             data-oj-tooltip="Open the complete event log with pagination."
           >
-            History
+            Full history
           </button>
           <button
             className="btn ghost activityActionBtn activityAuxAction"

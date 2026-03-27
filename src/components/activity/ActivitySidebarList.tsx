@@ -1,4 +1,3 @@
-// Sidebar list keeps grouped log entries compact with subtle separators instead of card-like blocks.
 import type { ActivityBucket } from "./types";
 import ActivityGroupHeader from "./ActivityGroupHeader";
 import ActivitySidebarRow from "./ActivitySidebarRow";
@@ -30,4 +29,3 @@ export default function ActivitySidebarList(props: ActivitySidebarListProps) {
     </div>
   );
 }
-

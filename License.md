@@ -1,42 +1,60 @@
-OpenJar Launcher — Source-Available License (No Redistribution + No Commercial Use)
-Version 1.0
+# OpenJar Launcher Source-Available License
+
+Version 1.1
 
 Copyright (c) 2026 OpenJar Launcher Contributors
 All rights reserved.
 
-Permission is granted to any person obtaining a copy of this software and associated
-documentation files (the "Software") to view, download, and use the Software for
-personal evaluation and non-commercial purposes, and to contribute to this repository
-via pull requests or patches.
+## Plain-language summary
 
-1) No Redistribution / Republishing Without Permission
-You may not publish, redistribute, re-upload, mirror, or otherwise share the Software
-(or any substantial portion of it), including modified versions, without explicit
-prior written permission from the copyright holder.
+You may read, download, run, evaluate, and contribute to this project for personal and non-commercial purposes.
 
-2) No Commercial Use / No Selling
-You may not sell, license, monetize, or use the Software (or any substantial portion
-of it) in a commercial product or service without explicit prior written permission
-from the copyright holder.
+You may not redistribute it, rehost it, sell it, or use it as part of a commercial product or service without explicit written permission from the copyright holder.
 
-3) No Misrepresentation
-You may not claim that you wrote the original Software. If you are granted permission
-to share or publish any portion of the Software, you must clearly state that your work
-is based on OpenJar Launcher and include attribution as described below.
+This is a source-available license. It is not an open source license.
 
-4) Attribution (When Permission Is Granted)
-If you are granted permission to publish, redistribute, or share any portion of the
-Software (including modified versions), you must provide clear attribution to the
-original project and source repository, and include this copyright notice.
+## License grant
 
-5) Contributions
-By submitting a contribution (pull request, patch, issue with code, etc.), you agree
-that your contribution may be incorporated into the project and distributed under the
-terms of this license.
+Subject to the terms below, permission is granted to any person obtaining a copy of this software and associated documentation files (the "Software") to:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
-HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
-CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE
-OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+- view and study the Software
+- download and run the Software for personal evaluation and non-commercial use
+- modify the Software for personal and internal non-commercial use
+- submit contributions, patches, and pull requests to this repository
+
+## Restrictions
+
+Without prior written permission from the copyright holder, you may not:
+
+1. Publish, redistribute, re-upload, mirror, sublicense, or otherwise share the Software, in whole or in substantial part, including modified versions.
+2. Sell, license, monetize, host, or use the Software as part of a commercial product, commercial service, or paid offering.
+3. Represent the Software, or a modified version of it, as your original work.
+4. Remove copyright notices, attribution requirements, or license notices from copies you are permitted to possess.
+
+## Attribution
+
+If you receive written permission to redistribute or publish any portion of the Software, including modified versions, you must:
+
+- clearly state that the work is based on OpenJar Launcher
+- preserve this copyright notice
+- preserve this license text unless the copyright holder explicitly authorizes different terms
+
+## Contributions
+
+By submitting a contribution, including a pull request, patch, or other code submission, you agree that:
+
+- you have the right to submit the contribution
+- the project may use, modify, and distribute that contribution under this license
+- no separate compensation is owed for accepting or using the contribution
+
+## Termination
+
+Any rights granted by this license terminate automatically if you violate its terms. If that happens, you must stop using and distributing the Software until you have written permission to continue.
+
+## Disclaimer of warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+## Limitation of liability
+
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE SOFTWARE.

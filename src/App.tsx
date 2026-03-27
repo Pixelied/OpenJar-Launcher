@@ -32,6 +32,7 @@ import type {
   GithubTokenPoolStatus,
   CurseforgeProjectDetail,
   GithubProjectDetail,
+  GithubInstallState,
   DiscoverContentType,
   DiscoverSearchHit,
   DiscoverSource,
@@ -263,8 +264,6 @@ import {
   TOP_ERROR_AUTO_HIDE_MS,
 } from "./app/constants";
 
-// UI polish pass: tighten action hierarchy, surface empty/warning states, and improve activity/feed scanability
-// while preserving the existing layout and neutral light-theme visual direction.
 type Route = "home" | "discover" | "modpacks" | "library" | "updates" | "skins" | "instance" | "account" | "settings" | "dev";
 type AccentPreset = "neutral" | "blue" | "emerald" | "amber" | "rose" | "violet" | "teal";
 type AccentStrength = "subtle" | "normal" | "vivid" | "max";
@@ -1242,12 +1241,12 @@ function normalizeGithubVerificationStatus(value?: string | null) {
   return "unknown";
 }
 
-function normalizeGithubCompatibilityStatus(value?: string | null) {
+function normalizeGithubInstallState(value?: string | null): GithubInstallState {
   const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "compatible" || normalized === "incompatible" || normalized === "unknown") {
+  if (normalized === "ready" || normalized === "checking" || normalized === "unsupported") {
     return normalized;
   }
-  return "unknown";
+  return "checking";
 }
 
 function githubVerificationStatusLabel(value?: string | null): string | null {
@@ -1259,11 +1258,9 @@ function githubVerificationStatusLabel(value?: string | null): string | null {
   return null;
 }
 
-function githubCompatibilityStatusLabel(value?: string | null): string | null {
-  const normalized = normalizeGithubCompatibilityStatus(value);
-  if (normalized === "compatible") return "compatible";
-  if (normalized === "incompatible") return "no compatible release";
-  if (normalized === "unknown") return "compatibility unknown";
+function githubInstallStateChipLabel(value?: string | null): string | null {
+  const normalized = normalizeGithubInstallState(value);
+  if (normalized === "unsupported") return "no compatible release";
   return null;
 }
 
@@ -1282,54 +1279,48 @@ function providerCandidateExplain(candidate: ProviderCandidate): string | null {
   return parts.join(" • ");
 }
 
-function githubStatusChipClass(kind: "verification" | "compatibility", value?: string | null) {
+function githubStatusChipClass(kind: "verification" | "installability", value?: string | null) {
   if (kind === "verification") {
     const normalized = normalizeGithubVerificationStatus(value);
     if (normalized === "verified") return "chip subtle";
     if (normalized === "unavailable") return "chip danger";
     return "chip";
   }
-  const normalized = normalizeGithubCompatibilityStatus(value);
-  if (normalized === "compatible") return "chip subtle";
-  if (normalized === "incompatible") return "chip danger";
+  const normalized = normalizeGithubInstallState(value);
+  if (normalized === "ready") return "chip subtle";
+  if (normalized === "unsupported") return "chip danger";
   return "chip";
 }
 
-function githubResultStatusNote(hit: DiscoverSearchHit): string | null {
-  const note = String(hit.install_note ?? "").trim();
-  if (note) return note;
-  const verification = normalizeGithubVerificationStatus(hit.verification_status);
-  if (verification === "deferred") {
-    return "Release verification is deferred until you open or install this result.";
-  }
-  if (verification === "unavailable") {
-    return "GitHub verification is temporarily unavailable right now.";
-  }
-  const compatibility = normalizeGithubCompatibilityStatus(hit.compatibility_status);
-  if (compatibility === "incompatible") {
-    return "No compatible GitHub release asset matched this search right now.";
-  }
-  return null;
+function githubInstallSummary(
+  hit: DiscoverSearchHit | null | undefined,
+  detail?: GithubProjectDetail | null
+): string | null {
+  const detailSummary = String(detail?.install_summary ?? "").trim();
+  if (detailSummary) return detailSummary;
+  const hitSummary = String(hit?.install_summary ?? "").trim();
+  return hitSummary || null;
+}
+
+function githubInstallState(
+  hit: DiscoverSearchHit | null | undefined,
+  detail?: GithubProjectDetail | null
+): GithubInstallState {
+  return normalizeGithubInstallState(detail?.install_state ?? hit?.install_state);
 }
 
 function githubResultInstallSupported(
   hit: DiscoverSearchHit | null | undefined,
   detail?: GithubProjectDetail | null
 ): boolean {
-  if (detail?.install_supported != null) return detail.install_supported !== false;
-  return hit?.install_supported !== false;
+  return githubInstallState(hit, detail) !== "unsupported";
 }
 
 function githubResultInstallNote(
   hit: DiscoverSearchHit | null | undefined,
   detail?: GithubProjectDetail | null
 ): string | null {
-  if (detail?.compatibility_status === "incompatible") {
-    return detail.compatible_release_name
-      ? `This repository does not currently expose an installable release for this app flow. Best verified release: ${detail.compatible_release_name}.`
-      : "This repository does not currently expose an installable GitHub release for this app flow.";
-  }
-  return hit ? githubResultStatusNote(hit) : null;
+  return githubInstallSummary(hit, detail);
 }
 
 
@@ -1957,16 +1948,16 @@ function updateCadenceLabel(cadence: SchedulerCadence): string {
 function updateAutoApplyModeLabel(mode: SchedulerAutoApplyMode): string {
   switch (mode) {
     case "opt_in_instances":
-      return "Opt-in instances";
+      return "Only chosen instances";
     case "all_instances":
       return "All instances";
     default:
-      return "Never";
+      return "Do not auto-install";
   }
 }
 
 function updateApplyScopeLabel(scope: SchedulerApplyScope): string {
-  return scope === "scheduled_and_manual" ? "Scheduled + check now" : "Scheduled only";
+  return scope === "scheduled_and_manual" ? "Scheduled runs and Run check now" : "Scheduled runs only";
 }
 
 function updateCadenceIntervalMs(cadence: SchedulerCadence): number {
@@ -2400,6 +2391,11 @@ function normalizeDiscoverProviderSources(values: readonly string[]): DiscoverPr
     next.push(source);
   }
   return next;
+}
+
+function discoverRequestSources(source: DiscoverSource): DiscoverProviderSource[] {
+  if (source === "all") return [...DISCOVER_PROVIDER_SOURCES];
+  return normalizeDiscoverProviderSources([source]);
 }
 
 function readSettingsMode(): SettingsMode {
@@ -3000,14 +2996,14 @@ const UPDATE_CADENCE_OPTIONS: { value: SchedulerCadence; label: string }[] = [
 ];
 
 const UPDATE_AUTO_APPLY_MODE_OPTIONS: { value: SchedulerAutoApplyMode; label: string }[] = [
-  { value: "never", label: "Never auto-apply" },
-  { value: "opt_in_instances", label: "Only opt-in instances" },
-  { value: "all_instances", label: "All instances" },
+  { value: "never", label: "Do not install automatically" },
+  { value: "opt_in_instances", label: "Only instances you marked for auto-install" },
+  { value: "all_instances", label: "Install updates for every instance" },
 ];
 
 const UPDATE_APPLY_SCOPE_OPTIONS: { value: SchedulerApplyScope; label: string }[] = [
-  { value: "scheduled_only", label: "Scheduled runs only" },
-  { value: "scheduled_and_manual", label: "Scheduled + Check now" },
+  { value: "scheduled_only", label: "Only during scheduled runs" },
+  { value: "scheduled_and_manual", label: "During scheduled runs and Run check now" },
 ];
 
 const UPDATE_CONTENT_TYPE_OPTIONS: { value: UpdatableContentType; label: string }[] = [
@@ -3618,8 +3614,6 @@ function LazyInstalledModIcon({
 }
 
 export default function App() {
-  // UI polish: preserve the existing light/neutral system while strengthening hierarchy, warning visibility,
-  // empty states, and dense activity readability across key surfaces.
   // theme
   const [uiSettingsSeed] = useState<UiSettingsSnapshot>(() => readUiSettingsSnapshot());
   const [theme, setTheme] = useState<"dark" | "light">(uiSettingsSeed.theme);
@@ -4843,7 +4837,9 @@ export default function App() {
   const [offset, setOffset] = useState(0);
   const [limit, setLimit] = useState(20);
   const [index, setIndex] = useState<ModrinthIndex>("relevance");
-  const [discoverSources, setDiscoverSources] = useState<DiscoverProviderSource[]>([]);
+  const [discoverSources, setDiscoverSources] = useState<DiscoverProviderSource[]>([
+    ...DISCOVER_PROVIDER_SOURCES,
+  ]);
   const [discoverContentType, setDiscoverContentType] = useState<DiscoverContentType>("mods");
   const [filterLoaders, setFilterLoaders] = useState<string[]>([]);
   const [filterVersion, setFilterVersion] = useState<string | null>(null);
@@ -4851,10 +4847,10 @@ export default function App() {
   const [discoverErr, setDiscoverErr] = useState<string | null>(null);
   const [discoverBusy, setDiscoverBusy] = useState(false);
   const effectiveDiscoverSources = useMemo(
-    () =>
-      discoverSources.length > 0
-        ? normalizeDiscoverProviderSources(discoverSources)
-        : [...DISCOVER_PROVIDER_SOURCES],
+    () => {
+      const normalized = normalizeDiscoverProviderSources(discoverSources);
+      return normalized.length > 0 ? normalized : [...DISCOVER_PROVIDER_SOURCES];
+    },
     [discoverSources]
   );
   const discoverSourceValue = useMemo<DiscoverSource>(
@@ -4873,6 +4869,7 @@ export default function App() {
   const [curseforgeOpen, setCurseforgeOpen] = useState<CurseforgeProjectDetail | null>(null);
   const [githubOpen, setGithubOpen] = useState<DiscoverSearchHit | null>(null);
   const [githubDetail, setGithubDetail] = useState<GithubProjectDetail | null>(null);
+  const githubDetailRequestIdRef = useRef(0);
   const [githubBusy, setGithubBusy] = useState(false);
   const [githubErr, setGithubErr] = useState<string | null>(null);
   const [githubDetailTab, setGithubDetailTab] = useState<GithubDetailTab>("overview");
@@ -6639,6 +6636,7 @@ export default function App() {
   );
 
   function closeProjectOverlays() {
+    githubDetailRequestIdRef.current += 1;
     setProjectBusy(false);
     setProjectOpen(null);
     setProjectVersions([]);
@@ -6737,11 +6735,7 @@ export default function App() {
         index,
         limit,
         offset: newOffset,
-        source: discoverSourceValue,
-        sources:
-          discoverSourceValue === "all" && effectiveDiscoverSources.length < DISCOVER_PROVIDER_SOURCES.length
-            ? effectiveDiscoverSources
-            : undefined,
+        sources: effectiveDiscoverSources,
         contentType: discoverContentType,
       });
       setHits(res.hits);
@@ -6799,7 +6793,7 @@ export default function App() {
         index,
         limit,
         offset: newOffset,
-        source: templateSource,
+        sources: discoverRequestSources(templateSource),
         contentType: templateType as DiscoverContentType,
       });
       setTemplateHits(res.hits);
@@ -7028,6 +7022,8 @@ export default function App() {
 
   async function openGithubProject(hit: DiscoverSearchHit, contentType?: DiscoverContentType) {
     closeProjectOverlays();
+    const requestId = githubDetailRequestIdRef.current + 1;
+    githubDetailRequestIdRef.current = requestId;
     setProjectOpenContentType(contentType ?? "mods");
     setGithubBusy(true);
     setGithubErr(null);
@@ -7040,15 +7036,23 @@ export default function App() {
         parseGithubProjectId(hit.external_url) ??
         parseGithubProjectId(hit.slug ? `${hit.author}/${hit.slug}` : "");
       if (!parsedProjectId) {
-        setGithubErr("GitHub repository id is missing for this entry.");
+        if (githubDetailRequestIdRef.current === requestId) {
+          setGithubErr("GitHub repository id is missing for this entry.");
+        }
         return;
       }
       const detail = await getGithubProjectDetail({ projectId: parsedProjectId });
-      setGithubDetail(detail);
+      if (githubDetailRequestIdRef.current === requestId) {
+        setGithubDetail(detail);
+      }
     } catch (e: any) {
-      setGithubErr(e?.toString?.() ?? String(e));
+      if (githubDetailRequestIdRef.current === requestId) {
+        setGithubErr(e?.toString?.() ?? String(e));
+      }
     } finally {
-      setGithubBusy(false);
+      if (githubDetailRequestIdRef.current === requestId) {
+        setGithubBusy(false);
+      }
     }
   }
 
@@ -7229,15 +7233,18 @@ export default function App() {
           external_url: `https://github.com/${githubProjectId}`,
           confidence: null,
           reason: "Installed from GitHub release metadata.",
-          install_supported: true,
-          install_note: null,
-          verification_status: githubCandidate?.verification_status ?? "verified",
-          compatibility_status: String(githubCandidate?.version_id ?? "")
+          install_state: String(githubCandidate?.version_id ?? "")
             .trim()
             .toLowerCase()
             .startsWith("gh_release:")
-            ? "compatible"
-            : "unknown",
+            ? "ready"
+            : "checking",
+          install_summary: String(githubCandidate?.version_id ?? "")
+            .trim()
+            .toLowerCase()
+            .startsWith("gh_release:")
+            ? null
+            : "GitHub install compatibility will be checked when you open this project.",
         },
         detailType
       );
@@ -12492,23 +12499,34 @@ export default function App() {
     const stage = String(installProgress?.stage ?? "").toLowerCase();
     switch (stage) {
       case "snapshotting":
-        return "Snapshotting";
       case "resolving":
-        return "Resolving";
+      case "installing":
+        return "Preparing";
       case "downloading":
         return "Downloading";
-      case "installing":
-        return "Installing";
       case "finalizing":
-        return "Finalizing";
+        return "Finishing";
       case "completed":
-        return "Completed";
+        return "Done";
       case "error":
         return "Error";
       default:
         return stage ? stage[0].toUpperCase() + stage.slice(1) : "Working";
     }
   }, [installProgress?.stage]);
+
+  const installProgressTitleText = useMemo(() => {
+    if (!installProgress) return "Working…";
+    const stage = String(installProgress.stage ?? "").toLowerCase();
+    if (stage === "error") return installProgress.message ?? "Install failed";
+    if (stage === "completed") return installProgress.message ?? "Install complete";
+    if (stage === "downloading") return "Downloading files…";
+    if (stage === "finalizing") return "Finishing install…";
+    if (stage === "installing" || stage === "resolving" || stage === "snapshotting") {
+      return "Preparing install…";
+    }
+    return installProgress.message ?? "Working…";
+  }, [installProgress]);
 
   const installProgressIndeterminate = useMemo(() => {
     if (!installProgress) return false;
@@ -12543,6 +12561,9 @@ export default function App() {
     }
     return `${formatBytes(installProgressBytesPerSecond)}/s`;
   }, [installProgress, installProgressBytesPerSecond]);
+
+  const installProgressShowTransferMetrics =
+    String(installProgress?.stage ?? "").toLowerCase() === "downloading";
 
   function renderContent() {
     if (route === "home") {
@@ -12712,6 +12733,16 @@ export default function App() {
         running_sessions: "Running sessions",
         recent_instances: "Recent instances",
       };
+      const homeWidgetDescriptions: Record<HomeWidgetId, string> = {
+        action_required: "Urgent blockers that need attention before you launch or update.",
+        launchpad: "Shortcuts for the most common launcher actions.",
+        recent_activity: "A compact feed of your latest launcher activity.",
+        performance_pulse: "Recent timing samples for checks, installs, and launcher actions.",
+        friend_link: "Status and follow-up actions for the focused instance's Friend Link setup.",
+        maintenance: "Update schedule, launcher upkeep, and maintenance shortcuts.",
+        running_sessions: "Instances that are currently active right now.",
+        recent_instances: "Quick access to the instances you touched most recently.",
+      };
       const orderedHomeLayout = [...homeLayout].sort(
         (a, b) => Number(b.pinned) - Number(a.pinned) || a.order - b.order
       );
@@ -12728,6 +12759,8 @@ export default function App() {
         (item) => item.visible && item.column === "side" && !autoHiddenHomeWidgets.has(item.id)
       );
       const hiddenHomeWidgetCount = homeLayout.filter((item) => !item.visible).length;
+      const mainColumnLayoutItems = orderedHomeLayout.filter((item) => item.column === "main");
+      const sideColumnLayoutItems = orderedHomeLayout.filter((item) => item.column === "side");
 
       const homeWidgetCards: Record<HomeWidgetId, ReactNode> = {
         action_required: (
@@ -12835,15 +12868,12 @@ export default function App() {
         performance_pulse: (
           <details className="card homePanel homeFoldPanel">
             <summary className="homeFoldSummary">
-              <div className="homePanelTitle">Performance pulse</div>
+              <div className="homePanelTitle">Latest timings</div>
               <span className="homeMeta">
                 Avg {perfActionMetrics ? formatDurationMs(perfActionMetrics.avg_ms) : "n/a"} · P95{" "}
                 {perfActionMetrics ? formatDurationMs(perfActionMetrics.p95_ms) : "n/a"}
               </span>
             </summary>
-            <div className="homePanelActions" style={{ marginTop: 10 }}>
-              <button className="btn" onClick={() => setRoute("updates")}>View full timings</button>
-            </div>
             <div className="homeMeta">{perfTrendLabel}</div>
             {topSlowPerfActions.length === 0 ? (
               <div className="homeEmpty homePerfEmpty">
@@ -12855,10 +12885,7 @@ export default function App() {
                   <span />
                   <span />
                 </div>
-                <div>Launch an instance to start tracking performance.</div>
-                <button className="btn subtle" onClick={() => setRoute("library")}>
-                  Open Library
-                </button>
+                <div>Launch an instance and OpenJar will start collecting timing samples here.</div>
               </div>
             ) : (
               <div className="homePerfList">
@@ -13118,25 +13145,12 @@ export default function App() {
           >
             {homeCustomizeOpen ? (
               <div className="homeWidgetCustomizeStrip">
-                <span className="chip subtle">{homeWidgetLabels[layoutItem.id]}</span>
-                {layoutItem.pinned ? <span className="chip">Pinned</span> : null}
-                <div className="homeWidgetCustomizeActions">
-                  <button
-                    className={`btn ${layoutItem.pinned ? "primary" : ""}`}
-                    onClick={() => patchHomeLayout(layoutItem.id, { pinned: !layoutItem.pinned })}
-                  >
-                    {layoutItem.pinned ? "Unpin" : "Pin"}
-                  </button>
-                  <button className="btn" onClick={() => patchHomeLayout(layoutItem.id, { visible: false })}>
-                    Hide
-                  </button>
-                  <button className="btn" onClick={() => nudgeHomeWidget(layoutItem.id, -1)} disabled={!canNudgeUp}>
-                    Up
-                  </button>
-                  <button className="btn" onClick={() => nudgeHomeWidget(layoutItem.id, 1)}>
-                    Down
-                  </button>
+                <div className="homeWidgetCustomizeLabelGroup">
+                  <span className="chip subtle">{homeWidgetLabels[layoutItem.id]}</span>
+                  <span className="homeMeta">Drag to reorder</span>
                 </div>
+                {layoutItem.pinned ? <span className="chip">Pinned</span> : null}
+                {canNudgeUp ? <span className="chip subtle">Can move up</span> : <span className="chip subtle">Top of column</span>}
               </div>
             ) : null}
             {content}
@@ -13149,45 +13163,37 @@ export default function App() {
           <section className="card homeSpotlight">
             <div className="homeSpotlightMain">
               <div className="homeSpotlightTopRow">
-                <div className="homeKicker">Mission control</div>
-                <div className="homeCustomizeTop">
-                  <button
-                    className={`btn ${homeCustomizeOpen ? "primary" : ""}`}
-                    onClick={() => {
-                      setHomeCustomizeOpen((prev) => !prev);
-                      setDraggedHomeWidgetId(null);
-                    }}
-                  >
-                    {homeCustomizeOpen ? "Done customizing" : "Customize home"}
-                  </button>
-                  {homeCustomizeOpen ? (
-                    <button className="btn" onClick={resetHomeLayout}>
-                      Reset defaults
-                    </button>
-                  ) : null}
-                  {hiddenHomeWidgetCount > 0 ? (
-                    <span className="chip subtle">{hiddenHomeWidgetCount} hidden</span>
-                  ) : null}
-                </div>
+                <div className="homeKicker">Home</div>
               </div>
               <div className="homeSpotlightTitle">
-                {focusInstance ? `Continue ${focusInstance.name}` : "Start your first instance"}
+                {focusInstance ? `Ready to launch ${focusInstance.name}` : "Start your first instance"}
               </div>
               <div className="homeSpotlightSub">
                 {focusInstance
-                  ? `${loaderLabelFor(focusInstance)} • Minecraft ${focusInstance.mc_version}`
+                  ? `${loaderLabelFor(focusInstance)} instance on Minecraft ${focusInstance.mc_version}`
                   : "Create an instance, install content, and launch in one flow."}
               </div>
               {focusInstance ? (
                 <div className="homeChipRow">
-                  <span className="chip subtle">{loaderLabelFor(focusInstance)}</span>
-                  <span className="chip subtle">Minecraft {focusInstance.mc_version}</span>
                   {focusHealthScore ? (
                     <span className={`chip ${focusHealthScore.score < 60 ? "danger" : "subtle"}`}>
                       Health {focusHealthScore.grade} ({focusHealthScore.score})
                     </span>
                   ) : null}
                   {runningIds.has(focusInstance.id) ? <span className="chip">Running</span> : null}
+                  {focusFriendStatus?.linked ? (
+                    <span
+                      className={`chip ${
+                        (focusFriendStatus.pending_conflicts_count ?? 0) > 0 ? "danger" : "subtle"
+                      }`}
+                    >
+                      {(focusFriendStatus.pending_conflicts_count ?? 0) > 0
+                        ? `${focusFriendStatus.pending_conflicts_count} Friend Link conflict${
+                            (focusFriendStatus.pending_conflicts_count ?? 0) === 1 ? "" : "s"
+                          }`
+                        : "Friend Link ready"}
+                    </span>
+                  ) : null}
                 </div>
               ) : null}
               <div className="homePanelActions">
@@ -13220,69 +13226,131 @@ export default function App() {
                 )}
               </div>
             </div>
-            <div className="homeKpis">
-              <div className="homeKpi">
-                <div className="homeKpiLabel">Instances</div>
-                <div className="homeKpiValue">{instances.length}</div>
-              </div>
+              <div className="homeKpis">
+                <div className="homeKpi">
+                  <div className="homeKpiLabel">Instances</div>
+                  <div className="homeKpiValue">{instances.length}</div>
+                </div>
               <div className="homeKpi">
                 <div className="homeKpiLabel">Running</div>
                 <div className="homeKpiValue">{runningInstances.length}</div>
               </div>
-              <div className="homeKpi">
-                <div className="homeKpiLabel">Scheduled updates</div>
-                <div className="homeKpiValue">{scheduledUpdatesAvailableTotal}</div>
+                <div className="homeKpi">
+                  <div className="homeKpiLabel">Updates waiting</div>
+                  <div className="homeKpiValue">{scheduledUpdatesAvailableTotal}</div>
+                </div>
+                <div className="homeKpi">
+                  <div className="homeKpiLabel">Account</div>
+                  <div className="homeKpiValue">{selectedLauncherAccount ? "Online" : "Offline"}</div>
+                </div>
               </div>
-              <div className="homeKpi">
-                <div className="homeKpiLabel">Account</div>
-                <div className="homeKpiValue">{selectedLauncherAccount ? "Connected" : "Offline"}</div>
+          </section>
+
+          <section className="card homeControlBar">
+            <div className="homeControlBarMain">
+              <div className="homeControlBarTitle">Workspace layout</div>
+              <div className="homeControlBarMeta">
+                {homeCustomizeOpen
+                  ? "Drag widgets in the page preview, or use the organizer below to show, hide, pin, and move them."
+                  : "Tune what appears on Home and where each section lives."}
               </div>
+            </div>
+            <div className="homeControlBarActions">
+              {hiddenHomeWidgetCount > 0 ? (
+                <span className="chip subtle">{hiddenHomeWidgetCount} hidden</span>
+              ) : null}
+              {homeCustomizeOpen ? (
+                <span className="chip subtle">Customization mode</span>
+              ) : null}
+              <button
+                className={`btn ${homeCustomizeOpen ? "primary" : ""}`}
+                onClick={() => {
+                  setHomeCustomizeOpen((prev) => !prev);
+                  setDraggedHomeWidgetId(null);
+                }}
+              >
+                {homeCustomizeOpen ? "Done customizing" : "Customize home"}
+              </button>
+              {homeCustomizeOpen ? (
+                <button className="btn" onClick={resetHomeLayout}>
+                  Reset defaults
+                </button>
+              ) : null}
             </div>
           </section>
 
           {homeCustomizeOpen ? (
             <div className="card homeCustomizePanel">
-              <div className="homeCustomizeHint">
-                Drag cards to reorder across columns. You can also hide, pin, and move sections from this list.
+              <div className="homeCustomizeHeader">
+                <div>
+                  <div className="homeCustomizeTitle">Organize your Home page</div>
+                  <div className="homeCustomizeHint">
+                    Keep the essentials up front. Move sections between columns, pin the important ones, or hide the ones you do not need.
+                  </div>
+                </div>
               </div>
-              <div className="homeCustomizeList">
-                {orderedHomeLayout.map((item) => (
-                  <div key={`customize:${item.id}`} className={`homeCustomizeItem ${item.visible ? "" : "hidden"}`}>
-                    <div className="homeCustomizeItemMain">
-                      <div className="homeCustomizeItemTitle">{homeWidgetLabels[item.id]}</div>
-                      <div className="homeCustomizeItemMeta">
-                        {item.column === "main" ? "Main column" : "Side column"} · {item.pinned ? "Pinned" : "Not pinned"}
-                      </div>
+              <div className="homeCustomizeBoard">
+                {[
+                  { key: "main", label: "Main column", items: mainColumnLayoutItems as HomeWidgetLayoutItem[] },
+                  { key: "side", label: "Side column", items: sideColumnLayoutItems as HomeWidgetLayoutItem[] },
+                ].map((group) => (
+                  <div key={group.key} className="homeCustomizeColumn">
+                    <div className="homeCustomizeColumnHead">
+                      <div className="homeCustomizeColumnTitle">{group.label}</div>
+                      <span className="chip subtle">
+                        {group.items.filter((item) => item.visible).length} shown
+                      </span>
                     </div>
-                    <div className="homeCustomizeItemActions">
-                      <button
-                        className={`btn ${item.visible ? "primary" : ""}`}
-                        onClick={() => patchHomeLayout(item.id, { visible: !item.visible })}
-                      >
-                        {item.visible ? "Shown" : "Hidden"}
-                      </button>
-                      <button
-                        className={`btn ${item.pinned ? "primary" : ""}`}
-                        onClick={() => patchHomeLayout(item.id, { pinned: !item.pinned })}
-                      >
-                        {item.pinned ? "Pinned" : "Pin"}
-                      </button>
-                      <button
-                        className="btn"
-                        onClick={() =>
-                          patchHomeLayout(item.id, {
-                            column: item.column === "main" ? "side" : "main",
-                          })
-                        }
-                      >
-                        Move to {item.column === "main" ? "side" : "main"}
-                      </button>
-                      <button className="btn" onClick={() => nudgeHomeWidget(item.id, -1)}>
-                        Up
-                      </button>
-                      <button className="btn" onClick={() => nudgeHomeWidget(item.id, 1)}>
-                        Down
-                      </button>
+                    <div className="homeCustomizeList">
+                      {group.items.map((item) => (
+                        <div
+                          key={`customize:${item.id}`}
+                          className={`homeCustomizeItem ${item.visible ? "" : "hidden"}`}
+                        >
+                          <div className="homeCustomizeItemMain">
+                            <div className="homeCustomizeItemTopRow">
+                              <div className="homeCustomizeItemTitle">{homeWidgetLabels[item.id]}</div>
+                              <div className="homeCustomizeItemStatus">
+                                <span className={`chip ${item.visible ? "subtle" : ""}`}>
+                                  {item.visible ? "Shown" : "Hidden"}
+                                </span>
+                                {item.pinned ? <span className="chip">Pinned</span> : null}
+                              </div>
+                            </div>
+                            <div className="homeCustomizeItemMeta">{homeWidgetDescriptions[item.id]}</div>
+                          </div>
+                          <div className="homeCustomizeItemActions">
+                            <button
+                              className={`btn ${item.visible ? "primary" : ""}`}
+                              onClick={() => patchHomeLayout(item.id, { visible: !item.visible })}
+                            >
+                              {item.visible ? "Hide" : "Show"}
+                            </button>
+                            <button
+                              className={`btn ${item.pinned ? "primary" : ""}`}
+                              onClick={() => patchHomeLayout(item.id, { pinned: !item.pinned })}
+                            >
+                              {item.pinned ? "Unpin" : "Pin"}
+                            </button>
+                            <button
+                              className="btn"
+                              onClick={() =>
+                                patchHomeLayout(item.id, {
+                                  column: item.column === "main" ? "side" : "main",
+                                })
+                              }
+                            >
+                              Send to {item.column === "main" ? "side" : "main"}
+                            </button>
+                            <button className="btn" onClick={() => nudgeHomeWidget(item.id, -1)}>
+                              Up
+                            </button>
+                            <button className="btn" onClick={() => nudgeHomeWidget(item.id, 1)}>
+                              Down
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 ))}
@@ -13342,6 +13410,12 @@ export default function App() {
       const selectedPermissionsChecklist: LaunchPermissionChecklistItem[] = selectedPermissionsInstance
         ? preflightReportByInstance[selectedPermissionsInstance.id]?.permissions ?? []
         : [];
+      const settingsSelectedAccount = selectedLauncherAccount ?? launcherAccounts[0] ?? null;
+      const settingsUpdateStatusLabel = appUpdaterState?.available
+        ? `Update ready${appUpdaterState.latest_version ? ` · v${appUpdaterState.latest_version}` : ""}`
+        : appUpdaterState
+          ? "Up to date"
+          : "Not checked yet";
       return (
         <div className="settingsPage">
           <div className="settingsShell">
@@ -13395,6 +13469,74 @@ export default function App() {
             </aside>
 
             <div className="settingsMain">
+              <div className="card settingsHeroCard">
+                <div className="settingsHeroHeader">
+                  <div>
+                    <div className="settingsHeroEyebrow">Overview</div>
+                    <div className="settingsHeroTitle">Make the launcher feel right before you dive deeper.</div>
+                    <div className="settingsHeroSub">
+                      Everyday settings stay up front. Advanced controls are still here, but they should stop competing with the basics.
+                    </div>
+                  </div>
+                  <div className="settingsHeroActions">
+                    <button className="btn" onClick={() => openSettingAnchor("global:appearance", { target: "global" })}>
+                      Appearance
+                    </button>
+                    <button className="btn" onClick={() => openSettingAnchor("global:launch-method", { target: "global" })}>
+                      Launch
+                    </button>
+                    <button className="btn" onClick={() => openSettingAnchor("global:account", { target: "global" })}>
+                      Account
+                    </button>
+                    <button className="btn" onClick={() => openSettingAnchor("global:app-updates", { target: "global" })}>
+                      Updates
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settingsHeroSummaryGrid">
+                  <div className="settingsHeroSummaryCard">
+                    <div className="settingsHeroSummaryLabel">View mode</div>
+                    <div className="settingsHeroSummaryValue">
+                      {settingsMode === "advanced" ? t("settings.mode.advanced") : t("settings.mode.basic")}
+                    </div>
+                    <div className="settingsHeroSummaryMeta">
+                      {settingsMode === "advanced"
+                        ? "Power-user controls are visible."
+                        : "Only the common settings are emphasized."}
+                    </div>
+                  </div>
+                  <div className="settingsHeroSummaryCard">
+                    <div className="settingsHeroSummaryLabel">Language</div>
+                    <div className="settingsHeroSummaryValue">{getAppLanguageOption(appLanguage).nativeLabel}</div>
+                    <div className="settingsHeroSummaryMeta">App UI language</div>
+                  </div>
+                  <div className="settingsHeroSummaryCard">
+                    <div className="settingsHeroSummaryLabel">Default launch</div>
+                    <div className="settingsHeroSummaryValue">{humanizeToken(launchMethodPick)}</div>
+                    <div className="settingsHeroSummaryMeta">Used when an instance does not override it</div>
+                  </div>
+                  <div className="settingsHeroSummaryCard">
+                    <div className="settingsHeroSummaryLabel">Connected account</div>
+                    <div className="settingsHeroSummaryValue">
+                      {settingsSelectedAccount?.username ?? "Not connected"}
+                    </div>
+                    <div className="settingsHeroSummaryMeta">
+                      {settingsSelectedAccount ? "Ready for native launch" : "Connect Microsoft to launch natively"}
+                    </div>
+                  </div>
+                  <div className="settingsHeroSummaryCard">
+                    <div className="settingsHeroSummaryLabel">App updates</div>
+                    <div className="settingsHeroSummaryValue">{settingsUpdateStatusLabel}</div>
+                    <div className="settingsHeroSummaryMeta">
+                      {appUpdaterState?.checked_at
+                        ? `Last check ${formatDateTime(appUpdaterState.checked_at, "Never")}`
+                        : "No launcher update check yet"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="settingsLayout">
                 <section className="settingsCol">
               <div className="card settingsSectionCard" id="setting-anchor-global:appearance">
@@ -14176,37 +14318,55 @@ export default function App() {
       const updatesContentScopeSummary = summarizeUpdateContentTypeSelection(
         updatesPageContentTypesNormalized
       );
+      const updateScheduleStatus =
+        updateCheckCadence === "off"
+          ? "Paused"
+          : scheduledUpdateBusy
+            ? "Checking now"
+            : "Scheduled";
       return (
         <div className="page">
           <div style={{ maxWidth: 1100 }}>
             <div className="h1">Updates available</div>
             <div className="p">
-              Scheduled checks for installed content across providers with optional auto-apply rules.
+              Keep installed content current across your instances, with clearer rules for when checks run and when updates install automatically.
             </div>
 
             <div className="card updatesScreenSummaryCard">
               <div className="updatesScreenSummaryHeader">
-                <div>
-                  <div className="settingTitle">Schedule: {updateCadenceLabel(updateCheckCadence)}</div>
-                  <div className="settingSub">
-                    Last run: {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"} · Next run: {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check") : "Pending first check"}
+                <div className="updatesScreenSummaryMain">
+                  <div className="updatesScreenSummaryEyebrow">Update checks</div>
+                  <div className="updatesScreenSummaryTitleRow">
+                    <div className="settingTitle">Runs {updateCadenceLabel(updateCheckCadence).toLowerCase()}</div>
+                    <span className={`chip ${updateScheduleStatus === "Paused" ? "" : "subtle"}`}>
+                      {updateScheduleStatus}
+                    </span>
                   </div>
-                  <div className="settingSub" style={{ marginTop: 6 }}>
-                    Mode: {updateAutoApplyModeLabel(updateAutoApplyMode)} ({updateApplyScopeLabel(updateApplyScope)})
+                  <div className="settingSub updatesScreenSummaryLead">
+                    Choose what gets checked, how often checks happen, and whether matching updates can install automatically.
                   </div>
-                  {scheduledUpdateBusy ? (
-                    <div className="settingSub" style={{ marginTop: 6 }}>
-                      Progress: {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} · Elapsed{" "}
-                      {formatEtaSeconds(scheduledUpdateRunElapsedSeconds)} · ETA{" "}
-                      {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
-                    </div>
-                  ) : scheduledUpdateRunTotal > 0 && scheduledUpdateRunElapsedSeconds != null ? (
-                    <div className="settingSub" style={{ marginTop: 6 }}>
-                      Last run duration: {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
-                    </div>
-                  ) : null}
-                  <div className="settingSub" style={{ marginTop: 6 }}>
-                    Content scope: {updatesContentScopeSummary}
+                  <div className="updatesScreenSummaryMeta">
+                    <span className="chip subtle">
+                      Last run: {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
+                    </span>
+                    <span className="chip subtle">
+                      Next run: {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check") : "Pending first check"}
+                    </span>
+                    <span className="chip subtle">Content: {updatesContentScopeSummary}</span>
+                    <span className="chip subtle">
+                      Auto install: {updateAutoApplyModeLabel(updateAutoApplyMode)}
+                    </span>
+                    <span className="chip subtle">When allowed: {updateApplyScopeLabel(updateApplyScope)}</span>
+                    {scheduledUpdateBusy ? (
+                      <span className="chip">
+                        Progress {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} · ETA{" "}
+                        {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
+                      </span>
+                    ) : scheduledUpdateRunTotal > 0 && scheduledUpdateRunElapsedSeconds != null ? (
+                      <span className="chip subtle">
+                        Last run took {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="updatesScreenSummaryActions">
@@ -14224,22 +14384,28 @@ export default function App() {
                     }
                     disabled={scheduledUpdateBusy}
                   >
-                    {scheduledUpdateBusy ? "Checking…" : "Check now"}
+                    {scheduledUpdateBusy ? "Checking…" : "Run check now"}
                   </button>
                 </div>
               </div>
-              <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: "wrap" }}>
-                <div style={{ minWidth: 260, maxWidth: 360, flex: "1 1 280px" }}>
+
+              <div className="updatesScreenRuleGrid">
+                <div className="updatesScreenRuleCard updatesScreenRuleCardWide">
+                  <div className="updatesScreenRuleLabel">What to check</div>
+                  <div className="updatesScreenRuleHelp">
+                    Pick which content types should be included.
+                  </div>
                   <MultiSelectDropdown
                     values={updatesPageUseAllContentTypes ? [] : updatesPageContentTypesNormalized}
-                    placeholder="Update only: All content"
+                    placeholder="All content types"
                     groups={UPDATE_CONTENT_TYPE_GROUPS}
                     showSearch={false}
                     showGroupHeaders={false}
                     itemVariant="menu"
                     panelMinWidth={260}
                     panelEstimatedHeight={320}
-                    clearLabel="All content"
+                    clearLabel="Use all content types"
+                    allSelectedLabel="All content types"
                     disabled={scheduledUpdateBusy}
                     onClear={() => setUpdatesPageContentTypes([])}
                     onChange={(next) => {
@@ -14257,45 +14423,61 @@ export default function App() {
                     }}
                   />
                 </div>
-                <MenuSelect
-                  value={updateCheckCadence}
-                  labelPrefix="Check cadence"
-                  onChange={(v) => {
-                    const next = normalizeUpdateCheckCadence(v);
-                    setUpdateCheckCadence(next);
-                    void persistUpdateSchedulerPrefs({ cadence: next });
-                  }}
-                  options={UPDATE_CADENCE_OPTIONS}
-                />
-                <MenuSelect
-                  value={updateAutoApplyMode}
-                  labelPrefix="Auto-apply"
-                  onChange={(v) => {
-                    const next = normalizeUpdateAutoApplyMode(v);
-                    setUpdateAutoApplyMode(next);
-                    void persistUpdateSchedulerPrefs({ autoApplyMode: next });
-                  }}
-                  options={UPDATE_AUTO_APPLY_MODE_OPTIONS}
-                />
-                <MenuSelect
-                  value={updateApplyScope}
-                  labelPrefix="Apply on"
-                  onChange={(v) => {
-                    const next = normalizeUpdateApplyScope(v);
-                    setUpdateApplyScope(next);
-                    void persistUpdateSchedulerPrefs({ applyScope: next });
-                  }}
-                  options={UPDATE_APPLY_SCOPE_OPTIONS}
-                />
+                <div className="updatesScreenRuleCard">
+                  <div className="updatesScreenRuleLabel">How often to check</div>
+                  <div className="updatesScreenRuleHelp">Set how often background checks run.</div>
+                  <MenuSelect
+                    value={updateCheckCadence}
+                    labelPrefix="How often"
+                    buttonLabel={updateCadenceLabel(updateCheckCadence)}
+                    onChange={(v) => {
+                      const next = normalizeUpdateCheckCadence(v);
+                      setUpdateCheckCadence(next);
+                      void persistUpdateSchedulerPrefs({ cadence: next });
+                    }}
+                    options={UPDATE_CADENCE_OPTIONS}
+                  />
+                </div>
+                <div className="updatesScreenRuleCard">
+                  <div className="updatesScreenRuleLabel">Automatic installs</div>
+                  <div className="updatesScreenRuleHelp">Choose which instances can install updates for you.</div>
+                  <MenuSelect
+                    value={updateAutoApplyMode}
+                    labelPrefix="Automatic installs"
+                    buttonLabel={updateAutoApplyModeLabel(updateAutoApplyMode)}
+                    onChange={(v) => {
+                      const next = normalizeUpdateAutoApplyMode(v);
+                      setUpdateAutoApplyMode(next);
+                      void persistUpdateSchedulerPrefs({ autoApplyMode: next });
+                    }}
+                    options={UPDATE_AUTO_APPLY_MODE_OPTIONS}
+                  />
+                </div>
+                <div className="updatesScreenRuleCard">
+                  <div className="updatesScreenRuleLabel">When auto-install can run</div>
+                  <div className="updatesScreenRuleHelp">Allow auto-install on scheduled checks, or also when you run one manually.</div>
+                  <MenuSelect
+                    value={updateApplyScope}
+                    labelPrefix="When allowed"
+                    buttonLabel={updateApplyScopeLabel(updateApplyScope)}
+                    onChange={(v) => {
+                      const next = normalizeUpdateApplyScope(v);
+                      setUpdateApplyScope(next);
+                      void persistUpdateSchedulerPrefs({ applyScope: next });
+                    }}
+                    options={UPDATE_APPLY_SCOPE_OPTIONS}
+                  />
+                </div>
               </div>
+
               <div className="updatesScreenStatsRow">
-                <span className="chip subtle">{updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} with updates</span>
-                <span className="chip">{updatesPageUpdatesAvailableTotal} total update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"}</span>
-                <span className="chip subtle">{updatesPageVisibleEntries.length} checked instance{updatesPageVisibleEntries.length === 1 ? "" : "s"}</span>
+                <span className="chip">{updatesPageUpdatesAvailableTotal} update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"} waiting</span>
+                <span className="chip subtle">{updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} need attention</span>
+                <span className="chip subtle">{updatesPageVisibleEntries.length} instance{updatesPageVisibleEntries.length === 1 ? "" : "s"} checked</span>
               </div>
               {scheduledAppliedUpdatesRecent.length > 0 ? (
                 <div className="updatesScreenAppliedSummary">
-                  <div className="updatesCardTitle">Last scheduled auto-updates</div>
+                  <div className="updatesCardTitle">Recent automatic installs</div>
                   <div className="updatesList">
                     {scheduledAppliedUpdatesRecent.map((entry) => (
                       <div key={`applied:${entry.instance_id}:${entry.applied_at}`} className="updatesListRow">
@@ -14347,8 +14529,20 @@ export default function App() {
                     <div className="updatesScreenItemHead">
                       <div>
                         <div className="updatesScreenItemTitle">{row.instance_name}</div>
-                        <div className="muted">
-                          Checked {new Date(row.checked_at).toLocaleString()}
+                        <div className="updatesScreenItemMetaRow">
+                          <span className={`chip ${row.error ? "" : row.update_count === 0 ? "subtle" : ""}`}>
+                            {row.error
+                              ? "Check failed"
+                              : row.update_count === 0
+                                ? "Up to date"
+                                : `${row.update_count} update${row.update_count === 1 ? "" : "s"} available`}
+                          </span>
+                          <span className="chip subtle">
+                            Checked {new Date(row.checked_at).toLocaleString()}
+                          </span>
+                          <span className="chip subtle">
+                            {row.checked_entries} entr{row.checked_entries === 1 ? "y" : "ies"} scanned
+                          </span>
                         </div>
                       </div>
                       <div className="updatesScreenItemActions">
@@ -14376,7 +14570,7 @@ export default function App() {
                     {appliedEntry ? (
                       <div className="updatesScreenAppliedInstance">
                         <div className="updatesCardTitle">
-                          Last scheduled auto-update
+                          Last automatic install
                           <span className="chip subtle" style={{ marginLeft: 8 }}>
                             {appliedEntry.updated_entries} updated
                           </span>
@@ -14403,7 +14597,7 @@ export default function App() {
                       <div className="errorBox" style={{ marginTop: 8 }}>{row.error}</div>
                     ) : row.update_count === 0 ? (
                       <div className="noticeBox" style={{ marginTop: 8 }}>
-                        Up to date ({row.checked_entries} entr{row.checked_entries === 1 ? "y" : "ies"} checked).
+                        Everything checked here is already current.
                       </div>
                     ) : (
                       <div className="updatesList" style={{ marginTop: 8 }}>
@@ -14478,7 +14672,7 @@ export default function App() {
       return (
         <div className="accountPage">
           <div className="h1">Account</div>
-          <div className="p">Minecraft account details, launcher diagnostics, and skin studio controls.</div>
+          <div className="p">Connection status, launcher profile details, and skin setup in one calmer workspace.</div>
 
           <div className="accountHero card">
             <div className="accountAvatarWrap">
@@ -14500,6 +14694,7 @@ export default function App() {
               )}
             </div>
             <div className="accountHeroMain">
+              <div className="accountHeroEyebrow">Minecraft profile</div>
               <div className="accountHeroName">{username}</div>
               <div className="accountHeroMeta">
                 <span className={`accountStatusBadge tone-${accountStatusTone}`}>
@@ -14511,6 +14706,13 @@ export default function App() {
               </div>
               <div className="accountHeroSub">
                 UUID: {uuid ?? "Not available"}
+              </div>
+              <div className="accountHeroLead">
+                {isDisconnected
+                  ? "Connect a Microsoft account to unlock native launch, entitlement checks, and profile sync."
+                  : isUnverified
+                    ? "The account is connected, but verification is still incomplete right now."
+                    : "Your launcher account is connected and ready for native launch workflows."}
               </div>
               <div className="row" style={{ marginTop: 10 }}>
                 <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
@@ -14539,78 +14741,96 @@ export default function App() {
             </div>
           ) : null}
 
+          <div className="accountSummaryStrip">
+            <div className="accountSummaryCard">
+              <div className="accountSummaryLabel">Launch mode</div>
+              <div className="accountSummaryValue">{humanizeToken(launcherSettings?.default_launch_method ?? "native")}</div>
+            </div>
+            <div className="accountSummaryCard">
+              <div className="accountSummaryLabel">Update checks</div>
+              <div className="accountSummaryValue">{updateCadenceLabel(updateCheckCadence)}</div>
+            </div>
+            <div className="accountSummaryCard">
+              <div className="accountSummaryLabel">Saved skins</div>
+              <div className="accountSummaryValue">{savedSkinOptions.length}</div>
+            </div>
+            <div className="accountSummaryCard">
+              <div className="accountSummaryLabel">Connected accounts</div>
+              <div className="accountSummaryValue">{launcherAccounts.length}</div>
+            </div>
+          </div>
+
           <div className="accountGrid">
-            <div className="card accountCard">
-              <div className="settingTitle">Launcher profile</div>
-              <div className="settingSub">Useful account and launcher defaults for quick checks.</div>
-              <div className="accountDiagList">
-                <div className="accountDiagRow">
-                  <span>Default launch mode</span>
-                  <strong>{humanizeToken(launcherSettings?.default_launch_method ?? "native")}</strong>
+            <div className="card accountCard accountCardWide">
+              <div className="settingTitle">Profile overview</div>
+              <div className="settingSub">The account you are using right now, plus the launcher and skin defaults attached to it.</div>
+              <div className="accountProfileSplit">
+                <div className="accountSectionBlock">
+                  <div className="accountSectionTitle">Launcher defaults</div>
+                  <div className="accountDiagList">
+                    <div className="accountDiagRow">
+                      <span>Default launch mode</span>
+                      <strong>{humanizeToken(launcherSettings?.default_launch_method ?? "native")}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Update checks</span>
+                      <strong>{updateCadenceLabel(updateCheckCadence)}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Automatic installs</span>
+                      <strong>{updateAutoApplyModeLabel(updateAutoApplyMode)}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Current skin</span>
+                      <strong>{selectedAccountSkin?.label ?? "None"}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Current cape</span>
+                      <strong>{selectedAccountCape?.label ?? "No cape"}</strong>
+                    </div>
+                  </div>
                 </div>
-                <div className="accountDiagRow">
-                  <span>Update checks</span>
-                  <strong>{updateCadenceLabel(updateCheckCadence)}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Auto-apply</span>
-                  <strong>{updateAutoApplyModeLabel(updateAutoApplyMode)}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Connected accounts</span>
-                  <strong>{launcherAccounts.length}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Current skin</span>
-                  <strong>{selectedAccountSkin?.label ?? "None"}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Current cape</span>
-                  <strong>{selectedAccountCape?.label ?? "No cape"}</strong>
+                <div className="accountSectionBlock">
+                  <div className="accountSectionTitle">Skin setup</div>
+                  <div className="accountDiagList">
+                    <div className="accountDiagRow">
+                      <span>Saved skins</span>
+                      <strong>{savedSkinOptions.length}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Default skins</span>
+                      <strong>{defaultSkinOptions.length}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Cape options</span>
+                      <strong>{capeOptions.length}</strong>
+                    </div>
+                    <div className="accountDiagRow">
+                      <span>Last diagnostics refresh</span>
+                      <strong>{diag?.last_refreshed_at ? new Date(diag.last_refreshed_at).toLocaleString() : "Never"}</strong>
+                    </div>
+                  </div>
+                  <div className="accountSectionActions">
+                    <button className="btn" onClick={() => setRoute("skins")}>
+                      Open skin studio
+                    </button>
+                    <label className="toggleRow accountInlineToggle">
+                      <input
+                        type="checkbox"
+                        checked={skinPreviewEnabled}
+                        onChange={(event) => setSkinPreviewEnabled(event.target.checked)}
+                      />
+                      <span className="togglePill" />
+                      <span>Use 3D preview in Skin Studio</span>
+                    </label>
+                  </div>
                 </div>
               </div>
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn" onClick={() => setRoute("skins")}>
-                  Open skin studio
-                </button>
-              </div>
-              <label className="toggleRow" style={{ marginTop: 8 }}>
-                <input
-                  type="checkbox"
-                  checked={skinPreviewEnabled}
-                  onChange={(event) => setSkinPreviewEnabled(event.target.checked)}
-                />
-                <span className="togglePill" />
-                <span>Enable 3D preview in Skin Studio</span>
-              </label>
             </div>
 
-            <div className="card accountCard">
-              <div className="settingTitle">Skin library summary</div>
-              <div className="settingSub">Saved and default skin availability for this profile.</div>
-              <div className="accountDiagList">
-                <div className="accountDiagRow">
-                  <span>Saved skins</span>
-                  <strong>{savedSkinOptions.length}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Default skins</span>
-                  <strong>{defaultSkinOptions.length}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Cape options</span>
-                  <strong>{capeOptions.length}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Last diagnostics refresh</span>
-                  <strong>{diag?.last_refreshed_at ? new Date(diag.last_refreshed_at).toLocaleString() : "Never"}</strong>
-                </div>
-              </div>
-            </div>
-
-            <div className="card accountCard">
+            <div className="card accountCard accountCardWide">
               <div className="settingTitle">Diagnostics</div>
-              <div className="settingSub">Token chain and entitlement health for native launcher.</div>
+              <div className="settingSub">Connection health and token state for native launch. Network errors can make these checks look worse than the account really is.</div>
               <div className="accountDiagList">
                 <div className="accountDiagRow">
                   <span>Connection</span>
@@ -14632,7 +14852,7 @@ export default function App() {
                 </div>
                 <div className="accountDiagRow">
                   <span>Last refresh</span>
-                  <strong>{diag?.last_refreshed_at ?? "Never"}</strong>
+                  <strong>{diag?.last_refreshed_at ? formatDateTime(diag.last_refreshed_at, "Never") : "Never"}</strong>
                 </div>
                 {diag?.last_error ? (
                   <div className="errorBox" style={{ marginTop: 8 }}>{diag.last_error}</div>
@@ -14645,7 +14865,7 @@ export default function App() {
 
             <div className="card accountCard">
               <div className="settingTitle">Accounts</div>
-              <div className="settingSub">Switch active account for native launch.</div>
+              <div className="settingSub">Choose which connected account should be used for native launch.</div>
               <div className="accountAccountsList">
                 {launcherAccounts.length === 0 ? (
                   <div className="muted">No connected accounts.</div>
@@ -14683,7 +14903,7 @@ export default function App() {
 
             <div className="card accountCard">
               <div className="settingTitle">Profile assets</div>
-              <div className="settingSub">Skins and capes returned by Minecraft profile API.</div>
+              <div className="settingSub">Skins and capes currently returned by the Minecraft profile API.</div>
               <div className="accountDiagList">
                 <div className="accountDiagRow">
                   <span>Skins</span>
@@ -14791,9 +15011,9 @@ export default function App() {
         }
       }
       if (discoverIncludesCurseforge) {
-        if (discoverContentType === "mods" && filterLoaders.length > 0) {
+        if (discoverContentType === "mods" && discoverOnlyCurseforge) {
           discoverFilterSupportNotes.push(
-            "CurseForge loader filter is currently unavailable. Keep loader filters empty for CurseForge-only searches."
+            "CurseForge-only searches currently ignore the loader filter."
           );
         }
         if (filterCategories.length > 0) {
@@ -14813,19 +15033,26 @@ export default function App() {
       const discoverFilterSupportNotice = discoverFilterSupportNotes.length
         ? discoverFilterSupportNotes.join(" ")
         : null;
+      const activeDiscoverFilterCount =
+        (filterVersion ? 1 : 0) +
+        (filterLoaders.length > 0 ? 1 : 0) +
+        (filterCategories.length > 0 ? 1 : 0) +
+        (discoverAllVersions ? 1 : 0);
       const discoverPlaceholder =
         discoverContentType === "shaderpacks"
           ? "Search shaderpacks…"
           : discoverContentType === "resourcepacks"
             ? "Search resourcepacks…"
             : discoverContentType === "datapacks"
-              ? "Search datapacks…"
-              : discoverContentType === "modpacks"
-                ? "Search modpacks…"
+            ? "Search datapacks…"
+            : discoverContentType === "modpacks"
+              ? "Search modpacks…"
               : "Search mods…";
+      const discoverContentTypeLabel =
+        DISCOVER_CONTENT_OPTIONS.find((option) => option.value === discoverContentType)?.label ?? discoverContentType;
 
       return (
-        <div style={{ maxWidth: 1400 }}>
+        <div className="discoverPage" style={{ maxWidth: 1400 }}>
           <div className="h1">Discover content</div>
           <div className="p">Search Modrinth, CurseForge, or GitHub and install directly into instances.</div>
           {discoverAddContext ? (
@@ -14916,169 +15143,222 @@ export default function App() {
             </div>
           ) : null}
 
-          <div className="topRow" style={{ marginBottom: 10 }}>
-            <SegmentedControl
-              value={discoverContentType}
-              onChange={(v) => {
-                setDiscoverContentType((v as DiscoverContentType) ?? "mods");
-                setFilterLoaders([]);
-                setOffset(0);
-              }}
-              options={DISCOVER_CONTENT_OPTIONS}
-              variant="scroll"
-            />
-          </div>
-
-          <div className="topRow discoverSearchRow">
-            <div className="searchGrow">
-              <input
-                className="input"
-                value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  if (discoverErr) setDiscoverErr(null);
-                }}
-                placeholder={discoverPlaceholder}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") runSearch(0);
-                }}
-              />
+          <div className="discoverWorkspace">
+            <div className="discoverWorkspaceTop">
+              <div>
+                <div className="discoverWorkspaceEyebrow">Search setup</div>
+                <div className="discoverWorkspaceTitle">Find content by type, source, and compatibility.</div>
+              </div>
+              <div className="discoverWorkspaceStats">
+                <span className="chip subtle">{activeDiscoverFilterCount} active filter{activeDiscoverFilterCount === 1 ? "" : "s"}</span>
+                <span className="chip subtle">{totalHits} result{totalHits === 1 ? "" : "s"}</span>
+              </div>
             </div>
 
-            <MenuSelect
-              value={index}
-              labelPrefix="Sort"
-              options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-              onChange={(v) => {
-                setIndex(v as any);
-                setOffset(0);
-              }}
-            />
-
-            <MenuSelect
-              value={String(limit)}
-              labelPrefix="View"
-              options={DISCOVER_VIEW_OPTIONS}
-              align="end"
-              onChange={(v) => {
-                setLimit(parseInt(v, 10));
-                setOffset(0);
-              }}
-            />
-
-            <div className="filterCtrl filterCtrlSource">
-              <MultiSelectDropdown
-                values={discoverSources}
-                placeholder="Sources: All"
-                groups={DISCOVER_SOURCE_GROUPS}
-                showSearch={false}
-                showGroupHeaders={false}
-                itemVariant="menu"
-                clearLabel="All sources"
-                panelMinWidth={220}
-                panelEstimatedHeight={176}
-                onChange={(values) => {
-                  const next = normalizeDiscoverProviderSources(values);
-                  setDiscoverSources(
-                    next.length >= DISCOVER_PROVIDER_SOURCES.length ? [] : next
-                  );
-                  setOffset(0);
-                }}
-                onClear={() => {
-                  setDiscoverSources([]);
-                  setOffset(0);
-                }}
-              />
-            </div>
-
-            <button className="btn primary" onClick={() => runSearch(0)} disabled={discoverBusy}>
-              {discoverBusy ? "Searching…" : "Search"}
-            </button>
-          </div>
-
-          <div className="topRow discoverFilterRow">
-            <div className="discoverFiltersRight">
-              <div className="filterCtrl filterCtrlVersion">
-                <Dropdown
-                  value={filterVersion}
-                  placeholder="Game version: Any"
-                  groups={groupedDiscoverVersions}
-                  includeAny
-                  onPick={(v) => {
-                    setFilterVersion(v);
-                    setOffset(0);
-                  }}
-                />
-              </div>
-
-              <div className="filterCtrl filterCtrlLoader">
-                <MultiSelectDropdown
-                  values={filterLoaders}
-                  placeholder="Loaders: Any"
-                  groups={DISCOVER_LOADER_GROUPS}
-                  showSearch={false}
-                  showGroupHeaders={false}
-                  disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
-                  onChange={(v) => {
-                    if (discoverContentType !== "mods") return;
-                    if (discoverOnlyCurseforge) return;
-                    setFilterLoaders(v);
-                    setOffset(0);
-                  }}
-                />
-              </div>
-
-              <div className="filterCtrl filterCtrlCategory">
-                <MultiSelectDropdown
-                  values={filterCategories}
-                  placeholder="Categories: Any"
-                  groups={MOD_CATEGORY_GROUPS}
-                  searchPlaceholder="Search categories…"
-                  onChange={(v) => {
-                    setFilterCategories(v);
-                    setOffset(0);
-                  }}
-                />
-              </div>
-
-              <label className="checkboxRow discoverCheckboxRow">
-                <span
-                  className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
-                  onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
-                  role="checkbox"
-                  aria-checked={discoverAllVersions}
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      setDiscoverAllVersions(!discoverAllVersions);
-                    }
-                  }}
-                >
-                  {discoverAllVersions ? "✓" : ""}
-                </span>
-                Show all versions
-              </label>
-
-              <button
-                className="btn discoverClearBtn"
-                onClick={() => {
-                  setFilterVersion(null);
+            <div className="topRow" style={{ marginBottom: 8 }}>
+              <SegmentedControl
+                value={discoverContentType}
+                onChange={(v) => {
+                  setDiscoverContentType((v as DiscoverContentType) ?? "mods");
                   setFilterLoaders([]);
-                  setFilterCategories([]);
                   setOffset(0);
                 }}
-                disabled={!filterVersion && filterLoaders.length === 0 && filterCategories.length === 0}
-              >
-                Clear filters
-              </button>
+                options={DISCOVER_CONTENT_OPTIONS}
+                variant="scroll"
+              />
             </div>
+
+            <div className="topRow discoverSearchRow">
+              <div className="searchGrow">
+                <input
+                  className="input"
+                  value={q}
+                  onChange={(e) => {
+                    setQ(e.target.value);
+                    if (discoverErr) setDiscoverErr(null);
+                  }}
+                  placeholder={discoverPlaceholder}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") runSearch(0);
+                  }}
+                />
+              </div>
+
+              <div className="discoverSearchActions">
+                <MenuSelect
+                  value={index}
+                  labelPrefix="Sort"
+                  options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                  onChange={(v) => {
+                    setIndex(v as any);
+                    setOffset(0);
+                  }}
+                />
+
+                <MenuSelect
+                  value={String(limit)}
+                  labelPrefix="View"
+                  options={DISCOVER_VIEW_OPTIONS}
+                  align="end"
+                  onChange={(v) => {
+                    setLimit(parseInt(v, 10));
+                    setOffset(0);
+                  }}
+                />
+
+                <div className="filterCtrl filterCtrlSource">
+                  <MultiSelectDropdown
+                    values={discoverSources}
+                    placeholder="Sources: All"
+                    allSelectedLabel="Sources: All"
+                    groups={DISCOVER_SOURCE_GROUPS}
+                    showSearch={false}
+                    showGroupHeaders={false}
+                    itemVariant="menu"
+                    clearLabel="All sources"
+                    panelMinWidth={220}
+                    panelEstimatedHeight={176}
+                    onChange={(values) => {
+                      const next = normalizeDiscoverProviderSources(values);
+                      setDiscoverSources(next.length > 0 ? next : [...DISCOVER_PROVIDER_SOURCES]);
+                      setOffset(0);
+                    }}
+                    onClear={() => {
+                      setDiscoverSources([...DISCOVER_PROVIDER_SOURCES]);
+                      setOffset(0);
+                    }}
+                  />
+                </div>
+
+                <button className="btn primary" onClick={() => runSearch(0)} disabled={discoverBusy}>
+                  {discoverBusy ? "Searching…" : "Search"}
+                </button>
+              </div>
+            </div>
+
+            <div className="topRow discoverFilterRow">
+              <div className="discoverFiltersRight">
+                <div className="filterCtrl filterCtrlVersion">
+                  <Dropdown
+                    value={filterVersion}
+                    placeholder="Game version: Any"
+                    groups={groupedDiscoverVersions}
+                    includeAny
+                    onPick={(v) => {
+                      setFilterVersion(v);
+                      setOffset(0);
+                    }}
+                  />
+                </div>
+
+                <div className="filterCtrl filterCtrlLoader">
+                  <MultiSelectDropdown
+                    values={filterLoaders}
+                    placeholder="Loaders: Any"
+                    groups={DISCOVER_LOADER_GROUPS}
+                    showSearch={false}
+                    showGroupHeaders={false}
+                    disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
+                    onChange={(v) => {
+                      if (discoverContentType !== "mods") return;
+                      if (discoverOnlyCurseforge) return;
+                      setFilterLoaders(v);
+                      setOffset(0);
+                    }}
+                  />
+                </div>
+
+                <div className="filterCtrl filterCtrlCategory">
+                  <MultiSelectDropdown
+                    values={filterCategories}
+                    placeholder="Categories: Any"
+                    groups={MOD_CATEGORY_GROUPS}
+                    searchPlaceholder="Search categories…"
+                    onChange={(v) => {
+                      setFilterCategories(v);
+                      setOffset(0);
+                    }}
+                  />
+                </div>
+
+                <label className="checkboxRow discoverCheckboxRow">
+                  <span
+                    className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
+                    onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
+                    role="checkbox"
+                    aria-checked={discoverAllVersions}
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDiscoverAllVersions(!discoverAllVersions);
+                      }
+                    }}
+                  >
+                    {discoverAllVersions ? "✓" : ""}
+                  </span>
+                  Show all versions
+                </label>
+
+                <button
+                  className="btn discoverClearBtn"
+                  onClick={() => {
+                    setFilterVersion(null);
+                    setFilterLoaders([]);
+                    setFilterCategories([]);
+                    setOffset(0);
+                  }}
+                  disabled={!filterVersion && filterLoaders.length === 0 && filterCategories.length === 0}
+                >
+                  Clear filters
+                </button>
+              </div>
+            </div>
+
+            {discoverFilterSupportNotice ? (
+              <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
+            ) : null}
           </div>
 
-          {discoverFilterSupportNotice ? (
-            <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
-          ) : null}
           {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
+
+          <div className="discoverResultsHeader">
+            <div className="discoverResultsInfo">
+              <div className="discoverResultsTitleRow">
+                <div className="discoverResultsTitle">Results</div>
+                <span className="chip subtle">{discoverContentTypeLabel}</span>
+                <span className="chip subtle">
+                  {effectiveDiscoverSources.length} source{effectiveDiscoverSources.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="discoverResultsSub">
+                {discoverBusy
+                  ? "Refreshing matches..."
+                  : `Showing ${hits.length} of ${totalHits} result${totalHits === 1 ? "" : "s"} on page ${page} of ${pages}.`}
+              </div>
+            </div>
+            <div className="discoverResultsPager">
+              <div className="pager pagerTop">
+                <button
+                  className="btn"
+                  onClick={() => runSearch(Math.max(0, offset - limit))}
+                  disabled={discoverBusy || offset === 0}
+                >
+                  ← Prev
+                </button>
+                <div className="pagerLabel">
+                  Page {page} / {pages}
+                </div>
+                <button
+                  className="btn"
+                  onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
+                  disabled={discoverBusy || offset + limit >= totalHits}
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          </div>
 
           <div className="resultsGrid">
             {hits.map((h) => (
@@ -15107,22 +15387,19 @@ export default function App() {
                   <RemoteImage src={h.icon_url} alt={`${h.title} icon`} fallback={<div>⬚</div>} />
                 </div>
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="resultTitle">{h.title}</div>
+                <div className="resultBody">
+                  <div className="resultTitleRow">
+                    <div className="resultTitle">{h.title}</div>
+                  </div>
                   <div className="resultDesc">{h.description}</div>
                   <div className="resultMetaRow">
-                    <span className="chip subtle">{h.source}</span>
+                    <span className="chip subtle">{providerSourceLabel(h.source)}</span>
                     <span>by {h.author}</span>
                     <span>↓ {formatCompact(h.downloads)}</span>
                     <span>♥ {formatCompact(h.follows)}</span>
-                    {h.source === "github" && githubVerificationStatusLabel(h.verification_status) ? (
-                      <span className={githubStatusChipClass("verification", h.verification_status)}>
-                        {githubVerificationStatusLabel(h.verification_status)}
-                      </span>
-                    ) : null}
-                    {h.source === "github" && githubCompatibilityStatusLabel(h.compatibility_status) ? (
-                      <span className={githubStatusChipClass("compatibility", h.compatibility_status)}>
-                        {githubCompatibilityStatusLabel(h.compatibility_status)}
+                    {h.source === "github" && githubInstallStateChipLabel(h.install_state) ? (
+                      <span className={githubStatusChipClass("installability", h.install_state)}>
+                        {githubInstallStateChipLabel(h.install_state)}
                       </span>
                     ) : null}
                     {h.categories?.slice(0, 3)?.map((c) => (
@@ -15131,9 +15408,9 @@ export default function App() {
                       </span>
                     ))}
                   </div>
-                  {h.source === "github" && githubResultStatusNote(h) ? (
+                  {h.source === "github" && githubInstallSummary(h) ? (
                     <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
-                      {githubResultStatusNote(h)}
+                      {githubInstallSummary(h)}
                     </div>
                   ) : null}
                 </div>
@@ -15203,18 +15480,18 @@ export default function App() {
                             : ((h.content_type as DiscoverContentType) ?? discoverContentType),
                         iconUrl: h.icon_url,
                         description: h.description,
-                        installSupported: h.install_supported !== false,
-                        installNote: h.install_note ?? null,
+                        installSupported: githubResultInstallSupported(h),
+                        installNote: githubResultInstallNote(h),
                       })
                     }
                     title={
                       h.content_type === "modpacks"
                         ? "Modpacks are imported as templates"
-                        : h.install_supported === false
-                          ? h.install_note ?? "This provider result cannot be installed directly yet."
+                        : !githubResultInstallSupported(h)
+                          ? githubResultInstallNote(h) ?? "This provider result cannot be installed directly yet."
                           : "Install to instance"
                     }
-                    disabled={h.content_type === "modpacks" || h.install_supported === false}
+                    disabled={h.content_type === "modpacks" || !githubResultInstallSupported(h)}
                   >
                     <Icon name="download" /> {h.content_type === "modpacks" ? "Template only" : "Install"}
                   </button>
@@ -15237,7 +15514,7 @@ export default function App() {
             >
               ← Prev
             </button>
-            <div style={{ color: "var(--muted)", fontWeight: 950 }}>
+            <div className="pagerLabel">
               Page {page} / {pages}
             </div>
             <button
@@ -15391,6 +15668,22 @@ export default function App() {
       const shaderpackEntries = installedContentSummary.shaderpackEntries;
       const datapackEntries = installedContentSummary.datapackEntries;
       const visibleInstalledMods = installedContentSummary.visibleInstalledMods;
+      const currentContentSectionLabel = instanceContentSectionLabel(instanceContentType);
+      const currentContentEntryCount =
+        instanceContentType === "mods"
+          ? modEntries.length
+          : instanceContentType === "resourcepacks"
+            ? resourcepackEntries.length
+            : instanceContentType === "datapacks"
+              ? datapackEntries.length
+              : shaderpackEntries.length;
+      const instanceContentActiveFilterCount = [
+        instanceQuery.trim() ? 1 : 0,
+        instanceFilterWarningsOnly || instanceFilterState !== "all" ? 1 : 0,
+        instanceFilterSource !== "all" ? 1 : 0,
+        instanceFilterMissing !== "all" ? 1 : 0,
+        instanceSort !== "name_asc" ? 1 : 0,
+      ].reduce((sum, value) => sum + value, 0);
       const runningForInstance = runningByInstanceId.get(inst.id) ?? [];
       const quickPlayServersForInstance = quickPlayServers.filter(
         (server) => (server.bound_instance_id ?? inst.id) === inst.id
@@ -16049,7 +16342,6 @@ export default function App() {
                 <div className="instTabsActions">
                   {instanceTab === "content" ? (
                     <>
-                      {/* Keep this dense surface to one primary action; route secondary tasks through menu + activity toggle. */}
                       <button className="btn primary installAction" onClick={() => setRoute("discover")}>
                         <span className="btnIcon">
                           <Icon name="plus" size={18} />
@@ -16167,233 +16459,276 @@ export default function App() {
                 </div>
               </div>
 
-              {instanceTab === "content" ? (
-                <div className="instToolbar instToolbarSolo">
-                  <div className="instToolbarLeft">
-                    <Icon name="search" size={18} />
-                    <input
-                      className="input"
-                      value={instanceQuery}
-                      onChange={(e) => setInstanceQuery(e.target.value)}
-                      placeholder="Search installed content…"
-                    />
-                    <button
-                      className={`iconBtn instToolbarClearBtn ${instanceQuery ? "" : "hidden"}`}
-                      onClick={() => setInstanceQuery("")}
-                      aria-label="Clear search"
-                      disabled={!instanceQuery}
-                      data-oj-tooltip="Clear search"
-                    >
-                      <Icon name="x" size={18} />
-                    </button>
-                  </div>
-                  <div className="instToolbarRight">
-                    <MenuSelect
-                      value={instanceFilterWarningsOnly ? "warnings" : instanceFilterState}
-                      labelPrefix="State"
-                      onChange={(value) => {
-                        if (value === "warnings") {
-                          setInstanceFilterWarningsOnly(true);
-                          setInstanceFilterState("all");
-                          return;
-                        }
-                        setInstanceFilterWarningsOnly(false);
-                        setInstanceFilterState((value as any) ?? "all");
-                      }}
-                      options={[
-                        { value: "all", label: "All" },
-                        { value: "enabled", label: "Enabled" },
-                        { value: "disabled", label: "Disabled" },
-                        ...(instanceContentType === "mods" && hasDependencyWarningsInScope
-                          ? [{ value: "warnings", label: "Warnings" }]
-                          : []),
-                      ]}
-                      align="start"
-                    />
-                    <MenuSelect
-                      value={instanceFilterSource}
-                      labelPrefix="Source"
-                      onChange={(value) => setInstanceFilterSource((value as any) ?? "all")}
-                      options={[
-                        { value: "all", label: "All" },
-                        { value: "modrinth", label: "Modrinth" },
-                        { value: "curseforge", label: "CurseForge" },
-                        { value: "github", label: "GitHub" },
-                        { value: "local", label: "Local" },
-                        { value: "other", label: "Other" },
-                      ]}
-                      align="start"
-                    />
-                    <MenuSelect
-                      value={instanceFilterMissing}
-                      labelPrefix="Files"
-                      onChange={(value) => setInstanceFilterMissing((value as any) ?? "all")}
-                      options={[
-                        { value: "all", label: "All" },
-                        { value: "present", label: "Present on disk" },
-                        { value: "missing", label: "Missing on disk" },
-                      ]}
-                      align="start"
-                    />
-                    <MenuSelect
-                      value={instanceSort}
-                      labelPrefix="Sort"
-                      onChange={(value) => setInstanceSort((value as InstanceContentSort | null) ?? "name_asc")}
-                      options={[
-                        { value: "recently_added", label: "Recently added" },
-                        { value: "name_asc", label: "Name A-Z" },
-                        { value: "name_desc", label: "Name Z-A" },
-                        { value: "source", label: "Source" },
-                        { value: "enabled_first", label: "Enabled first" },
-                        { value: "disabled_first", label: "Disabled first" },
-                      ]}
-                      align="start"
-                    />
-                    <button
-                      className="btn subtle"
-                      onClick={() => {
-                        setInstanceQuery("");
-                        setInstanceFilterState("all");
-                        setInstanceFilterSource("all");
-                        setInstanceFilterMissing("all");
-                        setInstanceFilterWarningsOnly(false);
-                        setInstanceSort("name_asc");
-                      }}
-                    >
-                      Clear filters
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
               <div className="card instPanel">
                 {instanceTab === "content" ? (
                   <div className="instanceContentWrap">
-                    <div className="instanceContentTopRow">
-                      <SegmentedControl
-                        value={instanceContentType}
-                        onChange={(v) => setInstanceContentType((v as any) ?? "mods")}
-                        options={[
-                          { label: "Installed mods", value: "mods" },
-                          { label: "Resource packs", value: "resourcepacks" },
-                          { label: "Datapacks", value: "datapacks" },
-                          { label: "Shaders", value: "shaders" },
-                        ]}
-                        variant="scroll"
-                        className="instanceContentTabs"
-                      />
-                    </div>
-
-                    <div className="instanceContentMaintenanceBar">
-                      <div className="instanceContentUpdateRow">
-                        <button
-                          className="btn"
-                          onClick={() =>
-                            onCheckUpdates(inst, {
-                              contentTypes: [instanceContentTypeToBackend(instanceContentType)],
-                              persistScheduledCache: false,
-                            })
-                          }
-                          disabled={updateBusy || updateAllBusy}
-                        >
-                          {updateBusy ? "Checking…" : "Refresh"}
-                        </button>
-                        <button
-                          className="btn primary"
-                          onClick={() => onUpdateAll(inst, instanceContentType)}
-                          disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
-                        >
-                          {updateAllBusy
-                            ? "Updating…"
-                            : `Update all ${instanceContentSectionLabel(instanceContentType)}`}
-                        </button>
-                        <span className="muted instanceContentControlHint">
-                          {updateCheck?.update_count
-                            ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} pending in ${instanceContentSectionLabel(instanceContentType)}`
-                            : `Run refresh to check ${instanceContentSectionLabel(instanceContentType)} updates`}
-                        </span>
+                    <div className="instanceContentWorkspaceCard">
+                      <div className="instanceContentWorkspaceHead">
+                        <div className="instanceContentWorkspaceIntro">
+                          <div className="instanceContentWorkspaceEyebrow">Instance content</div>
+                          <div className="instanceContentWorkspaceTitle">Installed {currentContentSectionLabel}</div>
+                          <div className="instanceContentWorkspaceSub">
+                            Search, sort, update, and clean up this section without leaving the list.
+                          </div>
+                        </div>
+                        <div className="instanceContentWorkspaceStats">
+                          <span className="chip subtle">
+                            {visibleInstalledMods.length} visible of {currentContentEntryCount}
+                          </span>
+                          {instanceContentActiveFilterCount > 0 ? (
+                            <span className="chip subtle">
+                              {instanceContentActiveFilterCount} active filter{instanceContentActiveFilterCount === 1 ? "" : "s"}
+                            </span>
+                          ) : null}
+                          <span className="chip subtle">{currentContentSectionLabel}</span>
+                        </div>
                       </div>
-                      {snapshots.length > 0 ? (
-                        <div className="instanceSnapshotRow">
-                          <MenuSelect
-                            value={rollbackSnapshotId ?? snapshots[0].id}
-                            labelPrefix="Snapshot"
-                            options={snapshots.slice(0, 30).map((s) => ({
-                              value: s.id,
-                              label: formatSnapshotOptionLabel(s, resolveSnapshotProjectLabel),
-                            }))}
-                            align="start"
-                            onChange={(v) => setRollbackSnapshotId(v)}
+
+                      <div className="instanceContentTopRow">
+                        <SegmentedControl
+                          value={instanceContentType}
+                          onChange={(v) => setInstanceContentType((v as any) ?? "mods")}
+                          options={[
+                            { label: "Installed mods", value: "mods" },
+                            { label: "Resource packs", value: "resourcepacks" },
+                            { label: "Datapacks", value: "datapacks" },
+                            { label: "Shaders", value: "shaders" },
+                          ]}
+                          variant="scroll"
+                          className="instanceContentTabs"
+                        />
+                      </div>
+
+                      <div className="instToolbar instToolbarSolo">
+                        <div className="instToolbarLeft">
+                          <Icon name="search" size={18} />
+                          <input
+                            className="input"
+                            value={instanceQuery}
+                            onChange={(e) => setInstanceQuery(e.target.value)}
+                            placeholder={`Search ${currentContentSectionLabel}…`}
                           />
                           <button
-                            className="btn instanceSnapshotRollbackBtn"
-                            onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
-                            disabled={rollbackBusy}
-                            title={
-                              selectedSnapshot
-                                ? `Rollback to ${formatSnapshotOptionLabel(selectedSnapshot, resolveSnapshotProjectLabel)}`
-                                : "Rollback to latest snapshot"
-                            }
+                            className={`iconBtn instToolbarClearBtn ${instanceQuery ? "" : "hidden"}`}
+                            onClick={() => setInstanceQuery("")}
+                            aria-label="Clear search"
+                            disabled={!instanceQuery}
+                            data-oj-tooltip="Clear search"
                           >
-                            {rollbackBusy ? "Rolling back…" : "Rollback"}
+                            <Icon name="x" size={18} />
                           </button>
                         </div>
-                      ) : (
-                        <div className="muted instanceContentControlHint">
-                          Installing or updating content creates a snapshot automatically.
+                        <div className="instToolbarRight instanceContentFilterRow">
+                          <MenuSelect
+                            value={instanceFilterWarningsOnly ? "warnings" : instanceFilterState}
+                            labelPrefix="State"
+                            onChange={(value) => {
+                              if (value === "warnings") {
+                                setInstanceFilterWarningsOnly(true);
+                                setInstanceFilterState("all");
+                                return;
+                              }
+                              setInstanceFilterWarningsOnly(false);
+                              setInstanceFilterState((value as any) ?? "all");
+                            }}
+                            options={[
+                              { value: "all", label: "All" },
+                              { value: "enabled", label: "Enabled" },
+                              { value: "disabled", label: "Disabled" },
+                              ...(instanceContentType === "mods" && hasDependencyWarningsInScope
+                                ? [{ value: "warnings", label: "Warnings" }]
+                                : []),
+                            ]}
+                            align="start"
+                          />
+                          <MenuSelect
+                            value={instanceFilterSource}
+                            labelPrefix="Source"
+                            onChange={(value) => setInstanceFilterSource((value as any) ?? "all")}
+                            options={[
+                              { value: "all", label: "All" },
+                              { value: "modrinth", label: "Modrinth" },
+                              { value: "curseforge", label: "CurseForge" },
+                              { value: "github", label: "GitHub" },
+                              { value: "local", label: "Local" },
+                              { value: "other", label: "Other" },
+                            ]}
+                            align="start"
+                          />
+                          <MenuSelect
+                            value={instanceFilterMissing}
+                            labelPrefix="Files"
+                            onChange={(value) => setInstanceFilterMissing((value as any) ?? "all")}
+                            options={[
+                              { value: "all", label: "All" },
+                              { value: "present", label: "Present on disk" },
+                              { value: "missing", label: "Missing on disk" },
+                            ]}
+                            align="start"
+                          />
+                          <MenuSelect
+                            value={instanceSort}
+                            labelPrefix="Sort"
+                            onChange={(value) => setInstanceSort((value as InstanceContentSort | null) ?? "name_asc")}
+                            options={[
+                              { value: "recently_added", label: "Recently added" },
+                              { value: "name_asc", label: "Name A-Z" },
+                              { value: "name_desc", label: "Name Z-A" },
+                              { value: "source", label: "Source" },
+                              { value: "enabled_first", label: "Enabled first" },
+                              { value: "disabled_first", label: "Disabled first" },
+                            ]}
+                            align="start"
+                          />
+                          <button
+                            className="btn subtle instanceContentClearBtn"
+                            onClick={() => {
+                              setInstanceQuery("");
+                              setInstanceFilterState("all");
+                              setInstanceFilterSource("all");
+                              setInstanceFilterMissing("all");
+                              setInstanceFilterWarningsOnly(false);
+                              setInstanceSort("name_asc");
+                            }}
+                          >
+                            Clear filters
+                          </button>
                         </div>
-                      )}
+                      </div>
+
+                      <div className="instanceContentMaintenanceGrid">
+                        <div className="instanceContentMaintenancePanel">
+                          <div className="instanceContentMaintenancePanelHead">
+                            <div className="instanceContentMaintenanceTitle">Updates</div>
+                            <div className="instanceContentMaintenanceSub">
+                              Check this section, then update everything in one pass.
+                            </div>
+                          </div>
+                          <div className="instanceContentUpdateRow">
+                            <button
+                              className="btn"
+                              onClick={() =>
+                                onCheckUpdates(inst, {
+                                  contentTypes: [instanceContentTypeToBackend(instanceContentType)],
+                                  persistScheduledCache: false,
+                                })
+                              }
+                              disabled={updateBusy || updateAllBusy}
+                            >
+                              {updateBusy ? "Checking…" : "Refresh"}
+                            </button>
+                            <button
+                              className="btn primary"
+                              onClick={() => onUpdateAll(inst, instanceContentType)}
+                              disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
+                            >
+                              {updateAllBusy ? "Updating…" : `Update all ${currentContentSectionLabel}`}
+                            </button>
+                            <span className="muted instanceContentControlHint">
+                              {updateCheck?.update_count
+                                ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} ready`
+                                : `No check yet for ${currentContentSectionLabel}`}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="instanceContentMaintenancePanel">
+                          <div className="instanceContentMaintenancePanelHead">
+                            <div className="instanceContentMaintenanceTitle">Snapshots</div>
+                            <div className="instanceContentMaintenanceSub">
+                              Roll back to the last safe point if something goes sideways.
+                            </div>
+                          </div>
+                          {snapshots.length > 0 ? (
+                            <div className="instanceSnapshotRow">
+                              <MenuSelect
+                                value={rollbackSnapshotId ?? snapshots[0].id}
+                                labelPrefix="Snapshot"
+                                options={snapshots.slice(0, 30).map((s) => ({
+                                  value: s.id,
+                                  label: formatSnapshotOptionLabel(s, resolveSnapshotProjectLabel),
+                                }))}
+                                align="start"
+                                onChange={(v) => setRollbackSnapshotId(v)}
+                              />
+                              <button
+                                className="btn instanceSnapshotRollbackBtn"
+                                onClick={() => onRollbackToSnapshot(inst, rollbackSnapshotId)}
+                                disabled={rollbackBusy}
+                                title={
+                                  selectedSnapshot
+                                    ? `Rollback to ${formatSnapshotOptionLabel(selectedSnapshot, resolveSnapshotProjectLabel)}`
+                                    : "Rollback to latest snapshot"
+                                }
+                              >
+                                {rollbackBusy ? "Rolling back…" : "Rollback"}
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="muted instanceContentControlHint">
+                              Installing or updating content creates a snapshot automatically.
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
 
                     {updateErr ? <div className="errorBox" style={{ marginTop: 4 }}>{updateErr}</div> : null}
 
-                    {updateCheck ? (
-                      <div className="card updatesCard">
-                        <div className="updatesCardTitle">
-                          {updateCheck.update_count === 0
-                            ? `Checked ${updateCheck.checked_entries} entr${updateCheck.checked_entries === 1 ? "y" : "ies"} - all up to date`
-                            : `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} available`}
-                        </div>
-                        {updateCheck.update_count > 0 ? (
-                          <div className="updatesList">
-                            {updateCheck.updates.slice(0, 8).map((u) => (
-                              <div key={`${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
-                                <div className="updatesListName">
-                                  {u.name}
-                                  <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
-                                  <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
-                                </div>
-                                <div className="updatesListMeta">
-                                  {u.current_version_number} → {u.latest_version_number}
-                                  {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
-                                    <div className="muted" style={{ marginTop: 4 }}>
-                                      {u.compatibility_notes[0]}
-                                    </div>
-                                  ) : null}
-                                </div>
+                    <div className="instanceContentResultsShell">
+                      {updateCheck ? (
+                        <div className="card updatesCard">
+                          <div className="updatesCardHead">
+                            <div>
+                              <div className="updatesCardEyebrow">Release check</div>
+                              <div className="updatesCardTitle">
+                                {updateCheck.update_count === 0
+                                  ? `Checked ${updateCheck.checked_entries} entr${updateCheck.checked_entries === 1 ? "y" : "ies"} - all up to date`
+                                  : `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} available`}
                               </div>
-                            ))}
-                            {updateCheck.updates.length > 8 ? (
-                              <div className="muted">+{updateCheck.updates.length - 8} more</div>
-                            ) : null}
+                            </div>
+                            <span className="chip subtle">{currentContentSectionLabel}</span>
                           </div>
-                        ) : null}
-                      </div>
-                    ) : null}
+                          {updateCheck.update_count > 0 ? (
+                            <div className="updatesList">
+                              {updateCheck.updates.slice(0, 8).map((u) => (
+                                <div key={`${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
+                                  <div className="updatesListName">
+                                    {u.name}
+                                    <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
+                                    <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
+                                  </div>
+                                  <div className="updatesListMeta">
+                                    {u.current_version_number} → {u.latest_version_number}
+                                    {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
+                                      <div className="muted" style={{ marginTop: 4 }}>
+                                        {u.compatibility_notes[0]}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </div>
+                              ))}
+                              {updateCheck.updates.length > 8 ? (
+                                <div className="muted">+{updateCheck.updates.length - 8} more</div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
 
-                    {modsBusy ? (
-                      <div className="emptyState">
-                        <div className="emptyTitle">Loading installed content…</div>
-                      </div>
-                    ) : modsErr ? (
-                      <div className="errorBox" style={{ marginTop: 8 }}>{modsErr}</div>
-                    ) : visibleInstalledMods.length === 0 ? (
-                      <div className="emptyState">
-                        <div className="emptyTitle">No {instanceContentType} installed</div>
-                        <div className="emptySub">Install from Discover or apply a preset.</div>
-                      </div>
-                    ) : (
-                      <div className={`instanceModsTable ${selectedInstalledEntryCount > 0 ? "hasStickyActions" : ""}`}>
+                      {modsBusy ? (
+                        <div className="emptyState">
+                          <div className="emptyTitle">Loading installed content…</div>
+                        </div>
+                      ) : modsErr ? (
+                        <div className="errorBox" style={{ marginTop: 8 }}>{modsErr}</div>
+                      ) : visibleInstalledMods.length === 0 ? (
+                        <div className="emptyState">
+                          <div className="emptyTitle">No {instanceContentType} installed</div>
+                          <div className="emptySub">Install from Discover or apply a preset.</div>
+                        </div>
+                      ) : (
+                        <div className={`instanceModsTable ${selectedInstalledEntryCount > 0 ? "hasStickyActions" : ""}`}>
                         <div className="instanceModsHeaderRow">
                           <div className="instanceModsHeaderSelect">
                             <input
@@ -16605,15 +16940,15 @@ export default function App() {
                                         }
                                         data-oj-tooltip={
                                           hasGithubCandidate
-                                            ? "Attach or replace the GitHub repository mapping"
-                                            : "Attach a GitHub repository manually"
+                                            ? "Save or replace the GitHub repository hint"
+                                            : "Save a GitHub repository hint manually"
                                         }
                                       >
                                         {githubAttachBusyVersion === entryKey
-                                          ? "Attaching…"
+                                          ? "Saving…"
                                           : hasGithubCandidate
-                                            ? "Reattach GitHub"
-                                            : "Attach GitHub"}
+                                            ? "Update GitHub Hint"
+                                            : "Save GitHub Hint"}
                                       </button>
                                     ) : null}
                                   </div>
@@ -16669,8 +17004,9 @@ export default function App() {
                             </div>
                           );
                         })}
-                      </div>
-                    )}
+                        </div>
+                      )}
+                    </div>
 
                     {selectedInstalledEntryCount > 0 ? (
                       <div className="instanceModsStickyBar">
@@ -17317,44 +17653,49 @@ export default function App() {
                   limit={RECENT_ACTIVITY_LIMIT}
                   showEarlierBucket={showEarlierRecentActivityBucket}
                 />
-              <div className="card instanceSideCard">
-                <div className="librarySideTitle">Runtime status</div>
-                {hasRunningForInstance ? (
-                  <>
-                    <div className="muted">
-                      {runningForInstance.length} running session{runningForInstance.length === 1 ? "" : "s"}
-                    </div>
-                    {hasDisposableRuntimeSession ? (
-                      <div className="muted" style={{ marginTop: 8 }}>
-                        Extra native runs use disposable runtime sessions. Only Minecraft settings sync back.
+              <div className="card instanceSideCard instanceSessionCard">
+                <div className="librarySideTitle">Session</div>
+                <div className="instanceSessionStack">
+                  <div className="instanceSessionBlock">
+                    <div className="instanceSessionLabel">Runtime</div>
+                    {hasRunningForInstance ? (
+                      <>
+                        <div className="instanceSessionValue">
+                          {runningForInstance.length} running session{runningForInstance.length === 1 ? "" : "s"}
+                        </div>
+                        {hasDisposableRuntimeSession ? (
+                          <div className="muted instanceSessionSub">
+                            Extra native runs use disposable runtime sessions. Only Minecraft settings sync back.
+                          </div>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="compactEmptyState">
+                        <span className="compactEmptyIcon" aria-hidden="true">
+                          <Icon name="play" size={14} />
+                        </span>
+                        <div className="compactEmptyBody">
+                          <div className="compactEmptyTitle">Nothing running right now</div>
+                          <div className="compactEmptyText">Hit Play on this instance to start.</div>
+                        </div>
                       </div>
-                    ) : null}
-                  </>
-                ) : (
-                  <div className="compactEmptyState">
-                    <span className="compactEmptyIcon" aria-hidden="true">
-                      <Icon name="play" size={14} />
-                    </span>
-                    <div className="compactEmptyBody">
-                      <div className="compactEmptyTitle">Nothing running right now</div>
-                      <div className="compactEmptyText">Hit Play on this instance to start.</div>
-                    </div>
+                    )}
                   </div>
-                )}
+                  <div className="instanceSessionBlock">
+                    <div className="instanceSessionLabel">Playing as</div>
+                    {selectedLauncherAccount ? (
+                      <>
+                        <div className="libraryAccountName">{selectedLauncherAccount.username}</div>
+                        <div className="libraryAccountId muted">{selectedLauncherAccount.id}</div>
+                      </>
+                    ) : (
+                      <div className="muted instanceSessionSub">Select account in Settings or Account page.</div>
+                    )}
+                  </div>
+                </div>
               </div>
               <div className="card instanceSideCard">
-                <div className="librarySideTitle">Playing as</div>
-                {selectedLauncherAccount ? (
-                  <>
-                    <div className="libraryAccountName">{selectedLauncherAccount.username}</div>
-                    <div className="libraryAccountId muted">{selectedLauncherAccount.id}</div>
-                  </>
-                ) : (
-                  <div className="muted">Select account in Settings or Account page.</div>
-                )}
-              </div>
-              <div className="card instanceSideCard">
-                <div className="librarySideTitle">Instance tools</div>
+                <div className="librarySideTitle">File actions</div>
                 <div className="libraryQuickActions">
                   <button className="btn" onClick={() => onOpenInstancePath(inst, "instance")}>
                     <Icon name="folder" size={16} />
@@ -17375,37 +17716,53 @@ export default function App() {
                 </div>
               </div>
               <div className="card instanceSideCard">
-                <div className="librarySideTitle">Quick play</div>
+                <div className="librarySideTitle">Quick Play</div>
                 <div className="muted quickPlaySub">
                   Launch straight into a server with this instance.
                 </div>
                 <div className="quickPlayForm">
-                  <input
-                    className="input"
-                    placeholder="Server name"
-                    value={quickPlayDraftName}
-                    onChange={(e) => setQuickPlayDraftName(e.target.value)}
-                    disabled={quickPlayBusy}
-                  />
-                  <input
-                    className="input"
-                    placeholder="Host (example.org)"
-                    value={quickPlayDraftHost}
-                    onChange={(e) => setQuickPlayDraftHost(e.target.value)}
-                    disabled={quickPlayBusy}
-                  />
-                  <div className="quickPlayMetaRow">
+                  <label className="quickPlayField">
+                    <span className="quickPlayLabel">Server name</span>
                     <input
-                      className="input quickPlayPortInput"
-                      placeholder="Port"
-                      value={quickPlayDraftPort}
-                      onChange={(e) => setQuickPlayDraftPort(e.target.value)}
+                      className="input"
+                      placeholder="My server"
+                      value={quickPlayDraftName}
+                      onChange={(e) => setQuickPlayDraftName(e.target.value)}
                       disabled={quickPlayBusy}
                     />
-                    <div className="quickPlayBind">
+                  </label>
+                  <label className="quickPlayField">
+                    <span className="quickPlayLabel">Host</span>
+                    <input
+                      className="input"
+                      placeholder="example.org"
+                      value={quickPlayDraftHost}
+                      onChange={(e) => setQuickPlayDraftHost(e.target.value)}
+                      disabled={quickPlayBusy}
+                    />
+                  </label>
+                  <div className="quickPlayMetaRow">
+                    <label className="quickPlayField">
+                      <span className="quickPlayLabel">Port</span>
+                      <input
+                        className="input quickPlayPortInput"
+                        placeholder="25565"
+                        value={quickPlayDraftPort}
+                        onChange={(e) => setQuickPlayDraftPort(e.target.value)}
+                        disabled={quickPlayBusy}
+                      />
+                    </label>
+                    <div className="quickPlayField quickPlayBind">
+                      <span className="quickPlayLabel">Bind</span>
                       <MenuSelect
                         value={quickPlayDraftBoundInstanceId}
                         labelPrefix="Bind"
+                        buttonLabel={
+                          quickPlayDraftBoundInstanceId === "none"
+                            ? "Current instance"
+                            : instances.find((entry) => entry.id === quickPlayDraftBoundInstanceId)?.name ||
+                              "Current instance"
+                        }
                         options={[
                           { value: "none", label: "Current instance" },
                           ...instances.map((entry) => ({
@@ -18572,23 +18929,66 @@ export default function App() {
         : "Scanning…";
     const storageOverviewWarnings = storageOverview?.warnings ?? [];
     const needsLibraryGrowthPrompt = instances.length < 3;
+    const totalRunningCount = runningInstances.length;
+    const customInstancesCount = instances.length;
+    const recentInstanceCreatedAt = filtered[0]?.created_at ?? null;
 
     return (
       <div className="page">
         <div className="libraryLayout">
           <section className="libraryMainPane">
-            <div className="libraryHeader">
-              <div>
-                <div className="h1">Library</div>
-                <div className="muted">All your instances - open one to manage content and settings.</div>
+            <div className="card libraryHeroCard">
+              <div className="libraryHeroHead">
+                <div className="libraryHeroMain">
+                  <div className="libraryHeroEyebrow">Instance library</div>
+                  <div className="libraryHeroTitle">Library</div>
+                  <div className="libraryHeroSub">
+                    Open an instance to manage content, settings, worlds, and launch state.
+                  </div>
+                </div>
+
+                <div className="libraryHeroActions">
+                  <button className="btn primary" onClick={() => setShowCreate(true)}>
+                    <span className="btnIcon">
+                      <Icon name="plus" size={18} className="navIcon plusIcon navAnimPlus" />
+                    </span>
+                    Create new instance
+                  </button>
+                </div>
               </div>
 
-              <button className="btn primary" onClick={() => setShowCreate(true)}>
-                <span className="btnIcon">
-                  <Icon name="plus" size={18} className="navIcon plusIcon navAnimPlus" />
-                </span>
-                Create new instance
-              </button>
+              <div className="libraryHeroStats">
+                <div className="libraryHeroStat">
+                  <div className="libraryHeroStatLabel">Instances</div>
+                  <div className="libraryHeroStatValue">{instances.length}</div>
+                  <div className="libraryHeroStatMeta">
+                    {customInstancesCount} custom instance{customInstancesCount === 1 ? "" : "s"}
+                  </div>
+                </div>
+                <div className="libraryHeroStat">
+                  <div className="libraryHeroStatLabel">Running</div>
+                  <div className="libraryHeroStatValue">{totalRunningCount}</div>
+                  <div className="libraryHeroStatMeta">
+                    {totalRunningCount === 0 ? "Nothing active right now" : "Minecraft currently in progress"}
+                  </div>
+                </div>
+                <div className="libraryHeroStat">
+                  <div className="libraryHeroStatLabel">Known mods</div>
+                  <div className="libraryHeroStatValue">{knownModsTotal.toLocaleString()}</div>
+                  <div className="libraryHeroStatMeta">
+                    Tracked across every visible instance
+                  </div>
+                </div>
+                <div className="libraryHeroStat">
+                  <div className="libraryHeroStatLabel">Newest</div>
+                  <div className="libraryHeroStatValue">
+                    {recentInstanceCreatedAt ? formatDate(recentInstanceCreatedAt) : "None"}
+                  </div>
+                  <div className="libraryHeroStatMeta">
+                    Most recently created instance
+                  </div>
+                </div>
+              </div>
             </div>
 
             <>
@@ -18705,6 +19105,8 @@ export default function App() {
                           launchStage?.status,
                           launchStage?.message
                         );
+                        const instanceModCount = Number(instanceModCountById[inst.id] ?? 0);
+                        const createdLabel = formatDate(inst.created_at);
                         return (
                           <article
                             key={inst.id}
@@ -18734,16 +19136,17 @@ export default function App() {
                                   {loaderLabel} · Minecraft {inst.mc_version}
                                 </div>
                               </div>
-                              {isRunning ? <span className="chip">Running</span> : null}
-                              {!isRunning && launchStageLabel ? (
-                                <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
-                              ) : null}
                             </div>
 
                             <div className="instCardMeta">
                               <span className="chip">{loaderLabel}</span>
                               <span className="chip">{inst.mc_version}</span>
-                              <span className="chip subtle">Custom</span>
+                              <span className="chip subtle">{instanceModCount} mod{instanceModCount === 1 ? "" : "s"}</span>
+                              <span className="chip subtle">Created {createdLabel}</span>
+                              {isRunning ? <span className="chip">Running</span> : null}
+                              {!isRunning && launchStageLabel ? (
+                                <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
+                              ) : null}
                             </div>
 
                             <div className="instCardActions" onClick={(event) => event.stopPropagation()}>
@@ -19309,6 +19712,7 @@ export default function App() {
                       { key: "instances", label: "Instances", bytes: Number(overview?.instances_bytes ?? 0) },
                     ];
           const visibleBreakdownRows = breakdownRows.filter((row) => Number(row.bytes ?? 0) > 0);
+          const railInstanceCount = overview?.instance_summaries?.length ?? 0;
           const selectedTotal =
             parsed.scope === "overview"
               ? Number(overview?.total_bytes ?? 0)
@@ -19335,7 +19739,18 @@ export default function App() {
                       (item) => item.scope === `instance:${parsed.instanceId}`
                     )
                   : [];
-          const breadcrumbParts = relativePath ? relativePath.split("/").filter(Boolean) : [];
+          const normalizedRelativePath =
+            relativePath === "root"
+              ? ""
+              : relativePath.startsWith("root/")
+                ? relativePath.slice("root/".length)
+                : relativePath;
+          const breadcrumbParts = normalizedRelativePath ? normalizedRelativePath.split("/").filter(Boolean) : [];
+          const showBreakdownRows =
+            selectedTotal > 0 &&
+            (visibleBreakdownRows.length > 0 ? visibleBreakdownRows : breakdownRows).some(
+              (row) => Number(row.bytes ?? 0) > 0
+            );
           return (
             <Modal
               title="Storage manager"
@@ -19416,6 +19831,12 @@ export default function App() {
 
                 <div className="storageManagerLayout">
                   <aside className="storageManagerRail">
+                    <div className="storageRailHeader">
+                      <div className="storageRailHeaderTitle">Locations</div>
+                      <div className="storageRailHeaderMeta">
+                        {railInstanceCount} instance{railInstanceCount === 1 ? "" : "s"} tracked
+                      </div>
+                    </div>
                     {railItems.map((item) => (
                       <button
                         key={item.key}
@@ -19445,6 +19866,19 @@ export default function App() {
                                 )}.`
                               : `${selectionTitle} is using ${formatBytes(selectedTotal)}.`}
                         </div>
+                        <div className="storagePaneMetaRow">
+                          <span className="chip subtle">{formatBytes(selectedTotal)}</span>
+                          {parsed.scope !== "overview" ? (
+                            <span className="chip subtle">
+                              {storageDetailMode === "folders" ? "Largest folders" : "Largest files"}
+                            </span>
+                          ) : null}
+                          {normalizedRelativePath ? (
+                            <span className="chip subtle">Path: {normalizedRelativePath}</span>
+                          ) : parsed.scope !== "overview" ? (
+                            <span className="chip subtle">Path: root</span>
+                          ) : null}
+                        </div>
                       </div>
                       {parsed.scope !== "overview" ? (
                         <div className="storagePaneActions">
@@ -19459,7 +19893,7 @@ export default function App() {
                           <button
                             className="btn"
                             type="button"
-                            onClick={() => void revealStoragePath(selection, relativePath || undefined)}
+                            onClick={() => void revealStoragePath(selection, normalizedRelativePath || undefined)}
                           >
                             {revealLabel}
                           </button>
@@ -19467,7 +19901,7 @@ export default function App() {
                       ) : null}
                     </div>
 
-                    {parsed.scope !== "overview" ? (
+                    {parsed.scope !== "overview" && breadcrumbParts.length > 0 ? (
                       <div className="storageBreadcrumbRow">
                         <button
                           className="chip subtle chipButton"
@@ -19496,7 +19930,7 @@ export default function App() {
                             </button>
                           );
                         })}
-                        {relativePath ? (
+                        {normalizedRelativePath ? (
                           <button
                             className="chip subtle chipButton"
                             type="button"
@@ -19517,47 +19951,66 @@ export default function App() {
                     <div className="storagePaneGrid">
                       <div className="storagePaneCard">
                         <div className="storageSectionHeader">
-                          <div className="storageSectionTitle">Breakdown</div>
+                          <div>
+                            <div className="storageSectionTitle">Breakdown</div>
+                            <div className="storageSectionSub">See which buckets are taking the most space.</div>
+                          </div>
                           <span className="chip subtle">{formatBytes(selectedTotal)}</span>
                         </div>
                         <div className="storageBreakdownList">
-                          {(visibleBreakdownRows.length > 0 ? visibleBreakdownRows : breakdownRows).map((row) => {
-                            const percent =
-                              selectedTotal > 0 ? (Number(row.bytes ?? 0) / selectedTotal) * 100 : 0;
-                            return (
-                              <div key={row.key} className="storageBreakdownRow">
-                                <div className="storageBreakdownMeta">
-                                  <div className="storageBreakdownLabel">{row.label}</div>
-                                  <div className="storageBreakdownValue">{formatBytes(row.bytes)}</div>
+                          {showBreakdownRows ? (
+                            (visibleBreakdownRows.length > 0 ? visibleBreakdownRows : breakdownRows).map((row) => {
+                              const percent =
+                                selectedTotal > 0 ? (Number(row.bytes ?? 0) / selectedTotal) * 100 : 0;
+                              return (
+                                <div key={row.key} className="storageBreakdownRow">
+                                  <div className="storageBreakdownMeta">
+                                    <div className="storageBreakdownLabel">{row.label}</div>
+                                    <div className="storageBreakdownValue">{formatBytes(row.bytes)}</div>
+                                  </div>
+                                  <div className="storageBreakdownBar">
+                                    <div
+                                      className="storageBreakdownBarFill"
+                                      style={{ width: `${Math.max(2, Math.min(100, percent || 0))}%` }}
+                                    />
+                                  </div>
+                                  <div className="storageBreakdownPercent">{formatPercent(percent)}</div>
                                 </div>
-                                <div className="storageBreakdownBar">
-                                  <div
-                                    className="storageBreakdownBarFill"
-                                    style={{ width: `${Math.max(2, Math.min(100, percent || 0))}%` }}
-                                  />
-                                </div>
-                                <div className="storageBreakdownPercent">{formatPercent(percent)}</div>
+                              );
+                            })
+                          ) : (
+                            <div className="storageEmptyState">
+                              <div className="storageEmptyStateTitle">Nothing significant here yet</div>
+                              <div className="storageEmptyStateText">
+                                This location is effectively empty right now, so there is no meaningful breakdown to show.
                               </div>
-                            );
-                          })}
+                            </div>
+                          )}
                         </div>
                       </div>
 
                       <div className="storagePaneCard">
                         <div className="storageSectionHeader">
-                          <div className="storageSectionTitle">
-                            {parsed.scope === "overview"
-                              ? "Top cleanup ideas"
-                              : storageDetailMode === "folders"
-                                ? "Largest folders"
-                                : "Largest files"}
+                          <div>
+                            <div className="storageSectionTitle">
+                              {parsed.scope === "overview"
+                                ? "Top cleanup ideas"
+                                : storageDetailMode === "folders"
+                                  ? "Largest folders"
+                                  : "Largest files"}
+                            </div>
+                            <div className="storageSectionSub">
+                              {parsed.scope === "overview"
+                                ? "Start with safe cleanup ideas that free space right away."
+                                : "Open the biggest entries first to understand where the size is coming from."}
+                            </div>
                           </div>
                           {parsed.scope !== "overview" ? (
                             <button
                               className="btn subtle"
                               type="button"
                               onClick={() =>
-                                void loadStorageEntries(selection, storageDetailMode, relativePath, {
+                                void loadStorageEntries(selection, storageDetailMode, normalizedRelativePath, {
                                   force: true,
                                 })
                               }
@@ -19570,7 +20023,12 @@ export default function App() {
                         {parsed.scope === "overview" ? (
                           <div className="storageRecommendationList">
                             {recommendationRows.length === 0 ? (
-                              <div className="muted">No safe cleanup actions are available right now.</div>
+                              <div className="storageEmptyState">
+                                <div className="storageEmptyStateTitle">No safe cleanup actions right now</div>
+                                <div className="storageEmptyStateText">
+                                  OpenJar is not seeing any low-risk cleanup wins at the moment.
+                                </div>
+                              </div>
                             ) : (
                               recommendationRows.slice(0, 8).map((recommendation) => (
                                 <div key={recommendation.action_id} className="storageRecommendationRow">
@@ -19606,7 +20064,12 @@ export default function App() {
                         ) : entryBusy && entryRows.length === 0 ? (
                           <div className="muted">Scanning {storageDetailMode === "folders" ? "folders" : "files"}…</div>
                         ) : entryRows.length === 0 ? (
-                          <div className="muted">Nothing notable in this location yet.</div>
+                          <div className="storageEmptyState">
+                            <div className="storageEmptyStateTitle">Nothing notable in this location yet</div>
+                            <div className="storageEmptyStateText">
+                              Try another folder, switch between folders and files, or refresh the list after a new scan.
+                            </div>
+                          </div>
                         ) : (
                           <div className="storageEntryList">
                             {entryRows.map((row) => (
@@ -19651,7 +20114,10 @@ export default function App() {
                     {parsed.scope === "overview" ? (
                       <div className="storagePaneCard">
                         <div className="storageSectionHeader">
-                          <div className="storageSectionTitle">Heaviest instances</div>
+                          <div>
+                            <div className="storageSectionTitle">Heaviest instances</div>
+                            <div className="storageSectionSub">Jump straight into the largest instance folders.</div>
+                          </div>
                         </div>
                         <div className="storageInstanceOverviewList">
                           {(overview?.instance_summaries ?? []).slice(0, 8).map((summary) => (
@@ -19677,7 +20143,10 @@ export default function App() {
                     ) : recommendationRows.length > 0 ? (
                       <div className="storagePaneCard">
                         <div className="storageSectionHeader">
-                          <div className="storageSectionTitle">Safe cleanup</div>
+                          <div>
+                            <div className="storageSectionTitle">Safe cleanup</div>
+                            <div className="storageSectionSub">Only actions the launcher considers low-risk to automate.</div>
+                          </div>
                         </div>
                         <div className="storageRecommendationList">
                           {recommendationRows.map((recommendation) => (
@@ -20489,7 +20958,7 @@ export default function App() {
             {installProgress && installProgress.project_id === installTarget.projectId ? (
               <div className="card installProgressCard">
                 <div className="installProgressTitle">
-                  {installProgress.message ?? "Working…"}
+                  {installProgressTitleText}
                 </div>
                 <div className="installProgressBar">
                   <div
@@ -20500,16 +20969,20 @@ export default function App() {
                 <div className="installProgressMeta">
                   <span>{installProgressPercentLabel || "Working…"}</span>
                   <span>{installProgressStageLabel}</span>
-                  {installProgressTransferText ? <span>{installProgressTransferText}</span> : null}
-                  {installProgressSpeedText ? <span>{installProgressSpeedText}</span> : null}
-                  {installProgressElapsedSeconds != null ? (
+                  {installProgressShowTransferMetrics && installProgressTransferText ? (
+                    <span>{installProgressTransferText}</span>
+                  ) : null}
+                  {installProgressShowTransferMetrics && installProgressSpeedText ? (
+                    <span>{installProgressSpeedText}</span>
+                  ) : null}
+                  {installProgressShowTransferMetrics && installProgressElapsedSeconds != null ? (
                     <span>Elapsed {formatEtaSeconds(installProgressElapsedSeconds)}</span>
                   ) : null}
                   {installProgress.stage === "completed" ? (
                     <span>ETA done</span>
                   ) : installProgress.stage === "error" ? (
                     <span>ETA unavailable</span>
-                  ) : !installProgressIndeterminate ? (
+                  ) : installProgressShowTransferMetrics && !installProgressIndeterminate ? (
                     <span>ETA {formatEtaSeconds(installProgressEtaSeconds)}</span>
                   ) : null}
                 </div>
@@ -21415,34 +21888,11 @@ export default function App() {
                         {typeof githubDetail?.forks === "number" ? (
                           <span className="chip">Forks: {formatCompact(githubDetail.forks)}</span>
                         ) : null}
-                        {githubOpen.confidence ? <span className="chip">Confidence: {githubOpen.confidence}</span> : null}
-                        {githubVerificationStatusLabel(githubOpen.verification_status) ? (
+                        {githubInstallStateChipLabel(githubInstallState(githubOpen, githubDetail)) ? (
                           <span
-                            className={githubStatusChipClass(
-                              "verification",
-                              githubOpen.verification_status
-                            )}
+                            className={githubStatusChipClass("installability", githubInstallState(githubOpen, githubDetail))}
                           >
-                            {githubVerificationStatusLabel(githubOpen.verification_status)}
-                          </span>
-                        ) : null}
-                        {githubCompatibilityStatusLabel(
-                          githubDetail?.compatibility_status ?? githubOpen.compatibility_status
-                        ) ? (
-                          <span
-                            className={githubStatusChipClass(
-                              "compatibility",
-                              githubDetail?.compatibility_status ?? githubOpen.compatibility_status
-                            )}
-                          >
-                            {githubCompatibilityStatusLabel(
-                              githubDetail?.compatibility_status ?? githubOpen.compatibility_status
-                            )}
-                          </span>
-                        ) : null}
-                        {githubDetail?.compatible_release_name ? (
-                          <span className="chip subtle">
-                            Best release: {githubDetail.compatible_release_name}
+                            {githubInstallStateChipLabel(githubInstallState(githubOpen, githubDetail))}
                           </span>
                         ) : null}
                         {(githubDetail?.categories ?? githubOpen.categories ?? []).slice(0, 8).map((tag) => (
@@ -21656,7 +22106,7 @@ export default function App() {
 
       {githubAttachTarget ? (
         <Modal
-          title={`Attach GitHub Repository`}
+          title={`Save GitHub Repo Hint`}
           onClose={() => {
             if (githubAttachBusyVersion === installedEntryUiKey(githubAttachTarget.mod)) return;
             setGithubAttachTarget(null);
@@ -21665,10 +22115,10 @@ export default function App() {
         >
           <div className="modalBody">
             <div className="card" style={{ padding: 14, borderRadius: 18, display: "grid", gap: 10 }}>
-              <div className="muted">
-                Attach a GitHub repo for <strong>{githubAttachTarget.mod.name}</strong> in{" "}
-                <strong>{githubAttachTarget.instanceName}</strong>.
-              </div>
+                <div className="muted">
+                  Save a GitHub repo hint for <strong>{githubAttachTarget.mod.name}</strong> in{" "}
+                  <strong>{githubAttachTarget.instanceName}</strong>.
+                </div>
               <label style={{ display: "grid", gap: 6 }}>
                 <span className="muted">Repository</span>
                 <input
@@ -21691,7 +22141,7 @@ export default function App() {
                 <div className="errorBox">{githubAttachErr}</div>
               ) : (
                 <div className="muted">
-                  If GitHub API is rate-limited, the launcher still saves the mapping and marks provider activation as pending verification.
+                  If GitHub API is rate-limited, the launcher saves the repo hint and leaves GitHub provider activation pending verification.
                 </div>
               )}
             </div>
@@ -21712,7 +22162,7 @@ export default function App() {
               onClick={() => void submitAttachInstalledModGithubRepo()}
               disabled={githubAttachBusyVersion === installedEntryUiKey(githubAttachTarget.mod)}
             >
-              {githubAttachBusyVersion === installedEntryUiKey(githubAttachTarget.mod) ? "Attaching…" : "Attach"}
+              {githubAttachBusyVersion === installedEntryUiKey(githubAttachTarget.mod) ? "Saving…" : "Save Hint"}
             </button>
           </div>
         </Modal>

@@ -1,4 +1,3 @@
-// Dependency badge is intentionally compact and low-saturation so it reads as a signal, not a dominant alert.
 export interface DependencyBadgeProps {
   warnings: string[];
   onClick?: () => void;

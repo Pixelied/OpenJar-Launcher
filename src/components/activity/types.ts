@@ -1,4 +1,3 @@
-// Activity feed model types are centralized here so App.tsx can focus on orchestration/state instead of view detail.
 import type { IconName } from "../app-shell/Icon";
 
 export type RecentActivityFilter = "all" | "installs" | "updates" | "pins" | "imports" | "warnings";

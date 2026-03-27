@@ -1,4 +1,3 @@
-// Main feed shell keeps retention messaging explicit while reducing visual noise through neutral rows and subtle controls.
 import { useMemo, useState } from "react";
 import ActivityCoalescer from "./ActivityCoalescer";
 import ActivityEmptyState from "./ActivityEmptyState";

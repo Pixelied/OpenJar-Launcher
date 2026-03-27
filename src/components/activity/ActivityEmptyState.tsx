@@ -1,4 +1,3 @@
-// Compact empty state keeps the panel informative without dominating layout and clarifies retention behavior.
 import Icon from "../app-shell/Icon";
 
 export interface ActivityEmptyStateProps {
