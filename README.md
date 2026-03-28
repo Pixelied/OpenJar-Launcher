@@ -122,7 +122,7 @@ Notes:
 
 ### Requirements
 
-- Node.js 18+
+- Node.js 20+
 - Rust stable
 - Tauri prerequisites for your OS
 
@@ -160,7 +160,10 @@ Desktop bundle:
 npm run tauri:build
 ```
 
-On macOS, the release build script produces the `.app` bundle and then creates a `.dmg`.
+Artifact notes:
+
+- Local macOS release builds produced by `npm run tauri:build` create the `.app` bundle and then package it into a `.dmg`.
+- CI and tag-based release workflows build the same target matrix, but ship zipped `.app` bundles on macOS plus updater artifacts instead of publishing a `.dmg`.
 
 ### Recommended verification
 

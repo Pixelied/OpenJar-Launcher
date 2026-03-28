@@ -95,6 +95,7 @@ Examples of security-relevant checks already in the repository:
 
 - Rust tests under `src-tauri/src/friend_link/tests.rs`
 - Rust tests under `src-tauri/src/modpack/tests.rs`
+- Rust regression tests under `src-tauri/src/tests/` for token storage, runtime/playtime, storage usage, update-check resilience, provider matching, and related safety-sensitive paths
 - contract verification in `scripts/verify-tauri-command-contract.mjs`
 - platform and packaging checks in `scripts/verify-platform-support.mjs` and `scripts/verify-desktop-asset-paths.mjs`
 
