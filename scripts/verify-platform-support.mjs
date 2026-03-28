@@ -34,20 +34,23 @@ function extractTargetsFromWorkflow(workflowBody) {
 
 function extractReadmeTargets(readmeBody) {
   const sectionMatch = readmeBody.match(
-    /##\s+Platform support & testing\s*\n([\s\S]*?)(?:\n##\s+|\s*$)/,
+    /##\s+Platform Support(?:\s*&\s*Testing)?\s*\n([\s\S]*?)(?:\n##\s+|\s*$)/i,
   );
   if (!sectionMatch) {
     throw new Error("Could not parse README platform support section.");
   }
 
   const section = sectionMatch[1];
-  const marker = "Current build targets:";
-  const markerIndex = section.indexOf(marker);
-  if (markerIndex < 0) {
-    throw new Error("README platform section is missing 'Current build targets:'.");
+  const markerMatch = section.match(/Current(?:\s+build)?\s+targets:/i);
+  if (!markerMatch || markerMatch.index == null) {
+    throw new Error(
+      "README platform section is missing 'Current targets:' or 'Current build targets:'.",
+    );
   }
 
-  const lines = section.slice(markerIndex + marker.length).split("\n");
+  const lines = section
+    .slice(markerMatch.index + markerMatch[0].length)
+    .split("\n");
   const targets = new Set();
 
   for (const line of lines) {
