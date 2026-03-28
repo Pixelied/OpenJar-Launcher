@@ -45,7 +45,11 @@ pub(crate) async fn try_download_file(
     let url = url.replace(std::path::MAIN_SEPARATOR_STR, "/");
     let url = url.as_str();
 
-    let response = shared_http_client().get(url).send().await?.error_for_status()?;
+    let response = shared_http_client()
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?;
     let data = response.bytes().await?;
 
     let mut file = fs::File::create(path).await?;

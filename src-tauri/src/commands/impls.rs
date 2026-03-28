@@ -93,7 +93,10 @@ fn discover_has_explicit_source_subset(selected_sources: &[String]) -> bool {
     selected_sources.len() < DISCOVER_PROVIDER_SOURCES.len()
 }
 
-fn github_install_state(compatible_release_found: bool, release_list_available: bool) -> &'static str {
+fn github_install_state(
+    compatible_release_found: bool,
+    release_list_available: bool,
+) -> &'static str {
     if compatible_release_found {
         "ready"
     } else if release_list_available {
@@ -1735,8 +1738,10 @@ pub(crate) async fn get_instance_disk_usage(
 pub(crate) async fn get_storage_usage_overview(
     app: tauri::AppHandle,
 ) -> Result<StorageUsageOverview, String> {
-    run_blocking_task("get storage usage overview", move || Ok(scan_storage_usage_overview(&app)))
-        .await
+    run_blocking_task("get storage usage overview", move || {
+        Ok(scan_storage_usage_overview(&app))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1813,7 +1818,10 @@ pub(crate) async fn run_storage_cleanup(
                 let bytes = dir_total_size_bytes(&cache_dir);
                 remove_path_if_exists(&cache_dir)?;
                 fs::create_dir_all(&cache_dir).map_err(|e| {
-                    format!("recreate launcher cache '{}' failed: {e}", cache_dir.display())
+                    format!(
+                        "recreate launcher cache '{}' failed: {e}",
+                        cache_dir.display()
+                    )
                 })?;
                 reclaimed_bytes = reclaimed_bytes.saturating_add(bytes);
                 actions_run += 1;
@@ -1827,15 +1835,24 @@ pub(crate) async fn run_storage_cleanup(
             let (action_kind, action_instance_ids) = if let Some(instance_id) =
                 action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS))
             {
-                (STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS, vec![instance_id.to_string()])
+                (
+                    STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS,
+                    vec![instance_id.to_string()],
+                )
             } else if let Some(instance_id) =
                 action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_SNAPSHOTS))
             {
-                (STORAGE_ACTION_PRUNE_SNAPSHOTS, vec![instance_id.to_string()])
+                (
+                    STORAGE_ACTION_PRUNE_SNAPSHOTS,
+                    vec![instance_id.to_string()],
+                )
             } else if let Some(instance_id) =
                 action.strip_prefix(&format!("{}:", STORAGE_ACTION_PRUNE_WORLD_BACKUPS))
             {
-                (STORAGE_ACTION_PRUNE_WORLD_BACKUPS, vec![instance_id.to_string()])
+                (
+                    STORAGE_ACTION_PRUNE_WORLD_BACKUPS,
+                    vec![instance_id.to_string()],
+                )
             } else if matches!(
                 action,
                 STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS
@@ -1872,7 +1889,10 @@ pub(crate) async fn run_storage_cleanup(
                 if targets.is_empty() {
                     continue;
                 }
-                let bytes = targets.iter().map(|path| dir_total_size_bytes(path)).sum::<u64>();
+                let bytes = targets
+                    .iter()
+                    .map(|path| dir_total_size_bytes(path))
+                    .sum::<u64>();
                 for target in targets {
                     remove_path_if_exists(&target)?;
                 }
@@ -2934,7 +2954,12 @@ fn normalized_discover_sources(args: &SearchDiscoverContentArgs) -> Vec<String> 
 fn search_discover_content_inner(
     args: SearchDiscoverContentArgs,
 ) -> Result<DiscoverSearchResult, String> {
-    let source = args.source.as_deref().unwrap_or("all").trim().to_lowercase();
+    let source = args
+        .source
+        .as_deref()
+        .unwrap_or("all")
+        .trim()
+        .to_lowercase();
     let selected_sources = normalized_discover_sources(&args);
     let explicit_source_subset = discover_has_explicit_source_subset(&selected_sources);
     let normalized_content_type = normalize_discover_content_type(&args.content_type);
@@ -3031,19 +3056,19 @@ fn search_discover_content_inner(
     } else {
         (Vec::new(), 0)
     };
-    let (curseforge_hits, curseforge_total) = if include_curseforge && curseforge_api_key().is_some()
-    {
-        gather_provider_hits_with_query_variants(
-            &client,
-            &sub,
-            sub.limit,
-            3,
-            true,
-            search_curseforge_discover,
-        )?
-    } else {
-        (Vec::new(), 0)
-    };
+    let (curseforge_hits, curseforge_total) =
+        if include_curseforge && curseforge_api_key().is_some() {
+            gather_provider_hits_with_query_variants(
+                &client,
+                &sub,
+                sub.limit,
+                3,
+                true,
+                search_curseforge_discover,
+            )?
+        } else {
+            (Vec::new(), 0)
+        };
 
     let mut merged = modrinth_hits;
     merge_discover_hits_in_place(&mut merged, curseforge_hits, args.query.trim());
@@ -3366,8 +3391,9 @@ fn get_github_project_detail_inner(
     } else {
         (None, HashSet::new())
     };
-    let install_state =
-        Some(github_install_state(compatible_release.is_some(), release_list_available).to_string());
+    let install_state = Some(
+        github_install_state(compatible_release.is_some(), release_list_available).to_string(),
+    );
     let install_summary = match install_state.as_deref() {
         Some("unsupported") => Some(
             "This repository does not currently expose an installable GitHub release for this app flow."
@@ -3926,6 +3952,7 @@ fn create_instance_internal(
     clean_name: String,
     clean_mc: String,
     loader_lc: String,
+    origin: String,
     icon_path: Option<String>,
 ) -> Result<Instance, String> {
     if clean_name.trim().is_empty() {
@@ -3948,6 +3975,7 @@ fn create_instance_internal(
     let mut inst = Instance {
         id: gen_id(),
         name: clean_name,
+        origin: normalize_instance_origin(&origin),
         folder_name: Some(folder_name.clone()),
         mc_version: clean_mc,
         loader: loader_lc,
@@ -3998,7 +4026,14 @@ pub(crate) fn create_instance(
     if clean_mc.is_empty() {
         return Err("mc_version is required".into());
     }
-    create_instance_internal(&app, clean_name, clean_mc, loader_lc, args.icon_path)
+    create_instance_internal(
+        &app,
+        clean_name,
+        clean_mc,
+        loader_lc,
+        "custom".to_string(),
+        args.icon_path,
+    )
 }
 
 #[tauri::command]
@@ -4016,8 +4051,14 @@ pub(crate) fn create_instance_from_modpack_file(
     if final_name.trim().is_empty() {
         return Err("Imported modpack name is empty.".to_string());
     }
-    let instance =
-        create_instance_internal(&app, final_name, mc_version, loader, args.icon_path.clone())?;
+    let instance = create_instance_internal(
+        &app,
+        final_name,
+        mc_version,
+        loader,
+        "downloaded".to_string(),
+        args.icon_path.clone(),
+    )?;
     let instances_dir = app_instances_dir(&app)?;
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
     let imported_files =
@@ -4061,6 +4102,7 @@ pub(crate) fn import_instance_from_launcher(
         final_name,
         source.mc_version.clone(),
         loader,
+        "downloaded".to_string(),
         args.icon_path.clone(),
     )?;
     let instances_dir = app_instances_dir(&app)?;
@@ -8617,6 +8659,7 @@ mod tests {
         Instance {
             id: id.to_string(),
             name: name.to_string(),
+            origin: "custom".to_string(),
             folder_name: None,
             mc_version: "1.20.1".to_string(),
             loader: "fabric".to_string(),

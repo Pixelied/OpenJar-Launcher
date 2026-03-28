@@ -1087,8 +1087,8 @@ export default function ModpackMaker({
           <div className="card mpmShellCard mpmHomeCard" style={{ position: "relative", zIndex: 4 }}>
             <div className="mpmHomeHeader">
               <div className="mpmHeaderBlock">
-                <div className="mpmEyebrow">Layered pack builder</div>
-                <div className="h2">Modpacks</div>
+                <div className="mpmEyebrow">Creator workspace</div>
+                <div className="h2">Saved packs</div>
                 <div className="muted" style={{ marginTop: 4 }}>
                   Build modpack specs, then preview and apply with clear results.
                 </div>
@@ -1270,14 +1270,9 @@ export default function ModpackMaker({
                 title="Search by name, description, or tags."
               />
             </div>
-            <div className="mpmHomeSummary">
-              <span className="chip subtle">{specs.length} total packs</span>
-              <span className="chip subtle">
-                {specs.reduce((sum, spec) => sum + spec.layers.length, 0)} total layers
-              </span>
-              <span className="chip subtle">
-                {specs.reduce((sum, spec) => sum + spec.layers.reduce((inner, layer) => inner + layer.entries_delta.add.length, 0), 0)} total entries
-              </span>
+            <div className="mpmHomeSummaryText">
+              {specs.length} packs • {specs.reduce((sum, spec) => sum + spec.layers.length, 0)} layers •{" "}
+              {specs.reduce((sum, spec) => sum + spec.layers.reduce((inner, layer) => inner + layer.entries_delta.add.length, 0), 0)} entries
             </div>
           </div>
 

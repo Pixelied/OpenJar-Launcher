@@ -1,9 +1,3 @@
-@font-face{
-  font-family: "Minecraft";
-  src: url("./assets/minecraft.woff2") format("woff2");
-  font-display: swap;
-}
-
 :root{
   --bg: #0b1017;
   --bg2: rgba(144, 166, 204, 0.06);
@@ -2614,7 +2608,7 @@ button, input, select { font-family: inherit; }
   padding-left: 1.2em;
 }
 .projectMarkdown code{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   background: rgba(127,127,127,0.14);
   border: 1px solid var(--stroke);
   border-radius: 6px;
@@ -2860,9 +2854,12 @@ button, input, select { font-family: inherit; }
   gap: 10px;
 }
 .creatorStudioIntro .h1{
-  font-size: clamp(24px, 3vw, 36px);
-  line-height: 1;
-  letter-spacing: -0.035em;
+  font-family: var(--font-display);
+  font-size: clamp(2.55rem, 1.95rem + 1.45vw, 3.55rem);
+  font-weight: 760;
+  line-height: 0.92;
+  letter-spacing: -0.055em;
+  text-wrap: balance;
 }
 .creatorStudioIntro .p{
   max-width: 56ch;
@@ -2935,9 +2932,20 @@ button, input, select { font-family: inherit; }
   flex: 1 1 440px;
 }
 .mpmHeaderBlock .h2{
-  font-size: clamp(30px, 4vw, 44px);
-  line-height: 0.98;
-  letter-spacing: -0.035em;
+  font-family: var(--font-display);
+  font-size: clamp(1.85rem, 1.5rem + 0.72vw, 2.35rem);
+  font-weight: 710;
+  line-height: 0.96;
+  letter-spacing: -0.042em;
+  text-wrap: balance;
+}
+.mpmEditorHeader .h2{
+  font-family: var(--font-display);
+  font-size: clamp(1.65rem, 1.35rem + 0.55vw, 2rem);
+  font-weight: 700;
+  line-height: 0.97;
+  letter-spacing: -0.038em;
+  text-wrap: balance;
 }
 .mpmHomeActions{
   display: flex;
@@ -3065,8 +3073,10 @@ button, input, select { font-family: inherit; }
   align-items: flex-start;
 }
 .mpmPanelTitle{
-  font-weight: 900;
-  line-height: 1;
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  line-height: 1.08;
   display: inline-flex;
   align-items: center;
 }
@@ -3249,7 +3259,7 @@ button, input, select { font-family: inherit; }
 }
 @media (max-width: 940px){
   .creatorStudioIntro .h1{
-    max-width: 16ch;
+    max-width: none;
   }
   .creatorStudioTabs .segmented{
     width: 100%;
@@ -4070,8 +4080,8 @@ button, input, select { font-family: inherit; }
   gap: 8px 10px;
   flex-wrap: wrap;
   align-items:center;
-  color: var(--muted2);
-  font-weight: 900;
+  color: color-mix(in srgb, var(--muted) 82%, var(--text) 18%);
+  font-weight: 560;
   font-size: 12px;
 }
 .pager{
@@ -4290,7 +4300,8 @@ button, input, select { font-family: inherit; }
   font-weight: 990;
   letter-spacing: -0.03em;
   line-height: 1;
-  max-width: 11ch;
+  max-width: 18ch;
+  text-wrap: balance;
 }
 .homeSpotlightSub{
   color: var(--muted);
@@ -5105,8 +5116,8 @@ button, input, select { font-family: inherit; }
   gap: 8px;
 }
 .librarySideTitle{
-  font-size: 14px;
-  font-weight: 950;
+  font-size: 16px;
+  font-weight: 920;
   letter-spacing: -0.01em;
 }
 .instanceSessionCard{
@@ -5122,19 +5133,21 @@ button, input, select { font-family: inherit; }
   gap: 6px;
 }
 .instanceSessionLabel{
-  font-size: 11px;
-  font-weight: 920;
-  letter-spacing: 0.08em;
+  font-size: 10.5px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .instanceSessionValue{
   font-size: 13.5px;
-  font-weight: 900;
-  letter-spacing: -0.01em;
+  font-weight: 820;
+  letter-spacing: -0.015em;
 }
 .instanceSessionSub{
-  font-size: 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 520;
   line-height: 1.45;
 }
 .libraryRunCount{
@@ -5255,6 +5268,8 @@ button, input, select { font-family: inherit; }
   margin-top: 2px;
   margin-bottom: 6px;
   font-size: 12.5px;
+  color: var(--muted);
+  font-weight: 520;
   line-height: 1.45;
 }
 .quickPlayForm{
@@ -5269,8 +5284,8 @@ button, input, select { font-family: inherit; }
 }
 .quickPlayLabel{
   font-size: 10.5px;
-  font-weight: 950;
-  letter-spacing: 0.1em;
+  font-weight: 760;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -6725,22 +6740,23 @@ button, input, select { font-family: inherit; }
   flex: 1 1 360px;
 }
 .instanceContentWorkspaceEyebrow{
-  font-size: 11px;
-  font-weight: 960;
-  letter-spacing: 0.12em;
+  font-size: 10.5px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .instanceContentWorkspaceTitle{
   margin-top: 4px;
-  font-size: 20px;
-  font-weight: 980;
-  letter-spacing: -0.03em;
+  font-size: 18px;
+  font-weight: 920;
+  letter-spacing: -0.025em;
 }
 .instanceContentWorkspaceSub{
   margin-top: 5px;
   color: var(--muted);
   font-size: 13px;
+  font-weight: 520;
   line-height: 1.45;
   max-width: 58ch;
 }
@@ -6871,28 +6887,30 @@ button, input, select { font-family: inherit; }
   display: grid;
   grid-template-columns: minmax(0, 1.16fr) minmax(0, 0.84fr);
   gap: 10px;
+  margin-top: 2px;
 }
 .instanceContentMaintenancePanel{
   border: 1px solid color-mix(in srgb, var(--stroke) 70%, transparent);
   border-radius: 18px;
-  background: color-mix(in srgb, var(--surface) 91%, var(--surface-2) 9%);
-  padding: 12px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  padding: 14px;
   display: grid;
-  gap: 10px;
+  gap: 11px;
   align-content: start;
 }
 .instanceContentMaintenancePanelHead{
   display: grid;
-  gap: 4px;
+  gap: 5px;
 }
 .instanceContentMaintenanceTitle{
-  font-size: 13.5px;
-  font-weight: 950;
-  letter-spacing: -0.01em;
+  font-size: 17px;
+  font-weight: 920;
+  letter-spacing: -0.02em;
 }
 .instanceContentMaintenanceSub{
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
+  font-weight: 520;
   line-height: 1.42;
 }
 .instanceContentUpdateRow{
@@ -6988,16 +7006,16 @@ button, input, select { font-family: inherit; }
   flex-wrap: wrap;
 }
 .updatesCardEyebrow{
-  font-size: 10.5px;
-  font-weight: 960;
-  letter-spacing: 0.12em;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .updatesCardTitle{
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 900;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
 }
 .updatesList{
   margin-top: 10px;
@@ -7023,15 +7041,15 @@ button, input, select { font-family: inherit; }
     color-mix(in srgb, var(--surface) 97%, transparent);
 }
 .updatesListName{
-  font-size: 13px;
-  font-weight: 900;
-  letter-spacing: -0.01em;
+  font-size: 13.5px;
+  font-weight: 760;
+  letter-spacing: -0.015em;
 }
 .updatesListMeta{
   margin-top: 4px;
   color: var(--muted);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 560;
 }
 .updatesScreenSummaryCard{
   margin-top: 12px;
@@ -7054,35 +7072,74 @@ button, input, select { font-family: inherit; }
   flex: 1 1 520px;
 }
 .updatesScreenSummaryEyebrow{
-  font-size: 11px;
-  font-weight: 1000;
-  letter-spacing: 0.16em;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--muted);
 }
+.updatesScreenSummaryTitle{
+  font-size: 18px;
+  font-weight: 760;
+  letter-spacing: -0.028em;
+  line-height: 1.04;
+  color: var(--text);
+}
 .updatesScreenSummaryTitleRow{
-  margin-top: 6px;
+  margin-top: 5px;
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
 .updatesScreenSummaryLead{
-  margin-top: 8px;
+  margin-top: 7px;
   max-width: 760px;
-}
-.updatesScreenSummaryMeta{
-  margin-top: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 12.5px;
+  font-weight: 560;
+  line-height: 1.48;
+  letter-spacing: -0.012em;
 }
 .updatesScreenSummaryActions{
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+.updatesScreenActionState{
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.3;
+}
+.updatesScreenFactsGrid{
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.updatesScreenFactCard{
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+.updatesScreenFactLabel{
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.updatesScreenFactValue{
+  margin-top: 4px;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted) 12%);
+  font-size: 12.5px;
+  font-weight: 620;
+  line-height: 1.38;
+  min-width: 0;
 }
 .updatesScreenRuleGrid{
   margin-top: 16px;
@@ -7101,19 +7158,20 @@ button, input, select { font-family: inherit; }
   grid-column: span 1;
 }
 .updatesScreenRuleLabel{
-  font-size: 12px;
-  font-weight: 1000;
-  letter-spacing: 0.08em;
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.13em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .updatesScreenRuleHelp{
   margin-top: 6px;
   margin-bottom: 10px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 750;
-  line-height: 1.45;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 12.5px;
+  font-weight: 540;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
 }
 .updatesScreenRuleCard .dropdown,
 .updatesScreenRuleCard .menuSelect{
@@ -7122,6 +7180,8 @@ button, input, select { font-family: inherit; }
 .updatesScreenRuleCard .dropBtn,
 .updatesScreenRuleCard .menuSelectBtn{
   width: 100%;
+  font-size: 13px;
+  font-weight: 640;
 }
 .updatesScreenStatsRow{
   margin-top: 14px;
@@ -7130,10 +7190,50 @@ button, input, select { font-family: inherit; }
   gap: 8px;
   flex-wrap: wrap;
 }
-.updatesScreenAppliedSummary{
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--stroke);
+.updatesScreenStatsText{
+  color: color-mix(in srgb, var(--muted) 82%, var(--text) 18%);
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 1.35;
+}
+.updatesScreenStatsDivider{
+  color: color-mix(in srgb, var(--muted) 78%, var(--text) 22%);
+  font-size: 11px;
+}
+.updatesScreenSectionCard{
+  margin-top: 12px;
+  padding: 16px 18px;
+  border-radius: 22px;
+  border: 1px solid var(--stroke2);
+  background: color-mix(in srgb, var(--surface) 95%, transparent);
+}
+.updatesScreenSectionHead{
+  display: grid;
+  gap: 4px;
+}
+.updatesScreenSectionSub{
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 12.5px;
+  font-weight: 540;
+  line-height: 1.42;
+}
+.updatesScreenRecentList{
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+.updatesScreenRecentRow{
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+}
+.updatesScreenRecentHead{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 .updatesScreenList{
   margin-top: 14px;
@@ -7155,10 +7255,38 @@ button, input, select { font-family: inherit; }
 }
 .updatesScreenAppliedNames{
   margin-top: 8px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 14px;
+}
+.updatesScreenAppliedName{
+  display: block;
+  position: relative;
+  min-width: 0;
+  padding-left: 12px;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.updatesScreenAppliedName::before{
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.55em;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 58%, transparent);
+}
+.updatesScreenInlineMeta{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.3;
 }
 .updatesScreenItemHead{
   display: flex;
@@ -7169,8 +7297,8 @@ button, input, select { font-family: inherit; }
 }
 .updatesScreenItemTitle{
   font-size: 15px;
-  font-weight: 940;
-  letter-spacing: -0.01em;
+  font-weight: 760;
+  letter-spacing: -0.018em;
 }
 .updatesScreenItemMetaRow{
   margin-top: 8px;
@@ -7184,16 +7312,63 @@ button, input, select { font-family: inherit; }
   gap: 8px;
   flex-wrap: wrap;
 }
+.chip.updatesScreenChip{
+  font-size: 9.5px;
+  font-weight: 560;
+  line-height: 1.15;
+  letter-spacing: 0.005em;
+  padding: 3px 7px;
+}
+.updatesScreenSummaryCard .chip.updatesScreenChip,
+.updatesScreenItemCard .chip.updatesScreenChip,
+.updatesScreenSectionCard .chip.updatesScreenChip{
+  border-color: color-mix(in srgb, var(--stroke2) 56%, transparent);
+  color: color-mix(in srgb, var(--text) 52%, var(--muted) 48%);
+}
+.updatesScreenSummaryCard .chip.updatesScreenChip.subtle,
+.updatesScreenItemCard .chip.updatesScreenChip.subtle,
+.updatesScreenSectionCard .chip.updatesScreenChip.subtle{
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
+}
+.updatesScreenItemActions .btn,
+.updatesScreenSummaryActions .btn{
+  font-size: 12.5px;
+  font-weight: 650;
+}
+.updatesScreenSummaryActions .btn.primary{
+  font-weight: 700;
+}
+.updatesListMeta{
+  margin-top: 4px;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 12px;
+  font-weight: 560;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
+}
+.updatesCardTitle{
+  font-size: 13.5px;
+  font-weight: 720;
+  letter-spacing: -0.018em;
+  color: var(--text);
+}
 .updatesScreenItemCard .noticeBox,
 .updatesScreenItemCard .errorBox{
   border-radius: 14px;
 }
 @media (max-width: 1040px){
+  .updatesScreenFactsGrid{
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .updatesScreenRuleGrid{
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 700px){
+  .updatesScreenFactsGrid{
+    grid-template-columns: minmax(0, 1fr);
+  }
   .updatesScreenRuleGrid{
     grid-template-columns: minmax(0, 1fr);
   }
@@ -7354,8 +7529,8 @@ button, input, select { font-family: inherit; }
 }
 .instanceModsNameTitle{
   font-size: 15px;
-  font-weight: 960;
-  letter-spacing: -0.01em;
+  font-weight: 900;
+  letter-spacing: -0.015em;
   line-height: 1.14;
   white-space: nowrap;
   overflow: hidden;
@@ -7364,8 +7539,8 @@ button, input, select { font-family: inherit; }
 .instanceModsNameMeta{
   color: var(--muted);
   font-size: 12px;
-  font-weight: 780;
-  line-height: 1.22;
+  font-weight: 560;
+  line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7389,18 +7564,19 @@ button, input, select { font-family: inherit; }
   border: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
   border-radius: 999px;
   font-size: 9.5px;
-  font-weight: 760;
+  font-weight: 540;
+  letter-spacing: 0.005em;
   line-height: 1 !important;
-  color: color-mix(in srgb, var(--muted) 88%, var(--text));
-  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+  color: color-mix(in srgb, var(--muted) 82%, var(--text) 18%);
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
   white-space: nowrap;
   vertical-align: middle;
 }
 .instanceProviderBadge.active{
-  border-color: color-mix(in srgb, var(--stroke2) 96%, var(--stroke));
-  color: var(--text);
-  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--stroke2) 36%, transparent);
+  border-color: color-mix(in srgb, var(--stroke) 82%, var(--stroke2) 18%);
+  color: color-mix(in srgb, var(--text) 58%, var(--muted) 42%);
+  background: color-mix(in srgb, var(--surface-2) 58%, transparent);
+  box-shadow: none;
 }
 .instanceProviderBadge.missing{
   border-color: rgba(248,113,113,0.30);
@@ -7411,8 +7587,8 @@ button, input, select { font-family: inherit; }
   border-color: rgba(217, 119, 6, 0.36);
   color: rgba(120, 53, 15, 0.9);
   background: rgba(245, 158, 11, 0.09);
-  font-weight: 780;
-  font-size: 10px;
+  font-weight: 560;
+  font-size: 9.5px;
   height: 20px;
   min-height: 20px;
   padding: 0 7px;
@@ -7427,9 +7603,9 @@ button, input, select { font-family: inherit; }
   align-items: center;
   justify-content: center;
   margin-right: 4px;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
-  font-weight: 980;
+  font-weight: 720;
 }
 .dependencyBadge{
   letter-spacing: 0;
@@ -7448,7 +7624,7 @@ button.instanceProviderBadge{
   min-height: 20px;
   line-height: 1 !important;
   font-size: 9.75px;
-  font-weight: 720;
+  font-weight: 560;
   font-family: inherit;
   cursor: default;
 }
@@ -7457,8 +7633,8 @@ button.instanceProviderBadge.clickable{
   transition: border-color 140ms var(--ease), transform 140ms var(--ease), background 140ms var(--ease), color 140ms var(--ease);
 }
 button.instanceProviderBadge.clickable:hover{
-  border-color: color-mix(in srgb, var(--stroke2) 86%, transparent);
-  background: color-mix(in srgb, var(--surface-2) 75%, transparent);
+  border-color: color-mix(in srgb, var(--stroke2) 74%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 66%, transparent);
   transform: translateY(-1px);
 }
 button.instanceProviderBadge.clickable:focus-visible{
@@ -7489,8 +7665,8 @@ button.instanceProviderBadge:disabled{
 }
 .instanceModsFilenamePrimary{
   font-size: 14px;
-  font-weight: 940;
-  letter-spacing: -0.01em;
+  font-weight: 760;
+  letter-spacing: -0.015em;
   line-height: 1.14;
   white-space: nowrap;
   overflow: hidden;
@@ -7499,8 +7675,8 @@ button.instanceProviderBadge:disabled{
 .instanceModsVersionMeta{
   color: var(--muted);
   font-size: 12px;
-  font-weight: 780;
-  line-height: 1.22;
+  font-weight: 540;
+  line-height: 1.32;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7859,7 +8035,7 @@ button.instanceProviderBadge:disabled{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
 }
@@ -7922,7 +8098,7 @@ button.instanceProviderBadge:disabled{
 }
 .instanceLogTimestamp{
   color: color-mix(in srgb, var(--muted) 88%, transparent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 780;
   white-space: nowrap;
@@ -7930,7 +8106,7 @@ button.instanceProviderBadge:disabled{
 .instanceLogMessage{
   min-width: 0;
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.4;
   word-break: break-word;
@@ -8995,7 +9171,6 @@ button.instanceProviderBadge:disabled{
   border-radius: 24px;
   border-color: color-mix(in srgb, var(--stroke2) 82%, transparent);
   background:
-    radial-gradient(circle at top left, color-mix(in srgb, var(--accent-soft) 20%, transparent), transparent 44%),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, var(--panel2) 2%), color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%));
   box-shadow: var(--shadow-xs);
   display: grid;
@@ -9022,7 +9197,8 @@ button.instanceProviderBadge:disabled{
   letter-spacing: -0.035em;
   font-weight: 980;
   max-width: none;
-  white-space: nowrap;
+  white-space: normal;
+  text-wrap: balance;
 }
 .settingsHeroSub{
   margin-top: 8px;
@@ -9096,7 +9272,7 @@ button.instanceProviderBadge:disabled{
   border-radius: 24px;
   border-color: color-mix(in srgb, var(--stroke2) 78%, transparent);
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--accent-soft) 4%), color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%));
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%), color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%));
   box-shadow: 0 14px 36px color-mix(in srgb, #000 6%, transparent);
 }
 .settingsMotionNote{
@@ -9301,7 +9477,7 @@ button.instanceProviderBadge:disabled{
   margin-top: 8px;
 }
 .githubTokenTextarea{
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 .githubTokenTextarea.ready{
   border-color: color-mix(in srgb, rgba(34, 197, 94, 0.38) 64%, var(--stroke));
@@ -9440,7 +9616,6 @@ button.instanceProviderBadge:disabled{
   border-radius: 24px;
   border: 1px solid color-mix(in srgb, var(--stroke2) 70%, transparent);
   background:
-    radial-gradient(820px 220px at 0% 0%, color-mix(in srgb, var(--accent-soft) 14%, transparent), transparent 58%),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, white 3%), color-mix(in srgb, var(--surface-2) 90%, transparent));
   box-shadow: var(--shadow-xs);
 }
@@ -9449,7 +9624,7 @@ button.instanceProviderBadge:disabled{
   height: 88px;
   border-radius: 20px;
   border: 1px solid var(--stroke2);
-  background: color-mix(in srgb, var(--accent-soft) 62%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface) 52%, var(--surface-2) 48%);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -10183,9 +10358,10 @@ button.instanceProviderBadge:disabled{
 .skinChoiceCompactRef{
   min-height: 164px;
   gap: 7px;
+  padding: 8px;
 }
 .skinChoiceCompactRef .accountSkinChoiceThumb{
-  min-height: 116px;
+  min-height: 138px;
 }
 .skinsLibraryRef .skinChoiceSavedRef .accountSkinChoiceThumb img{
   padding: 0;
@@ -10194,8 +10370,8 @@ button.instanceProviderBadge:disabled{
 }
 .skinsLibraryRef .skinChoiceCompactRef .accountSkinChoiceThumb img{
   padding: 0;
-  transform: scale(0.98);
-  transform-origin: center 78%;
+  transform: scale(1.5);
+  transform-origin: center 92%;
 }
 .skinsLibraryRef .accountSkinChoiceLabel{
   font-size: 14px;
@@ -10688,7 +10864,6 @@ button.instanceProviderBadge:disabled{
   overflow: visible;
   border-radius: 22px;
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--accent-soft) 20%, transparent), transparent 38%),
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, var(--panel2) 2%), color-mix(in srgb, var(--surface) 93%, var(--panel2) 7%));
   box-shadow: var(--shadow-xs);
 }
@@ -11175,7 +11350,7 @@ button.instanceProviderBadge:disabled{
   padding: 8px;
   font-size: 11.5px;
   line-height: 1.45;
-  font-family: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+  font-family: var(--font-mono);
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -11198,7 +11373,7 @@ button.instanceProviderBadge:disabled{
   outline: none;
   font-size: 12.5px;
   line-height: 1.55;
-  font-family: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+  font-family: var(--font-mono);
 }
 .configSuggestMenu{
   position: absolute;
@@ -11456,7 +11631,7 @@ button.instanceProviderBadge:disabled{
   word-break: break-word;
   font-size: 12px;
   line-height: 1.4;
-  font-family: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+  font-family: var(--font-mono);
 }
 .configInspectorWarnings{
   display: grid;
@@ -11554,4 +11729,2842 @@ button.instanceProviderBadge:disabled{
   .quickPlayActions{
     grid-template-columns: 1fr;
   }
+}
+
+/* --- Editorial desktop refresh: typography + flatter surfaces --- */
+:root{
+  --font-body: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-display: "Avenir Next", "Segoe UI Variable Display", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-label: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-mono: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+}
+
+body{
+  font-family: var(--font-body);
+  letter-spacing: -0.012em;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select,
+textarea{
+  font-family: inherit;
+}
+
+.h1,
+.h2,
+.h3,
+.discoverWorkspaceTitle,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.settingsSidebarTitle,
+.settingsPageTitle,
+.accountHeroName,
+.instTitle,
+.projectHeroTitle,
+.resultTitle,
+.instCardTitle{
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.h1{
+  font-size: clamp(1.65rem, 1.18rem + 0.72vw, 2.15rem);
+  line-height: 0.98;
+}
+
+.h2{
+  font-size: clamp(1.18rem, 1.02rem + 0.3vw, 1.48rem);
+  line-height: 1.02;
+}
+
+.h3{
+  font-size: 1rem;
+  line-height: 1.08;
+}
+
+.discoverWorkspaceEyebrow,
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow,
+.settingsSidebarLabel,
+.libraryHeroStatLabel,
+.accountSummaryLabel,
+.accountSectionTitle,
+.settingsHeroSummaryLabel{
+  font-family: var(--font-label);
+  letter-spacing: 0.16em;
+}
+
+.settingTitle,
+.settingsSectionTitle,
+.homePanelTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.instanceSectionTitle,
+.discoverResultsTitle,
+.settingsRailButtonTitle{
+  letter-spacing: -0.022em;
+}
+
+.content{
+  padding: 18px 26px 26px;
+}
+
+:root:not([data-theme="light"]) .content{
+  background:
+    radial-gradient(1080px 700px at 0% -8%, color-mix(in srgb, var(--accent-soft) 16%, transparent), transparent 56%),
+    radial-gradient(820px 420px at 100% 0%, color-mix(in srgb, var(--accent-soft-2) 10%, transparent), transparent 62%),
+    linear-gradient(180deg, #0b1017 0%, #0d121a 100%);
+}
+
+:root[data-theme="light"] .content{
+  background:
+    radial-gradient(980px 560px at 0% -8%, color-mix(in srgb, var(--accent-soft) 12%, transparent), transparent 58%),
+    linear-gradient(180deg, #f2f1ed 0%, #ecebe6 100%);
+}
+
+.navRail{
+  padding: 22px 12px 18px;
+}
+
+:root:not([data-theme="light"]) .navRail{
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #121824 86%, #070b11 14%), color-mix(in srgb, #0e141d 92%, #070b11 8%));
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--stroke2) 52%, transparent);
+}
+
+.navDivider{
+  width: 28px;
+  opacity: 0.56;
+}
+
+.navBtn{
+  border-radius: 14px;
+}
+
+.btn,
+.input,
+.segmented{
+  border-radius: 13px;
+}
+
+.btn{
+  font-size: 13px;
+  font-weight: 820;
+  letter-spacing: -0.012em;
+  box-shadow: none;
+}
+
+.btn:hover{
+  box-shadow: none;
+}
+
+.btn.primary,
+.btn.primary:hover{
+  box-shadow: none;
+}
+
+.input{
+  font-weight: 720;
+}
+
+.chip{
+  font-weight: 820;
+  letter-spacing: 0.01em;
+}
+
+.card{
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .card{
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #101621 4%), color-mix(in srgb, var(--surface-2) 94%, #0d131d 6%));
+  box-shadow: none;
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.instanceSideCard{
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.settingsSidebar,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.instanceSideCard,
+.homePanel{
+  background: color-mix(in srgb, var(--surface) 93%, var(--surface-2) 7%);
+  border-color: color-mix(in srgb, var(--stroke2) 64%, transparent);
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.settingsSidebar,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.homePanel{
+  position: relative;
+}
+
+.discoverWorkspace::before,
+.libraryTopRow::before,
+.settingsSidebar::before,
+.settingsHeroCard::before,
+.settingsSectionCard::before,
+.accountCard::before,
+.homePanel::before{
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent-ring) 34%, var(--stroke));
+  opacity: 0.9;
+}
+
+.homePanel{
+  padding: 16px 16px 14px;
+}
+
+.homePanelHead{
+  padding-bottom: 12px;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.resultCard,
+.instCard,
+.settingsRailButton,
+.settingsAccountCard,
+.libraryStorageCard{
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.resultCard,
+.instCard,
+.settingsRailButton,
+.settingsAccountCard,
+.libraryStorageCard,
+.discoverResultsHeader{
+  background: color-mix(in srgb, var(--surface) 89%, var(--surface-2) 11%);
+  border-color: color-mix(in srgb, var(--stroke2) 58%, transparent);
+}
+
+.discoverResultsHeader{
+  border-radius: 14px;
+  padding: 12px 0 10px;
+  background: transparent;
+  border-width: 0 0 1px;
+}
+
+.topRow{
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.resultCard,
+.instCard{
+  padding: 15px 16px;
+}
+
+.resultCard:hover,
+.instCard:hover,
+.homeLaunchAction:hover,
+.libraryStorageCard:hover,
+.settingsRailButton:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.resultCard:hover,
+.instCard:hover{
+  background: color-mix(in srgb, var(--surface) 84%, var(--accent-soft) 16%);
+}
+
+.resultIcon,
+.instCardIcon,
+.settingsRailButtonIcon{
+  border-radius: 12px;
+}
+
+.resultIcon,
+.instCardIcon{
+  border-color: color-mix(in srgb, var(--stroke2) 56%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+}
+
+.resultCard:hover .resultIcon,
+.instCard:hover .instCardIcon{
+  transform: none;
+  box-shadow: none;
+}
+
+.libraryHeroCard,
+.settingsHeroCard,
+.accountHero{
+  padding: 22px 22px 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, transparent), color-mix(in srgb, var(--surface-2) 95%, transparent));
+  border-color: color-mix(in srgb, var(--stroke2) 72%, transparent);
+}
+
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName{
+  line-height: 0.94;
+}
+
+.libraryHeroTitle{
+  font-size: clamp(2rem, 1.55rem + 1vw, 2.65rem);
+}
+
+.settingsHeroTitle{
+  font-size: clamp(1.85rem, 1.4rem + 0.8vw, 2.4rem);
+  white-space: normal;
+}
+
+.accountHeroName{
+  font-size: clamp(1.8rem, 1.45rem + 0.72vw, 2.35rem);
+}
+
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.discoverResultsSub,
+.settingsPageIntro{
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.libraryHeroStats,
+.settingsHeroSummaryGrid,
+.accountSummaryStrip{
+  gap: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 56%, transparent);
+  padding-top: 14px;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.accountSummaryCard{
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 14px 0 16px;
+  min-height: 0;
+}
+
+.libraryHeroStats > :first-child,
+.settingsHeroSummaryGrid > :first-child,
+.accountSummaryStrip > :first-child{
+  border-left: 0;
+  padding-left: 0;
+}
+
+.libraryHeroStatValue,
+.accountSummaryValue{
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.librarySideCard,
+.accountSectionBlock,
+.settingsSectionCard .settingStack > div,
+.settingsFoldSection{
+  border-radius: 0;
+  border-width: 1px 0 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.librarySideCard{
+  padding: 14px 0 0;
+}
+
+.settingsSectionCard{
+  padding: 20px 20px 16px;
+}
+
+.settingsSectionCard .settingStack{
+  gap: 0;
+  margin-top: 12px;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 14px 0;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.settingsFoldSection{
+  margin-top: 10px;
+}
+
+.settingsFoldSummary{
+  padding: 12px 0;
+}
+
+.settingsFoldBody{
+  padding: 12px 0 2px;
+}
+
+.settingsSidebar{
+  padding: 20px 18px 18px;
+  border-radius: 18px;
+}
+
+.settingsRailList{
+  gap: 4px;
+}
+
+.settingsRailButton{
+  padding: 10px 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settingsRailButton:last-child{
+  border-bottom: 0;
+}
+
+.settingsRailButtonIcon{
+  background: color-mix(in srgb, var(--surface) 56%, var(--surface-2) 44%);
+}
+
+.settingsRailButton.active{
+  background: transparent;
+  box-shadow: none;
+}
+
+.settingsHeroSummaryValue,
+.settingsSidebarTitle,
+.settingsSectionTitle{
+  font-family: var(--font-display);
+}
+
+.accountCard{
+  padding: 18px 18px 16px;
+}
+
+.accountSectionBlock{
+  padding: 12px 0 0;
+}
+
+.accountProfileSplit{
+  gap: 18px;
+}
+
+.accountGrid{
+  gap: 16px;
+}
+
+.accountAuthBanner{
+  border-radius: 14px;
+}
+
+.instanceSidePane{
+  gap: 6px;
+}
+
+.instanceSideCard{
+  padding: 14px 0 0;
+  border-width: 1px 0 0;
+  background: transparent;
+}
+
+.instanceSideCard:first-child{
+  border-top: 0;
+  padding-top: 0;
+}
+
+.activityHeadMeta{
+  padding: 12px 0 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.instanceSectionHeader,
+.homePanelHead,
+.libraryHeroHead,
+.settingsHeroHeader{
+  align-items: flex-end;
+}
+
+@media (max-width: 820px){
+  .content{
+    padding: 14px 18px 22px;
+  }
+
+  .libraryHeroCard,
+  .settingsHeroCard,
+  .accountHero,
+  .settingsSectionCard,
+  .accountCard{
+    padding-inline: 16px;
+  }
+
+  .libraryHeroStat,
+  .settingsHeroSummaryCard,
+  .accountSummaryCard{
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* --- Modern correction pass: remove editorial/heritage cues --- */
+:root{
+  --font-body: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-display: "Avenir Next", "Segoe UI Variable Display", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-label: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-mono: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+}
+
+body{
+  letter-spacing: -0.008em;
+}
+
+.h1,
+.h2,
+.h3,
+.discoverWorkspaceTitle,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.settingsSidebarTitle,
+.settingsPageTitle,
+.accountHeroName,
+.instTitle,
+.projectHeroTitle,
+.resultTitle,
+.instCardTitle,
+.settingsSectionTitle,
+.settingsHeroSummaryValue{
+  font-weight: 680;
+  letter-spacing: -0.032em;
+}
+
+.discoverWorkspaceEyebrow,
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow,
+.settingsSidebarLabel,
+.libraryHeroStatLabel,
+.accountSummaryLabel,
+.accountSectionTitle,
+.settingsHeroSummaryLabel{
+  letter-spacing: 0.11em;
+  font-weight: 780;
+}
+
+.btn,
+.input,
+.segmented,
+.card,
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.resultCard,
+.instCard{
+  border-radius: 12px;
+}
+
+:root[data-theme="light"] .content{
+  background:
+    radial-gradient(820px 460px at 0% -6%, rgba(130, 130, 130, 0.035), transparent 60%),
+    linear-gradient(180deg, #fbfbfa 0%, #f2f2ef 100%);
+}
+
+:root[data-theme="light"] .navRail{
+  background: linear-gradient(180deg, #fcfcfb 0%, #f3f3f0 100%);
+  border-right-color: rgba(120, 120, 120, 0.14);
+  box-shadow: inset -1px 0 0 rgba(120, 120, 120, 0.08);
+}
+
+.discoverWorkspace::before,
+.libraryTopRow::before,
+.settingsSidebar::before,
+.settingsHeroCard::before,
+.settingsSectionCard::before,
+.accountCard::before,
+.homePanel::before{
+  opacity: 0;
+}
+
+:root[data-theme="light"] .discoverWorkspace,
+:root[data-theme="light"] .libraryTopRow,
+:root[data-theme="light"] .settingsSidebar,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .settingsSectionCard,
+:root[data-theme="light"] .accountCard,
+:root[data-theme="light"] .homePanel,
+:root[data-theme="light"] .resultCard,
+:root[data-theme="light"] .instCard,
+:root[data-theme="light"] .libraryStorageCard,
+:root[data-theme="light"] .discoverResultsHeader{
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  border-color: rgba(119, 133, 153, 0.16);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-theme="light"] .libraryHeroCard,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .accountHero{
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  border-color: rgba(120, 120, 120, 0.16);
+}
+
+:root[data-theme="light"] .resultCard:hover,
+:root[data-theme="light"] .instCard:hover,
+:root[data-theme="light"] .homeLaunchAction:hover,
+:root[data-theme="light"] .libraryStorageCard:hover,
+:root[data-theme="light"] .settingsRailButton:hover{
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  border-color: rgba(95, 113, 140, 0.24);
+}
+
+.settingsRailButton{
+  padding: 11px 0;
+}
+
+:root[data-theme="light"] .settingsRailButton{
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: transparent;
+}
+
+.libraryHeroTitle{
+  font-size: clamp(1.8rem, 1.45rem + 0.85vw, 2.35rem);
+}
+
+.settingsHeroTitle{
+  font-size: clamp(1.7rem, 1.3rem + 0.65vw, 2.15rem);
+}
+
+.accountHeroName{
+  font-size: clamp(1.65rem, 1.32rem + 0.6vw, 2rem);
+}
+
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.discoverResultsSub,
+.settingsPageIntro,
+.homeRowMeta{
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+/* --- Motion restore: keep updated visuals, bring back the older interaction feel --- */
+.resultCard{
+  border-radius: 20px;
+}
+
+.resultIcon{
+  border-radius: 16px;
+}
+
+.btn:hover{
+  box-shadow: var(--shadow-xs);
+}
+
+.btn.primary{
+  box-shadow:
+    0 10px 24px color-mix(in srgb, var(--accent-soft) 44%, transparent),
+    0 1px 2px rgba(18, 24, 32, 0.08);
+}
+
+.btn.primary:hover{
+  box-shadow:
+    0 12px 28px color-mix(in srgb, var(--accent-soft-2) 54%, transparent),
+    var(--shadow-xs);
+}
+
+:root[data-theme="light"] .btn.primary{
+  box-shadow:
+    0 8px 18px rgba(18, 24, 32, 0.05),
+    0 1px 2px rgba(18, 24, 32, 0.06);
+}
+
+:root[data-theme="light"] .btn.primary:hover{
+  box-shadow:
+    0 10px 22px rgba(18, 24, 32, 0.07),
+    var(--shadow-xs);
+}
+
+.resultCard:hover{
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-xs);
+}
+
+.instCard:hover,
+.homeLaunchAction:hover,
+.libraryStorageCard:hover,
+.settingsRailButton:hover{
+  transform: translateY(var(--hover-lift-soft)) scale(var(--hover-scale-soft));
+  box-shadow: var(--shadow-xs);
+}
+
+.resultCard:hover .resultIcon{
+  transform: scale(1.04) rotate(-3deg);
+  box-shadow: var(--shadowSoft);
+}
+
+.instCard:hover .instCardIcon{
+  transform: rotate(-8deg) scale(1.04);
+  box-shadow: var(--shadowSoft);
+}
+
+/* --- Discover segmented control shape alignment --- */
+.discoverPage .segmented{
+  border-radius: 18px;
+  padding: 5px;
+}
+
+.discoverPage .segmentedIndicator,
+.discoverPage .segmentedIndicator::before,
+.discoverPage .segBtn{
+  border-radius: 15px;
+}
+
+/* --- Global corner system normalization --- */
+:root{
+  --corner-modal: 20px;
+  --corner-panel: 18px;
+  --corner-row: 16px;
+  --corner-control: 13px;
+  --corner-soft: 15px;
+}
+
+.modal,
+.msCodeDialog,
+.commandPalettePanel{
+  border-radius: var(--corner-modal);
+}
+
+.card,
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.storageManagerHero,
+.storageManagerRail,
+.storagePaneCard,
+.projectHeroCard,
+.instanceContentWorkspaceCard,
+.instanceContentResultsShell,
+.updatesScreenSummaryCard,
+.updatesCard{
+  border-radius: var(--corner-panel);
+}
+
+.resultCard,
+.instCard,
+.instanceModsRow,
+.homeLaunchAction,
+.homeListRow,
+.libraryStorageCard,
+.storageSummaryCard,
+.storageRailItem,
+.storageBreakdownRow,
+.storageEntryRow,
+.storageRecommendationRow,
+.storageInstanceOverviewRow,
+.instanceContentMaintenanceBar,
+.instanceContentMaintenancePanel,
+.instanceContentControlCard,
+.instanceContentToolsPane,
+.updatesListRow,
+.updatesScreenRuleCard,
+.updatesScreenItemCard,
+.updatesScreenAppliedInstance,
+.settingsAccountCard,
+.accountAuthBanner,
+.errorBox,
+.warningBox,
+.noticeBox,
+.topStatusBanner.warningBox,
+.topStatusBanner.errorBox,
+.topStatusBanner.noticeBox,
+.commandPaletteItem,
+.commandPaletteEmpty,
+.emptyInline,
+.configInlinePanel,
+.configSimpleRow,
+.configInspectorRows,
+.configInspectorPreview,
+.configNestedDetails{
+  border-radius: var(--corner-row);
+}
+
+.btn,
+.input,
+.dropBtn,
+.menuSelectBtn,
+.dropSearch,
+.dropMiniBtn,
+.iconBtn,
+.instanceActionIconBtn,
+.fullHistoryModal .iconBtn,
+.storageManagerModal .iconBtn,
+.instanceSettingsModal .iconBtn,
+.resultIcon,
+.instCardIcon,
+.settingsRailButtonIcon,
+.accountAvatarWrap,
+.instHeroIcon,
+.commandPaletteItem,
+.menuItem,
+.dropPanel.menuSelectCompactPanel,
+.dropPanel.menuSelectCompactPanel .menuItem{
+  border-radius: var(--corner-control);
+}
+
+.segmented{
+  border-radius: var(--corner-panel);
+}
+
+.segmentedIndicator,
+.segmentedIndicator::before,
+.segBtn{
+  border-radius: var(--corner-soft);
+}
+
+.dropPanel{
+  border-radius: var(--corner-panel);
+}
+
+/* --- Page header authority pass --- */
+.homeSpotlightTitle,
+.h1,
+.libraryHeroTitle,
+.accountHeroName,
+.settingsSidebarTitle,
+.settingsPageTitle{
+  font-family: var(--font-display);
+  font-weight: 740;
+  letter-spacing: -0.05em;
+  line-height: 0.93;
+  text-wrap: balance;
+}
+
+.h1{
+  font-size: clamp(2.15rem, 1.55rem + 1.2vw, 3rem);
+  margin-bottom: 2px;
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.5rem, 1.9rem + 1.75vw, 3.95rem);
+  max-width: 14ch;
+}
+
+.libraryHeroTitle,
+.accountHeroName,
+.settingsSidebarTitle,
+.settingsPageTitle{
+  font-size: clamp(2rem, 1.45rem + 0.95vw, 2.65rem);
+}
+
+.settingsHeroTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 1.35rem + 0.7vw, 2.25rem);
+  font-weight: 720;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+.discoverWorkspaceTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.4vw, 1.65rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  max-width: 28ch;
+  text-wrap: balance;
+}
+
+.settingsSectionTitle,
+.instanceSectionTitle,
+.homePanelTitle,
+.discoverResultsTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle{
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+}
+
+.settingsSectionTitle{
+  margin-bottom: 2px;
+}
+
+/* --- Unified page header + wrap cleanup pass --- */
+.homeKicker,
+.creatorStudioEyebrow,
+.mpmEyebrow,
+.discoverWorkspaceEyebrow,
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow{
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.homeSpotlightTitle,
+.creatorStudioIntro .h1,
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-family: var(--font-display);
+  font-weight: 735;
+  letter-spacing: -0.048em;
+  line-height: 0.94;
+  text-wrap: balance;
+}
+
+.creatorStudioIntro .h1{
+  font-size: clamp(2.3rem, 1.82rem + 1.12vw, 3.05rem);
+  max-width: 16ch;
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.95rem, 1.48rem + 0.9vw, 2.55rem);
+}
+
+.mpmEditorHeader .h2{
+  font-size: clamp(1.7rem, 1.4rem + 0.5vw, 2rem);
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.5rem, 1.95rem + 1.55vw, 3.7rem);
+  max-width: 16ch;
+}
+
+.homeSpotlightSub,
+.creatorStudioIntro .p,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.settingsPageIntro,
+.discoverResultsSub,
+.updatesScreenSummaryLead{
+  font-size: 14px;
+  line-height: 1.58;
+  text-wrap: pretty;
+}
+
+.homeSpotlightSub,
+.creatorStudioIntro .p,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead{
+  max-width: 58ch;
+}
+
+.discoverWorkspaceTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.4vw, 1.65rem);
+  font-weight: 700;
+  letter-spacing: -0.032em;
+  line-height: 1.03;
+  text-wrap: balance;
+  max-width: none;
+}
+
+.settingsSectionTitle,
+.homePanelTitle,
+.instanceSectionTitle,
+.discoverResultsTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.mpmPanelTitle{
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.016em;
+  line-height: 1.16;
+}
+
+.mpmPanelSub,
+.compactEmptyText,
+.emptySub,
+.homeRowMeta{
+  text-wrap: pretty;
+}
+
+/* --- Surface rebalance: restore meaningful cards, reduce low-value nesting --- */
+.libraryHeroStats,
+.settingsHeroSummaryGrid,
+.accountSummaryStrip{
+  gap: 10px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.accountSummaryCard{
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  padding: 12px 14px;
+}
+
+.libraryHeroStats > :first-child,
+.settingsHeroSummaryGrid > :first-child,
+.accountSummaryStrip > :first-child{
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  padding-left: 14px;
+}
+
+.librarySideCard,
+.accountSectionBlock,
+.settingsSectionCard .settingStack > div,
+.settingsFoldSection,
+.instanceSideCard,
+.activityHeadMeta{
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  box-shadow: none;
+}
+
+.librarySideCard{
+  padding: 16px;
+}
+
+.settingsSectionCard .settingStack{
+  gap: 10px;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 14px;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  padding-top: 14px;
+}
+
+.settingsFoldSummary{
+  padding: 12px 14px;
+}
+
+.settingsFoldBody{
+  padding: 12px 14px 14px;
+}
+
+.instanceSidePane{
+  gap: 10px;
+}
+
+.instanceSideCard{
+  padding: 13px 14px;
+}
+
+.activityHeadMeta{
+  padding: 14px 16px;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.libraryStorageCard,
+.settingsAccountCard{
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border-color: color-mix(in srgb, var(--stroke2) 42%, transparent);
+  box-shadow: none;
+}
+
+.homeLaunchAction:hover,
+.homeListRow:hover,
+.libraryStorageCard:hover{
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  border-color: color-mix(in srgb, var(--stroke2) 58%, transparent);
+}
+
+/* --- Discover title emphasis pass --- */
+.discoverWorkspaceTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.7rem, 1.32rem + 0.62vw, 2.08rem);
+  font-weight: 760;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+.resultTitle{
+  font-family: var(--font-body);
+  font-size: 1.06rem;
+  font-weight: 760;
+  letter-spacing: -0.018em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+/* --- Instance content surface cleanup: reduce nested cards --- */
+.instPanelContent{
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.instanceContentWorkspaceCard{
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0 6px;
+  gap: 12px;
+}
+
+.instanceContentMaintenanceGrid{
+  gap: 18px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 44%, transparent);
+}
+
+.instanceContentMaintenancePanel{
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  gap: 10px;
+}
+
+.instanceContentMaintenancePanelHead{
+  gap: 5px;
+}
+
+.instanceContentUpdateRow,
+.instanceSnapshotRow{
+  padding-top: 2px;
+}
+
+.instanceContentResultsShell{
+  padding: 10px 0 0;
+  margin-bottom: 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 44%, transparent);
+  border-radius: 0;
+  background: transparent;
+  gap: 10px;
+}
+
+/* --- Desktop system pass: calmer hierarchy + one clear workspace surface --- */
+:root{
+  --workspace-card-radius: 22px;
+  --workspace-card-border: color-mix(in srgb, var(--stroke2) 58%, transparent);
+  --workspace-card-bg: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  --ui-page-title-weight: 800;
+  --ui-page-title-tracking: -0.04em;
+  --ui-subpage-title-weight: 760;
+}
+
+.btn{
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.btn.primary{
+  font-weight: 680;
+}
+
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-size: 13px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.input,
+.textarea{
+  font-weight: 620;
+}
+
+.chip{
+  font-size: 10.5px;
+  font-weight: 635;
+  letter-spacing: 0.01em;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 82%, transparent);
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  color: color-mix(in srgb, var(--text) 68%, var(--muted) 32%);
+}
+
+.chip.subtle{
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.72rem, 1.42rem + 0.45vw, 2.08rem);
+  font-weight: 800;
+  letter-spacing: -0.038em;
+  line-height: 0.98;
+}
+
+.creatorStudioIntro .h1{
+  font-size: clamp(2.02rem, 1.72rem + 0.72vw, 2.5rem);
+  font-weight: 800;
+  letter-spacing: -0.042em;
+  line-height: 0.97;
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.16rem, 1.74rem + 1vw, 2.9rem);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+}
+
+.pageRouteEyebrow,
+.instanceContentWorkspaceEyebrow,
+.updatesScreenSummaryEyebrow,
+.updatesScreenRuleLabel,
+.quickPlayLabel,
+.instanceSessionLabel{
+  font-weight: 740;
+  letter-spacing: 0.11em;
+}
+
+.pageRouteHeader > .p,
+.p,
+.settingSub,
+.instanceContentWorkspaceSub,
+.updatesScreenSummaryLead,
+.updatesScreenSectionSub,
+.quickPlaySub,
+.instanceSessionSub,
+.updatesListMeta,
+.instanceModsNameMeta{
+  font-weight: 520;
+  color: var(--muted);
+}
+
+.settingTitle,
+.librarySideTitle,
+.activityHeaderTitle,
+.instanceContentMaintenanceTitle,
+.updatesCardTitle,
+.instanceModsNameTitle{
+  font-weight: 820;
+  letter-spacing: -0.018em;
+}
+
+.pill{
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.h1 + .p,
+.creatorStudioIntro .h1 + .p,
+.homeSpotlightTitle + .homeSpotlightSub,
+.libraryHeroTitle + .libraryHeroSub,
+.settingsHeroTitle + .settingsHeroSub,
+.accountHeroName + .accountHeroLead{
+  margin-top: 6px;
+}
+
+.p,
+.creatorStudioIntro .p,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.settingsPageIntro,
+.discoverResultsSub,
+.updatesScreenSummaryLead,
+.homeSpotlightSub{
+  font-size: 13.5px;
+  font-weight: 640;
+  line-height: 1.48;
+}
+
+.discoverWorkspaceEyebrow,
+.instanceContentWorkspaceEyebrow,
+.updatesCardEyebrow,
+.instanceSectionMeta,
+.discoverResultsTitle{
+  letter-spacing: 0.11em;
+}
+
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.34rem, 1.2rem + 0.28vw, 1.56rem);
+  font-weight: 715;
+  letter-spacing: -0.032em;
+  line-height: 1.02;
+  margin-top: 2px;
+}
+
+.instanceContentWorkspaceSub,
+.discoverWorkspaceSub{
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 630;
+  line-height: 1.42;
+}
+
+.settingsSectionTitle,
+.homePanelTitle,
+.instanceSectionTitle,
+.discoverResultsTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.mpmPanelTitle,
+.instanceContentMaintenanceTitle,
+.updatesCardTitle{
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 740;
+  letter-spacing: -0.014em;
+  line-height: 1.18;
+}
+
+.resultDesc,
+.instanceContentMaintenanceSub,
+.updatesListMeta,
+.instanceModsNameMeta,
+.activitySub{
+  font-weight: 640;
+}
+
+.resultMetaRow{
+  font-weight: 560;
+}
+
+.instanceModsNameTitle{
+  font-size: 14px;
+  font-weight: 780;
+  letter-spacing: -0.014em;
+}
+
+.resultCard,
+.instanceModsRow,
+.updatesListRow{
+  border-radius: 18px;
+  border-color: color-mix(in srgb, var(--stroke2) 48%, transparent);
+  box-shadow: none;
+}
+
+.resultCard:hover,
+.instanceModsRow:hover{
+  box-shadow: none;
+  transform: translateY(-1px);
+}
+
+.instPanelContent{
+  border: 1px solid var(--workspace-card-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--workspace-card-bg) 100%, white 0%), color-mix(in srgb, var(--surface) 98%, transparent));
+  box-shadow: none;
+  border-radius: var(--workspace-card-radius);
+}
+
+.instanceContentWrap{
+  padding: 18px 18px 16px;
+  gap: 12px;
+}
+
+.instanceContentWorkspaceCard{
+  padding: 0;
+  gap: 10px;
+}
+
+.instanceContentMaintenanceGrid{
+  gap: 16px;
+  padding-top: 10px;
+}
+
+.instanceContentResultsShell{
+  padding-top: 12px;
+  gap: 12px;
+}
+
+.discoverWorkspace{
+  border-radius: var(--workspace-card-radius);
+  border-color: var(--workspace-card-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--workspace-card-bg) 100%, white 0%), color-mix(in srgb, var(--surface) 98%, transparent));
+}
+
+/* --- Cross-page cleanup pass from screenshot audit --- */
+:root{
+  --ui-title-tight-gap: 4px;
+  --ui-section-gap: 12px;
+  --ui-soft-panel-bg: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  --ui-soft-panel-border: color-mix(in srgb, var(--stroke2) 46%, transparent);
+  --ui-row-border: color-mix(in srgb, var(--stroke2) 40%, transparent);
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.skinsRefSectionTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.mpmHeaderBlock .h2,
+.creatorStudioIntro .h1{
+  font-weight: 700;
+}
+
+.h1{
+  font-size: clamp(1.9rem, 1.55rem + 0.52vw, 2.28rem);
+}
+
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle{
+  font-size: clamp(1.24rem, 1.12rem + 0.22vw, 1.42rem);
+  margin-top: var(--ui-title-tight-gap);
+}
+
+.settingsHeroTitle,
+.accountHeroName,
+.libraryHeroTitle{
+  margin-top: var(--ui-title-tight-gap);
+}
+
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.libraryHeroSub,
+.settingsPageIntro,
+.discoverWorkspaceSub,
+.instanceContentWorkspaceSub,
+.skinsLibrarySub,
+.accountSkinSub,
+.storageSectionSub,
+.storagePaneHeader .muted,
+.settingsSidebarIntro{
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.42;
+  font-weight: 620;
+}
+
+.settingsShell{
+  gap: 18px;
+}
+
+.settingsSidebar{
+  padding: 16px 14px;
+  border-radius: 20px;
+  gap: 12px;
+}
+
+.settingsSidebarHeader{
+  gap: 6px;
+}
+
+.settingsSidebarTitle{
+  font-size: clamp(1.45rem, 1.16rem + 0.45vw, 1.82rem);
+  font-weight: 760;
+  letter-spacing: -0.03em;
+}
+
+.settingsRailList{
+  gap: 0;
+}
+
+.settingsRailButton{
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 2px;
+  transform: none;
+}
+
+.settingsRailButton:last-child{
+  border-bottom: 0;
+}
+
+.settingsRailButton:hover,
+.settingsRailButton.active{
+  transform: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.settingsRailButton.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 30%, var(--ui-row-border));
+}
+
+.settingsRailButtonIcon{
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 10px;
+}
+
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.libraryHeroCard,
+.libraryTopRow,
+.updatesScreenSummaryCard,
+.discoverWorkspace,
+.storageManagerHero{
+  border-radius: 20px;
+  box-shadow: none;
+}
+
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.libraryTopRow,
+.updatesScreenSummaryCard{
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.settingsHeroCard{
+  padding: 18px;
+  gap: 12px;
+}
+
+.settingsHeroHeader{
+  gap: 12px;
+}
+
+.settingsHeroSummaryGrid{
+  gap: 8px;
+}
+
+.settingsHeroSummaryCard{
+  border-radius: 14px;
+  padding: 10px 12px;
+  min-height: 0;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+}
+
+.settingsHeroSummaryValue{
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.settingsSectionCard{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.settingsSectionCard .settingStack{
+  margin-top: 10px;
+  gap: 0;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 12px 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  padding-top: 6px;
+  border-top: 0;
+}
+
+.settingsFoldSection{
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settingsFoldSummary,
+.settingsFoldBody{
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settingsSectionCard .accentPicker{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settingsSectionCard .accentChoice{
+  border-radius: 14px;
+}
+
+.settingsModeToggle{
+  border-radius: 14px;
+  padding: 4px;
+}
+
+.accountHero{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.accountSummaryStrip{
+  gap: 8px;
+}
+
+.accountSummaryCard{
+  min-height: 0;
+  padding: 10px 12px 12px;
+  border-radius: 14px;
+}
+
+.accountSummaryValue{
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 760;
+}
+
+.accountAuthBanner{
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.accountCard{
+  padding: 14px 16px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.accountSectionBlock{
+  border-width: 1px 0 0;
+  border-radius: 0;
+  padding: 10px 0 0;
+  background: transparent;
+}
+
+.accountProfileSplit{
+  gap: 12px;
+}
+
+.accountSkinsStudioLibrary{
+  margin-top: 10px;
+  gap: 14px;
+}
+
+.accountSkinViewerPane,
+.accountSkinLibrarySection{
+  border-radius: 16px;
+  background: var(--ui-soft-panel-bg);
+  box-shadow: none;
+}
+
+.accountSkinHeading,
+.skinsRefSectionTitle{
+  font-size: clamp(1.55rem, 1.28rem + 0.46vw, 1.92rem);
+  font-weight: 740;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+}
+
+.accountSkinBeta{
+  font-size: 11px;
+  font-weight: 760;
+  padding: 2px 8px;
+}
+
+.accountSkinNamePlate,
+.skinsLibrarySelection{
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.skinsLibrarySelection strong{
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.skinsRefSavedGrid,
+.skinsRefDefaultGrid{
+  gap: 8px;
+}
+
+.skinsLibraryRef .accountSkinChoiceCard,
+.accountSkinAddCardRef{
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+.skinsLibraryRef .accountSkinChoiceCard:hover,
+.accountSkinChoiceCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.accountSkinChoiceCard:hover .accountSkinChoiceThumbInner{
+  transform: none;
+}
+
+.accountSkinChoiceLabel{
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.accountSkinChoiceMeta{
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.updatesScreenSummaryCard{
+  padding: 16px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.updatesScreenRuleCard,
+.updatesScreenItemCard,
+.updatesScreenAppliedInstance,
+.updatesCard{
+  border-radius: 16px;
+  box-shadow: none;
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.libraryHeroCard{
+  padding: 16px 18px;
+}
+
+.libraryHeroStats{
+  gap: 8px;
+}
+
+.libraryHeroStat{
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+
+.libraryTopRow{
+  padding: 14px;
+}
+
+.instCard,
+.resultCard,
+.instanceModsRow{
+  border-radius: 16px;
+}
+
+.instCard{
+  padding: 14px 16px;
+}
+
+.instCardTitle,
+.storageRecommendationTitle,
+.storageEntryLabel,
+.instanceModsNameTitle{
+  font-weight: 760;
+}
+
+.librarySideCard{
+  border-radius: 18px;
+}
+
+.storageManagerModal{
+  max-height: min(92vh, 980px);
+}
+
+.storageManagerModal .modalBody{
+  padding: 14px 16px 16px;
+}
+
+.storageManagerBody{
+  gap: 12px;
+  max-height: min(82vh, 860px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.storageManagerHero{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.storageManagerTotal{
+  font-size: clamp(22px, 1.8vw, 28px);
+  font-weight: 780;
+}
+
+.storageSummaryStrip{
+  gap: 8px;
+}
+
+.storageSummaryCard{
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.storageSummaryValue{
+  font-size: 16px;
+  font-weight: 760;
+}
+
+.storageManagerLayout{
+  gap: 12px;
+  align-items: start;
+}
+
+.storageManagerRail{
+  padding: 8px;
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+.storageRailItem{
+  border-radius: 14px;
+  padding: 10px 11px;
+}
+
+.storageManagerPane{
+  max-height: none;
+  overflow: visible;
+}
+
+.storagePaneHeader{
+  gap: 10px;
+}
+
+.storagePaneTitle{
+  font-size: 18px;
+  font-weight: 760;
+  margin-bottom: 2px;
+}
+
+.storagePaneGrid{
+  gap: 12px;
+}
+
+.storagePaneCard{
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: none;
+  background: var(--ui-soft-panel-bg);
+}
+
+.storagePaneCard .storageEntryList,
+.storagePaneCard .storageRecommendationList,
+.storagePaneCard .storageInstanceOverviewList{
+  max-height: none;
+  overflow: visible;
+}
+
+.storageBreakdownRow,
+.storageEntryRow,
+.storageRecommendationRow,
+.storageInstanceOverviewRow{
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.storageEntryRow:hover,
+.storageRecommendationRow:hover,
+.storageInstanceOverviewRow:hover{
+  box-shadow: none;
+}
+
+.discoverWorkspace{
+  padding: 14px 14px 12px;
+}
+
+.discoverWorkspaceTop{
+  gap: 8px;
+}
+
+.discoverWorkspaceTitle{
+  max-width: 20ch;
+}
+
+.resultCard{
+  padding: 14px 14px;
+  gap: 14px;
+}
+
+.resultDesc{
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
+.resultMetaRow{
+  margin-top: 8px;
+  gap: 6px 8px;
+  font-size: 11.5px;
+}
+
+.resultMetaText{
+  color: color-mix(in srgb, var(--muted) 80%, var(--text) 20%);
+  font-weight: 560;
+  letter-spacing: 0;
+}
+
+.discoverMetaChip{
+  font-weight: 620;
+}
+
+.projectModal .modalBody,
+.discoverProjectModal .modalBody,
+.modal .modalBody{
+  overscroll-behavior: contain;
+}
+
+.creatorStudioIntro .h1,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-size: clamp(1.62rem, 1.34rem + 0.44vw, 1.98rem);
+}
+
+.creatorStudioIntro .p{
+  margin-top: 6px;
+}
+
+.mpmWorkspaceCard,
+.mpmHeaderBlock,
+.mpmEditorHeader,
+.configEditorWorkspace,
+.configEditorPanel,
+.configInspectorPane,
+.mpmLayersPanel,
+.mpmEntriesPanel,
+.mpmInspectorPanel{
+  box-shadow: none;
+}
+
+.mpmLayersPanel,
+.mpmEntriesPanel,
+.mpmInspectorPanel,
+.configEditorPanel,
+.configInspectorPane{
+  border-radius: 18px;
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.mpmLayerCard,
+.mpmEntryRow,
+.configFileRow{
+  border-radius: 14px;
+}
+
+/* --- Page title hierarchy reset: top-level headers should lead --- */
+:root{
+  --ui-page-title-size: clamp(2.2rem, 1.86rem + 0.76vw, 2.88rem);
+  --ui-page-title-weight: 860;
+  --ui-page-title-tracking: -0.045em;
+  --ui-subpage-title-size: clamp(1.22rem, 1.12rem + 0.24vw, 1.42rem);
+  --ui-subpage-title-weight: 770;
+}
+
+.page > .h1,
+.accountPage > .h1,
+.discoverPage > .h1,
+.pageRouteHeader > .h1,
+.settingsSidebarTitle,
+.libraryHeroTitle,
+.homeSpotlightTitle,
+.creatorStudioIntro .h1{
+  font-size: var(--ui-page-title-size);
+  font-weight: var(--ui-page-title-weight);
+  letter-spacing: var(--ui-page-title-tracking);
+  line-height: 0.96;
+}
+
+.settingsSidebarTitle{
+  font-size: clamp(2.08rem, 1.78rem + 0.58vw, 2.52rem);
+}
+
+.libraryHeroTitle{
+  font-size: clamp(2.1rem, 1.82rem + 0.48vw, 2.44rem);
+}
+
+.homeSpotlightTitle{
+  max-width: 16ch;
+}
+
+.settingsHeroTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle,
+.skinsRefSectionTitle,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-size: var(--ui-subpage-title-size);
+  font-weight: var(--ui-subpage-title-weight);
+  letter-spacing: -0.032em;
+  line-height: 1.03;
+}
+
+.pageRouteHeader{
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+
+.pageRouteEyebrow{
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsMain > .pageRouteHeader{
+  margin-bottom: 12px;
+}
+
+.creatorStudioRoute > .pageRouteHeader,
+.libraryMainPane > .pageRouteHeader{
+  margin-bottom: 16px;
+}
+
+.pageRouteHeader > .p{
+  max-width: 76ch;
+  margin-top: 2px;
+}
+
+.settingsSidebarTitle{
+  font-size: clamp(2.08rem, 1.78rem + 0.58vw, 2.52rem);
+}
+
+.libraryHeroTitle,
+.creatorStudioIntro .h1{
+  font-size: clamp(2.1rem, 1.82rem + 0.48vw, 2.44rem);
+  font-weight: 830;
+  letter-spacing: -0.042em;
+  line-height: 0.98;
+}
+
+.pageRouteHeader > .h1{
+  text-wrap: balance;
+}
+
+.libraryHeroCard,
+.creatorStudioIntro,
+.settingsHeroCard,
+.accountHero,
+.updatesScreenSummaryCard,
+.updatesScreenItemCard,
+.libraryTopRow,
+.librarySideCard,
+.discoverWorkspace,
+.discoverResultsHeader,
+.instCard,
+.resultCard{
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+  box-shadow: none;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.updatesScreenRuleCard,
+.storageSummaryCard,
+.storagePaneCard{
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  border-color: color-mix(in srgb, var(--stroke2) 42%, transparent);
+  box-shadow: none;
+}
+
+/* --- Desktop UI cleanup pass: calmer hierarchy, fewer loud surfaces --- */
+.modalOverlay{
+  background: rgba(14, 18, 24, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.modal,
+.instanceSettingsModal,
+.createInstanceModal{
+  border-radius: 24px;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 92%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+}
+
+.modalHeader{
+  padding: 18px 20px 14px;
+}
+
+.modalTitle{
+  font-size: 22px;
+  font-weight: 860;
+  letter-spacing: -0.03em;
+}
+
+.iconBtn{
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%);
+}
+
+.iconBtn:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.chip{
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.02em;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 72%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  color: color-mix(in srgb, var(--text) 70%, var(--muted) 30%);
+}
+
+.chip.subtle{
+  background: transparent;
+  color: var(--muted);
+}
+
+.pillRow{
+  gap: 8px;
+}
+
+.pill{
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 780;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 72%, transparent);
+}
+
+.pill:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.pageRouteHeader{
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.pageRouteHeaderSplit{
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pageRouteHeaderCopy{
+  min-width: 0;
+  flex: 1 1 460px;
+  display: grid;
+  gap: 5px;
+}
+
+.pageRouteHeaderActions{
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pageRouteHeaderProminent{
+  align-items: flex-start;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.pageRouteHeaderProminent .pageRouteHeaderCopy{
+  gap: 6px;
+}
+
+.pageRouteHeaderProminent > .pageRouteHeaderCopy > .h1{
+  font-size: clamp(2.45rem, 2.06rem + 0.82vw, 3.02rem);
+  font-weight: 860;
+  letter-spacing: -0.055em;
+  line-height: 0.92;
+}
+
+.pageRouteHeaderProminent > .pageRouteHeaderCopy > .p{
+  max-width: 56ch;
+}
+
+.pageRouteHeaderProminent .pageRouteHeaderActions{
+  align-self: center;
+}
+
+.pageRouteHeader > .h1{
+  line-height: 0.94;
+}
+
+.pageRouteHeader > .p{
+  max-width: 70ch;
+  margin-top: 1px;
+}
+
+.settingsSidebar{
+  padding: 16px 14px;
+  gap: 14px;
+}
+
+.settingsSidebarHeader{
+  gap: 6px;
+}
+
+.settingsSidebarTitle{
+  font-size: clamp(1.1rem, 1.02rem + 0.28vw, 1.28rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.04;
+}
+
+.settingsSidebarIntro{
+  max-width: 28ch;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.settingsMain{
+  gap: 12px;
+}
+
+.settingsHeroCard{
+  padding: 14px 16px;
+  gap: 12px;
+  border-radius: 18px;
+}
+
+.settingsHeroLead{
+  display: grid;
+  gap: 4px;
+  max-width: 52ch;
+}
+
+.settingsHeroLeadLabel{
+  font-size: 10px;
+  font-weight: 880;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsHeroLeadText{
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.settingsHeroSummaryGrid{
+  grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+  gap: 8px;
+}
+
+.settingsHeroSummaryCard{
+  min-height: 78px;
+  padding: 10px 11px;
+  border-radius: 12px;
+}
+
+.settingsHeroSummaryLabel{
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsHeroSummaryValue{
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.settingsHeroSummaryMeta{
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.creatorStudioRoute{
+  gap: 12px;
+}
+
+.creatorStudioHeaderActions .segmented{
+  padding: 4px;
+  border-radius: 16px;
+}
+
+.creatorStudioPanelWrap{
+  margin-top: 0;
+}
+
+.configWorkspace{
+  gap: 12px;
+}
+
+.configWorkspaceHeader{
+  padding: 14px 16px;
+  gap: 12px;
+  border-radius: 18px;
+}
+
+.configHeaderEyebrow{
+  margin-bottom: 4px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.configHeaderTitle{
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+}
+
+.configHeaderControlGrid{
+  gap: 8px 10px;
+}
+
+.configHeaderMetaText,
+.configHeaderStatusText{
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.configHeaderStatusStrip{
+  margin-top: 0;
+}
+
+.mpmHomeCard{
+  padding: 14px 16px;
+}
+
+.mpmHomeHeader{
+  gap: 10px;
+}
+
+.mpmEyebrow{
+  font-size: 10px;
+  font-weight: 860;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.24rem, 1.12rem + 0.34vw, 1.46rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.028em;
+}
+
+.mpmHomeSummaryText{
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 760;
+  color: var(--muted);
+}
+
+.mpmHomeSpecCard{
+  border-radius: 14px !important;
+  padding: 11px 12px !important;
+}
+
+.mpmHomeSpecCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.discoverWorkspace{
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.discoverWorkspaceTop{
+  gap: 8px 12px;
+}
+
+.discoverWorkspaceEyebrow{
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.discoverWorkspaceTitle{
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.015em;
+}
+
+.discoverResultsHeader{
+  padding: 10px 12px;
+  border-radius: 16px;
+}
+
+.discoverResultsTitle{
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.discoverResultsSub{
+  font-size: 11.5px;
+}
+
+.discoverAddTray{
+  padding: 10px 12px;
+  border-radius: 16px;
+}
+
+.resultCard{
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+.resultCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.libraryMainPane{
+  gap: 12px;
+}
+
+.libraryHeroCard{
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.libraryHeroStats{
+  gap: 8px;
+}
+
+.libraryHeroStat{
+  min-height: 72px;
+  padding: 10px 11px;
+  border-radius: 13px;
+}
+
+.libraryHeroStatLabel{
+  font-size: 10px;
+}
+
+.libraryHeroStatValue{
+  font-size: 20px;
+  font-weight: 820;
+}
+
+.libraryHeroStatMeta{
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.libraryTopRow{
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.instCard{
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+.instCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+/* Final typography consistency pass
+   Keeps page headers strong, controls readable, and metadata quiet. */
+:root{
+  --ui-page-title-weight: 800;
+  --ui-page-title-tracking: -0.04em;
+  --ui-subpage-title-weight: 760;
+}
+
+.h1,
+.pageRouteHeader > .h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.creatorStudioIntro .h1,
+.homeSpotlightTitle{
+  font-weight: var(--ui-page-title-weight);
+  letter-spacing: var(--ui-page-title-tracking);
+}
+
+.h2,
+.sectionHead,
+.settingsHeroTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle,
+.skinsRefSectionTitle,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-weight: var(--ui-subpage-title-weight);
+  letter-spacing: -0.03em;
+}
+
+.p,
+.pageRouteHeader > .p,
+.muted,
+.settingSub,
+.instanceContentWorkspaceSub,
+.updatesScreenSummaryLead,
+.updatesScreenSectionSub,
+.quickPlaySub,
+.instanceSessionSub,
+.updatesListMeta,
+.instanceModsNameMeta,
+.homeRowMeta{
+  color: var(--muted);
+  font-weight: 520;
+}
+
+.pageRouteEyebrow,
+.instanceContentWorkspaceEyebrow,
+.updatesScreenSummaryEyebrow,
+.updatesScreenRuleLabel,
+.quickPlayLabel,
+.instanceSessionLabel,
+.accountSummaryLabel{
+  font-weight: 740;
+  letter-spacing: 0.11em;
+}
+
+.settingTitle,
+.librarySideTitle,
+.activityHeaderTitle,
+.homePanelTitle,
+.discoverResultsTitle,
+.accountSectionTitle,
+.instanceContentMaintenanceTitle,
+.updatesCardTitle,
+.instanceModsNameTitle{
+  font-weight: 820;
+  letter-spacing: -0.018em;
+}
+
+.btn,
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.btn{
+  font-weight: 640;
+}
+
+.btn.primary{
+  font-weight: 680;
+}
+
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-weight: 640;
+}
+
+.input,
+.textarea{
+  font-weight: 620;
+}
+
+.chip{
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: color-mix(in srgb, var(--text) 62%, var(--muted) 38%);
+}
+
+.chip.subtle{
+  color: color-mix(in srgb, var(--muted) 94%, var(--text) 6%);
+}
+
+.pill{
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.librarySideCard{
+  border-radius: 16px;
+}
+
+.accountPage{
+  display: grid;
+  gap: 12px;
+}
+
+.accountHero{
+  margin-top: 0;
+  padding: 16px;
+  gap: 14px;
+  border-radius: 18px;
+  grid-template-columns: 72px minmax(0, 1fr);
+}
+
+.accountAvatarWrap{
+  width: 72px;
+  height: 72px;
+  border-radius: 16px;
+}
+
+.accountHeroEyebrow{
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.accountHeroName{
+  font-size: 22px;
+  font-weight: 820;
+}
+
+.accountHeroLead{
+  font-size: 12.5px;
+  max-width: 50ch;
+}
+
+.accountSummaryStrip{
+  margin-top: 0;
+  gap: 8px;
+}
+
+.accountSummaryCard{
+  min-height: 70px;
+  padding: 10px 11px 12px;
+  border-radius: 12px;
+}
+
+.accountSummaryLabel{
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.accountSummaryValue{
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.accountCard{
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.accountDiagRow,
+.accountAccountRow,
+.accountAssetRow{
+  padding-block: 10px;
+}
+
+.instanceSettingsModal{
+  border-radius: 24px;
+}
+
+.instanceSettingsModal .modalHeader{
+  padding: 16px 18px 14px;
+}
+
+.instanceSettingsModal .instSettingsNav{
+  padding: 14px 10px;
+}
+
+.instanceSettingsModal .instSettingsNavItem{
+  min-height: 44px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.instanceSettingsModal .instSettingsBody{
+  padding: 18px 20px 22px;
+  gap: 16px;
+}
+
+.instanceSettingsModal .sectionHead{
+  font-size: 20px;
+  font-weight: 860;
+  letter-spacing: -0.03em;
+}
+
+.instanceSettingsModal .settingCard{
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: none;
+}
+
+.createInstanceModal{
+  width: 900px;
+  max-width: min(940px, 96vw);
+}
+
+.createInstanceModal .iconBox{
+  border-radius: 18px;
+}
+
+/* Final cross-page polish: align the busiest desktop surfaces to the calmer
+   instance-settings hierarchy without broad global overrides. */
+.discoverResultsTitle{
+  font-size: 13.5px;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+}
+
+.discoverResultsSub{
+  font-size: 12px;
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.discoverAddTrayTitle{
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.discoverAddTraySub{
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.resultTitle{
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: -0.018em;
+}
+
+.resultDesc{
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.42;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.resultMetaRow{
+  font-size: 11.5px;
+  font-weight: 560;
+  color: color-mix(in srgb, var(--muted) 82%, var(--text) 18%);
+}
+
+.librarySideTitle{
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -0.012em;
+}
+
+.libraryRecentName,
+.libraryAccountName{
+  font-weight: 760;
+}
+
+.libraryRecentMeta,
+.libraryAccountId{
+  font-weight: 540;
+}
+
+.libraryRunRow{
+  font-weight: 660;
+}
+
+.quickPlayLabel{
+  font-weight: 720;
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
+}
+
+.quickPlaySub{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.instanceModsHeaderRow{
+  font-weight: 760;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.instanceModsNameTitle{
+  font-size: 14.5px;
+  font-weight: 760;
+}
+
+.instanceModsNameMeta{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.updatesCardTitle{
+  font-size: 14px;
+  font-weight: 740;
+  letter-spacing: -0.016em;
+}
+
+.updatesListName{
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.updatesListMeta{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
 }

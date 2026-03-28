@@ -1065,8 +1065,8 @@ export default function ModpacksConfigEditor({
     <div className="configWorkspace">
       <div className="card configWorkspaceHeader">
         <div className="configHeaderLeft">
-          <div className="configHeaderEyebrow">Live config workspace</div>
-          <div className="settingTitle">Config Editor</div>
+          <div className="configHeaderEyebrow">Config workspace</div>
+          <div className="configHeaderTitle">Choose target and edit live files</div>
           <div className="settingSub">
             Choose target, edit, and save. Instance files auto-back up before every write.
           </div>
@@ -1123,16 +1123,15 @@ export default function ModpacksConfigEditor({
               <button className="btn" type="button" onClick={onManageInstances}>
                 Manage instances
               </button>
-              <span className="chip subtle">
+              <div className="configHeaderMetaText">
                 {scope === "instance" ? "Editing instance" : "Editing world"} • {activeInstance.name}
                 {scope === "world" && activeWorld ? ` • ${activeWorld.name}` : ""}
-              </span>
+              </div>
             </div>
           </div>
           <div className="configHeaderStatusStrip">
-            <span className="chip subtle">{files.length} files</span>
-            <span className="chip subtle">{scope === "instance" ? "Instance scope" : "World scope"}</span>
-            <span className={`chip subtle ${runningInstanceIds.includes(activeInstance.id) ? "" : "configHeaderStatusMuted"}`}>
+            <span className={`configHeaderStatusText ${runningInstanceIds.includes(activeInstance.id) ? "" : "configHeaderStatusMuted"}`}>
+              {files.length} files • {scope === "instance" ? "Instance scope" : "World scope"} •{" "}
               {runningInstanceIds.includes(activeInstance.id) ? "Instance running" : "Instance stopped"}
             </span>
           </div>

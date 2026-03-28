@@ -181,8 +181,9 @@ pub(crate) async fn download_libs(
         }
         while let Some(joined) = set.join_next().await {
             let task = joined.map_err(|e| {
-                Box::new(LauncherError(format!("Library download worker failed: {e}")))
-                    as Box<dyn Error + Send + Sync>
+                Box::new(LauncherError(format!(
+                    "Library download worker failed: {e}"
+                ))) as Box<dyn Error + Send + Sync>
             })??;
             *progress = events::Progress {
                 task: "downloading_libraries".to_string(),

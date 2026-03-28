@@ -1,0 +1,688 @@
+import Icon from "../components/app-shell/Icon";
+import Modal from "../components/app-shell/Modal";
+import Dropdown from "../components/app-shell/controls/Dropdown";
+import MenuSelect from "../components/app-shell/controls/MenuSelect";
+import MultiSelectDropdown from "../components/app-shell/controls/MultiSelectDropdown";
+import SegmentedControl from "../components/app-shell/controls/SegmentedControl";
+import ModpackMaker from "./ModpackMaker";
+import ModpacksConfigEditor from "./ModpacksConfigEditor";
+import { LocalImage, RemoteImage } from "../components/app-shell/AsyncImage";
+import { formatBytes, formatCompact, formatDate, formatDateTime, humanizeToken, parseDateLike } from "../app/utils/format";
+import { getAppLanguageOption, type AppLanguage } from "../lib/i18n";
+import type { DiscoverContentType, Instance, LaunchMethod, LaunchPermissionChecklistItem } from "../types";
+import {
+  ACCENT_OPTIONS,
+  ACCENT_STRENGTH_OPTIONS,
+  DENSITY_OPTIONS,
+  DISCOVER_CONTENT_OPTIONS,
+  DISCOVER_LOADER_GROUPS,
+  DISCOVER_PROVIDER_SOURCES,
+  DISCOVER_SORT_OPTIONS,
+  DISCOVER_SOURCE_GROUPS,
+  DISCOVER_VIEW_OPTIONS,
+  LOG_MAX_LINES_OPTIONS,
+  MOD_CATEGORY_GROUPS,
+  MOTION_OPTIONS,
+  MOTION_PROFILE_DETAILS,
+  javaRuntimeDisplayLabel,
+  githubInstallStateChipLabel,
+  githubInstallSummary,
+  githubResultInstallNote,
+  githubResultInstallSupported,
+  githubStatusChipClass,
+  normalizeDiscoverProviderSources,
+  normalizeDiscoverSource,
+  openExternalLink,
+  permissionStatusChipClass,
+  permissionStatusLabel,
+  providerSourceLabel,
+  relativeTimeFromMs,
+  updateAutoApplyModeLabel,
+  updateCadenceLabel,
+  type AccentStrength,
+  type DensityPreset,
+  type MotionPreset,
+  type SettingsMode,
+} from "../app/routeSupport";
+
+export type DiscoverRouteProps = {
+  discoverAddContext: any;
+  discoverAddTrayExpanded: any;
+  discoverAddTrayItems: any;
+  discoverAddTraySticky: any;
+  discoverAllVersions: any;
+  discoverBusy: any;
+  discoverContentType: any;
+  discoverErr: any;
+  discoverSources: any;
+  effectiveDiscoverSources: any;
+  filterCategories: any;
+  filterLoaders: any;
+  filterVersion: any;
+  groupedDiscoverVersions: any;
+  hits: any;
+  index: any;
+  instances: any;
+  limit: any;
+  offset: any;
+  openAddToModpack: any;
+  openCurseforgeProject: any;
+  openGithubProject: any;
+  openInstall: any;
+  openProject: any;
+  page: any;
+  pages: any;
+  q: any;
+  runSearch: any;
+  selectedId: any;
+  setDiscoverAddContext: any;
+  setDiscoverAddTrayExpanded: any;
+  setDiscoverAddTrayItems: any;
+  setDiscoverAddTraySticky: any;
+  setDiscoverAllVersions: any;
+  setDiscoverContentType: any;
+  setDiscoverErr: any;
+  setDiscoverSources: any;
+  setFilterCategories: any;
+  setFilterLoaders: any;
+  setFilterVersion: any;
+  setIndex: any;
+  setLimit: any;
+  setModpacksStudioTab: any;
+  setOffset: any;
+  setQ: any;
+  setRoute: any;
+  totalHits: any;
+};
+
+export default function DiscoverRoute(props: DiscoverRouteProps) {
+  const {
+    discoverAddContext,
+    discoverAddTrayExpanded,
+    discoverAddTrayItems,
+    discoverAddTraySticky,
+    discoverAllVersions,
+    discoverBusy,
+    discoverContentType,
+    discoverErr,
+    discoverSources,
+    effectiveDiscoverSources,
+    filterCategories,
+    filterLoaders,
+    filterVersion,
+    groupedDiscoverVersions,
+    hits,
+    index,
+    instances,
+    limit,
+    offset,
+    openAddToModpack,
+    openCurseforgeProject,
+    openGithubProject,
+    openInstall,
+    openProject,
+    page,
+    pages,
+    q,
+    runSearch,
+    selectedId,
+    setDiscoverAddContext,
+    setDiscoverAddTrayExpanded,
+    setDiscoverAddTrayItems,
+    setDiscoverAddTraySticky,
+    setDiscoverAllVersions,
+    setDiscoverContentType,
+    setDiscoverErr,
+    setDiscoverSources,
+    setFilterCategories,
+    setFilterLoaders,
+    setFilterVersion,
+    setIndex,
+    setLimit,
+    setModpacksStudioTab,
+    setOffset,
+    setQ,
+    setRoute,
+    totalHits
+  } = props;
+
+  const selectedInst = instances.find((i) => i.id === selectedId) ?? null;
+        const discoverIncludesGithub = effectiveDiscoverSources.includes("github");
+        const discoverIncludesCurseforge = effectiveDiscoverSources.includes("curseforge");
+        const discoverOnlyCurseforge =
+          effectiveDiscoverSources.length === 1 && effectiveDiscoverSources[0] === "curseforge";
+        const discoverFilterSupportNotes: string[] = [];
+        if (discoverIncludesGithub) {
+          if (discoverContentType !== "mods") {
+            discoverFilterSupportNotes.push("GitHub source currently supports mods only.");
+          } else if (
+            filterLoaders.length > 0 ||
+            Boolean(filterVersion) ||
+            filterCategories.length > 0
+          ) {
+            discoverFilterSupportNotes.push(
+              "GitHub source filters are best-effort: loader/version/category checks rely on repository topics and release asset naming."
+            );
+          }
+        }
+        if (discoverIncludesCurseforge) {
+          if (discoverContentType === "mods" && discoverOnlyCurseforge) {
+            discoverFilterSupportNotes.push(
+              "CurseForge-only searches currently ignore the loader filter."
+            );
+          }
+          if (filterCategories.length > 0) {
+            discoverFilterSupportNotes.push(
+              "CurseForge category matching is best-effort because provider category vocabularies differ."
+            );
+          }
+        }
+        if (
+          effectiveDiscoverSources.length > 1 &&
+          (filterLoaders.length > 0 || Boolean(filterVersion) || filterCategories.length > 0)
+        ) {
+          discoverFilterSupportNotes.push(
+            "Multi-source search combines provider results; filter precision varies by provider."
+          );
+        }
+        const discoverFilterSupportNotice = discoverFilterSupportNotes.length
+          ? discoverFilterSupportNotes.join(" ")
+          : null;
+        const activeDiscoverFilterCount =
+          (filterVersion ? 1 : 0) +
+          (filterLoaders.length > 0 ? 1 : 0) +
+          (filterCategories.length > 0 ? 1 : 0) +
+          (discoverAllVersions ? 1 : 0);
+        const discoverPlaceholder =
+          discoverContentType === "shaderpacks"
+            ? "Search shaderpacks…"
+            : discoverContentType === "resourcepacks"
+              ? "Search resourcepacks…"
+              : discoverContentType === "datapacks"
+              ? "Search datapacks…"
+              : discoverContentType === "modpacks"
+                ? "Search modpacks…"
+                : "Search mods…";
+        const discoverContentTypeLabel =
+          DISCOVER_CONTENT_OPTIONS.find((option) => option.value === discoverContentType)?.label ?? discoverContentType;
+  
+        return (
+          <div className="discoverPage" style={{ maxWidth: 1400 }}>
+            <div className="pageRouteHeader">
+              <div className="pageRouteEyebrow">Discover</div>
+              <div className="h1">Discover content</div>
+              <div className="p">Search Modrinth, CurseForge, or GitHub and install directly into instances.</div>
+            </div>
+            {discoverAddContext ? (
+              <div className={`discoverAddTray${discoverAddTraySticky ? " discoverAddTraySticky" : ""}`}>
+                <div className="discoverAddTrayHeader">
+                  <div>
+                    <div className="discoverAddTrayTitle">
+                      Adding to {discoverAddContext.modpackName}
+                      {discoverAddContext.layerName ? ` / ${discoverAddContext.layerName}` : ""}
+                    </div>
+                    <div className="discoverAddTraySub">
+                      Use <strong>Add to modpack</strong> on any result. This tray tracks what you added in this session.
+                    </div>
+                  </div>
+                  <div className="discoverAddTrayActions">
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setRoute("modpacks");
+                        setModpacksStudioTab("creator");
+                      }}
+                    >
+                      Open Creator Studio
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => setDiscoverAddTrayExpanded((prev) => !prev)}
+                      title="Show or hide added items."
+                    >
+                      {discoverAddTrayExpanded ? "Hide additions" : "Show additions"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
+                      title="Keep this tray pinned while you scroll results."
+                    >
+                      {discoverAddTraySticky ? "Unpin tray" : "Pin tray"}
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setDiscoverAddContext(null);
+                        setDiscoverAddTrayItems([]);
+                      }}
+                    >
+                      Clear add target
+                    </button>
+                  </div>
+                </div>
+  
+                <div className="discoverAddTrayStats">
+                  <span className="chip subtle">Added this session: {discoverAddTrayItems.length}</span>
+                  <span className="chip subtle">Target layer: {discoverAddContext.layerName ?? "Default"}</span>
+                  {discoverAddTrayItems[0] ? (
+                    <span className="chip subtle">Last added: {formatDateTime(discoverAddTrayItems[0].addedAt, "just now")}</span>
+                  ) : (
+                    <span className="chip subtle">No items added yet</span>
+                  )}
+                </div>
+  
+                {discoverAddTrayExpanded ? (
+                  <div className="discoverAddTrayList">
+                    {discoverAddTrayItems.length === 0 ? (
+                      <div className="discoverAddTrayEmpty">
+                        Add content from Discover results and it will appear here.
+                      </div>
+                    ) : (
+                      discoverAddTrayItems.slice(0, 8).map((item) => (
+                        <div key={item.id} className="discoverAddTrayItem">
+                          <div className="discoverAddTrayItemMain">
+                            <div className="discoverAddTrayItemTitle">{item.title}</div>
+                            <div className="discoverAddTrayItemMeta">
+                              {item.projectId} · {item.source} · {item.contentType} · {item.layerName}
+                            </div>
+                          </div>
+                          <span className="chip subtle">{formatDateTime(item.addedAt, "just now")}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+  
+                {discoverAddTrayItems.length > 8 ? (
+                  <div className="discoverAddTrayOverflow muted">
+                    Showing latest 8 of {discoverAddTrayItems.length} items.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+  
+            <div className="discoverWorkspace">
+              <div className="discoverWorkspaceTop">
+                <div>
+                  <div className="discoverWorkspaceEyebrow">Search setup</div>
+                  <div className="discoverWorkspaceTitle">Filters and sources</div>
+                </div>
+                <div className="discoverWorkspaceStats">
+                  <span className="chip subtle">{activeDiscoverFilterCount} active filter{activeDiscoverFilterCount === 1 ? "" : "s"}</span>
+                  <span className="chip subtle">{totalHits} result{totalHits === 1 ? "" : "s"}</span>
+                </div>
+              </div>
+  
+              <div className="topRow" style={{ marginBottom: 8 }}>
+                <SegmentedControl
+                  value={discoverContentType}
+                  onChange={(v) => {
+                    setDiscoverContentType((v as DiscoverContentType) ?? "mods");
+                    setFilterLoaders([]);
+                    setOffset(0);
+                  }}
+                  options={DISCOVER_CONTENT_OPTIONS}
+                  variant="scroll"
+                />
+              </div>
+  
+              <div className="topRow discoverSearchRow">
+                <div className="searchGrow">
+                  <input
+                    className="input"
+                    value={q}
+                    onChange={(e) => {
+                      setQ(e.target.value);
+                      if (discoverErr) setDiscoverErr(null);
+                    }}
+                    placeholder={discoverPlaceholder}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") runSearch(0);
+                    }}
+                  />
+                </div>
+  
+                <div className="discoverSearchActions">
+                  <MenuSelect
+                    value={index}
+                    labelPrefix="Sort"
+                    options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                    onChange={(v) => {
+                      setIndex(v as any);
+                      setOffset(0);
+                    }}
+                  />
+  
+                  <MenuSelect
+                    value={String(limit)}
+                    labelPrefix="View"
+                    options={DISCOVER_VIEW_OPTIONS}
+                    align="end"
+                    onChange={(v) => {
+                      setLimit(parseInt(v, 10));
+                      setOffset(0);
+                    }}
+                  />
+  
+                  <div className="filterCtrl filterCtrlSource">
+                    <MultiSelectDropdown
+                      values={discoverSources}
+                      placeholder="Sources: All"
+                      allSelectedLabel="Sources: All"
+                      groups={DISCOVER_SOURCE_GROUPS}
+                      showSearch={false}
+                      showGroupHeaders={false}
+                      itemVariant="menu"
+                      clearLabel="All sources"
+                      panelMinWidth={220}
+                      panelEstimatedHeight={176}
+                      onChange={(values) => {
+                        const next = normalizeDiscoverProviderSources(values);
+                        setDiscoverSources(next.length > 0 ? next : [...DISCOVER_PROVIDER_SOURCES]);
+                        setOffset(0);
+                      }}
+                      onClear={() => {
+                        setDiscoverSources([...DISCOVER_PROVIDER_SOURCES]);
+                        setOffset(0);
+                      }}
+                    />
+                  </div>
+  
+                  <button className="btn primary" onClick={() => runSearch(0)} disabled={discoverBusy}>
+                    {discoverBusy ? "Searching…" : "Search"}
+                  </button>
+                </div>
+              </div>
+  
+              <div className="topRow discoverFilterRow">
+                <div className="discoverFiltersRight">
+                  <div className="filterCtrl filterCtrlVersion">
+                    <Dropdown
+                      value={filterVersion}
+                      placeholder="Game version: Any"
+                      groups={groupedDiscoverVersions}
+                      includeAny
+                      onPick={(v) => {
+                        setFilterVersion(v);
+                        setOffset(0);
+                      }}
+                    />
+                  </div>
+  
+                  <div className="filterCtrl filterCtrlLoader">
+                    <MultiSelectDropdown
+                      values={filterLoaders}
+                      placeholder="Loaders: Any"
+                      groups={DISCOVER_LOADER_GROUPS}
+                      showSearch={false}
+                      showGroupHeaders={false}
+                      disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
+                      onChange={(v) => {
+                        if (discoverContentType !== "mods") return;
+                        if (discoverOnlyCurseforge) return;
+                        setFilterLoaders(v);
+                        setOffset(0);
+                      }}
+                    />
+                  </div>
+  
+                  <div className="filterCtrl filterCtrlCategory">
+                    <MultiSelectDropdown
+                      values={filterCategories}
+                      placeholder="Categories: Any"
+                      groups={MOD_CATEGORY_GROUPS}
+                      searchPlaceholder="Search categories…"
+                      onChange={(v) => {
+                        setFilterCategories(v);
+                        setOffset(0);
+                      }}
+                    />
+                  </div>
+  
+                  <label className="checkboxRow discoverCheckboxRow">
+                    <span
+                      className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
+                      onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
+                      role="checkbox"
+                      aria-checked={discoverAllVersions}
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setDiscoverAllVersions(!discoverAllVersions);
+                        }
+                      }}
+                    >
+                      {discoverAllVersions ? "✓" : ""}
+                    </span>
+                    Show all versions
+                  </label>
+  
+                  <button
+                    className="btn discoverClearBtn"
+                    onClick={() => {
+                      setFilterVersion(null);
+                      setFilterLoaders([]);
+                      setFilterCategories([]);
+                      setOffset(0);
+                    }}
+                    disabled={!filterVersion && filterLoaders.length === 0 && filterCategories.length === 0}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              </div>
+  
+              {discoverFilterSupportNotice ? (
+                <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
+              ) : null}
+            </div>
+  
+            {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
+  
+            <div className="discoverResultsHeader">
+              <div className="discoverResultsInfo">
+                <div className="discoverResultsTitleRow">
+                  <div className="discoverResultsTitle">Results</div>
+                  <span className="chip subtle">{discoverContentTypeLabel}</span>
+                  <span className="chip subtle">
+                    {effectiveDiscoverSources.length} source{effectiveDiscoverSources.length === 1 ? "" : "s"}
+                  </span>
+                </div>
+                <div className="discoverResultsSub">
+                  {discoverBusy
+                    ? "Refreshing matches..."
+                    : `Showing ${hits.length} of ${totalHits} result${totalHits === 1 ? "" : "s"} on page ${page} of ${pages}.`}
+                </div>
+              </div>
+              <div className="discoverResultsPager">
+                <div className="pager pagerTop">
+                  <button
+                    className="btn"
+                    onClick={() => runSearch(Math.max(0, offset - limit))}
+                    disabled={discoverBusy || offset === 0}
+                  >
+                    ← Prev
+                  </button>
+                  <div className="pagerLabel">
+                    Page {page} / {pages}
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
+                    disabled={discoverBusy || offset + limit >= totalHits}
+                  >
+                    Next →
+                  </button>
+                </div>
+              </div>
+            </div>
+  
+            <div className="resultsGrid">
+              {hits.map((h) => (
+                <div
+                  className="resultCard"
+                  key={`${h.source}:${h.project_id}`}
+                  onClick={() => {
+                      if (h.source === "modrinth") {
+                        openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                        return;
+                      }
+                      if (h.source === "curseforge") {
+                        openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                        return;
+                      }
+                      if (h.source === "github") {
+                        void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                        return;
+                      }
+                      if (h.external_url?.trim()) {
+                        void openExternalLink(h.external_url.trim());
+                      }
+                  }}
+                >
+                  <div className="resultIcon">
+                    <RemoteImage src={h.icon_url} alt={`${h.title} icon`} fallback={<div>⬚</div>} />
+                  </div>
+  
+                  <div className="resultBody">
+                    <div className="resultTitleRow">
+                      <div className="resultTitle">{h.title}</div>
+                    </div>
+                    <div className="resultDesc">{h.description}</div>
+                    <div className="resultMetaRow">
+                      <span className="chip subtle discoverMetaChip">{providerSourceLabel(h.source)}</span>
+                      <span className="resultMetaText">by {h.author}</span>
+                      <span className="resultMetaText">↓ {formatCompact(h.downloads)}</span>
+                      <span className="resultMetaText">♥ {formatCompact(h.follows)}</span>
+                      {h.source === "github" && githubInstallStateChipLabel(h.install_state) ? (
+                        <span className={githubStatusChipClass("installability", h.install_state)}>
+                          {githubInstallStateChipLabel(h.install_state)}
+                        </span>
+                      ) : null}
+                      {h.categories?.slice(0, 3)?.map((c) => (
+                        <span key={c} className="chip subtle discoverMetaChip">
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                    {h.source === "github" && githubInstallSummary(h) ? (
+                      <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
+                        {githubInstallSummary(h)}
+                      </div>
+                    ) : null}
+                  </div>
+  
+                  <div
+                    className="resultActions"
+                    style={{ alignSelf: "center" }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      className="btn ghost"
+                      onClick={() => {
+                        if (h.source === "modrinth") {
+                          openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                          return;
+                        }
+                        if (h.source === "curseforge") {
+                          openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                          return;
+                        }
+                        if (h.source === "github") {
+                          void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
+                          return;
+                        }
+                        if (h.external_url?.trim()) {
+                          void openExternalLink(h.external_url.trim());
+                        }
+                      }}
+                    >
+                      View
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() =>
+                        openAddToModpack({
+                          source: normalizeDiscoverSource(h.source),
+                          projectId: h.project_id,
+                          title: h.title,
+                          contentType:
+                            (h.content_type as DiscoverContentType) === "modpacks"
+                              ? "modpacks"
+                              : ((h.content_type as DiscoverContentType) ?? discoverContentType),
+                          slug: h.slug ?? null,
+                          iconUrl: h.icon_url,
+                          description: h.description,
+                        }, discoverAddContext ? { modpackId: discoverAddContext.modpackId, layerId: discoverAddContext.layerId ?? null } : undefined)
+                      }
+                      title={
+                        h.content_type === "modpacks"
+                          ? "Import modpacks as template layers from Creator Studio"
+                          : "Add to a Modpack Maker layer"
+                      }
+                      disabled={h.content_type === "modpacks"}
+                    >
+                      Add to modpack
+                    </button>
+                    <button
+                      className="btn primary installAction"
+                      onClick={() =>
+                        openInstall({
+                          source: normalizeDiscoverSource(h.source),
+                          projectId: h.project_id,
+                          title: h.title,
+                          contentType:
+                            (h.content_type as DiscoverContentType) === "modpacks"
+                              ? "modpacks"
+                              : ((h.content_type as DiscoverContentType) ?? discoverContentType),
+                          iconUrl: h.icon_url,
+                          description: h.description,
+                          installSupported: githubResultInstallSupported(h),
+                          installNote: githubResultInstallNote(h),
+                        })
+                      }
+                      title={
+                        h.content_type === "modpacks"
+                          ? "Modpacks are imported as templates"
+                          : !githubResultInstallSupported(h)
+                            ? githubResultInstallNote(h) ?? "This provider result cannot be installed directly yet."
+                            : "Install to instance"
+                      }
+                      disabled={h.content_type === "modpacks" || !githubResultInstallSupported(h)}
+                    >
+                      <Icon name="download" /> {h.content_type === "modpacks" ? "Template only" : "Install"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+  
+              {hits.length === 0 && !discoverBusy ? (
+                <div className="card" style={{ padding: 16, borderRadius: 22, color: "var(--muted)" }}>
+                  No results.
+                </div>
+              ) : null}
+            </div>
+  
+            <div className="pager">
+              <button
+                className="btn"
+                onClick={() => runSearch(Math.max(0, offset - limit))}
+                disabled={discoverBusy || offset === 0}
+              >
+                ← Prev
+              </button>
+              <div className="pagerLabel">
+                Page {page} / {pages}
+              </div>
+              <button
+                className="btn"
+                onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
+                disabled={discoverBusy || offset + limit >= totalHits}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+        );
+}

@@ -234,14 +234,13 @@ impl Launcher {
         if !version_json_path.exists() {
             let version_manifest_url =
                 format!("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
-            let version_manifest: serde_json::Value =
-                shared_http_client()
-                    .get(&version_manifest_url)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json()
-                    .await?;
+            let version_manifest: serde_json::Value = shared_http_client()
+                .get(&version_manifest_url)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
             let version_url = version_manifest["versions"]
                 .as_array()
                 .unwrap()
@@ -317,7 +316,10 @@ impl Launcher {
             self.version.loader_version, self.version.neoforge.combined
         )
             };
-            let forge_installer = shared_http_client().get(&forge_installer_url).send().await?;
+            let forge_installer = shared_http_client()
+                .get(&forge_installer_url)
+                .send()
+                .await?;
 
             if !forge_installer.status().is_success() {
                 fs::remove_dir_all(self.game_dir.join("versions").join(&self.version.id)).await?;

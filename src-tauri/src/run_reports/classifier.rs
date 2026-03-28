@@ -750,6 +750,7 @@ mod tests {
         Instance {
             id: "inst_test".to_string(),
             name: "Test Instance".to_string(),
+            origin: "custom".to_string(),
             folder_name: None,
             mc_version: mc.to_string(),
             loader: loader.to_string(),

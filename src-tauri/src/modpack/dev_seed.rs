@@ -32,6 +32,7 @@ pub fn seed_dev_data(
         let inst = crate::Instance {
             id: uuid::Uuid::new_v4().to_string(),
             name,
+            origin: "custom".to_string(),
             folder_name: None,
             mc_version: "1.21.1".to_string(),
             loader: "fabric".to_string(),

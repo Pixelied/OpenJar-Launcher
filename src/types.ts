@@ -3,6 +3,7 @@ export type Loader = "fabric" | "forge" | "quilt" | "neoforge" | "vanilla";
 export type Instance = {
   id: string;
   name: string;
+  origin?: "custom" | "downloaded" | string;
   folder_name?: string | null;
   mc_version: string;
   loader: Loader;

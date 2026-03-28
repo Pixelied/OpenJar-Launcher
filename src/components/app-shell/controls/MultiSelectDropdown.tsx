@@ -102,6 +102,14 @@ export default function MultiSelectDropdown({
     return `${labels[0]} +${labels.length - 1}`;
   }, [allSelectedLabel, groups, placeholder, values]);
 
+  const totalOptionCount = useMemo(
+    () => groups.reduce((count, group) => count + group.items.length, 0),
+    [groups]
+  );
+
+  const showValueStyle =
+    values.length > 0 || Boolean(allSelectedLabel && totalOptionCount > 0 && label === allSelectedLabel);
+
   const toggle = (id: string) => {
     const set = new Set(values);
     if (set.has(id)) set.delete(id);
@@ -112,7 +120,7 @@ export default function MultiSelectDropdown({
   return (
     <div className={`dropdown multiSelectDropdown ${open ? "open" : ""}`} ref={rootRef}>
       <div
-        className={`dropBtn ${values.length ? "value" : ""}`}
+        className={`dropBtn ${showValueStyle ? "value" : ""}`}
         onClick={() => {
           if (disabled) return;
           setOpen((o) => !o);

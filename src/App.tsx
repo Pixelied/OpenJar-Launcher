@@ -188,6 +188,12 @@ import {
 } from "./modrinth";
 import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
 import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
+import LibraryRoute from "./pages/LibraryRoute";
+import SkinsRoute from "./pages/SkinsRoute";
+import DiscoverRoute from "./pages/DiscoverRoute";
+import ModpacksRoute from "./pages/ModpacksRoute";
+import AccountRoute from "./pages/AccountRoute";
+import SettingsRoute from "./pages/SettingsRoute";
 import ModpackMaker from "./pages/ModpackMaker";
 import InstanceModpackCard from "./components/InstanceModpackCard";
 import DependencyBadge from "./components/DependencyBadge";
@@ -12190,7 +12196,7 @@ export default function App() {
     const text = String(skinViewerNameTag ?? "").trim() || "Player";
     if (skinViewerNameTagTextRef.current === text && viewer.nameTag) return;
     viewer.nameTag = new NameTagObject(text, {
-      font: "64px Minecraft, system-ui, sans-serif",
+      font: '700 64px "Avenir Next", "Helvetica Neue", sans-serif',
       margin: [8, 16, 8, 16],
       textStyle: "rgba(246, 248, 255, 0.98)",
       backgroundStyle: "rgba(18, 24, 36, 0.55)",
@@ -13404,788 +13410,98 @@ export default function App() {
     }
 
     if (route === "settings") {
-      const selectedPermissionsInstance = selectedId
-        ? instances.find((item) => item.id === selectedId) ?? null
-        : null;
-      const selectedPermissionsChecklist: LaunchPermissionChecklistItem[] = selectedPermissionsInstance
-        ? preflightReportByInstance[selectedPermissionsInstance.id]?.permissions ?? []
-        : [];
-      const settingsSelectedAccount = selectedLauncherAccount ?? launcherAccounts[0] ?? null;
-      const settingsUpdateStatusLabel = appUpdaterState?.available
-        ? `Update ready${appUpdaterState.latest_version ? ` · v${appUpdaterState.latest_version}` : ""}`
-        : appUpdaterState
-          ? "Up to date"
-          : "Not checked yet";
       return (
-        <div className="settingsPage">
-          <div className="settingsShell">
-            <aside className="card settingsSidebar">
-              <div className="settingsSidebarHeader">
-                <div className="settingsSidebarEyebrow">Launcher settings</div>
-                <div className="settingsSidebarTitle">{t("settings.title")}</div>
-                <div className="settingsSidebarIntro">{t("settings.intro")}</div>
-              </div>
-
-              <div className="settingsSidebarBlock">
-                <div className="settingsSidebarLabel">View mode</div>
-                <SegmentedControl
-                  className="settingsModeToggle"
-                  value={settingsMode}
-                  onChange={(value) => setSettingsMode(((value ?? "basic") as SettingsMode))}
-                  options={[
-                    { value: "basic", label: t("settings.mode.basic") },
-                    { value: "advanced", label: t("settings.mode.advanced") },
-                  ]}
-                />
-              </div>
-
-              <div className="settingsSidebarBlock">
-                <div className="settingsSidebarLabel">Sections</div>
-                <div className="settingsRailList">
-                  {settingsRailItems.map((item) => (
-                    <button
-                      key={item.id}
-                      className={`settingsRailButton ${activeSettingsRail === item.id ? "active" : ""}`}
-                      onClick={() => openSettingAnchor(item.id, { advanced: item.advanced, target: "global" })}
-                    >
-                      <span className="settingsRailButtonIcon" aria-hidden="true">
-                        <Icon name={item.icon} size={16} />
-                      </span>
-                      <span className="settingsRailButtonText">
-                        <span className="settingsRailButtonTitle">{item.label}</span>
-                        {item.advanced ? <span className="settingsRailButtonMeta">Advanced</span> : null}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="settingsSidebarFooter">
-                <span className="chip subtle">{getAppLanguageOption(appLanguage).nativeLabel}</span>
-                <span className="chip subtle">
-                  {settingsMode === "advanced" ? t("settings.mode.advanced") : t("settings.mode.basic")}
-                </span>
-              </div>
-            </aside>
-
-            <div className="settingsMain">
-              <div className="card settingsHeroCard">
-                <div className="settingsHeroHeader">
-                  <div>
-                    <div className="settingsHeroEyebrow">Overview</div>
-                    <div className="settingsHeroTitle">Make the launcher feel right before you dive deeper.</div>
-                    <div className="settingsHeroSub">
-                      Everyday settings stay up front. Advanced controls are still here, but they should stop competing with the basics.
-                    </div>
-                  </div>
-                  <div className="settingsHeroActions">
-                    <button className="btn" onClick={() => openSettingAnchor("global:appearance", { target: "global" })}>
-                      Appearance
-                    </button>
-                    <button className="btn" onClick={() => openSettingAnchor("global:launch-method", { target: "global" })}>
-                      Launch
-                    </button>
-                    <button className="btn" onClick={() => openSettingAnchor("global:account", { target: "global" })}>
-                      Account
-                    </button>
-                    <button className="btn" onClick={() => openSettingAnchor("global:app-updates", { target: "global" })}>
-                      Updates
-                    </button>
-                  </div>
-                </div>
-
-                <div className="settingsHeroSummaryGrid">
-                  <div className="settingsHeroSummaryCard">
-                    <div className="settingsHeroSummaryLabel">View mode</div>
-                    <div className="settingsHeroSummaryValue">
-                      {settingsMode === "advanced" ? t("settings.mode.advanced") : t("settings.mode.basic")}
-                    </div>
-                    <div className="settingsHeroSummaryMeta">
-                      {settingsMode === "advanced"
-                        ? "Power-user controls are visible."
-                        : "Only the common settings are emphasized."}
-                    </div>
-                  </div>
-                  <div className="settingsHeroSummaryCard">
-                    <div className="settingsHeroSummaryLabel">Language</div>
-                    <div className="settingsHeroSummaryValue">{getAppLanguageOption(appLanguage).nativeLabel}</div>
-                    <div className="settingsHeroSummaryMeta">App UI language</div>
-                  </div>
-                  <div className="settingsHeroSummaryCard">
-                    <div className="settingsHeroSummaryLabel">Default launch</div>
-                    <div className="settingsHeroSummaryValue">{humanizeToken(launchMethodPick)}</div>
-                    <div className="settingsHeroSummaryMeta">Used when an instance does not override it</div>
-                  </div>
-                  <div className="settingsHeroSummaryCard">
-                    <div className="settingsHeroSummaryLabel">Connected account</div>
-                    <div className="settingsHeroSummaryValue">
-                      {settingsSelectedAccount?.username ?? "Not connected"}
-                    </div>
-                    <div className="settingsHeroSummaryMeta">
-                      {settingsSelectedAccount ? "Ready for native launch" : "Connect Microsoft to launch natively"}
-                    </div>
-                  </div>
-                  <div className="settingsHeroSummaryCard">
-                    <div className="settingsHeroSummaryLabel">App updates</div>
-                    <div className="settingsHeroSummaryValue">{settingsUpdateStatusLabel}</div>
-                    <div className="settingsHeroSummaryMeta">
-                      {appUpdaterState?.checked_at
-                        ? `Last check ${formatDateTime(appUpdaterState.checked_at, "Never")}`
-                        : "No launcher update check yet"}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="settingsLayout">
-                <section className="settingsCol">
-              <div className="card settingsSectionCard" id="setting-anchor-global:appearance">
-                <div className="settingsSectionTitle">{t("settings.appearance.section_title")}</div>
-                <div className="p settingsSectionSub">{t("settings.appearance.section_sub")}</div>
-
-                <div className="settingStack">
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.theme.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.theme.sub")}</div>
-                    <div className="row">
-                      <button
-                        className={`btn stateful ${theme === "dark" ? "active" : ""}`}
-                        onClick={() => setTheme("dark")}
-                      >
-                        {t("settings.appearance.theme.dark")}
-                      </button>
-                      <button
-                        className={`btn stateful ${theme === "light" ? "active" : ""}`}
-                        onClick={() => setTheme("light")}
-                      >
-                        {t("settings.appearance.theme.light")}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.accent.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.accent.sub")}</div>
-                    <div className="row accentPicker">
-                      {ACCENT_OPTIONS.map((opt) => (
-                        <button
-                          key={opt.value}
-                          className={`btn accentChoice ${accentPreset === opt.value ? "selected" : ""}`}
-                          onClick={() => setAccentPreset(opt.value)}
-                          aria-pressed={accentPreset === opt.value}
-                        >
-                          <span className={`accentSwatch accent-${opt.value}`} />
-                          <span className="accentChoiceLabel">{opt.label}</span>
-                          {accentPreset === opt.value ? (
-                            <span className="accentChoiceCheck" aria-hidden="true">✓</span>
-                          ) : null}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.accent_strength.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.accent_strength.sub")}</div>
-                    <div className="row">
-                      <SegmentedControl
-                        value={accentStrength}
-                        options={ACCENT_STRENGTH_OPTIONS}
-                        onChange={(v) => setAccentStrength((v ?? "normal") as AccentStrength)}
-                        variant="scroll"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.motion.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.motion.sub")}</div>
-                    <div className="row">
-                      <SegmentedControl
-                        value={motionPreset}
-                        options={MOTION_OPTIONS}
-                        onChange={(v) => setMotionPreset((v ?? "standard") as MotionPreset)}
-                      />
-                    </div>
-                    <div className="settingsMotionNote" aria-live="polite">
-                      <span className="chip subtle">{MOTION_PROFILE_DETAILS[motionPreset].label}</span>
-                      {MOTION_PROFILE_DETAILS[motionPreset].traits.map((trait) => (
-                        <span key={trait} className="chip subtle">
-                          {trait}
-                        </span>
-                      ))}
-                      <span className="settingsMotionNoteText">
-                        {MOTION_PROFILE_DETAILS[motionPreset].summary}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.density.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.density.sub")}</div>
-                    <div className="row">
-                      <SegmentedControl
-                        value={densityPreset}
-                        options={DENSITY_OPTIONS}
-                        onChange={(v) => setDensityPreset((v ?? "comfortable") as DensityPreset)}
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">{t("settings.appearance.reset.title")}</div>
-                    <div className="settingSub">{t("settings.appearance.reset.sub")}</div>
-                    <div className="row">
-                      <button className="btn" onClick={onResetUiSettings}>
-                        {t("settings.appearance.reset.button")}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="card settingsSectionCard" id="setting-anchor-global:language">
-                <div className="settingsSectionTitle">{t("settings.language.section_title")}</div>
-                <div className="p settingsSectionSub">{t("settings.language.section_sub")}</div>
-
-                <div className="settingStack">
-                  <div>
-                    <div className="settingTitle">{t("settings.language.preference.title")}</div>
-                    <div className="settingSub">{t("settings.language.preference.sub")}</div>
-                    <div className="row" style={{ alignItems: "center" }}>
-                      <MenuSelect
-                        value={appLanguage}
-                        labelPrefix={t("settings.language.preference.menu_prefix")}
-                        options={appLanguageMenuOptions}
-                        onChange={(value) => void onSetAppLanguage(value as AppLanguage)}
-                      />
-                      <span className="chip">{appLanguageBusy ? t("settings.language.saving") : getAppLanguageOption(appLanguage).nativeLabel}</span>
-                    </div>
-                  </div>
-
-                  <div className="settingSub">{t("settings.language.warning")}</div>
-                </div>
-              </div>
-
-              <div className="card settingsSectionCard">
-                <div className="settingsSectionTitle">{t("settings.launch.section_title")}</div>
-                <div className="p settingsSectionSub">{t("settings.launch.section_sub")}</div>
-
-                <div className="settingStack">
-                  <div id="setting-anchor-global:launch-method">
-                    <div className="settingTitle">{t("settings.launch.method.title")}</div>
-                    <div className="settingSub">{t("settings.launch.method.sub")}</div>
-                    <div className="row">
-                      <SegmentedControl
-                        value={launchMethodPick}
-                        onChange={(v) => setLaunchMethodPick((v ?? "native") as LaunchMethod)}
-                        options={[
-                          { label: t("settings.launch.method.native"), value: "native" },
-                          { label: t("settings.launch.method.prism"), value: "prism" },
-                        ]}
-                      />
-                    </div>
-                  </div>
-
-                  {settingsMode === "advanced" ? (
-                    <>
-                      <div id="setting-anchor-global:java-path">
-                        <div className="settingTitle">{t("settings.launch.java.title")}</div>
-                        <div className="settingSub">{t("settings.launch.java.sub")}</div>
-                        <input
-                          className="input"
-                          value={javaPathDraft}
-                          onChange={(e) => setJavaPathDraft(e.target.value)}
-                          placeholder="/usr/bin/java or C:\\Program Files\\Java\\bin\\java.exe"
-                        />
-                        <div className="settingsActionGrid">
-                          <button className="btn" onClick={onPickLauncherJavaPath} disabled={launcherBusy}>
-                            <span className="btnIcon">
-                              <Icon name="upload" size={17} />
-                            </span>
-                            {t("settings.launch.java.browse")}
-                          </button>
-                          <button className="btn" onClick={() => void refreshJavaRuntimeCandidates()} disabled={javaRuntimeBusy}>
-                            {javaRuntimeBusy
-                              ? t("settings.launch.java.detecting")
-                              : t("settings.launch.java.detect")}
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={() => void openExternalLink("https://adoptium.net/temurin/releases/?version=21")}
-                          >
-                            {t("settings.launch.java.get_java_21")}
-                          </button>
-                        </div>
-                        {javaRuntimeCandidates.length > 0 ? (
-                          <div className="settingListMini">
-                            {javaRuntimeCandidates.map((runtime) => (
-                              <div key={runtime.path} className="settingListMiniRow">
-                                <div style={{ minWidth: 0 }}>
-                                  <div style={{ fontWeight: 900 }}>{javaRuntimeDisplayLabel(runtime)}</div>
-                                  <div className="muted" style={{ wordBreak: "break-all" }}>{runtime.path}</div>
-                                </div>
-                                <button
-                                  className={`btn stateful ${javaPathDraft.trim() === runtime.path.trim() ? "active" : ""}`}
-                                  onClick={() => setJavaPathDraft(runtime.path)}
-                                  disabled={launcherBusy}
-                                >
-                                  {javaPathDraft.trim() === runtime.path.trim()
-                                    ? t("settings.launch.java.selected")
-                                    : t("settings.launch.java.use")}
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div id="setting-anchor-global:oauth-client">
-                        <div className="settingTitle">{t("settings.launch.oauth.title")}</div>
-                        <div className="settingSub">{t("settings.launch.oauth.sub")}</div>
-                        <input
-                          className="input"
-                          value={oauthClientIdDraft}
-                          onChange={(e) => setOauthClientIdDraft(e.target.value)}
-                          placeholder={t("settings.launch.oauth.placeholder")}
-                          style={{ marginTop: 8 }}
-                        />
-                      </div>
-                    </>
-                  ) : (
-                    <div className="muted">
-                      {t("settings.launch.basic_hidden")}
-                      <button className="btn" style={{ marginLeft: 8 }} onClick={() => setSettingsMode("advanced")}>
-                        {t("settings.launch.switch_to_advanced")}
-                      </button>
-                    </div>
-                  )}
-
-                  <div className="settingsSaveRow">
-                    <button className="btn primary" onClick={onSaveLauncherPrefs} disabled={launcherBusy}>
-                      {launcherBusy ? t("settings.launch.saving") : t("settings.launch.save")}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            <section className="settingsCol">
-              <div className="card settingsSectionCard" id="setting-anchor-global:account">
-                <div className="settingsSectionTitle">{t("settings.account.section_title")}</div>
-                <div className="p settingsSectionSub">{t("settings.account.section_sub")}</div>
-
-                <div className="row" style={{ marginTop: 8 }}>
-                  <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                    {msLoginSessionId ? "Waiting for login…" : "Connect Microsoft"}
-                  </button>
-                  {msLoginSessionId && msCodePrompt ? (
-                    <button className="btn" onClick={() => setMsCodePromptVisible(true)}>
-                      Show code
-                    </button>
-                  ) : null}
-                  <button className="btn" onClick={() => setRoute("account")}>
-                    Open account page
-                  </button>
-                  {msLoginState?.message ? <div className="muted">{msLoginState.message}</div> : null}
-                </div>
-
-                <div className="settingsAccountList">
-                  {launcherAccounts.length === 0 ? (
-                    <div className="muted">No connected account yet.</div>
-                  ) : (
-                    launcherAccounts.map((acct) => {
-                      const selectedAccount = launcherSettings?.selected_account_id === acct.id;
-                      const manageOpen = settingsAccountManageId === acct.id;
-                      return (
-                        <div key={acct.id} className="card settingsAccountCard">
-                          <div className="settingsAccountRow">
-                            <div style={{ minWidth: 0 }}>
-                              <div style={{ fontWeight: 900 }}>{acct.username}</div>
-                              <div className="muted">{acct.id}</div>
-                            </div>
-                            <div className="settingsAccountActions">
-                              <button
-                                className={`btn stateful ${selectedAccount ? "active" : ""}`}
-                                onClick={() => onSelectAccount(acct.id)}
-                                disabled={launcherBusy}
-                              >
-                                {selectedAccount ? "Selected" : "Use"}
-                              </button>
-                              <button
-                                className={`btn subtle settingsManageBtn ${manageOpen ? "active" : ""}`}
-                                onClick={() =>
-                                  setSettingsAccountManageId((prev) => (prev === acct.id ? null : acct.id))
-                                }
-                                disabled={launcherBusy}
-                                aria-expanded={manageOpen}
-                                aria-controls={`settings-account-manage-${acct.id}`}
-                              >
-                                Manage…
-                              </button>
-                            </div>
-                          </div>
-                          {manageOpen ? (
-                            <div className="settingsAccountManagePanel" id={`settings-account-manage-${acct.id}`}>
-                              <div className="settingsAccountManageHint">
-                                Disconnect removes this account from this launcher on this device.
-                              </div>
-                              <button
-                                className="btn accountDisconnectBtn"
-                                onClick={() => {
-                                  if (!window.confirm(`Disconnect ${acct.username} from this launcher?`)) return;
-                                  void onLogoutAccount(acct.id);
-                                }}
-                                disabled={launcherBusy}
-                              >
-                                Disconnect account
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              <div className="card settingsSectionCard" id="setting-anchor-global:app-updates">
-                <div className="settingsSectionTitle">{t("settings.updates.section_title")}</div>
-                <div className="p settingsSectionSub">
-                  Check for new OpenJar Launcher releases, then install with explicit restart confirmation.
-                </div>
-
-                <div className="row">
-                  <span className="chip subtle">Current: v{appVersion || "unknown"}</span>
-                  {appUpdaterState ? (
-                    <span className="chip subtle">
-                      Last check: {formatDateTime(appUpdaterState.checked_at, "Never")}
-                    </span>
-                  ) : null}
-                  {appUpdaterState?.available ? (
-                    <span className="chip">Update: v{appUpdaterState.latest_version ?? "new"}</span>
-                  ) : appUpdaterState ? (
-                    <span className="chip subtle">Up to date</span>
-                  ) : null}
-                </div>
-                <div className="settingsActionGrid">
-                  <button
-                    className="btn"
-                    onClick={() => void onCheckAppUpdate({ silent: false })}
-                    disabled={appUpdaterBusy || appUpdaterInstallBusy}
-                  >
-                    {appUpdaterBusy ? "Checking…" : "Check app updates"}
-                  </button>
-                  <button
-                    className={`btn ${appUpdaterState?.available ? "primary" : ""}`}
-                    onClick={() => void onInstallAppUpdate()}
-                    disabled={!appUpdaterState?.available || appUpdaterBusy || appUpdaterInstallBusy}
-                  >
-                    {appUpdaterInstallBusy ? "Installing…" : "Install update + restart"}
-                  </button>
-                </div>
-                <div className="settingStackMini">
-                  <label className="toggleRow settingsToggleRow">
-                    <input
-                      type="checkbox"
-                      checked={appUpdaterAutoCheck}
-                      onChange={() => setAppUpdaterAutoCheck((prev) => !prev)}
-                      disabled={appUpdaterBusy || appUpdaterInstallBusy}
-                    />
-                    <span className="togglePill" />
-                    <span>Auto-check on launch</span>
-                  </label>
-                  <div className="settingSub">Checks for OpenJar Launcher releases when the app starts.</div>
-                </div>
-                {appUpdaterState?.release_notes ? (
-                  <div className="muted" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
-                    {appUpdaterState.release_notes.slice(0, 280)}
-                    {appUpdaterState.release_notes.length > 280 ? "…" : ""}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="card settingsSectionCard" id="setting-anchor-global:content-visuals">
-                <div className="settingsSectionTitle">{t("settings.content.section_title")}</div>
-                <div className="p settingsSectionSub">Quick toggles for launcher behavior outside game runtime.</div>
-
-                <div className="settingStack">
-                  <div>
-                    <div className="settingTitle">Automatic identify local files</div>
-                    <div className="settingSub">
-                      When enabled, local file imports automatically run Identify local files in Instance and Creator Studio.
-                    </div>
-                    <label className="toggleRow settingsToggleRow">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(launcherSettings?.auto_identify_local_jars)}
-                        onChange={() => void onToggleAutoIdentifyLocalJars()}
-                        disabled={autoIdentifyLocalJarsBusy}
-                      />
-                      <span className="togglePill" />
-                      <span>{autoIdentifyLocalJarsBusy ? "Saving…" : "Identify local files automatically"}</span>
-                    </label>
-                  </div>
-
-                  <div>
-                    <div className="settingTitle">3D skin preview</div>
-                    <div className="settingSub">
-                      Disable this for faster Account and Skins page loads on lower-end hardware.
-                    </div>
-                    <label className="toggleRow settingsToggleRow">
-                      <input
-                        type="checkbox"
-                        checked={skinPreviewEnabled}
-                        onChange={() => setSkinPreviewEnabled((prev) => !prev)}
-                      />
-                      <span className="togglePill" />
-                      <span>Enable 3D skin preview</span>
-                    </label>
-                  </div>
-
-                  <div id="setting-anchor-global:discord-presence">
-                    <div className="settingTitle">Discord Rich Presence</div>
-                    <div className="settingSub">
-                      Optional status sharing. Never includes server IP, username, world name, or file paths.
-                    </div>
-                    <label className="toggleRow settingsToggleRow">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(launcherSettings?.discord_presence_enabled ?? true)}
-                        onChange={() => void onToggleDiscordPresenceEnabled()}
-                        disabled={discordPresenceBusy}
-                      />
-                      <span className="togglePill" />
-                      <span>{discordPresenceBusy ? "Saving…" : "Enable Discord Rich Presence"}</span>
-                    </label>
-                    <div className="row">
-                      <MenuSelect
-                        value={String(launcherSettings?.discord_presence_detail_level ?? "minimal")}
-                        labelPrefix="Detail"
-                        options={[
-                          { value: "minimal", label: "Minimal" },
-                          { value: "expanded", label: "Expanded" },
-                        ]}
-                        onChange={(value) =>
-                          void onSetDiscordPresenceDetailLevel(
-                            String(value ?? "minimal") === "expanded" ? "expanded" : "minimal"
-                          )
-                        }
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-                {settingsMode === "advanced" ? (
-                  <div className="card settingsSectionCard">
-                  <div className="settingsSectionTitle">{t("settings.advanced.section_title")}</div>
-                  <div className="p settingsSectionSub">Power-user defaults and launch permission controls.</div>
-                  <div className="settingStack">
-                    <div>
-                      <div className="settingTitle">Power-user defaults</div>
-                      <div className="settingSub">
-                        Extra launcher behavior toggles for advanced workflows.
-                      </div>
-                      <label className="toggleRow settingsToggleRow">
-                        <input
-                          type="checkbox"
-                          checked={discoverAddTraySticky}
-                          onChange={() => setDiscoverAddTraySticky((prev) => !prev)}
-                        />
-                        <span className="togglePill" />
-                        <span>Keep Discover add tray pinned</span>
-                      </label>
-                      <label className="toggleRow settingsToggleRow">
-                        <input
-                          type="checkbox"
-                          checked={supportBundleIncludeRawLogs}
-                          onChange={() => setSupportBundleIncludeRawLogs((prev) => !prev)}
-                        />
-                        <span className="togglePill" />
-                        <span>Include raw logs by default in support bundles</span>
-                      </label>
-                      <div className="row">
-                        <MenuSelect
-                          value={String(logMaxLines)}
-                          labelPrefix="Default log window"
-                          options={LOG_MAX_LINES_OPTIONS}
-                          onChange={(v) => {
-                            const parsed = Number.parseInt(String(v ?? ""), 10);
-                            if (!Number.isFinite(parsed)) return;
-                            setLogMaxLines(Math.max(200, Math.min(12000, parsed)));
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <details className="settingsFoldSection" id="setting-anchor-global:permissions" open>
-                      <summary className="settingsFoldSummary">
-                        <span className="settingsFoldTitle">Launch permissions</span>
-                        <span className="settingsFoldMeta">Microphone checks and prompt controls</span>
-                      </summary>
-                      <div className="settingsFoldBody">
-                        <div className="settingSub">
-                          Voice chat instances can auto-trigger a Java microphone permission probe before launch.
-                        </div>
-                        <label className="toggleRow settingsToggleRow">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(launcherSettings?.auto_trigger_mic_permission_prompt ?? true)}
-                            onChange={() => void onToggleAutoMicPermissionPrompt()}
-                            disabled={autoMicPromptSettingBusy}
-                          />
-                          <span className="togglePill" />
-                          <span>
-                            {autoMicPromptSettingBusy ? "Saving…" : "Enable auto microphone prompt"}
-                          </span>
-                        </label>
-                        <div className="settingsActionGrid">
-                          <button className="btn" onClick={() => void openMicrophoneSystemSettings()}>
-                            Open microphone settings
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={() =>
-                              selectedPermissionsInstance
-                                ? void triggerInstanceMicrophonePrompt(selectedPermissionsInstance.id)
-                                : setInstallNotice("Select an instance first to trigger microphone prompt.")
-                            }
-                            disabled={!selectedPermissionsInstance}
-                          >
-                            Trigger selected prompt
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={() =>
-                              selectedPermissionsInstance
-                                ? void refreshInstancePermissionChecklist(selectedPermissionsInstance.id, launchMethodPick)
-                                : setInstallNotice("Select an instance first to run a permission re-check.")
-                            }
-                            disabled={!selectedPermissionsInstance}
-                          >
-                            Re-check selected instance
-                          </button>
-                        </div>
-                        <div className="muted" style={{ marginTop: 6 }}>
-                          Selected instance: {selectedPermissionsInstance?.name ?? "None"}.
-                        </div>
-                        {selectedPermissionsChecklist.length > 0 ? (
-                          <div className="preflightPermissionsList" style={{ marginTop: 8 }}>
-                            {selectedPermissionsChecklist.map((perm) => (
-                              <div key={`settings-perm:${perm.key}`} className="preflightPermissionRow">
-                                <div className="preflightCheckMain">
-                                  <div className="preflightCheckTitle">{perm.label}</div>
-                                  <div className="preflightCheckMsg">{perm.detail}</div>
-                                </div>
-                                <span className={`chip ${permissionStatusChipClass(perm.status)}`}>
-                                  {permissionStatusLabel(perm.status)}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <div className="muted" style={{ marginTop: 8 }}>
-                            No permission report yet for the selected instance. Click Re-check selected instance.
-                          </div>
-                        )}
-                      </div>
-                    </details>
-
-                    <details className="settingsFoldSection" id="setting-anchor-global:github-api">
-                      <summary className="settingsFoldSummary">
-                        <span className="settingsFoldTitle">GitHub API authentication</span>
-                        <span className="settingsFoldMeta">Token pool for higher API limits</span>
-                      </summary>
-                      <div className="settingsFoldBody">
-                        <div className="settingSub">
-                          Save personal access tokens to secure OS keychain storage for higher GitHub rate limits. Tokens are not stored in launcher settings files.
-                        </div>
-                        <div className="row settingsInlineBadges">
-                          <span className="chip">Tokens are stored in Keychain</span>
-                          {githubTokenPoolStatus ? (
-                            <span className={`chip ${githubTokenPoolStatus.configured ? "" : "subtle"}`}>
-                              {githubTokenPoolStatus.configured
-                                ? `${githubTokenPoolStatus.total_tokens} token${githubTokenPoolStatus.total_tokens === 1 ? "" : "s"} configured`
-                                : "Ready for first token"}
-                            </span>
-                          ) : null}
-                        </div>
-                        <textarea
-                          className={`input githubTokenTextarea ${
-                            !githubTokenPoolStatus?.configured && !githubTokenPoolDraft.trim() ? "ready" : ""
-                          }`}
-                          value={githubTokenPoolDraft}
-                          onChange={(e) => setGithubTokenPoolDraft(e.target.value)}
-                          placeholder="Paste one token per line (or comma/semicolon separated)"
-                          rows={4}
-                          style={{ marginTop: 8, resize: "vertical", minHeight: 96 }}
-                        />
-                        {!githubTokenPoolStatus?.configured && !githubTokenPoolDraft.trim() ? (
-                          <div className="githubTokenReadyHint">
-                            Paste tokens here and click Validate. We store them in secure Keychain storage only.
-                          </div>
-                        ) : null}
-                        <div className="settingsActionGrid">
-                          <button
-                            className="btn primary"
-                            onClick={() => void onSaveGithubTokenPool()}
-                            disabled={githubTokenPoolBusy}
-                          >
-                            {githubTokenPoolBusy ? "Saving…" : "Save GitHub tokens"}
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={() => void onValidateGithubTokenPool()}
-                            disabled={githubTokenPoolBusy}
-                          >
-                            {githubTokenPoolBusy ? "Validating…" : "Validate"}
-                          </button>
-                          <button
-                            className="btn"
-                            onClick={() => void onClearGithubTokenPool()}
-                            disabled={githubTokenPoolBusy}
-                          >
-                            Clear saved tokens
-                          </button>
-                          <button
-                            className="btn subtle"
-                            onClick={() => void refreshGithubTokenPoolStatus()}
-                            disabled={githubTokenPoolBusy}
-                          >
-                            {githubTokenPoolBusy ? "Checking…" : "Refresh status"}
-                          </button>
-                        </div>
-                        {githubTokenPoolStatus ? (
-                          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-                            <div className={githubTokenPoolStatus.keychain_available ? "noticeBox" : "warningBox"}>
-                              {githubTokenPoolStatus.message}
-                            </div>
-                            <div className="muted">
-                              Sources: env {githubTokenPoolStatus.env_tokens} · keychain {githubTokenPoolStatus.keychain_tokens}
-                              {githubTokenPoolStatus.unauth_rate_limited
-                                ? ` · unauth rate-limited${githubTokenPoolStatus.unauth_rate_limit_reset_at ? ` until ${githubTokenPoolStatus.unauth_rate_limit_reset_at}` : ""}`
-                                : ""}
-                            </div>
-                          </div>
-                        ) : null}
-                        {githubTokenPoolNotice ? (
-                          <div className={githubTokenPoolNoticeIsError ? "errorBox" : "noticeBox"} style={{ marginTop: 10 }}>
-                            {githubTokenPoolNotice}
-                          </div>
-                        ) : null}
-                      </div>
-                    </details>
-                  </div>
-                </div>
-              ) : null}
-                </section>
-              </div>
-            </div>
-          </div>
-
-          {launcherErr ? <div className="errorBox" style={{ marginTop: 14 }}>{launcherErr}</div> : null}
-        </div>
+        <SettingsRoute
+          {...{
+            accentPreset,
+        accentStrength,
+        activeSettingsRail,
+        appLanguage,
+        appLanguageBusy,
+        appLanguageMenuOptions,
+        appUpdaterAutoCheck,
+        appUpdaterBusy,
+        appUpdaterInstallBusy,
+        appUpdaterState,
+        appVersion,
+        autoIdentifyLocalJarsBusy,
+        autoMicPromptSettingBusy,
+        densityPreset,
+        discordPresenceBusy,
+        discoverAddTraySticky,
+        githubTokenPoolBusy,
+        githubTokenPoolDraft,
+        githubTokenPoolNotice,
+        githubTokenPoolNoticeIsError,
+        githubTokenPoolStatus,
+        instances,
+        javaPathDraft,
+        javaRuntimeBusy,
+        javaRuntimeCandidates,
+        launchMethodPick,
+        launcherAccounts,
+        launcherBusy,
+        launcherErr,
+        launcherSettings,
+        logMaxLines,
+        motionPreset,
+        msCodePrompt,
+        msLoginSessionId,
+        msLoginState,
+        oauthClientIdDraft,
+        onBeginMicrosoftLogin,
+        onCheckAppUpdate,
+        onClearGithubTokenPool,
+        onInstallAppUpdate,
+        onLogoutAccount,
+        onPickLauncherJavaPath,
+        onResetUiSettings,
+        onSaveGithubTokenPool,
+        onSaveLauncherPrefs,
+        onSelectAccount,
+        onSetAppLanguage,
+        onSetDiscordPresenceDetailLevel,
+        onToggleAutoIdentifyLocalJars,
+        onToggleAutoMicPermissionPrompt,
+        onToggleDiscordPresenceEnabled,
+        onValidateGithubTokenPool,
+        openMicrophoneSystemSettings,
+        openSettingAnchor,
+        preflightReportByInstance,
+        refreshGithubTokenPoolStatus,
+        refreshInstancePermissionChecklist,
+        refreshJavaRuntimeCandidates,
+        selectedId,
+        selectedLauncherAccount,
+        setAccentPreset,
+        setAccentStrength,
+        setAppUpdaterAutoCheck,
+        setDensityPreset,
+        setDiscoverAddTraySticky,
+        setGithubTokenPoolDraft,
+        setInstallNotice,
+        setJavaPathDraft,
+        setLaunchMethodPick,
+        setLogMaxLines,
+        setMotionPreset,
+        setMsCodePromptVisible,
+        setOauthClientIdDraft,
+        setRoute,
+        setSettingsAccountManageId,
+        setSettingsMode,
+        setSkinPreviewEnabled,
+        setSupportBundleIncludeRawLogs,
+        setTheme,
+        settingsAccountManageId,
+        settingsMode,
+        settingsRailItems,
+        skinPreviewEnabled,
+        supportBundleIncludeRawLogs,
+        t,
+        theme,
+        triggerInstanceMicrophonePrompt
+          }}
+        />
       );
     }
 
@@ -14327,9 +13643,12 @@ export default function App() {
       return (
         <div className="page">
           <div style={{ maxWidth: 1100 }}>
-            <div className="h1">Updates available</div>
-            <div className="p">
-              Keep installed content current across your instances, with clearer rules for when checks run and when updates install automatically.
+            <div className="pageRouteHeader">
+              <div className="pageRouteEyebrow">Content updates</div>
+              <div className="h1">Updates available</div>
+              <div className="p">
+                Keep installed content current across your instances, with clearer rules for when checks run and when updates install automatically.
+              </div>
             </div>
 
             <div className="card updatesScreenSummaryCard">
@@ -14337,43 +13656,20 @@ export default function App() {
                 <div className="updatesScreenSummaryMain">
                   <div className="updatesScreenSummaryEyebrow">Update checks</div>
                   <div className="updatesScreenSummaryTitleRow">
-                    <div className="settingTitle">Runs {updateCadenceLabel(updateCheckCadence).toLowerCase()}</div>
-                    <span className={`chip ${updateScheduleStatus === "Paused" ? "" : "subtle"}`}>
+                    <div className="updatesScreenSummaryTitle">Runs {updateCadenceLabel(updateCheckCadence).toLowerCase()}</div>
+                    <span className={`chip updatesScreenChip ${updateScheduleStatus === "Paused" ? "" : "subtle"}`}>
                       {updateScheduleStatus}
                     </span>
                   </div>
-                  <div className="settingSub updatesScreenSummaryLead">
+                  <div className="updatesScreenSummaryLead">
                     Choose what gets checked, how often checks happen, and whether matching updates can install automatically.
-                  </div>
-                  <div className="updatesScreenSummaryMeta">
-                    <span className="chip subtle">
-                      Last run: {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
-                    </span>
-                    <span className="chip subtle">
-                      Next run: {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check") : "Pending first check"}
-                    </span>
-                    <span className="chip subtle">Content: {updatesContentScopeSummary}</span>
-                    <span className="chip subtle">
-                      Auto install: {updateAutoApplyModeLabel(updateAutoApplyMode)}
-                    </span>
-                    <span className="chip subtle">When allowed: {updateApplyScopeLabel(updateApplyScope)}</span>
-                    {scheduledUpdateBusy ? (
-                      <span className="chip">
-                        Progress {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} · ETA{" "}
-                        {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
-                      </span>
-                    ) : scheduledUpdateRunTotal > 0 && scheduledUpdateRunElapsedSeconds != null ? (
-                      <span className="chip subtle">
-                        Last run took {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
-                      </span>
-                    ) : null}
                   </div>
                 </div>
                 <div className="updatesScreenSummaryActions">
                   {updatePrefsBusy ? (
-                    <span className="chip">Saving…</span>
+                    <span className="updatesScreenActionState">Saving…</span>
                   ) : updatePrefsSavedFlash ? (
-                    <span className="chip subtle">Saved</span>
+                    <span className="updatesScreenActionState">Saved</span>
                   ) : null}
                   <button
                     className="btn primary"
@@ -14387,6 +13683,49 @@ export default function App() {
                     {scheduledUpdateBusy ? "Checking…" : "Run check now"}
                   </button>
                 </div>
+              </div>
+
+              <div className="updatesScreenFactsGrid">
+                <div className="updatesScreenFactCard">
+                  <div className="updatesScreenFactLabel">Last run</div>
+                  <div className="updatesScreenFactValue">
+                    {scheduledUpdateLastRunAt ? formatDateTime(scheduledUpdateLastRunAt, "Never") : "Never"}
+                  </div>
+                </div>
+                <div className="updatesScreenFactCard">
+                  <div className="updatesScreenFactLabel">Next run</div>
+                  <div className="updatesScreenFactValue">
+                    {updateCheckCadence === "off" ? "Disabled" : nextScheduledUpdateRunAt ? formatDateTime(nextScheduledUpdateRunAt, "Pending first check") : "Pending first check"}
+                  </div>
+                </div>
+                <div className="updatesScreenFactCard">
+                  <div className="updatesScreenFactLabel">Content</div>
+                  <div className="updatesScreenFactValue">{updatesContentScopeSummary}</div>
+                </div>
+                <div className="updatesScreenFactCard">
+                  <div className="updatesScreenFactLabel">Auto install</div>
+                  <div className="updatesScreenFactValue">{updateAutoApplyModeLabel(updateAutoApplyMode)}</div>
+                </div>
+                <div className="updatesScreenFactCard">
+                  <div className="updatesScreenFactLabel">When allowed</div>
+                  <div className="updatesScreenFactValue">{updateApplyScopeLabel(updateApplyScope)}</div>
+                </div>
+                {scheduledUpdateBusy ? (
+                  <div className="updatesScreenFactCard">
+                    <div className="updatesScreenFactLabel">Progress</div>
+                    <div className="updatesScreenFactValue">
+                      {scheduledUpdateRunCompleted}/{scheduledUpdateRunTotal} · ETA{" "}
+                      {formatEtaSeconds(scheduledUpdateRunEtaSeconds)}
+                    </div>
+                  </div>
+                ) : scheduledUpdateRunTotal > 0 && scheduledUpdateRunElapsedSeconds != null ? (
+                  <div className="updatesScreenFactCard">
+                    <div className="updatesScreenFactLabel">Last duration</div>
+                    <div className="updatesScreenFactValue">
+                      {formatDurationMs(scheduledUpdateRunElapsedSeconds * 1000)}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="updatesScreenRuleGrid">
@@ -14471,45 +13810,55 @@ export default function App() {
               </div>
 
               <div className="updatesScreenStatsRow">
-                <span className="chip">{updatesPageUpdatesAvailableTotal} update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"} waiting</span>
-                <span className="chip subtle">{updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} need attention</span>
-                <span className="chip subtle">{updatesPageVisibleEntries.length} instance{updatesPageVisibleEntries.length === 1 ? "" : "s"} checked</span>
+                <span className="updatesScreenStatsText">
+                  {updatesPageUpdatesAvailableTotal} update{updatesPageUpdatesAvailableTotal === 1 ? "" : "s"} waiting
+                </span>
+                <span className="updatesScreenStatsDivider" aria-hidden="true">•</span>
+                <span className="updatesScreenStatsText">
+                  {updatesPageInstancesWithUpdatesCount} instance{updatesPageInstancesWithUpdatesCount === 1 ? "" : "s"} need attention
+                </span>
+                <span className="updatesScreenStatsDivider" aria-hidden="true">•</span>
+                <span className="updatesScreenStatsText">
+                  {updatesPageVisibleEntries.length} instance{updatesPageVisibleEntries.length === 1 ? "" : "s"} checked
+                </span>
               </div>
-              {scheduledAppliedUpdatesRecent.length > 0 ? (
-                <div className="updatesScreenAppliedSummary">
-                  <div className="updatesCardTitle">Recent automatic installs</div>
-                  <div className="updatesList">
-                    {scheduledAppliedUpdatesRecent.map((entry) => (
-                      <div key={`applied:${entry.instance_id}:${entry.applied_at}`} className="updatesListRow">
-                        <div className="updatesListName">
-                          {entry.instance_name}
-                          <span className="chip subtle" style={{ marginLeft: 8 }}>
-                            {entry.updated_entries} updated
-                          </span>
-                        </div>
-                        <div className="updatesListMeta">
-                          {formatDateTime(entry.applied_at, "Unknown time")}
-                        </div>
-                        <div className="updatesScreenAppliedNames">
-                          {entry.updates.slice(0, 5).map((u) => (
-                            <span
-                              key={`applied-chip:${entry.instance_id}:${u.source}:${u.content_type}:${u.project_id}`}
-                              className="chip subtle"
-                            >
-                              {u.name}
-                            </span>
-                          ))}
-                          {entry.updates.length > 5 ? (
-                            <span className="chip subtle">+{entry.updates.length - 5} more</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
               {scheduledUpdateErr ? <div className="errorBox" style={{ marginTop: 10 }}>{scheduledUpdateErr}</div> : null}
             </div>
+
+            {scheduledAppliedUpdatesRecent.length > 0 ? (
+              <div className="card updatesScreenSectionCard">
+                <div className="updatesScreenSectionHead">
+                  <div className="updatesCardTitle">Recent automatic installs</div>
+                  <div className="updatesScreenSectionSub">Most recent background installs across your instances.</div>
+                </div>
+                <div className="updatesScreenRecentList">
+                  {scheduledAppliedUpdatesRecent.map((entry) => (
+                    <div key={`applied:${entry.instance_id}:${entry.applied_at}`} className="updatesScreenRecentRow">
+                      <div className="updatesScreenRecentHead">
+                        <div>
+                          <div className="updatesListName">{entry.instance_name}</div>
+                          <div className="updatesListMeta">{formatDateTime(entry.applied_at, "Unknown time")}</div>
+                        </div>
+                        <div className="updatesScreenInlineMeta">{entry.updated_entries} updated</div>
+                      </div>
+                      <div className="updatesScreenAppliedNames">
+                        {entry.updates.slice(0, 5).map((u) => (
+                          <span
+                            key={`applied-chip:${entry.instance_id}:${u.source}:${u.content_type}:${u.project_id}`}
+                            className="updatesScreenAppliedName"
+                          >
+                            {u.name}
+                          </span>
+                        ))}
+                        {entry.updates.length > 5 ? (
+                          <span className="updatesScreenAppliedName">+{entry.updates.length - 5} more</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {updatesPageVisibleEntries.length === 0 ? (
               <div className="emptyState" style={{ marginTop: 12 }}>
@@ -14530,17 +13879,17 @@ export default function App() {
                       <div>
                         <div className="updatesScreenItemTitle">{row.instance_name}</div>
                         <div className="updatesScreenItemMetaRow">
-                          <span className={`chip ${row.error ? "" : row.update_count === 0 ? "subtle" : ""}`}>
+                          <span className={`chip updatesScreenChip ${row.error ? "" : row.update_count === 0 ? "subtle" : ""}`}>
                             {row.error
                               ? "Check failed"
                               : row.update_count === 0
                                 ? "Up to date"
                                 : `${row.update_count} update${row.update_count === 1 ? "" : "s"} available`}
                           </span>
-                          <span className="chip subtle">
+                          <span className="chip subtle updatesScreenChip">
                             Checked {new Date(row.checked_at).toLocaleString()}
                           </span>
-                          <span className="chip subtle">
+                          <span className="chip subtle updatesScreenChip">
                             {row.checked_entries} entr{row.checked_entries === 1 ? "y" : "ies"} scanned
                           </span>
                         </div>
@@ -14571,7 +13920,7 @@ export default function App() {
                       <div className="updatesScreenAppliedInstance">
                         <div className="updatesCardTitle">
                           Last automatic install
-                          <span className="chip subtle" style={{ marginLeft: 8 }}>
+                          <span className="updatesScreenInlineMeta" style={{ marginLeft: 8 }}>
                             {appliedEntry.updated_entries} updated
                           </span>
                         </div>
@@ -14582,13 +13931,13 @@ export default function App() {
                           {appliedEntry.updates.slice(0, 6).map((u) => (
                             <span
                               key={`applied-instance-chip:${row.instance_id}:${u.source}:${u.content_type}:${u.project_id}`}
-                              className="chip subtle"
+                              className="updatesScreenAppliedName"
                             >
                               {u.name}
                             </span>
                           ))}
                           {appliedEntry.updates.length > 6 ? (
-                            <span className="chip subtle">+{appliedEntry.updates.length - 6} more</span>
+                            <span className="updatesScreenAppliedName">+{appliedEntry.updates.length - 6} more</span>
                           ) : null}
                         </div>
                       </div>
@@ -14608,8 +13957,8 @@ export default function App() {
                           <div key={`${row.instance_id}:${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
                             <div className="updatesListName">
                               {u.name}
-                              <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
-                              <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
+                              <span className="updatesScreenInlineMeta" style={{ marginLeft: 8 }}>{u.source}</span>
+                              <span className="updatesScreenInlineMeta" style={{ marginLeft: 6 }}>{u.content_type}</span>
                             </div>
                             <div className="updatesListMeta">
                               {u.current_version_number} → {u.latest_version_number}
@@ -14636,896 +13985,119 @@ export default function App() {
     }
 
     if (route === "account") {
-      const diag = accountDiagnostics;
-      const account = diag?.account ?? selectedLauncherAccount;
-      const uuid = diag?.minecraft_uuid ?? account?.id ?? null;
-      const username = diag?.minecraft_username ?? account?.username ?? "No account connected";
-      const skinTexture = toLocalIconSrc(diag?.skin_url) ?? "";
-      const avatarSources = minecraftAvatarSources(uuid);
-      const avatarSrc =
-        toLocalIconSrc(
-          avatarSources[Math.min(accountAvatarSourceIdx, Math.max(avatarSources.length - 1, 0))] ?? ""
-        ) ?? "";
-      const connectionRaw = String(diag?.status ?? (account ? "connected" : "not_connected")).toLowerCase();
-      const tokenRaw = String(diag?.token_exchange_status ?? "idle").toLowerCase();
-      const isDisconnected =
-        !account ||
-        connectionRaw.includes("not_connected") ||
-        connectionRaw.includes("offline") ||
-        connectionRaw.includes("idle");
-      const isUnverified = !isDisconnected && (!diag?.entitlements_ok || tokenRaw.includes("error"));
-      const accountStatusTone = isDisconnected ? "error" : isUnverified ? "warn" : "ok";
-      const accountStatusLabel = isDisconnected
-        ? "Not Connected"
-        : isUnverified
-          ? "Not verified"
-          : "Connected / verified";
-      const authBannerMessage = isDisconnected
-        ? "Your launcher is not connected to a Microsoft account, so native launch and profile sync are unavailable."
-        : isUnverified
-          ? "Account connected, but entitlement verification is incomplete. Reconnect to refresh auth tokens."
-          : diag?.last_error || accountDiagnosticsErr
-            ? "Authentication returned an error. Reconnect to re-establish a healthy token chain."
-            : null;
-      const showAuthBrokenBanner = Boolean(authBannerMessage);
-
       return (
-        <div className="accountPage">
-          <div className="h1">Account</div>
-          <div className="p">Connection status, launcher profile details, and skin setup in one calmer workspace.</div>
-
-          <div className="accountHero card">
-            <div className="accountAvatarWrap">
-              {accountAvatarFromSkin ? (
-                <img src={accountAvatarFromSkin} alt="Minecraft avatar" />
-              ) : skinTexture ? (
-                <span className="minecraftHeadPreview" role="img" aria-label="Minecraft avatar">
-                  <img src={skinTexture} alt="" className="minecraftHeadLayer base" />
-                  <img src={skinTexture} alt="" className="minecraftHeadLayer hat" />
-                </span>
-              ) : avatarSrc ? (
-                <img
-                  src={avatarSrc}
-                  alt="Minecraft avatar"
-                  onError={() => setAccountAvatarSourceIdx((i) => i + 1)}
-                />
-              ) : (
-                <span>{username?.slice(0, 1)?.toUpperCase() ?? "?"}</span>
-              )}
-            </div>
-            <div className="accountHeroMain">
-              <div className="accountHeroEyebrow">Minecraft profile</div>
-              <div className="accountHeroName">{username}</div>
-              <div className="accountHeroMeta">
-                <span className={`accountStatusBadge tone-${accountStatusTone}`}>
-                  <span className="accountStatusDot" aria-hidden="true" />
-                  {accountStatusLabel}
-                </span>
-                {diag?.entitlements_ok ? <span className="chip">Owns Minecraft</span> : null}
-                {diag?.token_exchange_status ? <span className="chip subtle">{humanizeToken(diag.token_exchange_status)}</span> : null}
-              </div>
-              <div className="accountHeroSub">
-                UUID: {uuid ?? "Not available"}
-              </div>
-              <div className="accountHeroLead">
-                {isDisconnected
-                  ? "Connect a Microsoft account to unlock native launch, entitlement checks, and profile sync."
-                  : isUnverified
-                    ? "The account is connected, but verification is still incomplete right now."
-                    : "Your launcher account is connected and ready for native launch workflows."}
-              </div>
-              <div className="row" style={{ marginTop: 10 }}>
-                <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                  {msLoginSessionId ? "Waiting for login…" : "Connect / Reconnect"}
-                </button>
-                {msLoginSessionId && msCodePrompt ? (
-                  <button className="btn" onClick={() => setMsCodePromptVisible(true)}>
-                    Show code
-                  </button>
-                ) : null}
-                <button className="btn" onClick={() => refreshAccountDiagnostics().catch(() => null)} disabled={accountDiagnosticsBusy}>
-                  {accountDiagnosticsBusy ? "Refreshing…" : "Refresh diagnostics"}
-                </button>
-              </div>
-            </div>
-          </div>
-          {showAuthBrokenBanner ? (
-            <div className="card accountAuthBanner">
-              <div className="accountAuthBannerMain">
-                <div className="accountAuthBannerTitle">Authentication needs attention</div>
-                <div className="accountAuthBannerText">{authBannerMessage}</div>
-              </div>
-              <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                {msLoginSessionId ? "Waiting for login…" : "Reconnect"}
-              </button>
-            </div>
-          ) : null}
-
-          <div className="accountSummaryStrip">
-            <div className="accountSummaryCard">
-              <div className="accountSummaryLabel">Launch mode</div>
-              <div className="accountSummaryValue">{humanizeToken(launcherSettings?.default_launch_method ?? "native")}</div>
-            </div>
-            <div className="accountSummaryCard">
-              <div className="accountSummaryLabel">Update checks</div>
-              <div className="accountSummaryValue">{updateCadenceLabel(updateCheckCadence)}</div>
-            </div>
-            <div className="accountSummaryCard">
-              <div className="accountSummaryLabel">Saved skins</div>
-              <div className="accountSummaryValue">{savedSkinOptions.length}</div>
-            </div>
-            <div className="accountSummaryCard">
-              <div className="accountSummaryLabel">Connected accounts</div>
-              <div className="accountSummaryValue">{launcherAccounts.length}</div>
-            </div>
-          </div>
-
-          <div className="accountGrid">
-            <div className="card accountCard accountCardWide">
-              <div className="settingTitle">Profile overview</div>
-              <div className="settingSub">The account you are using right now, plus the launcher and skin defaults attached to it.</div>
-              <div className="accountProfileSplit">
-                <div className="accountSectionBlock">
-                  <div className="accountSectionTitle">Launcher defaults</div>
-                  <div className="accountDiagList">
-                    <div className="accountDiagRow">
-                      <span>Default launch mode</span>
-                      <strong>{humanizeToken(launcherSettings?.default_launch_method ?? "native")}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Update checks</span>
-                      <strong>{updateCadenceLabel(updateCheckCadence)}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Automatic installs</span>
-                      <strong>{updateAutoApplyModeLabel(updateAutoApplyMode)}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Current skin</span>
-                      <strong>{selectedAccountSkin?.label ?? "None"}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Current cape</span>
-                      <strong>{selectedAccountCape?.label ?? "No cape"}</strong>
-                    </div>
-                  </div>
-                </div>
-                <div className="accountSectionBlock">
-                  <div className="accountSectionTitle">Skin setup</div>
-                  <div className="accountDiagList">
-                    <div className="accountDiagRow">
-                      <span>Saved skins</span>
-                      <strong>{savedSkinOptions.length}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Default skins</span>
-                      <strong>{defaultSkinOptions.length}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Cape options</span>
-                      <strong>{capeOptions.length}</strong>
-                    </div>
-                    <div className="accountDiagRow">
-                      <span>Last diagnostics refresh</span>
-                      <strong>{diag?.last_refreshed_at ? new Date(diag.last_refreshed_at).toLocaleString() : "Never"}</strong>
-                    </div>
-                  </div>
-                  <div className="accountSectionActions">
-                    <button className="btn" onClick={() => setRoute("skins")}>
-                      Open skin studio
-                    </button>
-                    <label className="toggleRow accountInlineToggle">
-                      <input
-                        type="checkbox"
-                        checked={skinPreviewEnabled}
-                        onChange={(event) => setSkinPreviewEnabled(event.target.checked)}
-                      />
-                      <span className="togglePill" />
-                      <span>Use 3D preview in Skin Studio</span>
-                    </label>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="card accountCard accountCardWide">
-              <div className="settingTitle">Diagnostics</div>
-              <div className="settingSub">Connection health and token state for native launch. Network errors can make these checks look worse than the account really is.</div>
-              <div className="accountDiagList">
-                <div className="accountDiagRow">
-                  <span>Connection</span>
-                  <strong className={`accountStatusText tone-${accountStatusTone}`}>{accountStatusLabel}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Entitlements</span>
-                  <strong className={`accountStatusText tone-${diag?.entitlements_ok ? "ok" : "warn"}`}>
-                    {diag?.entitlements_ok ? "Verified" : "Not verified"}
-                  </strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Token status</span>
-                  <strong>{humanizeToken(diag?.token_exchange_status ?? "idle")}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Client ID source</span>
-                  <strong>{humanizeToken(diag?.client_id_source ?? "unknown")}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Last refresh</span>
-                  <strong>{diag?.last_refreshed_at ? formatDateTime(diag.last_refreshed_at, "Never") : "Never"}</strong>
-                </div>
-                {diag?.last_error ? (
-                  <div className="errorBox" style={{ marginTop: 8 }}>{diag.last_error}</div>
-                ) : null}
-                {accountDiagnosticsErr ? (
-                  <div className="errorBox" style={{ marginTop: 8 }}>{accountDiagnosticsErr}</div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="card accountCard">
-              <div className="settingTitle">Accounts</div>
-              <div className="settingSub">Choose which connected account should be used for native launch.</div>
-              <div className="accountAccountsList">
-                {launcherAccounts.length === 0 ? (
-                  <div className="muted">No connected accounts.</div>
-                ) : (
-                  launcherAccounts.map((acct) => {
-                    const selectedAccount = selectedLauncherAccountId === acct.id;
-                    return (
-                      <div key={acct.id} className="accountAccountRow">
-                        <div className="accountAccountInfo">
-                          <div className="accountAccountName">{acct.username}</div>
-                          <div className="accountAccountId">{acct.id}</div>
-                        </div>
-                        <div className="row" style={{ marginTop: 0 }}>
-                          <button
-                            className={`btn stateful ${selectedAccount ? "active" : ""}`}
-                            onClick={() => onSelectAccount(acct.id)}
-                            disabled={launcherBusy}
-                          >
-                            {selectedAccount ? "Selected" : "Use"}
-                          </button>
-                          <button
-                            className="btn accountDisconnectBtn"
-                            onClick={() => onLogoutAccount(acct.id)}
-                            disabled={launcherBusy}
-                          >
-                            Disconnect
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            <div className="card accountCard">
-              <div className="settingTitle">Profile assets</div>
-              <div className="settingSub">Skins and capes currently returned by the Minecraft profile API.</div>
-              <div className="accountDiagList">
-                <div className="accountDiagRow">
-                  <span>Skins</span>
-                  <strong>{diag?.skins?.length ?? 0}</strong>
-                </div>
-                <div className="accountDiagRow">
-                  <span>Capes</span>
-                  <strong>{diag?.cape_count ?? 0}</strong>
-                </div>
-                <div className="accountAssetList">
-                  {(diag?.skins ?? []).slice(0, 6).map((skin) => (
-                    <div key={`${skin.id}:${skin.url}`} className="accountAssetRow">
-                      <span>{skin.variant ?? "Skin"}</span>
-                      <a href={skin.url} target="_blank" rel="noreferrer">Open</a>
-                    </div>
-                  ))}
-                  {(diag?.capes ?? []).slice(0, 6).map((cape) => (
-                    <div key={`${cape.id}:${cape.url}`} className="accountAssetRow">
-                      <span>{cape.alias ?? "Cape"}</span>
-                      <a href={cape.url} target="_blank" rel="noreferrer">Open</a>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <AccountRoute
+          {...{
+            accountAvatarFromSkin,
+        accountAvatarSourceIdx,
+        accountDiagnostics,
+        accountDiagnosticsBusy,
+        accountDiagnosticsErr,
+        capeOptions,
+        defaultSkinOptions,
+        launcherAccounts,
+        launcherBusy,
+        launcherSettings,
+        minecraftAvatarSources,
+        msCodePrompt,
+        msLoginSessionId,
+        onBeginMicrosoftLogin,
+        onLogoutAccount,
+        onSelectAccount,
+        refreshAccountDiagnostics,
+        savedSkinOptions,
+        selectedAccountCape,
+        selectedAccountSkin,
+        selectedLauncherAccount,
+        selectedLauncherAccountId,
+        setAccountAvatarSourceIdx,
+        setMsCodePromptVisible,
+        setRoute,
+        setSkinPreviewEnabled,
+        skinPreviewEnabled,
+        toLocalIconSrc,
+        updateAutoApplyMode,
+        updateCheckCadence
+          }}
+        />
       );
     }
 
     if (route === "modpacks") {
       return (
-        <div className="creatorStudioRoute" style={{ maxWidth: 1380 }}>
-          <div className="creatorStudioIntro card">
-            <div className="creatorStudioIntroCopy">
-              <div className="creatorStudioEyebrow">Creator Studio</div>
-              <div className="h1">Build packs and edit live config.</div>
-              <div className="p">
-                Creator handles layered modpack assembly and apply previews. Config Editor works directly against instance and world files with rollback safety.
-              </div>
-              <div className="creatorStudioTabs">
-                <SegmentedControl
-                  value={modpacksStudioTab === "config" ? "config" : "creator"}
-                  onChange={(v) => setModpacksStudioTab((v as any) ?? "creator")}
-                  options={[
-                    { value: "creator", label: "Creator" },
-                    { value: "config", label: "Config Editor" },
-                  ]}
-                  variant="scroll"
-                />
-              </div>
-            </div>
-          </div>
-
-          {modpacksStudioTab === "config" ? (
-            <div className="creatorStudioPanelWrap">
-              <ModpacksConfigEditor
-                instances={instances}
-                selectedInstanceId={selectedId}
-                onSelectInstance={setSelectedId}
-                onManageInstances={() => setRoute("library")}
-                runningInstanceIds={runningInstances.map((run) => run.instance_id)}
-              />
-            </div>
-          ) : (
-            <div className="creatorStudioPanelWrap">
-              <ModpackMaker
-                instances={instances}
-                selectedInstanceId={selectedId}
-                autoIdentifyLocalJarsEnabled={Boolean(launcherSettings?.auto_identify_local_jars)}
-                onSelectInstance={setSelectedId}
-                onOpenDiscover={(context) => {
-                  setDiscoverAddContext(context ?? null);
-                  setDiscoverAddTrayExpanded(true);
-                  setRoute("discover");
-                }}
-                isDevMode={isDevMode}
-                onNotice={(message) => setInstallNotice(message)}
-                onError={(message) => setError(message)}
-              />
-            </div>
-          )}
-        </div>
+        <ModpacksRoute
+          {...{
+            instances,
+        isDevMode,
+        launcherSettings,
+        modpacksStudioTab,
+        runningInstances,
+        selectedId,
+        setDiscoverAddContext,
+        setDiscoverAddTrayExpanded,
+        setError,
+        setInstallNotice,
+        setModpacksStudioTab,
+        setRoute,
+        setSelectedId
+          }}
+        />
       );
     }
 
     if (route === "discover") {
-      const selectedInst = instances.find((i) => i.id === selectedId) ?? null;
-      const discoverIncludesGithub = effectiveDiscoverSources.includes("github");
-      const discoverIncludesCurseforge = effectiveDiscoverSources.includes("curseforge");
-      const discoverOnlyCurseforge =
-        effectiveDiscoverSources.length === 1 && effectiveDiscoverSources[0] === "curseforge";
-      const discoverFilterSupportNotes: string[] = [];
-      if (discoverIncludesGithub) {
-        if (discoverContentType !== "mods") {
-          discoverFilterSupportNotes.push("GitHub source currently supports mods only.");
-        } else if (
-          filterLoaders.length > 0 ||
-          Boolean(filterVersion) ||
-          filterCategories.length > 0
-        ) {
-          discoverFilterSupportNotes.push(
-            "GitHub source filters are best-effort: loader/version/category checks rely on repository topics and release asset naming."
-          );
-        }
-      }
-      if (discoverIncludesCurseforge) {
-        if (discoverContentType === "mods" && discoverOnlyCurseforge) {
-          discoverFilterSupportNotes.push(
-            "CurseForge-only searches currently ignore the loader filter."
-          );
-        }
-        if (filterCategories.length > 0) {
-          discoverFilterSupportNotes.push(
-            "CurseForge category matching is best-effort because provider category vocabularies differ."
-          );
-        }
-      }
-      if (
-        effectiveDiscoverSources.length > 1 &&
-        (filterLoaders.length > 0 || Boolean(filterVersion) || filterCategories.length > 0)
-      ) {
-        discoverFilterSupportNotes.push(
-          "Multi-source search combines provider results; filter precision varies by provider."
-        );
-      }
-      const discoverFilterSupportNotice = discoverFilterSupportNotes.length
-        ? discoverFilterSupportNotes.join(" ")
-        : null;
-      const activeDiscoverFilterCount =
-        (filterVersion ? 1 : 0) +
-        (filterLoaders.length > 0 ? 1 : 0) +
-        (filterCategories.length > 0 ? 1 : 0) +
-        (discoverAllVersions ? 1 : 0);
-      const discoverPlaceholder =
-        discoverContentType === "shaderpacks"
-          ? "Search shaderpacks…"
-          : discoverContentType === "resourcepacks"
-            ? "Search resourcepacks…"
-            : discoverContentType === "datapacks"
-            ? "Search datapacks…"
-            : discoverContentType === "modpacks"
-              ? "Search modpacks…"
-              : "Search mods…";
-      const discoverContentTypeLabel =
-        DISCOVER_CONTENT_OPTIONS.find((option) => option.value === discoverContentType)?.label ?? discoverContentType;
-
       return (
-        <div className="discoverPage" style={{ maxWidth: 1400 }}>
-          <div className="h1">Discover content</div>
-          <div className="p">Search Modrinth, CurseForge, or GitHub and install directly into instances.</div>
-          {discoverAddContext ? (
-            <div className={`discoverAddTray${discoverAddTraySticky ? " discoverAddTraySticky" : ""}`}>
-              <div className="discoverAddTrayHeader">
-                <div>
-                  <div className="discoverAddTrayTitle">
-                    Adding to {discoverAddContext.modpackName}
-                    {discoverAddContext.layerName ? ` / ${discoverAddContext.layerName}` : ""}
-                  </div>
-                  <div className="discoverAddTraySub">
-                    Use <strong>Add to modpack</strong> on any result. This tray tracks what you added in this session.
-                  </div>
-                </div>
-                <div className="discoverAddTrayActions">
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setRoute("modpacks");
-                      setModpacksStudioTab("creator");
-                    }}
-                  >
-                    Open Creator Studio
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => setDiscoverAddTrayExpanded((prev) => !prev)}
-                    title="Show or hide added items."
-                  >
-                    {discoverAddTrayExpanded ? "Hide additions" : "Show additions"}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => setDiscoverAddTraySticky((prev) => !prev)}
-                    title="Keep this tray pinned while you scroll results."
-                  >
-                    {discoverAddTraySticky ? "Unpin tray" : "Pin tray"}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() => {
-                      setDiscoverAddContext(null);
-                      setDiscoverAddTrayItems([]);
-                    }}
-                  >
-                    Clear add target
-                  </button>
-                </div>
-              </div>
-
-              <div className="discoverAddTrayStats">
-                <span className="chip subtle">Added this session: {discoverAddTrayItems.length}</span>
-                <span className="chip subtle">Target layer: {discoverAddContext.layerName ?? "Default"}</span>
-                {discoverAddTrayItems[0] ? (
-                  <span className="chip subtle">Last added: {formatDateTime(discoverAddTrayItems[0].addedAt, "just now")}</span>
-                ) : (
-                  <span className="chip subtle">No items added yet</span>
-                )}
-              </div>
-
-              {discoverAddTrayExpanded ? (
-                <div className="discoverAddTrayList">
-                  {discoverAddTrayItems.length === 0 ? (
-                    <div className="discoverAddTrayEmpty">
-                      Add content from Discover results and it will appear here.
-                    </div>
-                  ) : (
-                    discoverAddTrayItems.slice(0, 8).map((item) => (
-                      <div key={item.id} className="discoverAddTrayItem">
-                        <div className="discoverAddTrayItemMain">
-                          <div className="discoverAddTrayItemTitle">{item.title}</div>
-                          <div className="discoverAddTrayItemMeta">
-                            {item.projectId} · {item.source} · {item.contentType} · {item.layerName}
-                          </div>
-                        </div>
-                        <span className="chip subtle">{formatDateTime(item.addedAt, "just now")}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : null}
-
-              {discoverAddTrayItems.length > 8 ? (
-                <div className="discoverAddTrayOverflow muted">
-                  Showing latest 8 of {discoverAddTrayItems.length} items.
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <div className="discoverWorkspace">
-            <div className="discoverWorkspaceTop">
-              <div>
-                <div className="discoverWorkspaceEyebrow">Search setup</div>
-                <div className="discoverWorkspaceTitle">Find content by type, source, and compatibility.</div>
-              </div>
-              <div className="discoverWorkspaceStats">
-                <span className="chip subtle">{activeDiscoverFilterCount} active filter{activeDiscoverFilterCount === 1 ? "" : "s"}</span>
-                <span className="chip subtle">{totalHits} result{totalHits === 1 ? "" : "s"}</span>
-              </div>
-            </div>
-
-            <div className="topRow" style={{ marginBottom: 8 }}>
-              <SegmentedControl
-                value={discoverContentType}
-                onChange={(v) => {
-                  setDiscoverContentType((v as DiscoverContentType) ?? "mods");
-                  setFilterLoaders([]);
-                  setOffset(0);
-                }}
-                options={DISCOVER_CONTENT_OPTIONS}
-                variant="scroll"
-              />
-            </div>
-
-            <div className="topRow discoverSearchRow">
-              <div className="searchGrow">
-                <input
-                  className="input"
-                  value={q}
-                  onChange={(e) => {
-                    setQ(e.target.value);
-                    if (discoverErr) setDiscoverErr(null);
-                  }}
-                  placeholder={discoverPlaceholder}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") runSearch(0);
-                  }}
-                />
-              </div>
-
-              <div className="discoverSearchActions">
-                <MenuSelect
-                  value={index}
-                  labelPrefix="Sort"
-                  options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                  onChange={(v) => {
-                    setIndex(v as any);
-                    setOffset(0);
-                  }}
-                />
-
-                <MenuSelect
-                  value={String(limit)}
-                  labelPrefix="View"
-                  options={DISCOVER_VIEW_OPTIONS}
-                  align="end"
-                  onChange={(v) => {
-                    setLimit(parseInt(v, 10));
-                    setOffset(0);
-                  }}
-                />
-
-                <div className="filterCtrl filterCtrlSource">
-                  <MultiSelectDropdown
-                    values={discoverSources}
-                    placeholder="Sources: All"
-                    allSelectedLabel="Sources: All"
-                    groups={DISCOVER_SOURCE_GROUPS}
-                    showSearch={false}
-                    showGroupHeaders={false}
-                    itemVariant="menu"
-                    clearLabel="All sources"
-                    panelMinWidth={220}
-                    panelEstimatedHeight={176}
-                    onChange={(values) => {
-                      const next = normalizeDiscoverProviderSources(values);
-                      setDiscoverSources(next.length > 0 ? next : [...DISCOVER_PROVIDER_SOURCES]);
-                      setOffset(0);
-                    }}
-                    onClear={() => {
-                      setDiscoverSources([...DISCOVER_PROVIDER_SOURCES]);
-                      setOffset(0);
-                    }}
-                  />
-                </div>
-
-                <button className="btn primary" onClick={() => runSearch(0)} disabled={discoverBusy}>
-                  {discoverBusy ? "Searching…" : "Search"}
-                </button>
-              </div>
-            </div>
-
-            <div className="topRow discoverFilterRow">
-              <div className="discoverFiltersRight">
-                <div className="filterCtrl filterCtrlVersion">
-                  <Dropdown
-                    value={filterVersion}
-                    placeholder="Game version: Any"
-                    groups={groupedDiscoverVersions}
-                    includeAny
-                    onPick={(v) => {
-                      setFilterVersion(v);
-                      setOffset(0);
-                    }}
-                  />
-                </div>
-
-                <div className="filterCtrl filterCtrlLoader">
-                  <MultiSelectDropdown
-                    values={filterLoaders}
-                    placeholder="Loaders: Any"
-                    groups={DISCOVER_LOADER_GROUPS}
-                    showSearch={false}
-                    showGroupHeaders={false}
-                    disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
-                    onChange={(v) => {
-                      if (discoverContentType !== "mods") return;
-                      if (discoverOnlyCurseforge) return;
-                      setFilterLoaders(v);
-                      setOffset(0);
-                    }}
-                  />
-                </div>
-
-                <div className="filterCtrl filterCtrlCategory">
-                  <MultiSelectDropdown
-                    values={filterCategories}
-                    placeholder="Categories: Any"
-                    groups={MOD_CATEGORY_GROUPS}
-                    searchPlaceholder="Search categories…"
-                    onChange={(v) => {
-                      setFilterCategories(v);
-                      setOffset(0);
-                    }}
-                  />
-                </div>
-
-                <label className="checkboxRow discoverCheckboxRow">
-                  <span
-                    className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
-                    onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
-                    role="checkbox"
-                    aria-checked={discoverAllVersions}
-                    tabIndex={0}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setDiscoverAllVersions(!discoverAllVersions);
-                      }
-                    }}
-                  >
-                    {discoverAllVersions ? "✓" : ""}
-                  </span>
-                  Show all versions
-                </label>
-
-                <button
-                  className="btn discoverClearBtn"
-                  onClick={() => {
-                    setFilterVersion(null);
-                    setFilterLoaders([]);
-                    setFilterCategories([]);
-                    setOffset(0);
-                  }}
-                  disabled={!filterVersion && filterLoaders.length === 0 && filterCategories.length === 0}
-                >
-                  Clear filters
-                </button>
-              </div>
-            </div>
-
-            {discoverFilterSupportNotice ? (
-              <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
-            ) : null}
-          </div>
-
-          {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
-
-          <div className="discoverResultsHeader">
-            <div className="discoverResultsInfo">
-              <div className="discoverResultsTitleRow">
-                <div className="discoverResultsTitle">Results</div>
-                <span className="chip subtle">{discoverContentTypeLabel}</span>
-                <span className="chip subtle">
-                  {effectiveDiscoverSources.length} source{effectiveDiscoverSources.length === 1 ? "" : "s"}
-                </span>
-              </div>
-              <div className="discoverResultsSub">
-                {discoverBusy
-                  ? "Refreshing matches..."
-                  : `Showing ${hits.length} of ${totalHits} result${totalHits === 1 ? "" : "s"} on page ${page} of ${pages}.`}
-              </div>
-            </div>
-            <div className="discoverResultsPager">
-              <div className="pager pagerTop">
-                <button
-                  className="btn"
-                  onClick={() => runSearch(Math.max(0, offset - limit))}
-                  disabled={discoverBusy || offset === 0}
-                >
-                  ← Prev
-                </button>
-                <div className="pagerLabel">
-                  Page {page} / {pages}
-                </div>
-                <button
-                  className="btn"
-                  onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
-                  disabled={discoverBusy || offset + limit >= totalHits}
-                >
-                  Next →
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="resultsGrid">
-            {hits.map((h) => (
-              <div
-                className="resultCard"
-                key={`${h.source}:${h.project_id}`}
-                onClick={() => {
-                    if (h.source === "modrinth") {
-                      openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                      return;
-                    }
-                    if (h.source === "curseforge") {
-                      openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                      return;
-                    }
-                    if (h.source === "github") {
-                      void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                      return;
-                    }
-                    if (h.external_url?.trim()) {
-                      void openExternalLink(h.external_url.trim());
-                    }
-                }}
-              >
-                <div className="resultIcon">
-                  <RemoteImage src={h.icon_url} alt={`${h.title} icon`} fallback={<div>⬚</div>} />
-                </div>
-
-                <div className="resultBody">
-                  <div className="resultTitleRow">
-                    <div className="resultTitle">{h.title}</div>
-                  </div>
-                  <div className="resultDesc">{h.description}</div>
-                  <div className="resultMetaRow">
-                    <span className="chip subtle">{providerSourceLabel(h.source)}</span>
-                    <span>by {h.author}</span>
-                    <span>↓ {formatCompact(h.downloads)}</span>
-                    <span>♥ {formatCompact(h.follows)}</span>
-                    {h.source === "github" && githubInstallStateChipLabel(h.install_state) ? (
-                      <span className={githubStatusChipClass("installability", h.install_state)}>
-                        {githubInstallStateChipLabel(h.install_state)}
-                      </span>
-                    ) : null}
-                    {h.categories?.slice(0, 3)?.map((c) => (
-                      <span key={c} className="chip">
-                        {c}
-                      </span>
-                    ))}
-                  </div>
-                  {h.source === "github" && githubInstallSummary(h) ? (
-                    <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
-                      {githubInstallSummary(h)}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div
-                  className="resultActions"
-                  style={{ alignSelf: "center" }}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <button
-                    className="btn ghost"
-                    onClick={() => {
-                      if (h.source === "modrinth") {
-                        openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                        return;
-                      }
-                      if (h.source === "curseforge") {
-                        openCurseforgeProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                        return;
-                      }
-                      if (h.source === "github") {
-                        void openGithubProject(h, (h.content_type as DiscoverContentType) ?? discoverContentType);
-                        return;
-                      }
-                      if (h.external_url?.trim()) {
-                        void openExternalLink(h.external_url.trim());
-                      }
-                    }}
-                  >
-                    View
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={() =>
-                      openAddToModpack({
-                        source: normalizeDiscoverSource(h.source),
-                        projectId: h.project_id,
-                        title: h.title,
-                        contentType:
-                          (h.content_type as DiscoverContentType) === "modpacks"
-                            ? "modpacks"
-                            : ((h.content_type as DiscoverContentType) ?? discoverContentType),
-                        slug: h.slug ?? null,
-                        iconUrl: h.icon_url,
-                        description: h.description,
-                      }, discoverAddContext ? { modpackId: discoverAddContext.modpackId, layerId: discoverAddContext.layerId ?? null } : undefined)
-                    }
-                    title={
-                      h.content_type === "modpacks"
-                        ? "Import modpacks as template layers from Creator Studio"
-                        : "Add to a Modpack Maker layer"
-                    }
-                    disabled={h.content_type === "modpacks"}
-                  >
-                    Add to modpack
-                  </button>
-                  <button
-                    className="btn primary installAction"
-                    onClick={() =>
-                      openInstall({
-                        source: normalizeDiscoverSource(h.source),
-                        projectId: h.project_id,
-                        title: h.title,
-                        contentType:
-                          (h.content_type as DiscoverContentType) === "modpacks"
-                            ? "modpacks"
-                            : ((h.content_type as DiscoverContentType) ?? discoverContentType),
-                        iconUrl: h.icon_url,
-                        description: h.description,
-                        installSupported: githubResultInstallSupported(h),
-                        installNote: githubResultInstallNote(h),
-                      })
-                    }
-                    title={
-                      h.content_type === "modpacks"
-                        ? "Modpacks are imported as templates"
-                        : !githubResultInstallSupported(h)
-                          ? githubResultInstallNote(h) ?? "This provider result cannot be installed directly yet."
-                          : "Install to instance"
-                    }
-                    disabled={h.content_type === "modpacks" || !githubResultInstallSupported(h)}
-                  >
-                    <Icon name="download" /> {h.content_type === "modpacks" ? "Template only" : "Install"}
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {hits.length === 0 && !discoverBusy ? (
-              <div className="card" style={{ padding: 16, borderRadius: 22, color: "var(--muted)" }}>
-                No results.
-              </div>
-            ) : null}
-          </div>
-
-          <div className="pager">
-            <button
-              className="btn"
-              onClick={() => runSearch(Math.max(0, offset - limit))}
-              disabled={discoverBusy || offset === 0}
-            >
-              ← Prev
-            </button>
-            <div className="pagerLabel">
-              Page {page} / {pages}
-            </div>
-            <button
-              className="btn"
-              onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
-              disabled={discoverBusy || offset + limit >= totalHits}
-            >
-              Next →
-            </button>
-          </div>
-        </div>
+        <DiscoverRoute
+          {...{
+            discoverAddContext,
+        discoverAddTrayExpanded,
+        discoverAddTrayItems,
+        discoverAddTraySticky,
+        discoverAllVersions,
+        discoverBusy,
+        discoverContentType,
+        discoverErr,
+        discoverSources,
+        effectiveDiscoverSources,
+        filterCategories,
+        filterLoaders,
+        filterVersion,
+        groupedDiscoverVersions,
+        hits,
+        index,
+        instances,
+        limit,
+        offset,
+        openAddToModpack,
+        openCurseforgeProject,
+        openGithubProject,
+        openInstall,
+        openProject,
+        page,
+        pages,
+        q,
+        runSearch,
+        selectedId,
+        setDiscoverAddContext,
+        setDiscoverAddTrayExpanded,
+        setDiscoverAddTrayItems,
+        setDiscoverAddTraySticky,
+        setDiscoverAllVersions,
+        setDiscoverContentType,
+        setDiscoverErr,
+        setDiscoverSources,
+        setFilterCategories,
+        setFilterLoaders,
+        setFilterVersion,
+        setIndex,
+        setLimit,
+        setModpacksStudioTab,
+        setOffset,
+        setQ,
+        setRoute,
+        totalHits
+          }}
+        />
       );
     }
 
@@ -16459,7 +15031,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="card instPanel">
+              <div className={`card instPanel ${instanceTab === "content" ? "instPanelContent" : ""}`}>
                 {instanceTab === "content" ? (
                   <div className="instanceContentWrap">
                     <div className="instanceContentWorkspaceCard">
@@ -16671,6 +15243,7 @@ export default function App() {
                           )}
                         </div>
                       </div>
+
                     </div>
 
                     {updateErr ? <div className="errorBox" style={{ marginTop: 4 }}>{updateErr}</div> : null}
@@ -17609,9 +16182,10 @@ export default function App() {
                               </div>
                             ) : (
                               <div className="muted">Run Analyze to generate confidence notes.</div>
-                            )}
-                          </div>
-                        </div>
+                      )}
+                    </div>
+
+                  </div>
                       </div>
                     )}
                   </div>
@@ -18655,659 +17229,75 @@ export default function App() {
 
     if (route === "skins") {
       return (
-        <div className="page">
-          <div style={{ maxWidth: 1360 }}>
-            <div className="h1">Skins</div>
-            <div className="p">Manage skins and capes with live 3D preview.</div>
-
-            <div className="accountSkinsStudio accountSkinsStudioLibrary skinsRouteLayoutRef card">
-              <div className="accountSkinViewerPane">
-                <div className="accountSkinTitleRow">
-                  <div className="accountSkinHeading">Skins</div>
-                  <span className="accountSkinBeta">Beta</span>
-                </div>
-                <div className="accountSkinSub">Interactive 3D preview. Drag to rotate your player.</div>
-                <div className="accountSkinNamePlate" title={selectedLauncherAccount?.username ?? "No account connected"}>
-                  {selectedLauncherAccount?.username ?? "No account connected"}
-                </div>
-                <div
-                  ref={accountSkinViewerStageRef}
-                  className="accountSkinViewerStage"
-                  style={skinViewerShadowStyle}
-                >
-                  <canvas ref={accountSkinViewerCanvasRef} className="accountSkinViewerCanvas" />
-                  <div className="accountSkinViewerShadow" />
-                </div>
-                {skinViewerErr ? <div className="errorBox">{skinViewerErr}</div> : null}
-                <div className="accountSkinViewerHint">{skinViewerHintText}</div>
-                {!skinPreviewEnabled ? (
-                  <div className="row" style={{ marginTop: 8 }}>
-                    <button className="btn" onClick={() => setSkinPreviewEnabled(true)}>
-                      Enable 3D preview
-                    </button>
-                  </div>
-                ) : null}
-                <div className="accountSkinViewerActions">
-                  <button
-                    className="btn primary"
-                    onClick={() => void onApplySelectedAppearance()}
-                    disabled={accountAppearanceBusy || !selectedLauncherAccountId || !selectedAccountSkin}
-                  >
-                    {accountAppearanceBusy ? "Applying…" : "Apply skin & cape in-game"}
-                  </button>
-                  <button
-                    className="btn"
-                    onClick={onPlaySkinViewerEmote}
-                    disabled={!skinPreviewEnabled || skinViewerPreparing}
-                  >
-                    Play emote
-                  </button>
-                  <button className="btn" onClick={onCycleAccountCape} disabled={capeOptions.length <= 1}>
-                    Change cape
-                  </button>
-                  {selectedAccountSkin?.origin === "custom" ? (
-                    <button className="btn danger" onClick={onRemoveSelectedCustomSkin}>
-                      Remove skin
-                    </button>
-                  ) : null}
-                </div>
-                <div className="accountSkinViewerHint">
-                  Cape: {selectedAccountCape?.label ?? "No cape"}
-                </div>
-              </div>
-
-              <div className="accountSkinLibraryPane skinsLibraryPane skinsLibraryRef">
-                <div className="skinsRefHeadRow">
-                  <div className="skinsRefSectionTitle">Saved skins</div>
-                  <div className="skinsLibraryStats">
-                    <span className="chip subtle">{savedSkinOptions.length} saved</span>
-                    <span className="chip subtle">{defaultSkinOptions.length} default</span>
-                  </div>
-                </div>
-
-                <div className="skinsLibrarySelection skinsLibrarySelectionRef">
-                  <span className="chip">Selected</span>
-                  <strong>{selectedAccountSkin?.label ?? "None"}</strong>
-                  <span className="skinsLibrarySelectionMeta">
-                    {selectedAccountSkin?.origin === "custom"
-                      ? "Custom"
-                      : selectedAccountSkin?.origin === "profile"
-                        ? "Profile"
-                        : "Default"}
-                  </span>
-                  {selectedAccountSkin?.origin === "custom" ? (
-                    <div className="skinsLibraryRenameRow">
-                      <input
-                        className="input skinsLibraryRenameInput"
-                        value={skinRenameDraft}
-                        onChange={(event) => setSkinRenameDraft(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") {
-                            event.preventDefault();
-                            onRenameSelectedCustomSkin();
-                          }
-                        }}
-                        placeholder="Rename selected skin"
-                      />
-                      <button
-                        className="btn"
-                        onClick={onRenameSelectedCustomSkin}
-                        disabled={
-                          !skinRenameDraft.trim() ||
-                          skinRenameDraft.trim() === (selectedAccountSkin.label ?? "").trim()
-                        }
-                      >
-                        Rename
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="accountSkinCardGrid accountSkinCardGridSaved skinsRefSavedGrid">
-                  <button className="accountSkinAddCard accountSkinAddCardRef" onClick={onAddCustomSkin}>
-                    <span className="accountSkinAddPlus">+</span>
-                    <span>Add a skin</span>
-                  </button>
-                  {savedSkinOptions.map((skin) => {
-                    const active = selectedAccountSkin?.id === skin.id;
-                    const thumbSet = accountSkinThumbs[skin.id];
-                    const frontThumb =
-                      thumbSet?.front ??
-                      toLocalIconSrc(skin.preview_url) ??
-                      toLocalIconSrc(skin.skin_url) ??
-                      "";
-                    const backThumb = thumbSet?.back ?? frontThumb;
-                    return (
-                      <button
-                        key={skin.id}
-                        className={`accountSkinChoiceCard skinChoiceSaved skinChoiceSavedRef ${active ? "active" : ""}`}
-                        onClick={() => setSelectedAccountSkinId(skin.id)}
-                      >
-                        {active ? (
-                          <span className="accountSkinSelectedCheck" aria-hidden="true">
-                            <Icon name="check_circle" size={15} />
-                          </span>
-                        ) : null}
-                        <div className="accountSkinChoiceThumb">
-                          <div className="accountSkinChoiceThumbInner">
-                            <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
-                              {frontThumb ? (
-                                <img src={frontThumb} alt={`${skin.label} front preview`} />
-                              ) : (
-                                <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                              )}
-                            </div>
-                            <div className="accountSkinChoiceFace accountSkinChoiceFaceBack">
-                              {backThumb ? (
-                                <img src={backThumb} alt={`${skin.label} back preview`} />
-                              ) : (
-                                <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="accountSkinChoiceLabel">{skin.label}</div>
-                        <div className="accountSkinChoiceMeta">
-                          {skin.origin === "custom" ? "Custom" : "Profile"}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="skinsRefSectionTitle skinsRefDefaultTitle">Default skins</div>
-                <div className="accountSkinCardGrid accountSkinCardGridDefault skinsRefDefaultGrid">
-                  {defaultSkinOptions.map((skin) => {
-                    const active = selectedAccountSkin?.id === skin.id;
-                    const thumbSet = accountSkinThumbs[skin.id];
-                    const frontThumb =
-                      thumbSet?.front ??
-                      toLocalIconSrc(skin.preview_url) ??
-                      toLocalIconSrc(skin.skin_url) ??
-                      "";
-                    const backThumb = thumbSet?.back ?? frontThumb;
-                    return (
-                      <button
-                        key={skin.id}
-                        className={`accountSkinChoiceCard skinChoiceCompact skinChoiceCompactRef ${active ? "active" : ""}`}
-                        onClick={() => setSelectedAccountSkinId(skin.id)}
-                      >
-                        {active ? (
-                          <span className="accountSkinSelectedCheck" aria-hidden="true">
-                            <Icon name="check_circle" size={15} />
-                          </span>
-                        ) : null}
-                        <div className="accountSkinChoiceThumb">
-                          <div className="accountSkinChoiceThumbInner">
-                            <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
-                              {frontThumb ? (
-                                <img src={frontThumb} alt={`${skin.label} front preview`} />
-                              ) : (
-                                <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                              )}
-                            </div>
-                            <div className="accountSkinChoiceFace accountSkinChoiceFaceBack">
-                              {backThumb ? (
-                                <img src={backThumb} alt={`${skin.label} back preview`} />
-                              ) : (
-                                <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="accountSkinChoiceLabel">{skin.label}</div>
-                        <div className="accountSkinChoiceMeta">Default</div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <SkinsRoute
+          {...{
+            accountAppearanceBusy,
+        accountSkinThumbs,
+        accountSkinViewerCanvasRef,
+        accountSkinViewerStageRef,
+        capeOptions,
+        defaultSkinOptions,
+        onAddCustomSkin,
+        onApplySelectedAppearance,
+        onCycleAccountCape,
+        onPlaySkinViewerEmote,
+        onRemoveSelectedCustomSkin,
+        onRenameSelectedCustomSkin,
+        savedSkinOptions,
+        selectedAccountCape,
+        selectedAccountSkin,
+        selectedLauncherAccount,
+        selectedLauncherAccountId,
+        setSelectedAccountSkinId,
+        setSkinPreviewEnabled,
+        setSkinRenameDraft,
+        skinPreviewEnabled,
+        skinRenameDraft,
+        skinViewerErr,
+        skinViewerHintText,
+        skinViewerPreparing,
+        skinViewerShadowStyle,
+        toLocalIconSrc
+          }}
+        />
       );
     }
 
-    // Library (dashboard layout + custom context menu)
-    const loaderLabelFor = (inst: Instance) =>
-      inst.loader === "neoforge"
-        ? "NeoForge"
-        : inst.loader === "fabric"
-          ? "Fabric"
-          : inst.loader === "forge"
-            ? "Forge"
-            : inst.loader === "quilt"
-              ? "Quilt"
-              : "Vanilla";
-
-    const visibleInstances =
-      libraryScope === "downloaded"
-        ? []
-        : instances.filter((x) => x.name.toLowerCase().includes(libraryQuery.toLowerCase()));
-
-    const filtered = [...visibleInstances].sort((a, b) => {
-      if (librarySort === "name") {
-        return a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
-      }
-      const bTs = parseDateLike(b.created_at)?.getTime() ?? 0;
-      const aTs = parseDateLike(a.created_at)?.getTime() ?? 0;
-      return bTs - aTs;
-    });
-
-    const grouped = (() => {
-      if (libraryGroupBy === "none") {
-        return [{ key: "all", label: "All instances", items: filtered }];
-      }
-      const map = new Map<string, Instance[]>();
-      for (const inst of filtered) {
-        const key = libraryGroupBy === "loader" ? loaderLabelFor(inst) : inst.mc_version;
-        if (!map.has(key)) map.set(key, []);
-        map.get(key)!.push(inst);
-      }
-      return Array.from(map.entries()).map(([key, items]) => ({
-        key,
-        label: key,
-        items,
-      }));
-    })();
-
-    const runningIds = new Set(runningInstances.map((run) => run.instance_id));
-    const recentlyPlayed = [...instances]
-      .map((inst) => {
-        const lastLaunchAt = instanceLastRunMetadataById[inst.id]?.lastLaunchAt ?? inst.created_at;
-        return { inst, lastLaunchAtMs: parseDateLike(lastLaunchAt)?.getTime() ?? 0 };
-      })
-      .sort((a, b) => b.lastLaunchAtMs - a.lastLaunchAtMs)
-      .slice(0, 3);
-    const knownModsTotal = Object.entries(instanceModCountById)
-      .filter(([instanceId, count]) => instances.some((item) => item.id === instanceId) && Number.isFinite(count))
-      .reduce((sum, [, count]) => sum + Math.max(0, Number(count ?? 0)), 0);
-    const libraryStorageDisplay = storageOverview
-      ? formatBytes(Number(storageOverview.total_bytes ?? 0))
-      : storageOverviewError
-        ? "Unavailable"
-        : "Scanning…";
-    const storageOverviewWarnings = storageOverview?.warnings ?? [];
-    const needsLibraryGrowthPrompt = instances.length < 3;
-    const totalRunningCount = runningInstances.length;
-    const customInstancesCount = instances.length;
-    const recentInstanceCreatedAt = filtered[0]?.created_at ?? null;
-
     return (
-      <div className="page">
-        <div className="libraryLayout">
-          <section className="libraryMainPane">
-            <div className="card libraryHeroCard">
-              <div className="libraryHeroHead">
-                <div className="libraryHeroMain">
-                  <div className="libraryHeroEyebrow">Instance library</div>
-                  <div className="libraryHeroTitle">Library</div>
-                  <div className="libraryHeroSub">
-                    Open an instance to manage content, settings, worlds, and launch state.
-                  </div>
-                </div>
-
-                <div className="libraryHeroActions">
-                  <button className="btn primary" onClick={() => setShowCreate(true)}>
-                    <span className="btnIcon">
-                      <Icon name="plus" size={18} className="navIcon plusIcon navAnimPlus" />
-                    </span>
-                    Create new instance
-                  </button>
-                </div>
-              </div>
-
-              <div className="libraryHeroStats">
-                <div className="libraryHeroStat">
-                  <div className="libraryHeroStatLabel">Instances</div>
-                  <div className="libraryHeroStatValue">{instances.length}</div>
-                  <div className="libraryHeroStatMeta">
-                    {customInstancesCount} custom instance{customInstancesCount === 1 ? "" : "s"}
-                  </div>
-                </div>
-                <div className="libraryHeroStat">
-                  <div className="libraryHeroStatLabel">Running</div>
-                  <div className="libraryHeroStatValue">{totalRunningCount}</div>
-                  <div className="libraryHeroStatMeta">
-                    {totalRunningCount === 0 ? "Nothing active right now" : "Minecraft currently in progress"}
-                  </div>
-                </div>
-                <div className="libraryHeroStat">
-                  <div className="libraryHeroStatLabel">Known mods</div>
-                  <div className="libraryHeroStatValue">{knownModsTotal.toLocaleString()}</div>
-                  <div className="libraryHeroStatMeta">
-                    Tracked across every visible instance
-                  </div>
-                </div>
-                <div className="libraryHeroStat">
-                  <div className="libraryHeroStatLabel">Newest</div>
-                  <div className="libraryHeroStatValue">
-                    {recentInstanceCreatedAt ? formatDate(recentInstanceCreatedAt) : "None"}
-                  </div>
-                  <div className="libraryHeroStatMeta">
-                    Most recently created instance
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <>
-                {!selectedLauncherAccount ? (
-                  <div className="libraryStatusBanner card">
-                    <div className="libraryStatusTitle">Sign in to Microsoft</div>
-                    <div className="libraryStatusText">
-                      Connect your Minecraft account to launch with the native launcher.
-                    </div>
-                    <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                      {msLoginSessionId ? "Waiting for login..." : "Connect account"}
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="libraryTopRow">
-                  <div className="libraryPrimaryControls">
-                    <SegmentedControl
-                      value={libraryScope}
-                      onChange={(v) => setLibraryScope(v as any)}
-                      options={[
-                        { label: "All instances", value: "all" },
-                        { label: "Downloaded", value: "downloaded" },
-                        { label: "Custom", value: "custom" },
-                      ]}
-                    />
-
-                    <div className="librarySearch">
-                      <Icon name="search" size={18} />
-                      <input
-                        className="input"
-                        placeholder="Search instances..."
-                        value={libraryQuery}
-                        onChange={(e) => setLibraryQuery(e.target.value)}
-                      />
-                      {libraryQuery && (
-                        <button className="iconBtn" onClick={() => setLibraryQuery("")} aria-label="Clear">
-                          <Icon name="x" size={18} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="libraryRight">
-                    <MenuSelect
-                      value={librarySort}
-                      labelPrefix="Sort"
-                      onChange={(v) => setLibrarySort(v as "recent" | "name")}
-                      options={[
-                        { value: "recent", label: "Recently created" },
-                        { value: "name", label: "Name" },
-                      ]}
-                      align="start"
-                    />
-                    <MenuSelect
-                      value={libraryGroupBy}
-                      labelPrefix="Group"
-                      onChange={(v) => setLibraryGroupBy(v as LibraryGroupBy)}
-                      options={[
-                        { value: "none", label: "None" },
-                        { value: "loader", label: "Loader" },
-                        { value: "version", label: "Game version" },
-                      ]}
-                      align="start"
-                    />
-                  </div>
-                </div>
-
-                {libraryScope === "downloaded" ? (
-              <div className="card" style={{ marginTop: 12 }}>
-                <div className="emptyState">
-                  <div className="emptyTitle">No downloaded instances yet</div>
-                  <div className="emptySub">
-                    Later, installed Modrinth modpacks will appear here. For now, create a custom
-                    instance.
-                  </div>
-                </div>
-              </div>
-                ) : filtered.length === 0 ? (
-              <div className="card" style={{ marginTop: 12 }}>
-                <div className="emptyState">
-                  <div className="emptyTitle">No instances found</div>
-                  <div className="emptySub">
-                    Create an instance to start managing mods and versions.
-                  </div>
-                  <div style={{ marginTop: 12 }}>
-                    <button className="btn primary" onClick={() => setShowCreate(true)}>
-                      <span className="btnIcon">
-                        <Icon name="plus" size={18} className="navIcon plusIcon navAnimPlus" />
-                      </span>
-                      Create new instance
-                    </button>
-                  </div>
-                </div>
-              </div>
-                ) : (
-              <div className="libraryGroupList">
-                {grouped.map((group) => (
-                  <section key={group.key} className="libraryGroupSection">
-                    {libraryGroupBy !== "none" ? (
-                      <div className="libraryGroupHeader">
-                        <div>{group.label}</div>
-                        <div className="chip subtle">{group.items.length}</div>
-                      </div>
-                    ) : null}
-                    <div className="libraryGrid">
-                      {group.items.map((inst) => {
-                        const active = inst.id === selectedId;
-                        const loaderLabel = loaderLabelFor(inst);
-                        const isRunning = runningIds.has(inst.id);
-                        const runningLaunch = runningInstances.find((run) => run.instance_id === inst.id) ?? null;
-                        const launchStage = launchStageByInstance[inst.id] ?? null;
-                        const launchStageLabel = launchStage?.label?.trim() || launchStageBadgeLabel(
-                          launchStage?.status,
-                          launchStage?.message
-                        );
-                        const instanceModCount = Number(instanceModCountById[inst.id] ?? 0);
-                        const createdLabel = formatDate(inst.created_at);
-                        return (
-                          <article
-                            key={inst.id}
-                            className={`instCard ${active ? "active" : ""} ${isRunning ? "running" : ""}`}
-                            onClick={() => openInstance(inst.id)}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setLibraryContextMenu({
-                                instanceId: inst.id,
-                                x: event.clientX,
-                                y: event.clientY,
-                              });
-                            }}
-                          >
-                            <div className="instCardHead">
-                              <div className="instCardIcon">
-                                {inst.icon_path ? (
-                                  <LocalImage path={inst.icon_path} alt="" fallback={<Icon name="box" size={19} />} />
-                                ) : (
-                                  <Icon name="box" size={19} />
-                                )}
-                              </div>
-                              <div className="instCardHeadText">
-                                <div className="instCardTitle">{inst.name}</div>
-                                <div className="instCardSub">
-                                  {loaderLabel} · Minecraft {inst.mc_version}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="instCardMeta">
-                              <span className="chip">{loaderLabel}</span>
-                              <span className="chip">{inst.mc_version}</span>
-                              <span className="chip subtle">{instanceModCount} mod{instanceModCount === 1 ? "" : "s"}</span>
-                              <span className="chip subtle">Created {createdLabel}</span>
-                              {isRunning ? <span className="chip">Running</span> : null}
-                              {!isRunning && launchStageLabel ? (
-                                <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
-                              ) : null}
-                            </div>
-
-                            <div className="instCardActions" onClick={(event) => event.stopPropagation()}>
-                              {runningLaunch ? (
-                                <button className="btn" onClick={() => onStopRunning(runningLaunch.launch_id)}>
-                                  Stop
-                                </button>
-                              ) : (
-                                <button
-                                  className={`btn ${launchBusyInstanceIds.includes(inst.id) ? "danger" : "primary"}`}
-                                  onClick={() => onPlayInstance(inst)}
-                                  disabled={launchCancelBusyInstanceId === inst.id}
-                                >
-                                  <Icon name={launchBusyInstanceIds.includes(inst.id) ? "x" : "play"} size={16} />
-                                  {launchBusyInstanceIds.includes(inst.id)
-                                    ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel launch")
-                                    : "Play"}
-                                </button>
-                              )}
-                              <button className="btn" onClick={() => openInstance(inst.id)}>
-                                View instance
-                              </button>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </section>
-                ))}
-              </div>
-                )}
-              </>
-          </section>
-
-          <aside className="librarySidePane">
-            <div className="card librarySideCard">
-              <div className="librarySideTitle">Instances running</div>
-              <div className="libraryRunCount">{runningInstances.length}</div>
-              {runningInstances.length === 0 ? (
-                <div className="compactEmptyState">
-                  <span className="compactEmptyIcon" aria-hidden="true">
-                    <Icon name="play" size={15} />
-                  </span>
-                  <div className="compactEmptyBody">
-                    <div className="compactEmptyTitle">Nothing running right now</div>
-                    <div className="compactEmptyText">Hit Play on any instance to launch Minecraft.</div>
-                  </div>
-                </div>
-              ) : (
-                <div className="libraryRunList">
-                  {runningInstances.slice(0, 5).map((run) => (
-                    <div key={run.launch_id} className="libraryRunRow">
-                      <span>{run.instance_name}</span>
-                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                        <span className="chip subtle">{run.method}</span>
-                        {run.isolated ? <span className="chip subtle">Disposable</span> : null}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <div className="card librarySideCard">
-              <div className="librarySideTitle">Recently played</div>
-              {recentlyPlayed.length === 0 ? (
-                <div className="muted">No launch history yet.</div>
-              ) : (
-                <div className="libraryRecentList">
-                  {recentlyPlayed.map((row) => (
-                    <button
-                      key={row.inst.id}
-                      className="libraryRecentRow"
-                      onClick={() => openInstance(row.inst.id)}
-                      title={formatDateTime(row.inst.created_at, "Unknown time")}
-                    >
-                      <span className="libraryRecentName">{row.inst.name}</span>
-                      <span className="libraryRecentMeta">{relativeTimeFromMs(row.lastLaunchAtMs)}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <button
-              className="card librarySideCard libraryStorageCard"
-              onClick={() => openStorageManager("overview")}
-              type="button"
-            >
-              <div className="libraryStorageCardMain">
-                <div className="librarySideTitle">Storage usage</div>
-                <div className="libraryStorageStat">{libraryStorageDisplay}</div>
-                <div className="muted">
-                  {storageOverviewError
-                    ? "Storage scan failed. Open the manager for details."
-                    : storageOverviewBusy && !storageOverview
-                    ? "Scanning launcher + instance storage…"
-                    : `${knownModsTotal.toLocaleString()} total mods across ${instances.length} instance${instances.length === 1 ? "" : "s"}.`}
-                </div>
-              </div>
-              <div className="libraryStorageCardMeta">
-                {storageOverview ? (
-                  <>
-                    <span className="chip subtle">Reclaimable {formatBytes(storageOverview.reclaimable_bytes)}</span>
-                    {storageOverviewWarnings.length > 0 ? (
-                      <span className="chip subtle">{storageOverviewWarnings.length} warning{storageOverviewWarnings.length === 1 ? "" : "s"}</span>
-                    ) : null}
-                  </>
-                ) : (
-                  <span className="chip subtle">{storageOverviewBusy ? "Scanning…" : "Open manager"}</span>
-                )}
-              </div>
-            </button>
-
-            {needsLibraryGrowthPrompt ? (
-              <div className="card librarySideCard libraryPromptCard">
-                <div className="librarySideTitle">Create your next instance</div>
-                <div className="muted">
-                  Try a Vanilla profile, a Fabric performance build, or a Creator Studio test instance.
-                </div>
-                <button className="btn primary" onClick={() => setShowCreate(true)}>
-                  <Icon name="plus" size={16} />
-                  Create instance
-                </button>
-              </div>
-            ) : null}
-
-            <div className="card librarySideCard">
-              <div className="librarySideTitle">Playing as</div>
-              {selectedLauncherAccount ? (
-                <>
-                  <div className="libraryAccountName">{selectedLauncherAccount.username}</div>
-                  <div className="libraryAccountId muted">{selectedLauncherAccount.id}</div>
-                  <div className="row" style={{ marginTop: 10 }}>
-                    <button className="btn" onClick={() => setRoute("account")}>
-                      Account page
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="muted">No Minecraft account connected.</div>
-                  <div className="row" style={{ marginTop: 10 }}>
-                    <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                      {msLoginSessionId ? "Waiting..." : "Sign in"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div className="card librarySideCard">
-              <div className="librarySideTitle">Quick actions</div>
-              <div className="libraryQuickActions">
-                <button className="btn" onClick={() => setRoute("discover")}>Discover mods</button>
-                <button className="btn primary" onClick={() => setShowCreate(true)}>Create instance</button>
-              </div>
-            </div>
-          </aside>
-        </div>
-      </div>
+      <LibraryRoute
+        {...{
+          instanceLastRunMetadataById,
+          instanceModCountById,
+          instances,
+          launchBusyInstanceIds,
+          launchCancelBusyInstanceId,
+          launchStageByInstance,
+          launcherBusy,
+          libraryGroupBy,
+          libraryQuery,
+          libraryScope,
+          librarySort,
+          msLoginSessionId,
+          onBeginMicrosoftLogin,
+          onPlayInstance,
+          onStopRunning,
+          openInstance,
+          openStorageManager,
+          runningInstances,
+          selectedId,
+          selectedLauncherAccount,
+          setLibraryContextMenu,
+          setLibraryGroupBy,
+          setLibraryQuery,
+          setLibraryScope,
+          setLibrarySort,
+          setRoute,
+          setShowCreate,
+          storageOverview,
+          storageOverviewBusy,
+          storageOverviewError
+        }}
+      />
     );
   }
 

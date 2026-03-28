@@ -30,7 +30,18 @@ mod friend_link;
 mod modpack;
 mod permissions;
 pub(crate) mod run_reports;
-pub(crate) use commands::import_provider_modpack_template;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+pub(crate) use commands::*;
+#[cfg(test)]
+pub(crate) use test_support::{
+    clear_test_token_keyring_store, runtime_refresh_token_cache_clear,
+    set_test_token_keyring_available, set_test_token_keyring_read_failure,
+    test_secure_storage_guard, token_keyring_delete_secret, token_keyring_get_secret,
+    token_keyring_set_secret,
+};
 
 const USER_AGENT: &str = "OpenJarLauncher/0.1.6 (Tauri)";
 const KEYRING_SERVICE: &str = "OpenJar Launcher";
@@ -214,13 +225,6 @@ fn runtime_refresh_token_cache_get(account_id: &str) -> Option<String> {
 fn runtime_refresh_token_cache_delete(account_id: &str) {
     if let Ok(mut guard) = runtime_refresh_token_cache().lock() {
         guard.remove(account_id.trim());
-    }
-}
-
-#[cfg(test)]
-fn runtime_refresh_token_cache_clear() {
-    if let Ok(mut guard) = runtime_refresh_token_cache().lock() {
-        guard.clear();
     }
 }
 
@@ -715,6 +719,8 @@ fn parse_github_release_id(raw: &str) -> Option<u64> {
 struct Instance {
     id: String,
     name: String,
+    #[serde(default = "default_instance_origin")]
+    origin: String,
     #[serde(default)]
     folder_name: Option<String>,
     mc_version: String,
@@ -3142,7 +3148,11 @@ fn format_storage_size_label(bytes: u64) -> String {
         value /= 1024.0;
         unit_idx += 1;
     }
-    let digits = if value >= 100.0 || unit_idx == 0 { 0 } else { 1 };
+    let digits = if value >= 100.0 || unit_idx == 0 {
+        0
+    } else {
+        1
+    };
     format!("{value:.digits$} {}", units[unit_idx], digits = digits)
 }
 
@@ -3321,13 +3331,15 @@ fn storage_summary_for_instance(
         } else {
             0
         };
-        *buckets.entry(bucket).or_insert(0) =
-            buckets.get(bucket).copied().unwrap_or(0).saturating_add(size);
+        *buckets.entry(bucket).or_insert(0) = buckets
+            .get(bucket)
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(size);
     }
 
     let settings = normalize_instance_settings(inst.settings.clone());
-    let runtime_sessions =
-        buckets.get("runtime_sessions").copied().unwrap_or(0);
+    let runtime_sessions = buckets.get("runtime_sessions").copied().unwrap_or(0);
     let reclaimable_runtime = storage_stale_runtime_session_targets(
         &instance_dir,
         Duration::from_secs(STALE_RUNTIME_SESSION_MAX_AGE_HOURS * 3600),
@@ -3468,7 +3480,9 @@ fn storage_stale_runtime_session_targets(
     Ok(targets)
 }
 
-fn storage_app_breakdown(launcher_dir: &Path) -> Result<(u64, u64, Vec<StorageBucketTotal>), String> {
+fn storage_app_breakdown(
+    launcher_dir: &Path,
+) -> Result<(u64, u64, Vec<StorageBucketTotal>), String> {
     if !launcher_dir.exists() {
         return Ok((
             0,
@@ -3496,8 +3510,12 @@ fn storage_app_breakdown(launcher_dir: &Path) -> Result<(u64, u64, Vec<StorageBu
 
     let mut launcher_metadata = 0u64;
     let mut other_launcher = 0u64;
-    let entries = fs::read_dir(launcher_dir)
-        .map_err(|e| format!("read launcher storage '{}' failed: {e}", launcher_dir.display()))?;
+    let entries = fs::read_dir(launcher_dir).map_err(|e| {
+        format!(
+            "read launcher storage '{}' failed: {e}",
+            launcher_dir.display()
+        )
+    })?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read launcher storage entry failed: {e}"))?;
         let name = entry.file_name().to_string_lossy().to_string();
@@ -3547,7 +3565,9 @@ fn storage_recommendations_for_overview(
         out.push(StorageCleanupRecommendation {
             action_id: STORAGE_ACTION_CLEAR_SHARED_CACHE.to_string(),
             title: "Clear shared cache".to_string(),
-            description: "Remove cached launcher downloads and metadata that OpenJar can rebuild later.".to_string(),
+            description:
+                "Remove cached launcher downloads and metadata that OpenJar can rebuild later."
+                    .to_string(),
             scope: "cache".to_string(),
             reclaimable_bytes: shared_cache_bytes,
             item_count: 1,
@@ -3556,9 +3576,14 @@ fn storage_recommendations_for_overview(
     for summary in instance_summaries {
         if summary.reclaimable_runtime_sessions > 0 {
             out.push(StorageCleanupRecommendation {
-                action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS, summary.instance_id),
+                action_id: format!(
+                    "{}:{}",
+                    STORAGE_ACTION_PRUNE_RUNTIME_SESSIONS, summary.instance_id
+                ),
                 title: format!("Clean stale runtime sessions for {}", summary.instance_name),
-                description: "Remove old disposable runtime copies left behind by previous launches.".to_string(),
+                description:
+                    "Remove old disposable runtime copies left behind by previous launches."
+                        .to_string(),
                 scope: format!("instance:{}", summary.instance_id),
                 reclaimable_bytes: summary.reclaimable_runtime_sessions,
                 item_count: 1,
@@ -3568,7 +3593,9 @@ fn storage_recommendations_for_overview(
             out.push(StorageCleanupRecommendation {
                 action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_SNAPSHOTS, summary.instance_id),
                 title: format!("Prune old snapshots for {}", summary.instance_name),
-                description: "Delete snapshots that exceed the instance retention count or max-age.".to_string(),
+                description:
+                    "Delete snapshots that exceed the instance retention count or max-age."
+                        .to_string(),
                 scope: format!("instance:{}", summary.instance_id),
                 reclaimable_bytes: summary.reclaimable_snapshots,
                 item_count: 1,
@@ -3576,9 +3603,13 @@ fn storage_recommendations_for_overview(
         }
         if summary.reclaimable_world_backups > 0 {
             out.push(StorageCleanupRecommendation {
-                action_id: format!("{}:{}", STORAGE_ACTION_PRUNE_WORLD_BACKUPS, summary.instance_id),
+                action_id: format!(
+                    "{}:{}",
+                    STORAGE_ACTION_PRUNE_WORLD_BACKUPS, summary.instance_id
+                ),
                 title: format!("Prune old world backups for {}", summary.instance_name),
-                description: "Trim world backups that exceed the instance retention count.".to_string(),
+                description: "Trim world backups that exceed the instance retention count."
+                    .to_string(),
                 scope: format!("instance:{}", summary.instance_id),
                 reclaimable_bytes: summary.reclaimable_world_backups,
                 item_count: 1,
@@ -3630,9 +3661,11 @@ fn scan_storage_usage_overview(app: &tauri::AppHandle) -> StorageUsageOverview {
     }
 
     instance_summaries.sort_by(|a, b| {
-        b.total_bytes
-            .cmp(&a.total_bytes)
-            .then_with(|| a.instance_name.to_lowercase().cmp(&b.instance_name.to_lowercase()))
+        b.total_bytes.cmp(&a.total_bytes).then_with(|| {
+            a.instance_name
+                .to_lowercase()
+                .cmp(&b.instance_name.to_lowercase())
+        })
     });
     let instances_bytes = instance_summaries
         .iter()
@@ -3833,9 +3866,11 @@ fn storage_collect_file_entries(
         }
     }
     out.sort_by(|a, b| {
-        b.bytes
-            .cmp(&a.bytes)
-            .then_with(|| a.relative_path.to_lowercase().cmp(&b.relative_path.to_lowercase()))
+        b.bytes.cmp(&a.bytes).then_with(|| {
+            a.relative_path
+                .to_lowercase()
+                .cmp(&b.relative_path.to_lowercase())
+        })
     });
     out.truncate(limit);
     Ok(out)
@@ -4265,11 +4300,27 @@ fn read_index(instances_dir: &Path) -> Result<InstanceIndex, String> {
         return Ok(InstanceIndex::default());
     }
     let s = fs::read_to_string(&p).map_err(|e| format!("read index failed: {e}"))?;
-    serde_json::from_str(&s).map_err(|e| format!("parse index failed: {e}"))
+    let mut idx: InstanceIndex =
+        serde_json::from_str(&s).map_err(|e| format!("parse index failed: {e}"))?;
+    for instance in &mut idx.instances {
+        instance.origin = normalize_instance_origin(&instance.origin);
+    }
+    Ok(idx)
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_instance_origin() -> String {
+    "custom".to_string()
+}
+
+fn normalize_instance_origin(input: &str) -> String {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "downloaded" => "downloaded".to_string(),
+        _ => "custom".to_string(),
+    }
 }
 
 fn default_memory_mb() -> u32 {
@@ -6537,7 +6588,9 @@ fn parse_manifest_metadata_hint(raw: &str) -> LocalMetadataHint {
             "GitHub-Repo",
         ]
         .iter()
-        .find_map(|key| parse_colon_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value)))
+        .find_map(|key| {
+            parse_colon_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value))
+        })
         .or_else(|| extract_github_repo_slug(raw)),
     }
 }
@@ -6549,10 +6602,18 @@ fn parse_properties_metadata_hint(raw: &str) -> LocalMetadataHint {
             .map(|value| normalize_hint_token(&value))
             .filter(|value| !value.is_empty()),
         display_name_hint: parse_toml_assignment(raw, "name"),
-        github_repo_hint: ["url", "homepage", "scm.url", "scm.connection", "scmConnection"]
-            .iter()
-            .find_map(|key| parse_toml_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value)))
-            .or_else(|| extract_github_repo_slug(raw)),
+        github_repo_hint: [
+            "url",
+            "homepage",
+            "scm.url",
+            "scm.connection",
+            "scmConnection",
+        ]
+        .iter()
+        .find_map(|key| {
+            parse_toml_assignment(raw, key).and_then(|value| extract_github_repo_slug(&value))
+        })
+        .or_else(|| extract_github_repo_slug(raw)),
     }
 }
 
@@ -6702,7 +6763,10 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
         }
     }
 
-    if merged.project_hint.is_none() || merged.display_name_hint.is_none() || merged.github_repo_hint.is_none() {
+    if merged.project_hint.is_none()
+        || merged.display_name_hint.is_none()
+        || merged.github_repo_hint.is_none()
+    {
         for idx in 0..archive.len() {
             let mut file = match archive.by_index(idx) {
                 Ok(file) => file,
@@ -6725,15 +6789,16 @@ fn parse_mod_metadata_hint_from_jar(file_bytes: &[u8]) -> Option<LocalMetadataHi
             if file.read_to_string(&mut raw).is_err() || raw.trim().is_empty() {
                 continue;
             }
-            let hint = if entry_name.ends_with("pom.properties") || entry_name.ends_with(".properties") {
-                parse_properties_metadata_hint(&raw)
-            } else if entry_name.ends_with("pom.xml") {
-                parse_pom_xml_metadata_hint(&raw)
-            } else if entry_name.ends_with(".mf") {
-                parse_manifest_metadata_hint(&raw)
-            } else {
-                parse_generic_text_metadata_hint(&raw)
-            };
+            let hint =
+                if entry_name.ends_with("pom.properties") || entry_name.ends_with(".properties") {
+                    parse_properties_metadata_hint(&raw)
+                } else if entry_name.ends_with("pom.xml") {
+                    parse_pom_xml_metadata_hint(&raw)
+                } else if entry_name.ends_with(".mf") {
+                    parse_manifest_metadata_hint(&raw)
+                } else {
+                    parse_generic_text_metadata_hint(&raw)
+                };
             merge_local_metadata_hint(&mut merged, hint);
             if merged.project_hint.is_some()
                 && merged.display_name_hint.is_some()
@@ -7939,167 +8004,6 @@ fn select_preferred_provider_match<'a>(
     })
 }
 
-#[cfg(test)]
-mod local_provider_preference_tests {
-    use super::*;
-
-    fn sample_match(source: &str, confidence: &str, project: &str) -> LocalImportedProviderMatch {
-        LocalImportedProviderMatch {
-            source: source.to_string(),
-            project_id: project.to_string(),
-            version_id: "v1".to_string(),
-            name: "Sample".to_string(),
-            version_number: "1.0.0".to_string(),
-            hashes: HashMap::new(),
-            confidence: confidence.to_string(),
-            reason: "test".to_string(),
-            verification_status: "verified".to_string(),
-        }
-    }
-
-    #[test]
-    fn select_preferred_provider_match_prefers_modrinth_on_tie() {
-        let matches = vec![
-            sample_match("curseforge", "high", "cf:123"),
-            sample_match("modrinth", "high", "mr:abc"),
-        ];
-        let selected = select_preferred_provider_match(&matches, None).expect("selected match");
-        assert_eq!(selected.source, "modrinth");
-    }
-
-    #[test]
-    fn to_provider_candidates_keeps_modrinth_first_on_tie() {
-        let deduped = dedupe_provider_matches(vec![
-            sample_match("curseforge", "high", "cf:123"),
-            sample_match("modrinth", "high", "mr:abc"),
-        ]);
-        let candidates = to_provider_candidates(&deduped);
-        assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0].source, "modrinth");
-        assert_eq!(candidates[1].source, "curseforge");
-    }
-
-    #[test]
-    fn provider_match_auto_activation_blocks_medium_github() {
-        let github_medium = sample_match("github", "medium", "owner/repo");
-        let github_high = sample_match("github", "high", "owner/repo");
-        let modrinth_high = sample_match("modrinth", "high", "mr:test");
-        assert!(!provider_match_is_auto_activatable(&github_medium));
-        assert!(provider_match_is_auto_activatable(&github_high));
-        assert!(provider_match_is_auto_activatable(&modrinth_high));
-    }
-
-    #[test]
-    fn provider_match_auto_activation_allows_manual_unverified_direct_repo_hint() {
-        let github_manual = LocalImportedProviderMatch {
-            source: "github".to_string(),
-            project_id: "gh:example/repo".to_string(),
-            version_id: "gh_repo_unverified".to_string(),
-            name: "Example".to_string(),
-            version_number: "unverified".to_string(),
-            hashes: HashMap::new(),
-            confidence: "manual".to_string(),
-            reason: "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached).".to_string(),
-            verification_status: "manual_unverified".to_string(),
-        };
-        assert!(provider_match_is_auto_activatable(&github_manual));
-    }
-
-    #[test]
-    fn compact_provider_candidates_dedupes_same_source_project() {
-        let compacted = compact_provider_candidates(vec![
-            ProviderCandidate {
-                source: "github".to_string(),
-                project_id: "gh:example/repo".to_string(),
-                version_id: "gh_repo_unverified".to_string(),
-                name: "Example Repo".to_string(),
-                version_number: "unverified".to_string(),
-                confidence: Some("manual".to_string()),
-                reason: Some("manual".to_string()),
-                verification_status: Some("manual_unverified".to_string()),
-            },
-            ProviderCandidate {
-                source: "github".to_string(),
-                project_id: "gh:example/repo".to_string(),
-                version_id: "gh_release:42".to_string(),
-                name: "Example Repo".to_string(),
-                version_number: "v1.2.3".to_string(),
-                confidence: Some("high".to_string()),
-                reason: Some("verified".to_string()),
-                verification_status: Some("verified".to_string()),
-            },
-        ]);
-        assert_eq!(compacted.len(), 1);
-        assert_eq!(compacted[0].version_id, "gh_release:42");
-    }
-
-    #[test]
-    fn effective_updatable_provider_allows_safe_local_github_candidate() {
-        let entry = LockEntry {
-            source: "local".to_string(),
-            project_id: "local:mods:test.jar".to_string(),
-            version_id: "local_1".to_string(),
-            name: "Test".to_string(),
-            version_number: "local-file".to_string(),
-            filename: "test.jar".to_string(),
-            content_type: "mods".to_string(),
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
-            pinned_version: None,
-            enabled: true,
-            hashes: HashMap::new(),
-            provider_candidates: vec![ProviderCandidate {
-                source: "github".to_string(),
-                project_id: "gh:example/repo".to_string(),
-                version_id: "gh_release:7".to_string(),
-                name: "Example Repo".to_string(),
-                version_number: "v1.0.0".to_string(),
-                confidence: Some("high".to_string()),
-                reason: Some("verified".to_string()),
-                verification_status: Some("verified".to_string()),
-            }],
-            local_analysis: None,
-        };
-        let effective = effective_updatable_provider_for_entry(&entry, UpdateScope::AllContent)
-            .expect("effective provider");
-        assert_eq!(effective.source.to_ascii_lowercase(), "github");
-        assert_eq!(effective.project_id, "gh:example/repo");
-    }
-
-    #[test]
-    fn effective_updatable_provider_blocks_weak_local_github_candidate() {
-        let entry = LockEntry {
-            source: "local".to_string(),
-            project_id: "local:mods:test.jar".to_string(),
-            version_id: "local_1".to_string(),
-            name: "Test".to_string(),
-            version_number: "local-file".to_string(),
-            filename: "test.jar".to_string(),
-            content_type: "mods".to_string(),
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
-            pinned_version: None,
-            enabled: true,
-            hashes: HashMap::new(),
-            provider_candidates: vec![ProviderCandidate {
-                source: "github".to_string(),
-                project_id: "gh:example/repo".to_string(),
-                version_id: "gh_repo_unverified".to_string(),
-                name: "Example Repo".to_string(),
-                version_number: "unverified".to_string(),
-                confidence: Some("manual".to_string()),
-                reason: Some(
-                    "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
-                        .to_string(),
-                ),
-                verification_status: Some("manual_unverified".to_string()),
-            }],
-            local_analysis: None,
-        };
-        assert!(effective_updatable_provider_for_entry(&entry, UpdateScope::AllContent).is_none());
-    }
-}
-
 fn to_provider_candidates(matches: &[LocalImportedProviderMatch]) -> Vec<ProviderCandidate> {
     compact_provider_candidates(matches.iter().map(|item| item.to_provider_candidate()))
 }
@@ -8316,9 +8220,18 @@ fn lock_entry_provider_candidates(entry: &LockEntry) -> Vec<ProviderCandidate> {
             confidence: None,
             reason: None,
             verification_status: if source == "github" {
-                if entry.version_id.trim().to_ascii_lowercase().starts_with("gh_release:") {
+                if entry
+                    .version_id
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("gh_release:")
+                {
                     Some("verified".to_string())
-                } else if entry.version_id.trim().eq_ignore_ascii_case("gh_repo_unverified") {
+                } else if entry
+                    .version_id
+                    .trim()
+                    .eq_ignore_ascii_case("gh_repo_unverified")
+                {
                     Some("manual_unverified".to_string())
                 } else {
                     None
@@ -9520,80 +9433,6 @@ fn keyring_error_with_action(operation: &str, error: &KeyringError) -> String {
     }
 }
 
-#[cfg(test)]
-fn test_token_keyring_store() -> &'static Mutex<HashMap<(String, String), String>> {
-    use std::sync::OnceLock;
-    static STORE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
-    STORE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[cfg(test)]
-fn test_token_keyring_available_flag() -> &'static std::sync::atomic::AtomicBool {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::OnceLock;
-    static AVAILABLE: OnceLock<AtomicBool> = OnceLock::new();
-    AVAILABLE.get_or_init(|| AtomicBool::new(true))
-}
-
-#[cfg(test)]
-fn test_token_keyring_read_fail_services() -> &'static Mutex<HashSet<String>> {
-    use std::sync::OnceLock;
-    static SERVICES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    SERVICES.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-#[cfg(test)]
-fn test_token_keyring_available() -> bool {
-    use std::sync::atomic::Ordering;
-    test_token_keyring_available_flag().load(Ordering::SeqCst)
-}
-
-#[cfg(test)]
-fn set_test_token_keyring_available(value: bool) {
-    use std::sync::atomic::Ordering;
-    test_token_keyring_available_flag().store(value, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-fn set_test_token_keyring_read_failure(service: &str, should_fail: bool) {
-    if let Ok(mut guard) = test_token_keyring_read_fail_services().lock() {
-        if should_fail {
-            guard.insert(service.to_string());
-        } else {
-            guard.remove(service);
-        }
-    }
-}
-
-#[cfg(test)]
-fn clear_test_token_keyring_store() {
-    if let Ok(mut guard) = test_token_keyring_store().lock() {
-        guard.clear();
-    }
-    if let Ok(mut guard) = test_token_keyring_read_fail_services().lock() {
-        guard.clear();
-    }
-    runtime_refresh_token_cache_clear();
-}
-
-#[cfg(test)]
-fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
-    if !test_token_keyring_available() {
-        return Err(format!(
-            "keyring write failed: {}",
-            keyring_unavailable_hint()
-        ));
-    }
-    let mut guard = test_token_keyring_store()
-        .lock()
-        .map_err(|_| "test keyring lock failed".to_string())?;
-    guard.insert(
-        (service.to_string(), username.to_string()),
-        secret.to_string(),
-    );
-    Ok(())
-}
-
 #[cfg(not(test))]
 fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
     let entry = KeyringEntry::new(service, username)
@@ -9601,31 +9440,6 @@ fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Resu
     entry
         .set_password(secret)
         .map_err(|e| keyring_error_with_action("keyring write", &e))
-}
-
-#[cfg(test)]
-fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
-    if !test_token_keyring_available() {
-        return Err(format!(
-            "keyring read failed: {}",
-            keyring_unavailable_hint()
-        ));
-    }
-    let should_fail = test_token_keyring_read_fail_services()
-        .lock()
-        .map_err(|_| "test keyring lock failed".to_string())?
-        .contains(service);
-    if should_fail {
-        return Err(format!(
-            "keyring read failed: simulated read failure for service '{service}'"
-        ));
-    }
-    let guard = test_token_keyring_store()
-        .lock()
-        .map_err(|_| "test keyring lock failed".to_string())?;
-    Ok(guard
-        .get(&(service.to_string(), username.to_string()))
-        .cloned())
 }
 
 #[cfg(not(test))]
@@ -9637,21 +9451,6 @@ fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<Stri
         Err(KeyringError::NoEntry) => Ok(None),
         Err(e) => Err(keyring_error_with_action("keyring read", &e)),
     }
-}
-
-#[cfg(test)]
-fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), String> {
-    if !test_token_keyring_available() {
-        return Err(format!(
-            "keyring delete failed: {}",
-            keyring_unavailable_hint()
-        ));
-    }
-    let mut guard = test_token_keyring_store()
-        .lock()
-        .map_err(|_| "test keyring lock failed".to_string())?;
-    guard.remove(&(service.to_string(), username.to_string()));
-    Ok(())
 }
 
 #[cfg(not(test))]
@@ -11540,9 +11339,18 @@ fn effective_updatable_provider_for_entry(
             confidence: None,
             reason: None,
             verification_status: if active_source == "github" {
-                if entry.version_id.trim().to_ascii_lowercase().starts_with("gh_release:") {
+                if entry
+                    .version_id
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("gh_release:")
+                {
                     Some("verified".to_string())
-                } else if entry.version_id.trim().eq_ignore_ascii_case("gh_repo_unverified") {
+                } else if entry
+                    .version_id
+                    .trim()
+                    .eq_ignore_ascii_case("gh_repo_unverified")
+                {
                     Some("manual_unverified".to_string())
                 } else {
                     None
@@ -13662,7 +13470,11 @@ fn discover_query_variants(query: &str) -> Vec<String> {
     let mut repaired_tokens: Vec<String> = Vec::with_capacity(tokens.len());
     for token in &tokens {
         let collapsed = collapse_repeated_ascii_chars(token);
-        let repaired = if collapsed.len() >= 3 { collapsed } else { token.clone() };
+        let repaired = if collapsed.len() >= 3 {
+            collapsed
+        } else {
+            token.clone()
+        };
         repaired_tokens.push(repaired.clone());
         if repaired != *token {
             push(repaired.clone(), &mut variants, &mut seen);
@@ -13689,10 +13501,7 @@ fn discover_query_variants(query: &str) -> Vec<String> {
         for token in longest.into_iter().take(3) {
             push(token, &mut variants, &mut seen);
         }
-        let strongest_pair = tokens
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let strongest_pair = tokens.iter().cloned().collect::<Vec<_>>();
         let mut strongest_pair_sorted = strongest_pair.clone();
         strongest_pair_sorted.sort_by_key(|token| std::cmp::Reverse(token.len()));
         if strongest_pair_sorted.len() >= 2 {
@@ -14753,7 +14562,11 @@ fn github_discover_search_queries(
     } else {
         None
     };
-    let fallback = variants.iter().skip(1).find(|value| !value.trim().is_empty()).cloned();
+    let fallback = variants
+        .iter()
+        .skip(1)
+        .find(|value| !value.trim().is_empty())
+        .cloned();
     let mut queries: Vec<String> = Vec::new();
     let mut seen_queries: HashSet<String> = HashSet::new();
     let push = |value: String, queries: &mut Vec<String>, seen_queries: &mut HashSet<String>| {
@@ -14764,7 +14577,11 @@ fn github_discover_search_queries(
         queries.push(value);
     };
 
-    push(format!("{primary} in:name,description"), &mut queries, &mut seen_queries);
+    push(
+        format!("{primary} in:name,description"),
+        &mut queries,
+        &mut seen_queries,
+    );
     push(
         format!("{strongest_single} in:name,description"),
         &mut queries,
@@ -14776,11 +14593,7 @@ fn github_discover_search_queries(
         &mut seen_queries,
     );
     if let Some(pair) = strongest_pair {
-        push(
-            format!("{pair} minecraft"),
-            &mut queries,
-            &mut seen_queries,
-        );
+        push(format!("{pair} minecraft"), &mut queries, &mut seen_queries);
     }
     if let Some(fallback_query) = fallback {
         push(
@@ -14789,7 +14602,11 @@ fn github_discover_search_queries(
             &mut seen_queries,
         );
     }
-    push(format!("{strongest_single} topic:minecraft"), &mut queries, &mut seen_queries);
+    push(
+        format!("{strongest_single} topic:minecraft"),
+        &mut queries,
+        &mut seen_queries,
+    );
 
     queries.truncate(if has_configured_auth_tokens {
         5
@@ -16481,13 +16298,7 @@ where
     let selection = if let Some(selection) = selection {
         selection
     } else if github_select_release_with_repo_hints(
-        client,
-        &repo,
-        &releases,
-        query_hint,
-        None,
-        None,
-        None,
+        client, &repo, &releases, query_hint, None, None, None,
     )
     .0
     .is_some()
@@ -18929,76 +18740,76 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::list_instances,
-            commands::create_instance,
-            commands::create_instance_from_modpack_file,
-            commands::list_launcher_import_sources,
-            commands::import_instance_from_launcher,
-            commands::update_instance,
-            commands::set_instance_icon,
-            commands::read_local_image_data_url,
-            commands::detect_java_runtimes,
-            commands::delete_instance,
-            commands::search_discover_content,
-            commands::install_modrinth_mod,
-            commands::install_curseforge_mod,
-            commands::preview_modrinth_install,
-            commands::check_instance_content_updates,
-            commands::update_all_instance_content,
-            commands::check_modrinth_updates,
-            commands::update_all_modrinth_mods,
-            commands::import_local_mod_file,
-            commands::resolve_local_mod_sources,
-            commands::prune_missing_installed_entries,
-            commands::list_installed_mods,
-            commands::set_installed_mod_enabled,
-            commands::set_installed_mod_pin,
-            commands::set_installed_mod_provider,
-            commands::attach_installed_mod_github_repo,
-            commands::remove_installed_mod,
-            commands::trigger_instance_microphone_permission_prompt,
-            commands::open_microphone_system_settings,
-            commands::preflight_launch_compatibility,
-            commands::launch_instance,
-            commands::get_launcher_settings,
-            commands::get_dev_mode_state,
-            commands::set_dev_curseforge_api_key,
-            commands::clear_dev_curseforge_api_key,
-            commands::get_curseforge_api_status,
-            commands::get_github_token_pool_status,
-            commands::set_github_token_pool,
-            commands::clear_github_token_pool,
-            commands::set_launcher_settings,
-            commands::list_launcher_accounts,
-            commands::select_launcher_account,
-            commands::logout_microsoft_account,
-            commands::begin_microsoft_login,
-            commands::poll_microsoft_login,
-            commands::list_running_instances,
-            commands::stop_running_instance,
-            commands::cancel_instance_launch,
-            commands::list_instance_snapshots,
-            commands::list_instance_worlds,
-            commands::get_instance_disk_usage,
-            commands::get_storage_usage_overview,
-            commands::get_storage_usage_entries,
-            commands::run_storage_cleanup,
-            commands::reveal_storage_usage_path,
-            commands::get_instance_playtime,
-            commands::get_instance_last_run_metadata,
-            commands::get_instance_last_run_report,
-            commands::list_instance_run_reports,
-            commands::list_instance_history_events,
-            commands::reset_instance_config_files_with_backup,
-            commands::list_world_config_files,
-            commands::read_world_config_file,
-            commands::write_world_config_file,
-            commands::rollback_instance,
-            commands::rollback_instance_world_backup,
-            commands::read_instance_logs,
-            commands::install_discover_content,
-            commands::preview_preset_apply,
-            commands::apply_preset_to_instance,
+            commands::impls::list_instances,
+            commands::impls::create_instance,
+            commands::impls::create_instance_from_modpack_file,
+            commands::impls::list_launcher_import_sources,
+            commands::impls::import_instance_from_launcher,
+            commands::impls::update_instance,
+            commands::impls::set_instance_icon,
+            commands::impls::read_local_image_data_url,
+            commands::impls::detect_java_runtimes,
+            commands::impls::delete_instance,
+            commands::impls::search_discover_content,
+            commands::impls::install_modrinth_mod,
+            commands::impls::install_curseforge_mod,
+            commands::impls::preview_modrinth_install,
+            commands::impls::check_instance_content_updates,
+            commands::impls::update_all_instance_content,
+            commands::impls::check_modrinth_updates,
+            commands::impls::update_all_modrinth_mods,
+            commands::impls::import_local_mod_file,
+            commands::impls::resolve_local_mod_sources,
+            commands::impls::prune_missing_installed_entries,
+            commands::impls::list_installed_mods,
+            commands::impls::set_installed_mod_enabled,
+            commands::impls::set_installed_mod_pin,
+            commands::impls::set_installed_mod_provider,
+            commands::impls::attach_installed_mod_github_repo,
+            commands::impls::remove_installed_mod,
+            commands::impls::trigger_instance_microphone_permission_prompt,
+            commands::impls::open_microphone_system_settings,
+            commands::impls::preflight_launch_compatibility,
+            commands::impls::launch_instance,
+            commands::impls::get_launcher_settings,
+            commands::impls::get_dev_mode_state,
+            commands::impls::set_dev_curseforge_api_key,
+            commands::impls::clear_dev_curseforge_api_key,
+            commands::impls::get_curseforge_api_status,
+            commands::impls::get_github_token_pool_status,
+            commands::impls::set_github_token_pool,
+            commands::impls::clear_github_token_pool,
+            commands::impls::set_launcher_settings,
+            commands::impls::list_launcher_accounts,
+            commands::impls::select_launcher_account,
+            commands::impls::logout_microsoft_account,
+            commands::impls::begin_microsoft_login,
+            commands::impls::poll_microsoft_login,
+            commands::impls::list_running_instances,
+            commands::impls::stop_running_instance,
+            commands::impls::cancel_instance_launch,
+            commands::impls::list_instance_snapshots,
+            commands::impls::list_instance_worlds,
+            commands::impls::get_instance_disk_usage,
+            commands::impls::get_storage_usage_overview,
+            commands::impls::get_storage_usage_entries,
+            commands::impls::run_storage_cleanup,
+            commands::impls::reveal_storage_usage_path,
+            commands::impls::get_instance_playtime,
+            commands::impls::get_instance_last_run_metadata,
+            commands::impls::get_instance_last_run_report,
+            commands::impls::list_instance_run_reports,
+            commands::impls::list_instance_history_events,
+            commands::impls::reset_instance_config_files_with_backup,
+            commands::impls::list_world_config_files,
+            commands::impls::read_world_config_file,
+            commands::impls::write_world_config_file,
+            commands::impls::rollback_instance,
+            commands::impls::rollback_instance_world_backup,
+            commands::impls::read_instance_logs,
+            commands::impls::install_discover_content,
+            commands::impls::preview_preset_apply,
+            commands::impls::apply_preset_to_instance,
             modpack::list_modpack_specs,
             modpack::get_modpack_spec,
             modpack::upsert_modpack_spec,
@@ -19039,1988 +18850,22 @@ fn main() {
             friend_link::write_instance_config_file,
             friend_link::list_instance_config_file_backups,
             friend_link::restore_instance_config_file_backup,
-            commands::get_curseforge_project_detail,
-            commands::get_github_project_detail,
-            commands::import_provider_modpack_template,
-            commands::export_presets_json,
-            commands::import_presets_json,
-            commands::get_selected_account_diagnostics,
-            commands::apply_selected_account_appearance,
-            commands::open_instance_path,
-            commands::reveal_config_editor_file,
-            commands::list_quick_play_servers,
-            commands::upsert_quick_play_server,
-            commands::remove_quick_play_server,
-            commands::launch_quick_play_server,
-            commands::export_instance_mods_zip,
-            commands::export_instance_support_bundle
+            commands::impls::get_curseforge_project_detail,
+            commands::impls::get_github_project_detail,
+            commands::impls::import_provider_modpack_template,
+            commands::impls::export_presets_json,
+            commands::impls::import_presets_json,
+            commands::impls::get_selected_account_diagnostics,
+            commands::impls::apply_selected_account_appearance,
+            commands::impls::open_instance_path,
+            commands::impls::reveal_config_editor_file,
+            commands::impls::list_quick_play_servers,
+            commands::impls::upsert_quick_play_server,
+            commands::impls::remove_quick_play_server,
+            commands::impls::launch_quick_play_server,
+            commands::impls::export_instance_mods_zip,
+            commands::impls::export_instance_support_bundle
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(test)]
-mod content_compatibility_tests {
-    use super::*;
-
-    fn make_instance(loader: &str, mc_version: &str) -> Instance {
-        Instance {
-            id: "inst_test".to_string(),
-            name: "Test".to_string(),
-            folder_name: None,
-            mc_version: mc_version.to_string(),
-            loader: loader.to_string(),
-            created_at: "now".to_string(),
-            icon_path: None,
-            settings: InstanceSettings::default(),
-        }
-    }
-
-    fn make_cf_file(game_versions: Vec<&str>) -> CurseforgeFile {
-        CurseforgeFile {
-            id: 1,
-            mod_id: 1,
-            display_name: "file".to_string(),
-            file_name: "file.zip".to_string(),
-            file_date: "2026-01-01T00:00:00Z".to_string(),
-            download_url: None,
-            game_versions: game_versions.into_iter().map(str::to_string).collect(),
-            hashes: vec![],
-            dependencies: vec![],
-        }
-    }
-
-    fn make_modrinth_version(game_versions: Vec<&str>, loaders: Vec<&str>) -> ModrinthVersion {
-        ModrinthVersion {
-            project_id: "project".to_string(),
-            id: "ver".to_string(),
-            version_number: "1.0.0".to_string(),
-            name: None,
-            game_versions: game_versions.into_iter().map(str::to_string).collect(),
-            loaders: loaders.into_iter().map(str::to_string).collect(),
-            date_published: "2026-01-01T00:00:00Z".to_string(),
-            dependencies: vec![],
-            files: vec![ModrinthVersionFile {
-                url: "https://example.com/file.zip".to_string(),
-                filename: "file.zip".to_string(),
-                primary: Some(true),
-                hashes: HashMap::new(),
-            }],
-        }
-    }
-
-    fn make_cf_project(
-        class_id: i64,
-        slug: &str,
-        categories: Vec<CurseforgeCategory>,
-    ) -> CurseforgeMod {
-        CurseforgeMod {
-            id: 12345,
-            class_id,
-            name: "Project".to_string(),
-            slug: Some(slug.to_string()),
-            summary: String::new(),
-            download_count: 0.0,
-            date_modified: String::new(),
-            authors: vec![],
-            categories,
-            logo: None,
-        }
-    }
-
-    #[test]
-    fn non_mod_curseforge_compatibility_ignores_loader_tags() {
-        let instance = make_instance("fabric", "1.20.1");
-        let file = make_cf_file(vec!["1.20.1", "forge"]);
-        assert!(file_looks_compatible_with_instance(
-            &file,
-            &instance,
-            "resourcepacks"
-        ));
-        assert!(!file_looks_compatible_with_instance(
-            &file, &instance, "mods"
-        ));
-    }
-
-    #[test]
-    fn non_mod_curseforge_compatibility_allows_patch_level_fallback() {
-        let instance = make_instance("fabric", "1.21.11");
-        let file = make_cf_file(vec!["1.21.1", "forge"]);
-        assert!(file_looks_compatible_with_instance(
-            &file,
-            &instance,
-            "resourcepacks"
-        ));
-    }
-
-    #[test]
-    fn mod_curseforge_compatibility_keeps_patch_strict() {
-        let instance = make_instance("fabric", "1.21.11");
-        let file = make_cf_file(vec!["1.21.1", "fabric"]);
-        assert!(!file_looks_compatible_with_instance(
-            &file, &instance, "mods"
-        ));
-    }
-
-    #[test]
-    fn non_mod_modrinth_selection_ignores_loader_mismatch() {
-        let instance = make_instance("fabric", "1.20.1");
-        let versions = vec![make_modrinth_version(vec!["1.20.1"], vec!["forge"])];
-        assert!(pick_compatible_version_for_content(versions, &instance, "shaderpacks").is_some());
-    }
-
-    #[test]
-    fn non_mod_modrinth_selection_allows_patch_level_fallback() {
-        let instance = make_instance("fabric", "1.21.11");
-        let versions = vec![make_modrinth_version(vec!["1.21.1"], vec!["forge"])];
-        assert!(pick_compatible_version_for_content(versions, &instance, "shaderpacks").is_some());
-    }
-
-    #[test]
-    fn mod_modrinth_selection_still_requires_loader_match() {
-        let instance = make_instance("fabric", "1.20.1");
-        let versions = vec![make_modrinth_version(vec!["1.20.1"], vec!["forge"])];
-        assert!(pick_compatible_version_for_content(versions, &instance, "mods").is_none());
-    }
-
-    #[test]
-    fn normalize_update_content_type_filter_accepts_supported_aliases() {
-        let requested = vec![
-            "shaders".to_string(),
-            "resourcepacks".to_string(),
-            "mods".to_string(),
-        ];
-        let filter = normalize_update_content_type_filter(Some(&requested))
-            .expect("filter should include supported content types");
-        assert!(filter.contains("shaderpacks"));
-        assert!(filter.contains("resourcepacks"));
-        assert!(filter.contains("mods"));
-    }
-
-    #[test]
-    fn normalize_update_content_type_filter_ignores_unsupported_values() {
-        let requested = vec!["modpacks".to_string(), "unknown".to_string()];
-        assert!(normalize_update_content_type_filter(Some(&requested)).is_none());
-    }
-
-    #[test]
-    fn curseforge_resourcepack_slug_uses_texture_packs_url_path() {
-        let url =
-            curseforge_external_project_url("12345", Some("fresh-animations"), "resourcepacks");
-        assert_eq!(
-            url,
-            "https://www.curseforge.com/minecraft/texture-packs/fresh-animations"
-        );
-    }
-
-    #[test]
-    fn infer_curseforge_class_12_without_shader_category_defaults_to_resourcepacks() {
-        let project = make_cf_project(
-            12,
-            "fresh-animations",
-            vec![CurseforgeCategory {
-                name: "Resource Packs".to_string(),
-                slug: Some("resource-packs".to_string()),
-            }],
-        );
-        let inferred = infer_curseforge_project_content_type(&project, None);
-        assert_eq!(inferred, "resourcepacks");
-        let url = curseforge_external_project_url("12345", project.slug.as_deref(), &inferred);
-        assert_eq!(
-            url,
-            "https://www.curseforge.com/minecraft/texture-packs/fresh-animations"
-        );
-    }
-
-    #[test]
-    fn infer_curseforge_class_12_shader_category_uses_shaders_path() {
-        let project = make_cf_project(
-            12,
-            "complementary-shaders",
-            vec![CurseforgeCategory {
-                name: "Shaders".to_string(),
-                slug: Some("shaders".to_string()),
-            }],
-        );
-        let inferred = infer_curseforge_project_content_type(&project, None);
-        assert_eq!(inferred, "shaderpacks");
-        let url = curseforge_external_project_url("12345", project.slug.as_deref(), &inferred);
-        assert_eq!(
-            url,
-            "https://www.curseforge.com/minecraft/shaders/complementary-shaders"
-        );
-    }
-
-    #[test]
-    fn local_loader_guard_blocks_fabric_and_forge_mismatch_both_directions() {
-        assert!(!instance_loader_accepts_mod_loader("fabric", "forge"));
-        assert!(!instance_loader_accepts_mod_loader("forge", "fabric"));
-    }
-
-    #[test]
-    fn local_loader_guard_allows_quilt_instance_to_accept_fabric_mods() {
-        assert!(instance_loader_accepts_mod_loader("quilt", "fabric"));
-        assert!(!instance_loader_accepts_mod_loader("fabric", "quilt"));
-    }
-
-    #[test]
-    fn local_loader_guard_keeps_neoforge_and_forge_distinct() {
-        assert!(!instance_loader_accepts_mod_loader("neoforge", "forge"));
-        assert!(!instance_loader_accepts_mod_loader("forge", "neoforge"));
-        assert!(instance_loader_accepts_mod_loader("neoforge", "neoforge"));
-    }
-
-    #[test]
-    fn local_loader_guard_allows_forge_family_hint_for_forge_variants() {
-        assert!(instance_loader_accepts_mod_loader("forge", "forge_family"));
-        assert!(instance_loader_accepts_mod_loader(
-            "neoforge",
-            "forge_family"
-        ));
-        assert!(!instance_loader_accepts_mod_loader(
-            "fabric",
-            "forge_family"
-        ));
-    }
-}
-
-#[cfg(test)]
-mod discover_ranking_tests {
-    use super::*;
-
-    fn make_hit(source: &str, project_id: &str) -> DiscoverSearchHit {
-        DiscoverSearchHit {
-            source: source.to_string(),
-            project_id: project_id.to_string(),
-            title: project_id.to_string(),
-            description: "".to_string(),
-            author: "".to_string(),
-            downloads: 0,
-            follows: 0,
-            icon_url: None,
-            categories: vec![],
-            versions: vec![],
-            date_modified: "".to_string(),
-            content_type: "mods".to_string(),
-            slug: None,
-            external_url: None,
-            confidence: None,
-            reason: None,
-            install_state: None,
-            install_summary: None,
-        }
-    }
-
-    fn sample_discover_repo() -> GithubRepository {
-        GithubRepository {
-            full_name: "etianl/Trouser-Streak".to_string(),
-            name: "Trouser-Streak".to_string(),
-            description: Some("Meteor addon with mods for chunk tracing.".to_string()),
-            stargazers_count: 500,
-            forks_count: 12,
-            archived: false,
-            fork: false,
-            disabled: false,
-            html_url: "https://github.com/etianl/Trouser-Streak".to_string(),
-            homepage: None,
-            watchers_count: 500,
-            open_issues_count: 1,
-            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
-            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
-            topics: vec![],
-            default_branch: "main".to_string(),
-            owner: GithubOwner {
-                login: "etianl".to_string(),
-                owner_type: "User".to_string(),
-            },
-        }
-    }
-
-    fn sample_non_minecraft_ml_repo() -> GithubRepository {
-        GithubRepository {
-            full_name: "hwaluskle/tensorflow-generative-model-collections".to_string(),
-            name: "tensorflow-generative-model-collections".to_string(),
-            description: Some("Collection of generative models in Tensorflow.".to_string()),
-            stargazers_count: 3900,
-            forks_count: 840,
-            archived: false,
-            fork: false,
-            disabled: false,
-            html_url: "https://github.com/hwaluskle/tensorflow-generative-model-collections"
-                .to_string(),
-            homepage: None,
-            watchers_count: 3900,
-            open_issues_count: 1,
-            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
-            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
-            topics: vec![
-                "tensorflow".to_string(),
-                "model".to_string(),
-                "gan".to_string(),
-            ],
-            default_branch: "main".to_string(),
-            owner: GithubOwner {
-                login: "hwaluskle".to_string(),
-                owner_type: "User".to_string(),
-            },
-        }
-    }
-
-    #[test]
-    fn blend_discover_hits_prefers_modrinth_but_keeps_other_provider_visible() {
-        let input = vec![
-            make_hit("curseforge", "cf_1"),
-            make_hit("modrinth", "mr_1"),
-            make_hit("curseforge", "cf_2"),
-            make_hit("modrinth", "mr_2"),
-            make_hit("modrinth", "mr_3"),
-        ];
-        let blended = blend_discover_hits_prefer_modrinth(input);
-        let order = blended
-            .iter()
-            .map(|hit| hit.project_id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(order, vec!["mr_1", "mr_2", "cf_1", "mr_3", "cf_2"]);
-    }
-
-    #[test]
-    fn blend_discover_hits_passthrough_when_single_provider_present() {
-        let input = vec![make_hit("modrinth", "mr_1"), make_hit("modrinth", "mr_2")];
-        let blended = blend_discover_hits_prefer_modrinth(input);
-        let order = blended
-            .iter()
-            .map(|hit| hit.project_id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(order, vec!["mr_1", "mr_2"]);
-    }
-
-    #[test]
-    fn github_similarity_score_tolerates_common_typos() {
-        let exact = github_name_similarity_score("meteor client", "meteor client");
-        let typo = github_name_similarity_score("meteor client", "metor clint");
-        assert!(exact >= typo);
-        assert!(typo >= 20);
-    }
-
-    #[test]
-    fn discover_query_variants_include_shortened_form() {
-        let variants = discover_query_variants("meteor client hacks");
-        assert!(!variants.is_empty());
-        assert!(variants.iter().any(|value| value.contains("meteor")));
-    }
-
-    #[test]
-    fn discover_query_variants_include_repeat_collapsed_typos() {
-        let variants = discover_query_variants("sodiuumm modd");
-        assert!(variants.iter().any(|value| value.contains("sodium")));
-        assert!(variants.iter().any(|value| value.contains("mod")));
-    }
-
-    #[test]
-    fn sort_discover_hits_prefers_relevance_by_default() {
-        let mut hits = vec![
-            DiscoverSearchHit {
-                project_id: "a".to_string(),
-                title: "random utility".to_string(),
-                downloads: 9000,
-                ..make_hit("modrinth", "a")
-            },
-            DiscoverSearchHit {
-                project_id: "b".to_string(),
-                title: "meteor client".to_string(),
-                downloads: 100,
-                ..make_hit("modrinth", "b")
-            },
-        ];
-        sort_discover_hits(&mut hits, "relevance", Some("metor"));
-        assert_eq!(hits.first().map(|hit| hit.project_id.as_str()), Some("b"));
-    }
-
-    #[test]
-    fn github_signal_gate_rejects_low_similarity_without_minecraft_signal() {
-        let repo = sample_discover_repo();
-        assert!(!github_repo_passes_signal_gate(
-            &repo,
-            0,
-            12,
-            "trouser treaks"
-        ));
-    }
-
-    #[test]
-    fn github_signal_gate_allows_high_similarity_without_minecraft_signal() {
-        let repo = sample_discover_repo();
-        assert!(github_repo_passes_signal_gate(
-            &repo,
-            0,
-            40,
-            "trouser treaks"
-        ));
-    }
-
-    #[test]
-    fn github_signal_gate_allows_positive_minecraft_signal() {
-        let repo = sample_discover_repo();
-        assert!(github_repo_passes_signal_gate(&repo, 2, 0, "any"));
-    }
-
-    #[test]
-    fn github_mod_ecosystem_signal_does_not_confuse_model_with_mod() {
-        let repo = sample_non_minecraft_ml_repo();
-        assert!(github_repo_mod_ecosystem_signal_score(&repo) <= 0);
-    }
-
-    #[test]
-    fn github_lookup_queries_strip_local_version_noise() {
-        let queries =
-            github_lookup_queries_for_local_mod("Trouser-Streak-v1.5.8-fabric-1.21.1.jar", None);
-        assert!(!queries.is_empty());
-        assert!(queries
-            .iter()
-            .any(|query| query.contains("trouser") && query.contains("streak")));
-    }
-
-    #[test]
-    fn github_discover_search_queries_prioritize_typo_fallback_without_tokens() {
-        let queries = github_discover_search_queries("Trouser Treaks", false);
-        assert!(!queries.is_empty());
-        assert!(queries
-            .iter()
-            .any(|q| q.contains("trouser in:name,description")));
-        assert!(queries.len() <= GITHUB_UNAUTH_MAX_SEARCH_QUERIES);
-    }
-}
-
-#[cfg(test)]
-mod lock_entry_name_tests {
-    use super::*;
-
-    #[test]
-    fn mod_entries_use_core_jar_filename_as_name() {
-        let name = canonical_lock_entry_name("mods", "meteor-client-1.21.1-0.5.8.jar", "Meteor");
-        assert_eq!(name, "meteor-client-1.21.1-0.5.8");
-    }
-
-    #[test]
-    fn mod_entries_strip_disabled_suffix_before_naming() {
-        let name = canonical_lock_entry_name(
-            "mods",
-            "trouser-streak-1.21.1.jar.disabled",
-            "Trouser Streak",
-        );
-        assert_eq!(name, "trouser-streak-1.21.1");
-    }
-
-    #[test]
-    fn non_mod_entries_keep_existing_name() {
-        let name = canonical_lock_entry_name(
-            "resourcepacks",
-            "fresh-animations-1.0.0.zip",
-            "Fresh Animations",
-        );
-        assert_eq!(name, "Fresh Animations");
-    }
-}
-
-#[cfg(test)]
-mod github_provider_tests {
-    use super::*;
-
-    fn sample_repo() -> GithubRepository {
-        GithubRepository {
-            full_name: "OpenJar/test-mod".to_string(),
-            name: "test-mod".to_string(),
-            description: Some("A test Minecraft mod".to_string()),
-            stargazers_count: 4200,
-            forks_count: 120,
-            archived: false,
-            fork: false,
-            disabled: false,
-            html_url: "https://github.com/OpenJar/test-mod".to_string(),
-            homepage: None,
-            watchers_count: 4200,
-            open_issues_count: 12,
-            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
-            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
-            topics: vec!["minecraft".to_string(), "fabric".to_string()],
-            default_branch: "main".to_string(),
-            owner: GithubOwner {
-                login: "OpenJar".to_string(),
-                owner_type: "Organization".to_string(),
-            },
-        }
-    }
-
-    fn release_with_assets(id: u64, published_at: &str, assets: Vec<&str>) -> GithubRelease {
-        GithubRelease {
-            id,
-            tag_name: format!("v{id}"),
-            html_url: format!("https://github.com/OpenJar/test-mod/releases/tag/v{id}"),
-            name: None,
-            draft: false,
-            prerelease: false,
-            created_at: Some(published_at.to_string()),
-            published_at: Some(published_at.to_string()),
-            assets: assets
-                .into_iter()
-                .map(|name| GithubReleaseAsset {
-                    name: name.to_string(),
-                    browser_download_url: format!(
-                        "https://github.com/OpenJar/test-mod/releases/download/v{id}/{name}"
-                    ),
-                    content_type: Some("application/java-archive".to_string()),
-                    size: 2 * 1024 * 1024,
-                    digest: None,
-                })
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn github_repo_policy_rejects_unsafe_repository_states() {
-        let mut repo = sample_repo();
-        repo.archived = true;
-        assert_eq!(
-            github_repo_policy_rejection_reason(&repo),
-            Some("repository is archived")
-        );
-        repo.archived = false;
-        repo.fork = true;
-        assert_eq!(
-            github_repo_policy_rejection_reason(&repo),
-            Some("repository is a fork")
-        );
-        repo.fork = false;
-        repo.disabled = true;
-        assert_eq!(
-            github_repo_policy_rejection_reason(&repo),
-            Some("repository is disabled")
-        );
-    }
-
-    #[test]
-    fn github_error_classification_detects_auth_or_rate_limit() {
-        assert!(github_error_is_auth_or_rate_limit(
-            "GitHub API rate limit reached (403 Forbidden)."
-        ));
-        assert!(github_error_is_auth_or_rate_limit(
-            "GitHub request failed with status 401 Unauthorized."
-        ));
-        assert!(!github_error_is_auth_or_rate_limit(
-            "GitHub request failed with status 404 Not Found."
-        ));
-    }
-
-    #[test]
-    fn github_reason_transient_detection_covers_verification_unavailable_messages() {
-        assert!(github_reason_is_transient_verification_failure(
-            "GitHub local identify manual candidate: direct metadata repo hint matched, but release verification is unavailable (GitHub API rate limit reached)."
-        ));
-        assert!(github_reason_is_transient_verification_failure(
-            "GitHub local identify manual candidate: direct metadata repo hint found, but release evidence is currently unverifiable."
-        ));
-        assert!(!github_reason_is_transient_verification_failure(
-            "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file."
-        ));
-    }
-
-    #[test]
-    fn github_release_selector_picks_latest_real_jar_asset() {
-        let repo = sample_repo();
-        let releases = vec![
-            release_with_assets(
-                1,
-                "2026-01-01T00:00:00Z",
-                vec!["test-mod-1.0.0.jar", "checksums.sha256"],
-            ),
-            release_with_assets(
-                2,
-                "2026-02-01T00:00:00Z",
-                vec!["test-mod-1.1.0-sources.jar", "test-mod-1.1.0.jar"],
-            ),
-        ];
-        let selected =
-            select_github_release_with_asset(&repo, &releases, "test mod", None, None, None, None)
-                .expect("expected a selected github release");
-        assert_eq!(selected.release.id, 2);
-        assert_eq!(selected.asset.name, "test-mod-1.1.0.jar");
-        assert!(!selected.asset.name.contains("sources"));
-    }
-
-    #[test]
-    fn github_release_query_hint_prefers_installed_filename() {
-        let repo = sample_repo();
-        let hint =
-            github_release_query_hint("test-mod-1.2.3.jar.disabled", "Pretty Mod Name", &repo);
-        assert_eq!(hint, "test-mod-1.2.3");
-    }
-
-    #[test]
-    fn github_release_selection_match_detects_same_release_label() {
-        let repo = sample_repo();
-        let releases = vec![release_with_assets(
-            7,
-            "2026-03-01T00:00:00Z",
-            vec!["test-mod-1.2.0.jar"],
-        )];
-        let selection = select_github_release_with_asset(
-            &repo,
-            &releases,
-            "test-mod-1.2.0",
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("expected selected release");
-        assert!(github_release_selection_matches_current(
-            &selection,
-            "gh_release:999",
-            "v7",
-            &HashMap::new(),
-        ));
-    }
-
-    #[test]
-    fn github_discover_hit_contains_confidence_metadata() {
-        let repo = sample_repo();
-        let releases = vec![release_with_assets(
-            3,
-            "2026-03-01T00:00:00Z",
-            vec!["test-mod-1.2.0.jar", "checksums.sha256"],
-        )];
-        let selected =
-            select_github_release_with_asset(&repo, &releases, "test mod", None, None, None, None)
-                .expect("expected selected release");
-        let hit = github_release_to_discover_hit(&repo, &selected, "test mod", None, None);
-        assert_eq!(hit.source, "github");
-        assert_eq!(hit.content_type, "mods");
-        assert!(hit.confidence.is_some());
-        assert!(hit.reason.is_some());
-    }
-
-    #[test]
-    fn github_release_selector_enforces_instance_compatibility() {
-        let repo = sample_repo();
-        let releases = vec![
-            release_with_assets(
-                1,
-                "2026-01-01T00:00:00Z",
-                vec!["test-mod-fabric-1.20.4.jar"],
-            ),
-            release_with_assets(
-                2,
-                "2026-02-01T00:00:00Z",
-                vec!["test-mod-fabric-1.21.1.jar"],
-            ),
-        ];
-        let selected = select_github_release_with_asset(
-            &repo,
-            &releases,
-            "test mod",
-            Some("1.21.1"),
-            Some("fabric"),
-            None,
-            None,
-        )
-        .expect("expected a compatible github selection");
-        assert_eq!(selected.release.id, 2);
-
-        let incompatible = select_github_release_with_asset(
-            &repo,
-            &releases,
-            "test mod",
-            Some("1.21.1"),
-            Some("forge"),
-            None,
-            None,
-        );
-        assert!(incompatible.is_none());
-    }
-
-    #[test]
-    fn github_asset_digest_matching_rejects_mismatch() {
-        let mut digests = HashMap::new();
-        digests.insert("sha256".to_string(), "abc123".to_string());
-        assert_eq!(
-            github_asset_digest_matches_local_hashes(&digests, "abc123", "zzz"),
-            Some(true)
-        );
-        assert_eq!(
-            github_asset_digest_matches_local_hashes(&digests, "nope", "zzz"),
-            Some(false)
-        );
-    }
-
-    #[test]
-    fn github_local_release_selector_uses_exact_asset_filename() {
-        let repo = sample_repo();
-        let releases = vec![
-            release_with_assets(1, "2026-01-01T00:00:00Z", vec!["test-mod-1.0.0.jar"]),
-            release_with_assets(
-                2,
-                "2026-02-01T00:00:00Z",
-                vec!["test-mod-1.2.0.jar", "test-mod-1.2.0-sources.jar"],
-            ),
-        ];
-        let selected = select_github_release_for_local_file(
-            &repo,
-            &releases,
-            "test-mod-1.2.0.jar",
-            "test mod",
-        )
-        .expect("expected exact filename match");
-        assert_eq!(selected.release.id, 2);
-        assert_eq!(selected.asset.name, "test-mod-1.2.0.jar");
-    }
-
-    #[test]
-    fn github_local_release_selector_accepts_strong_name_pattern_match() {
-        let repo = sample_repo();
-        let releases = vec![
-            release_with_assets(
-                1,
-                "2026-01-01T00:00:00Z",
-                vec!["meteor-client-fabric-1.21.1-0.5.8.jar"],
-            ),
-            release_with_assets(2, "2026-02-01T00:00:00Z", vec!["something-else-1.0.0.jar"]),
-        ];
-        let selected = select_github_release_for_local_file(
-            &repo,
-            &releases,
-            "meteor-client-0.5.8.jar",
-            "meteor client",
-        )
-        .expect("expected strong fuzzy filename pattern match");
-        assert_eq!(selected.release.id, 1);
-        assert_eq!(selected.asset.name, "meteor-client-fabric-1.21.1-0.5.8.jar");
-    }
-
-    #[test]
-    fn github_local_match_rejects_similarity_only_without_hard_evidence() {
-        let repo = sample_repo();
-        let release = release_with_assets(1, "2026-01-01T00:00:00Z", vec!["totally-different.jar"]);
-        let selection = GithubReleaseSelection {
-            release: release.clone(),
-            asset: release.assets[0].clone(),
-            has_checksum_sidecar: false,
-        };
-        let result = github_local_match_confidence_and_reason(
-            &repo,
-            &selection,
-            "meteor-client-1.0.0.jar",
-            "meteor client",
-            None,
-            false,
-            0,
-            None,
-            None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn github_local_match_rejects_ambiguous_baritone_on_weak_repo() {
-        let weak_repo = GithubRepository {
-            full_name: "kaushikkumarbora/forager".to_string(),
-            name: "forager".to_string(),
-            description: Some("A random utility project".to_string()),
-            stargazers_count: 12,
-            forks_count: 1,
-            archived: false,
-            fork: false,
-            disabled: false,
-            html_url: "https://github.com/kaushikkumarbora/forager".to_string(),
-            homepage: None,
-            watchers_count: 12,
-            open_issues_count: 0,
-            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
-            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
-            topics: vec![],
-            default_branch: "main".to_string(),
-            owner: GithubOwner {
-                login: "kaushikkumarbora".to_string(),
-                owner_type: "User".to_string(),
-            },
-        };
-        let release = release_with_assets(2, "2026-01-01T00:00:00Z", vec!["baritone-1.0.0.jar"]);
-        let selection = GithubReleaseSelection {
-            release: release.clone(),
-            asset: release.assets[0].clone(),
-            has_checksum_sidecar: false,
-        };
-        let result = github_local_match_confidence_and_reason(
-            &weak_repo,
-            &selection,
-            "baritone-1.0.0.jar",
-            "baritone",
-            None,
-            false,
-            0,
-            None,
-            None,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn github_local_known_repo_boost_enables_canonical_baritone_match() {
-        let canonical_repo = GithubRepository {
-            full_name: "cabaletta/baritone".to_string(),
-            name: "baritone".to_string(),
-            description: Some("Minecraft pathfinding bot".to_string()),
-            stargazers_count: 8_000,
-            forks_count: 900,
-            archived: false,
-            fork: false,
-            disabled: false,
-            html_url: "https://github.com/cabaletta/baritone".to_string(),
-            homepage: None,
-            watchers_count: 8_000,
-            open_issues_count: 12,
-            pushed_at: Some("2026-03-01T00:00:00Z".to_string()),
-            updated_at: Some("2026-03-01T00:00:00Z".to_string()),
-            topics: vec!["minecraft".to_string()],
-            default_branch: "main".to_string(),
-            owner: GithubOwner {
-                login: "cabaletta".to_string(),
-                owner_type: "Organization".to_string(),
-            },
-        };
-        let (boost, reason) =
-            github_local_known_repo_boost(&canonical_repo, "baritone-1.0.0.jar", "baritone", None);
-        assert!(boost >= 40);
-        assert!(reason.is_some());
-
-        let release = release_with_assets(3, "2026-01-01T00:00:00Z", vec!["baritone-1.0.0.jar"]);
-        let selection = GithubReleaseSelection {
-            release: release.clone(),
-            asset: release.assets[0].clone(),
-            has_checksum_sidecar: false,
-        };
-        let evaluated = github_local_match_confidence_and_reason(
-            &canonical_repo,
-            &selection,
-            "baritone-1.0.0.jar",
-            "baritone",
-            None,
-            false,
-            boost,
-            reason,
-            None,
-        )
-        .expect("canonical match accepted");
-        assert!(matches!(evaluated.0.as_str(), "high" | "deterministic"));
-    }
-
-    #[test]
-    fn extract_github_repo_slug_parses_owner_repo_urls() {
-        let parsed = extract_github_repo_slug("https://github.com/MeteorDevelopment/meteor-client");
-        assert_eq!(parsed.as_deref(), Some("MeteorDevelopment/meteor-client"));
-    }
-
-    #[test]
-    fn extract_github_repo_slug_rejects_non_github_urls() {
-        assert!(extract_github_repo_slug("https://meteorclient.com").is_none());
-        assert!(extract_github_repo_slug("https://jfronny.gitlab.io").is_none());
-    }
-
-    #[test]
-    fn parse_github_project_id_rejects_non_github_urls() {
-        assert!(parse_github_project_id("https://meteorclient.com").is_err());
-        assert!(parse_github_project_id("gh:https://meteorclient.com").is_err());
-        assert!(parse_github_project_id("https://jfronny.gitlab.io").is_err());
-        assert!(parse_github_project_id("gh:https://jfronny.gitlab.io").is_err());
-    }
-
-    #[test]
-    fn parse_github_project_id_accepts_github_urls_with_extra_path_segments() {
-        let parsed = parse_github_project_id(
-            "https://github.com/MeteorDevelopment/meteor-client/releases/tag/v1.0.0",
-        )
-        .expect("github release URL should parse");
-        assert_eq!(parsed.0, "MeteorDevelopment");
-        assert_eq!(parsed.1, "meteor-client");
-    }
-
-    #[test]
-    fn parse_toml_assignment_is_case_insensitive() {
-        let toml = r#"
-            modId = "examplemod"
-            displayName = "Example Mod"
-            displayURL = "https://github.com/example/mod-repo"
-        "#;
-        assert_eq!(
-            parse_toml_assignment(toml, "modid").as_deref(),
-            Some("examplemod")
-        );
-        assert_eq!(
-            parse_toml_assignment(toml, "displayname").as_deref(),
-            Some("Example Mod")
-        );
-        assert_eq!(
-            parse_toml_assignment(toml, "displayurl").as_deref(),
-            Some("https://github.com/example/mod-repo")
-        );
-    }
-
-    #[test]
-    fn github_api_tokens_from_env_entries_supports_pool_and_numbered_tokens() {
-        let entries = vec![
-            (
-                "MPM_GITHUB_TOKENS".to_string(),
-                "poolA, poolB;poolC\npoolD".to_string(),
-            ),
-            ("MPM_GITHUB_TOKEN_2".to_string(), "two".to_string()),
-            ("MPM_GITHUB_TOKEN_1".to_string(), "one".to_string()),
-            ("MPM_GITHUB_TOKEN_10".to_string(), "ten".to_string()),
-            ("MPM_GITHUB_TOKEN".to_string(), "single".to_string()),
-        ];
-        let tokens = github_api_tokens_from_env_entries(&entries);
-        assert_eq!(
-            tokens,
-            vec!["poolA", "poolB", "poolC", "poolD", "one", "two", "ten", "single",]
-        );
-    }
-
-    #[test]
-    fn github_api_tokens_from_env_entries_supports_non_mpm_numbered_tokens() {
-        let entries = vec![
-            ("GITHUB_TOKEN_2".to_string(), "two".to_string()),
-            ("GH_TOKEN_1".to_string(), "one".to_string()),
-            ("GH_TOKEN_3".to_string(), "three".to_string()),
-            ("GITHUB_TOKEN".to_string(), "fallback".to_string()),
-        ];
-        let tokens = github_api_tokens_from_env_entries(&entries);
-        assert_eq!(tokens, vec!["one", "two", "three", "fallback"]);
-    }
-
-    #[test]
-    fn github_api_tokens_from_env_entries_deduplicates_across_sources() {
-        let entries = vec![
-            (
-                "MPM_GITHUB_TOKENS".to_string(),
-                "same,other,same".to_string(),
-            ),
-            ("MPM_GITHUB_TOKEN_1".to_string(), "same".to_string()),
-            ("GITHUB_TOKEN".to_string(), "other".to_string()),
-            ("GH_TOKEN".to_string(), "third".to_string()),
-        ];
-        let tokens = github_api_tokens_from_env_entries(&entries);
-        assert_eq!(tokens, vec!["same", "other", "third"]);
-    }
-
-    #[test]
-    fn github_api_tokens_from_env_entries_caps_to_max_tokens() {
-        let pool = (1..=(GITHUB_API_TOKENS_MAX + 20))
-            .map(|idx| format!("token{idx}"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let entries = vec![("MPM_GITHUB_TOKENS".to_string(), pool)];
-        let tokens = github_api_tokens_from_env_entries(&entries);
-        let expected_last = format!("token{}", GITHUB_API_TOKENS_MAX);
-        assert_eq!(tokens.len(), GITHUB_API_TOKENS_MAX);
-        assert_eq!(tokens.first().map(String::as_str), Some("token1"));
-        assert_eq!(
-            tokens.last().map(String::as_str),
-            Some(expected_last.as_str())
-        );
-    }
-
-    #[test]
-    fn github_unverified_manual_candidate_is_manual_and_activatable_only_for_transient_outages() {
-        let candidate = github_unverified_manual_candidate(
-            "example",
-            "repo",
-            "Example Repo",
-            "sha256",
-            "sha512",
-            "GitHub local identify manual candidate: direct metadata repo hint found, but repository verification is unavailable (rate limited).".to_string(),
-        );
-        assert_eq!(candidate.source, "github");
-        assert_eq!(candidate.project_id, "gh:example/repo");
-        assert_eq!(candidate.version_id, "gh_repo_unverified");
-        assert_eq!(candidate.confidence, "manual");
-        assert_eq!(
-            candidate.hashes.get("sha256").map(String::as_str),
-            Some("sha256")
-        );
-        assert_eq!(
-            candidate.hashes.get("sha512").map(String::as_str),
-            Some("sha512")
-        );
-        assert!(provider_match_is_auto_activatable(&candidate));
-
-        let non_transient = github_unverified_manual_candidate(
-            "example",
-            "repo",
-            "Example Repo",
-            "sha256",
-            "sha512",
-            "GitHub local identify manual candidate: direct metadata repo hint matched, but no verified release asset matched the local file.".to_string(),
-        );
-        assert!(!provider_match_is_auto_activatable(&non_transient));
-    }
-
-    #[test]
-    fn github_provider_activation_rejects_invalid_project_ids() {
-        let invalid_match = LocalImportedProviderMatch {
-            source: "github".to_string(),
-            project_id: "gh:https://meteorclient.com".to_string(),
-            version_id: "gh_release:123".to_string(),
-            name: "Invalid".to_string(),
-            version_number: "1.0.0".to_string(),
-            hashes: HashMap::new(),
-            confidence: "deterministic".to_string(),
-            reason: "invalid".to_string(),
-            verification_status: "verified".to_string(),
-        };
-        assert!(!provider_match_is_auto_activatable(&invalid_match));
-
-        let invalid_candidate = ProviderCandidate {
-            source: "github".to_string(),
-            project_id: "gh:https://meteorclient.com".to_string(),
-            version_id: "gh_release:123".to_string(),
-            name: "Invalid".to_string(),
-            version_number: "1.0.0".to_string(),
-            confidence: Some("deterministic".to_string()),
-            reason: Some("invalid".to_string()),
-            verification_status: Some("verified".to_string()),
-        };
-        assert!(!provider_candidate_is_auto_activatable(&invalid_candidate));
-    }
-}
-
-#[cfg(test)]
-mod update_check_resilience_tests {
-    use super::*;
-    use reqwest::header::{HeaderMap, HeaderValue};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    fn github_test_guard() -> MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("github test mutex lock")
-    }
-
-    fn clear_and_capture_github_env() -> Vec<(String, String)> {
-        let mut captured = Vec::new();
-        let keys = std::env::vars()
-            .map(|(key, _)| key)
-            .filter(|key| {
-                key == "MPM_GITHUB_TOKENS"
-                    || key == "MPM_GITHUB_TOKEN"
-                    || key == "GITHUB_TOKEN"
-                    || key == "GH_TOKEN"
-                    || key.starts_with("MPM_GITHUB_TOKEN_")
-                    || key.starts_with("GITHUB_TOKEN_")
-                    || key.starts_with("GH_TOKEN_")
-            })
-            .collect::<Vec<_>>();
-        for key in keys {
-            if let Ok(value) = std::env::var(&key) {
-                captured.push((key.clone(), value));
-            }
-            std::env::remove_var(&key);
-        }
-        captured
-    }
-
-    fn restore_github_env(previous: Vec<(String, String)>) {
-        for (key, value) in previous {
-            std::env::set_var(key, value);
-        }
-    }
-
-    fn reset_github_rotation_state() {
-        if let Ok(mut guard) = github_token_rotation_state().lock() {
-            guard.next_start_index = 0;
-            guard.cooldown_until.clear();
-            guard.unauth_cooldown_until = None;
-            guard.unauth_reset_local = None;
-        }
-    }
-
-    fn mark_unauth_rate_limit_for_tests() {
-        let mut headers = HeaderMap::new();
-        let reset_epoch = (Utc::now().timestamp() + 120).to_string();
-        headers.insert(
-            "x-ratelimit-reset",
-            HeaderValue::from_str(&reset_epoch).expect("valid reset epoch"),
-        );
-        headers.insert("x-ratelimit-remaining", HeaderValue::from_static("0"));
-        github_mark_unauth_cooldown(&headers);
-    }
-
-    fn make_instance(loader: &str, mc_version: &str) -> Instance {
-        Instance {
-            id: "inst_resilience".to_string(),
-            name: "Resilience".to_string(),
-            folder_name: None,
-            mc_version: mc_version.to_string(),
-            loader: loader.to_string(),
-            created_at: "now".to_string(),
-            icon_path: None,
-            settings: InstanceSettings::default(),
-        }
-    }
-
-    fn make_github_lock_entry(name: &str, project_id: &str, version_id: &str) -> LockEntry {
-        LockEntry {
-            source: "github".to_string(),
-            project_id: project_id.to_string(),
-            version_id: version_id.to_string(),
-            name: name.to_string(),
-            version_number: "1.0.0".to_string(),
-            filename: format!("{name}.jar"),
-            content_type: "mods".to_string(),
-            target_scope: "instance".to_string(),
-            target_worlds: vec![],
-            pinned_version: None,
-            enabled: true,
-            hashes: HashMap::new(),
-            provider_candidates: vec![],
-            local_analysis: None,
-        }
-    }
-
-    #[test]
-    fn update_check_keeps_running_and_compacts_github_rate_limit_warnings() {
-        let _guard = github_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-        let previous_env = clear_and_capture_github_env();
-
-        mark_unauth_rate_limit_for_tests();
-
-        let lock = Lockfile {
-            version: 2,
-            entries: vec![
-                make_github_lock_entry("mod-one", "gh:example/repo-one", "gh_release:1"),
-                make_github_lock_entry("mod-two", "gh:example/repo-two", "gh_release:2"),
-            ],
-        };
-        let client = build_http_client().expect("http client");
-        let instance = make_instance("fabric", "1.21.1");
-        let result = check_instance_content_updates_inner(
-            &client,
-            &instance,
-            &lock,
-            UpdateScope::AllContent,
-            None,
-        )
-        .expect("update check should not fail hard");
-
-        assert_eq!(result.checked_entries, 2);
-        assert_eq!(result.update_count, 0);
-        assert!(result.warnings.iter().any(|warning| {
-            warning.contains("GitHub checks paused due to rate limit; skipped 2 GitHub entries")
-        }));
-
-        restore_github_env(previous_env);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-    }
-
-    #[test]
-    fn github_get_json_short_circuits_when_unauth_cooldown_active() {
-        let _guard = github_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-        let previous_env = clear_and_capture_github_env();
-
-        mark_unauth_rate_limit_for_tests();
-        let client = build_http_client().expect("http client");
-        let err = github_get_json::<serde_json::Value>(
-            &client,
-            "https://api.github.com/repos/octocat/Hello-World",
-        )
-        .expect_err("should fail fast while unauth cooldown is active");
-        assert!(err.contains("Unauthenticated GitHub requests are temporarily paused"));
-
-        restore_github_env(previous_env);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-    }
-
-    #[test]
-    fn github_token_pool_status_merges_env_and_keychain_tokens() {
-        let _guard = github_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-        let previous_env = clear_and_capture_github_env();
-
-        std::env::set_var("MPM_GITHUB_TOKENS", "envA,dup");
-        keyring_set_github_token_pool("keyA\ndup").expect("store keychain pool");
-        github_invalidate_token_pool_cache();
-
-        let status = github_token_pool_status();
-        assert_eq!(status.total_tokens, 3);
-        assert_eq!(status.env_tokens, 2);
-        assert_eq!(status.keychain_tokens, 2);
-        assert!(status.configured);
-
-        restore_github_env(previous_env);
-        let _ = keyring_delete_github_token_pool();
-        github_invalidate_token_pool_cache();
-        reset_github_rotation_state();
-    }
-}
-
-#[cfg(test)]
-mod token_storage_tests {
-    use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    fn token_test_guard() -> MutexGuard<'static, ()> {
-        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("token test mutex lock")
-    }
-
-    fn make_temp_dir(name: &str) -> PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("openjar-token-tests-{name}-{}", Uuid::new_v4()));
-        fs::create_dir_all(&path).expect("create temp dir");
-        path
-    }
-
-    #[test]
-    fn persist_refresh_token_does_not_create_plaintext_fallback_file() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        let dir = make_temp_dir("persist-no-fallback");
-        let fallback_path = dir.join(LAUNCHER_TOKEN_FALLBACK_FILE);
-        assert!(!fallback_path.exists());
-
-        persist_refresh_token_for_account("acct_test_a", "refresh_token_a")
-            .expect("persist refresh token");
-
-        assert!(!fallback_path.exists());
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn read_refresh_token_retrieves_from_keyring_store() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        persist_refresh_token_for_account("acct_test_b", "refresh_token_b")
-            .expect("persist refresh token");
-        let account = LauncherAccount {
-            id: "acct_test_b".to_string(),
-            username: "user_b".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("read refresh token");
-        assert_eq!(token, "refresh_token_b");
-    }
-
-    #[test]
-    fn legacy_fallback_migration_moves_to_keyring_and_deletes_file() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        let dir = make_temp_dir("legacy-migration");
-        let fallback_path = dir.join(LAUNCHER_TOKEN_FALLBACK_FILE);
-
-        let legacy_payload = serde_json::json!({
-            "refresh_tokens": {
-                "acct_test_c": "refresh_token_c"
-            }
-        });
-        fs::write(
-            &fallback_path,
-            serde_json::to_string_pretty(&legacy_payload).expect("serialize legacy payload"),
-        )
-        .expect("write legacy fallback");
-        assert!(fallback_path.exists());
-
-        let summary = migrate_legacy_refresh_tokens_from_path(&fallback_path)
-            .expect("migrate fallback tokens");
-        assert_eq!(summary.migrated, 1);
-        assert_eq!(summary.fallback_files_removed, 1);
-        assert!(!fallback_path.exists());
-
-        let account = LauncherAccount {
-            id: "acct_test_c".to_string(),
-            username: "user_c".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("read migrated refresh token");
-        assert_eq!(token, "refresh_token_c");
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn keyring_unavailable_returns_actionable_error() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(false);
-        let err = persist_refresh_token_for_account("acct_test_d", "refresh_token_d")
-            .expect_err("persist should fail when secure storage is unavailable");
-        assert!(err.contains("keyring write failed"));
-        assert!(err.contains("keyring"));
-        set_test_token_keyring_available(true);
-    }
-
-    #[test]
-    fn persist_launcher_refresh_token_succeeds_when_post_write_verification_cannot_read() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-        set_test_token_keyring_read_failure(KEYRING_SERVICE, true);
-        for service in LEGACY_KEYRING_SERVICES {
-            set_test_token_keyring_read_failure(service, true);
-        }
-
-        let account = LauncherAccount {
-            id: "acct_verify_read_fail".to_string(),
-            username: "player_verify_read_fail".to_string(),
-            added_at: "now".to_string(),
-        };
-        persist_refresh_token_for_launcher_account(&account, "refresh_token_verify_read_fail")
-            .expect("persist should not fail when verification read is unavailable");
-
-        set_test_token_keyring_read_failure(KEYRING_SERVICE, false);
-        for service in LEGACY_KEYRING_SERVICES {
-            set_test_token_keyring_read_failure(service, false);
-        }
-        let canonical_alias = keyring_username_for_account(&account.id);
-        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_alias)
-            .expect("read canonical persisted token after clearing simulated read failures");
-        assert_eq!(canonical.as_deref(), Some("refresh_token_verify_read_fail"));
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_single_known_token_for_selected_account() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        persist_refresh_token_for_account("acct_real", "refresh_token_real")
-            .expect("persist known refresh token");
-        let selected = LauncherAccount {
-            id: "acct_selected_missing".to_string(),
-            username: "player".to_string(),
-            added_at: "now".to_string(),
-        };
-        let known = LauncherAccount {
-            id: "acct_real".to_string(),
-            username: "player".to_string(),
-            added_at: "now".to_string(),
-        };
-        let accounts = vec![selected.clone(), known];
-
-        let token = read_refresh_token_from_keyring(&selected, &accounts)
-            .expect("recover refresh token for selected account");
-        assert_eq!(token, "refresh_token_real");
-
-        let canonical_username = keyring_username_for_account(&selected.id);
-        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
-            .expect("read canonical refreshed token");
-        assert_eq!(canonical.as_deref(), Some("refresh_token_real"));
-    }
-
-    #[test]
-    fn read_refresh_token_recovery_fails_when_multiple_distinct_tokens_exist() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        persist_refresh_token_for_account("acct_a", "refresh_token_a")
-            .expect("persist first refresh token");
-        persist_refresh_token_for_account("acct_b", "refresh_token_b")
-            .expect("persist second refresh token");
-
-        let selected = LauncherAccount {
-            id: "acct_selected_missing_2".to_string(),
-            username: "player".to_string(),
-            added_at: "now".to_string(),
-        };
-        let accounts = vec![
-            selected.clone(),
-            LauncherAccount {
-                id: "acct_a".to_string(),
-                username: "player-a".to_string(),
-                added_at: "now".to_string(),
-            },
-            LauncherAccount {
-                id: "acct_b".to_string(),
-                username: "player-b".to_string(),
-                added_at: "now".to_string(),
-            },
-        ];
-
-        let err = read_refresh_token_from_keyring(&selected, &accounts)
-            .expect_err("recovery should fail for ambiguous secure tokens");
-        assert!(err.contains("Multiple secure refresh tokens were found"));
-    }
-
-    #[test]
-    fn read_refresh_token_matches_uuid_hyphen_and_simple_aliases() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        let hyphenated = "123e4567-e89b-12d3-a456-426614174000";
-        let simple = "123e4567e89b12d3a456426614174000";
-        persist_refresh_token_for_account(hyphenated, "refresh_token_uuid")
-            .expect("persist uuid refresh token");
-
-        let account = LauncherAccount {
-            id: simple.to_string(),
-            username: "uuid-user".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("read uuid alias refresh token");
-        assert_eq!(token, "refresh_token_uuid");
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_from_selected_alias() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        token_keyring_set_secret(
-            KEYRING_SERVICE,
-            KEYRING_SELECTED_REFRESH_ALIAS,
-            "refresh_token_selected_alias",
-        )
-        .expect("seed selected refresh alias");
-
-        let account = LauncherAccount {
-            id: "acct_selected_alias".to_string(),
-            username: "player_selected".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("recover token from selected alias");
-        assert_eq!(token, "refresh_token_selected_alias");
-
-        let canonical_username = keyring_username_for_account(&account.id);
-        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
-            .expect("read canonical token");
-        assert_eq!(canonical.as_deref(), Some("refresh_token_selected_alias"));
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_from_selected_alias_in_legacy_service() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        token_keyring_set_secret(
-            LEGACY_KEYRING_SERVICES[0],
-            KEYRING_SELECTED_REFRESH_ALIAS,
-            "refresh_token_selected_legacy",
-        )
-        .expect("seed selected refresh alias in legacy service");
-
-        let account = LauncherAccount {
-            id: "acct_selected_alias_legacy".to_string(),
-            username: "player_selected_legacy".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("recover token from selected alias in legacy service");
-        assert_eq!(token, "refresh_token_selected_legacy");
-
-        let canonical_selected =
-            token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
-                .expect("read canonical selected alias");
-        assert_eq!(
-            canonical_selected.as_deref(),
-            Some("refresh_token_selected_legacy")
-        );
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_from_selected_alias_even_if_legacy_read_fails() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        token_keyring_set_secret(
-            KEYRING_SERVICE,
-            KEYRING_SELECTED_REFRESH_ALIAS,
-            "refresh_token_selected_canonical",
-        )
-        .expect("seed selected refresh alias in canonical service");
-        set_test_token_keyring_read_failure(LEGACY_KEYRING_SERVICES[0], true);
-
-        let account = LauncherAccount {
-            id: "acct_selected_alias_canonical".to_string(),
-            username: "player_selected_canonical".to_string(),
-            added_at: "now".to_string(),
-        };
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("recover token from selected alias despite legacy read failure");
-        assert_eq!(token, "refresh_token_selected_canonical");
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_known_account_despite_legacy_read_failure() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        let selected = LauncherAccount {
-            id: "acct_selected_legacy_read_fail".to_string(),
-            username: "player_selected_legacy_read_fail".to_string(),
-            added_at: "now".to_string(),
-        };
-        let known = LauncherAccount {
-            id: "acct_known_legacy_read_fail".to_string(),
-            username: "player_known_legacy_read_fail".to_string(),
-            added_at: "now".to_string(),
-        };
-
-        let known_alias = keyring_username_for_account(&known.id);
-        token_keyring_set_secret(
-            LEGACY_KEYRING_SERVICES[1],
-            &known_alias,
-            "refresh_token_legacy_recover",
-        )
-        .expect("seed known token in secondary legacy service");
-        set_test_token_keyring_read_failure(LEGACY_KEYRING_SERVICES[0], true);
-
-        let accounts = vec![selected.clone(), known];
-        let token = read_refresh_token_from_keyring(&selected, &accounts)
-            .expect("recover known token despite legacy read failure");
-        assert_eq!(token, "refresh_token_legacy_recover");
-    }
-
-    #[test]
-    fn read_refresh_token_survives_simulated_restart_for_launcher_account() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        let account = LauncherAccount {
-            id: "acct_restart_ok".to_string(),
-            username: "player_restart".to_string(),
-            added_at: "now".to_string(),
-        };
-        persist_refresh_token_for_launcher_account(&account, "refresh_token_restart")
-            .expect("persist launcher account refresh token");
-
-        // Simulate full app restart (runtime memory cache is gone).
-        runtime_refresh_token_cache_clear();
-
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("read refresh token after restart");
-        assert_eq!(token, "refresh_token_restart");
-    }
-
-    #[test]
-    fn read_refresh_token_recovers_from_legacy_service_alias_after_restart() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        let account = LauncherAccount {
-            id: "acct_legacy_restart".to_string(),
-            username: "player_legacy_restart".to_string(),
-            added_at: "now".to_string(),
-        };
-        let legacy_alias = keyring_username_for_account(&account.id);
-        token_keyring_set_secret(
-            LEGACY_KEYRING_SERVICES[1],
-            &legacy_alias,
-            "refresh_token_from_legacy_service",
-        )
-        .expect("seed legacy service refresh token");
-
-        // Simulate full app restart (runtime memory cache is gone).
-        runtime_refresh_token_cache_clear();
-
-        let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
-            .expect("read refresh token migrated from legacy service");
-        assert_eq!(token, "refresh_token_from_legacy_service");
-
-        let canonical = token_keyring_get_secret(KEYRING_SERVICE, &legacy_alias)
-            .expect("read canonical migrated token");
-        assert_eq!(
-            canonical.as_deref(),
-            Some("refresh_token_from_legacy_service")
-        );
-    }
-
-    #[test]
-    fn dev_curseforge_key_migrates_from_legacy_service_to_canonical_service() {
-        let _guard = token_test_guard();
-        clear_test_token_keyring_store();
-        set_test_token_keyring_available(true);
-
-        token_keyring_set_secret(
-            LEGACY_KEYRING_SERVICES[0],
-            DEV_CURSEFORGE_KEY_KEYRING_USER,
-            "legacy_dev_cf_key",
-        )
-        .expect("seed legacy dev curseforge key");
-
-        let key = keyring_get_dev_curseforge_key().expect("read dev curseforge key");
-        assert_eq!(key.as_deref(), Some("legacy_dev_cf_key"));
-
-        let canonical = token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
-            .expect("read canonical migrated dev curseforge key");
-        assert_eq!(canonical.as_deref(), Some("legacy_dev_cf_key"));
-    }
-}
-
-#[cfg(test)]
-mod runtime_and_playtime_tests {
-    use super::*;
-
-    fn temp_path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("openjar-runtime-tests-{label}-{}", Uuid::new_v4()))
-    }
-
-    #[test]
-    fn runtime_reconcile_copies_missing_entries_and_keeps_non_allowlisted_conflicts() {
-        let instance_dir = temp_path("runtime-reconcile");
-        fs::create_dir_all(instance_dir.join("runtime")).expect("create runtime");
-        fs::create_dir_all(instance_dir.join("mods")).expect("create canonical mods");
-        fs::create_dir_all(instance_dir.join("runtime").join(".meteor-client"))
-            .expect("create runtime meteor");
-        fs::write(
-            instance_dir
-                .join("runtime")
-                .join(".meteor-client")
-                .join("config.json"),
-            br#"{"ok":true}"#,
-        )
-        .expect("write runtime meteor config");
-        fs::write(instance_dir.join("mods").join("keep.jar"), b"canonical")
-            .expect("write canonical mod");
-        fs::write(instance_dir.join("runtime").join("mods"), b"bad")
-            .expect("write conflicting runtime file");
-        fs::write(
-            instance_dir.join("runtime").join("options.txt"),
-            b"runtime options",
-        )
-        .expect("write runtime options");
-        fs::write(instance_dir.join("options.txt"), b"canonical options")
-            .expect("write canonical options");
-
-        reconcile_legacy_runtime_into_instance(&instance_dir).expect("reconcile runtime");
-
-        assert!(instance_dir
-            .join(".meteor-client")
-            .join("config.json")
-            .exists());
-        assert_eq!(
-            fs::read_to_string(instance_dir.join("options.txt")).expect("read options"),
-            "canonical options"
-        );
-        assert!(instance_dir.join("mods").join("keep.jar").exists());
-        assert!(runtime_reconcile_marker_path(&instance_dir).exists());
-
-        let _ = fs::remove_dir_all(&instance_dir);
-    }
-
-    #[test]
-    fn isolated_clone_excludes_transient_roots_and_keeps_game_content() {
-        let instance_dir = temp_path("isolated-clone");
-        let isolated_dir = instance_dir.join("runtime_sessions").join("launch");
-        fs::create_dir_all(instance_dir.join("mods")).expect("create mods");
-        fs::create_dir_all(instance_dir.join("config")).expect("create config");
-        fs::create_dir_all(instance_dir.join("runtime_sessions").join("old"))
-            .expect("create old session");
-        fs::create_dir_all(instance_dir.join("snapshots").join("s1")).expect("create snapshot");
-        fs::create_dir_all(instance_dir.join("logs").join("launches")).expect("create launch logs");
-        fs::write(instance_dir.join("mods").join("a.jar"), b"jar").expect("write mod jar");
-        fs::write(instance_dir.join("play_sessions.v1.json"), b"{}").expect("write play sessions");
-        fs::write(
-            instance_dir.join("logs").join("launches").join("x.log"),
-            b"log",
-        )
-        .expect("write launch log");
-
-        clone_instance_to_isolated_runtime(&instance_dir, &isolated_dir)
-            .expect("clone isolated runtime");
-
-        assert!(isolated_dir.join("mods").join("a.jar").exists());
-        assert!(isolated_dir.join("config").exists());
-        assert!(!isolated_dir.join("runtime_sessions").exists());
-        assert!(!isolated_dir.join("snapshots").exists());
-        assert!(!isolated_dir.join("play_sessions.v1.json").exists());
-        assert!(!isolated_dir.join("logs").join("launches").exists());
-
-        let _ = fs::remove_dir_all(&instance_dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn isolated_clone_rejects_symlinked_entries() {
-        use std::os::unix::fs::symlink;
-
-        let instance_dir = temp_path("isolated-clone-symlink");
-        let isolated_dir = instance_dir.join("runtime_sessions").join("launch");
-        let outside_dir = temp_path("isolated-clone-symlink-outside");
-        fs::create_dir_all(&instance_dir).expect("create instance dir");
-        fs::create_dir_all(&outside_dir).expect("create outside dir");
-        fs::write(outside_dir.join("outside.txt"), b"outside").expect("write outside file");
-        symlink(&outside_dir, instance_dir.join("linked-outside")).expect("create symlink");
-
-        let err = clone_instance_to_isolated_runtime(&instance_dir, &isolated_dir)
-            .expect_err("symlinked entry must be rejected");
-        assert!(err.to_ascii_lowercase().contains("symlink"));
-        assert!(!isolated_dir.join("linked-outside").exists());
-
-        let _ = fs::remove_dir_all(&instance_dir);
-        let _ = fs::remove_dir_all(&outside_dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn launcher_import_rejects_symlinked_content() {
-        use std::os::unix::fs::symlink;
-
-        let source_dir = temp_path("launcher-import-symlink-source");
-        let instance_dir = temp_path("launcher-import-symlink-instance");
-        let outside_file = temp_path("launcher-import-symlink-outside");
-        fs::create_dir_all(source_dir.join("mods")).expect("create source mods");
-        fs::create_dir_all(&instance_dir).expect("create instance dir");
-        fs::write(&outside_file, b"outside").expect("write outside file");
-        symlink(&outside_file, source_dir.join("mods").join("linked.jar"))
-            .expect("create linked mod");
-
-        let err = copy_launcher_source_into_instance(&source_dir, &instance_dir)
-            .expect_err("symlinked import content must be rejected");
-        assert!(err.to_ascii_lowercase().contains("symlink"));
-        assert!(!instance_dir.join("mods").join("linked.jar").exists());
-
-        let _ = fs::remove_dir_all(&source_dir);
-        let _ = fs::remove_dir_all(&instance_dir);
-        let _ = fs::remove_file(&outside_file);
-    }
-
-    #[test]
-    fn playtime_store_tracks_native_session_duration_and_summary() {
-        let instances_dir = temp_path("playtime");
-        fs::create_dir_all(&instances_dir).expect("create instances root");
-        let instance = Instance {
-            id: "inst_playtime".to_string(),
-            name: "Playtime".to_string(),
-            folder_name: Some("Playtime".to_string()),
-            mc_version: "1.20.1".to_string(),
-            loader: "fabric".to_string(),
-            created_at: now_iso(),
-            icon_path: None,
-            settings: InstanceSettings::default(),
-        };
-        let index = InstanceIndex {
-            instances: vec![instance.clone()],
-        };
-        write_index(&instances_dir, &index).expect("write index");
-        let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
-        fs::create_dir_all(&instance_dir).expect("create instance dir");
-
-        register_native_play_session_start(
-            &instances_dir,
-            &instance.id,
-            "native_test",
-            std::process::id(),
-            false,
-        )
-        .expect("register active play session");
-        let mut active = read_active_play_sessions_store(&instance_dir);
-        assert_eq!(active.active.len(), 1);
-        active.active[0].started_at = format!("unix:{}", Utc::now().timestamp().saturating_sub(5));
-        write_active_play_sessions_store(&instance_dir, active).expect("write active store");
-
-        let finalized = finalize_native_play_session(
-            &instances_dir,
-            &instance.id,
-            "native_test",
-            "success",
-            false,
-        )
-        .expect("finalize play session");
-        assert!(finalized.is_some());
-
-        let summary =
-            instance_playtime_summary(&instances_dir, &instance.id).expect("read playtime summary");
-        assert!(summary.total_seconds >= 5);
-        assert_eq!(summary.sessions_count, 1);
-        assert_eq!(summary.tracking_scope, "native_only");
-
-        let _ = fs::remove_dir_all(&instances_dir);
-    }
-
-    #[test]
-    fn normalize_app_language_accepts_supported_aliases() {
-        assert_eq!(normalize_app_language(""), "en-US");
-        assert_eq!(normalize_app_language("en"), "en-US");
-        assert_eq!(normalize_app_language("es-419"), "es-ES");
-        assert_eq!(normalize_app_language("fr"), "fr-FR");
-        assert_eq!(normalize_app_language("deutsch"), "de-DE");
-        assert_eq!(normalize_app_language("pt"), "pt-BR");
-        assert_eq!(normalize_app_language("unknown"), "en-US");
-    }
-}
-
-#[cfg(test)]
-mod instance_health_tests {
-    use super::*;
-
-    #[test]
-    fn instance_last_run_metadata_serializes_camel_case_shape() {
-        let payload = serde_json::to_value(InstanceLastRunMetadata {
-            last_launch_at: Some("2026-02-25T20:00:00Z".to_string()),
-            last_exit_kind: Some("success".to_string()),
-            last_exit_at: Some("2026-02-25T20:02:00Z".to_string()),
-        })
-        .expect("serialize last-run metadata");
-
-        assert_eq!(
-            payload.get("lastLaunchAt").and_then(|v| v.as_str()),
-            Some("2026-02-25T20:00:00Z")
-        );
-        assert_eq!(
-            payload.get("lastExitKind").and_then(|v| v.as_str()),
-            Some("success")
-        );
-        assert_eq!(
-            payload.get("lastExitAt").and_then(|v| v.as_str()),
-            Some("2026-02-25T20:02:00Z")
-        );
-        assert!(payload.get("last_launch_at").is_none());
-        assert!(payload.get("last_exit_kind").is_none());
-    }
-
-    #[test]
-    fn disk_usage_helper_counts_instance_files() {
-        let tmp = std::env::temp_dir().join(format!("openjar-disk-usage-{}", Uuid::new_v4()));
-        fs::create_dir_all(&tmp).expect("create temp instance dir");
-        fs::write(tmp.join("a.bin"), vec![1_u8; 64]).expect("write first file");
-        fs::create_dir_all(tmp.join("nested")).expect("create nested dir");
-        fs::write(tmp.join("nested").join("b.bin"), vec![2_u8; 128]).expect("write nested file");
-
-        let size = dir_total_size_bytes(&tmp);
-        assert!(size >= 192, "size should include both regular files");
-
-        let _ = fs::remove_dir_all(&tmp);
-    }
-}
-
-#[cfg(test)]
-mod storage_usage_tests {
-    use super::*;
-
-    fn temp_path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("openjar-storage-tests-{label}-{}", Uuid::new_v4()))
-    }
-
-    #[test]
-    fn storage_folder_entries_include_nested_directories_by_recursive_size() {
-        let root = temp_path("folders-recursive");
-        fs::create_dir_all(root.join("mods").join("cache")).expect("create nested cache dir");
-        fs::create_dir_all(root.join("logs")).expect("create logs dir");
-        fs::write(root.join("mods").join("a.jar"), vec![0_u8; 80]).expect("write mod");
-        fs::write(root.join("mods").join("cache").join("big.bin"), vec![0_u8; 240])
-            .expect("write nested big file");
-        fs::write(root.join("logs").join("latest.log"), vec![0_u8; 32]).expect("write log");
-
-        let rows = storage_collect_folder_entries("instance", &root, &root, "instance", Some("inst"), 10)
-            .expect("collect folder entries");
-        let rels = rows
-            .iter()
-            .map(|row| row.relative_path.as_str())
-            .collect::<Vec<_>>();
-
-        assert!(rels.contains(&"mods"));
-        assert!(rels.contains(&"mods/cache"));
-        assert!(rels.contains(&"logs"));
-        assert_eq!(rows.first().map(|row| row.relative_path.as_str()), Some("mods"));
-        assert_eq!(
-            rows.iter()
-                .find(|row| row.relative_path == "mods/cache")
-                .map(|row| row.bytes),
-            Some(240)
-        );
-
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn storage_app_breakdown_keeps_shared_cache_out_of_app_total() {
-        let launcher_root = temp_path("app-breakdown");
-        fs::create_dir_all(launcher_root.join("cache").join("assets")).expect("create cache assets");
-        fs::create_dir_all(launcher_root.join("profiles")).expect("create profiles");
-        fs::write(launcher_root.join("cache").join("assets").join("idx.bin"), vec![0_u8; 128])
-            .expect("write cache file");
-        fs::write(launcher_root.join("settings.json"), vec![0_u8; 24]).expect("write settings");
-        fs::write(launcher_root.join("profiles").join("profile.json"), vec![0_u8; 64])
-            .expect("write profile");
-
-        let (app_bytes, shared_cache_bytes, breakdown) =
-            storage_app_breakdown(&launcher_root).expect("scan app breakdown");
-
-        assert_eq!(shared_cache_bytes, 128);
-        assert_eq!(app_bytes, 88);
-        assert_eq!(
-            breakdown
-                .iter()
-                .find(|row| row.key == "launcher_metadata")
-                .map(|row| row.bytes),
-            Some(24)
-        );
-        assert_eq!(
-            breakdown
-                .iter()
-                .find(|row| row.key == "other_launcher")
-                .map(|row| row.bytes),
-            Some(64)
-        );
-
-        let _ = fs::remove_dir_all(&launcher_root);
-    }
-
-    #[test]
-    fn storage_app_scope_entries_do_not_list_cache_paths() {
-        let launcher_root = temp_path("app-scope");
-        fs::create_dir_all(launcher_root.join("cache").join("versions")).expect("create cache versions");
-        fs::create_dir_all(launcher_root.join("profiles")).expect("create profiles");
-        fs::write(launcher_root.join("cache").join("versions").join("v.json"), vec![0_u8; 32])
-            .expect("write cache version file");
-        fs::write(launcher_root.join("profiles").join("profile.json"), vec![0_u8; 16])
-            .expect("write profile file");
-
-        let folder_rows =
-            storage_collect_folder_entries("app", &launcher_root, &launcher_root, "app", None, 10)
-                .expect("collect app folder entries");
-        let file_rows =
-            storage_collect_file_entries("app", &launcher_root, &launcher_root, "app", None, 10)
-                .expect("collect app file entries");
-
-        assert!(folder_rows.iter().all(|row| !row.relative_path.starts_with("cache")));
-        assert!(file_rows.iter().all(|row| !row.relative_path.starts_with("cache")));
-        assert!(folder_rows.iter().any(|row| row.relative_path == "profiles"));
-
-        let _ = fs::remove_dir_all(&launcher_root);
-    }
 }
