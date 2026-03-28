@@ -502,7 +502,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                     onClick={() => runSearch(Math.max(0, offset - limit))}
                     disabled={discoverBusy || offset === 0}
                   >
-                    ← Prev
+                    Previous
                   </button>
                   <div className="pagerLabel">
                     Page {page} / {pages}
@@ -512,7 +512,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                     onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
                     disabled={discoverBusy || offset + limit >= totalHits}
                   >
-                    Next →
+                    Next
                   </button>
                 </div>
               </div>
@@ -670,7 +670,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                 onClick={() => runSearch(Math.max(0, offset - limit))}
                 disabled={discoverBusy || offset === 0}
               >
-                ← Prev
+                Previous
               </button>
               <div className="pagerLabel">
                 Page {page} / {pages}
@@ -680,7 +680,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                 onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
                 disabled={discoverBusy || offset + limit >= totalHits}
               >
-                Next →
+                Next
               </button>
             </div>
           </div>

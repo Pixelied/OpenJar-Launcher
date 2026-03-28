@@ -23,7 +23,9 @@ export type IconName =
   | "trash"
   | "check_circle"
   | "slash_circle"
-  | "chevron_down";
+  | "chevron_down"
+  | "chevron_left"
+  | "chevron_right";
 
 export default function Icon(props: { name: IconName; size?: number; className?: string }) {
   const size = props.size ?? 22;
@@ -46,9 +48,9 @@ export default function Icon(props: { name: IconName; size?: number; className?:
     case "home":
       return (
         <svg {...common}>
-          <path d="M4.2 10.4L12 4l7.8 6.4" />
-          <path d="M6.4 9.2V19a1 1 0 0 0 1 1h9.2a1 1 0 0 0 1-1V9.2" />
-          <path d="M10.3 20v-4.9a.9.9 0 0 1 .9-.9h1.6a.9.9 0 0 1 .9.9V20" />
+          <path className="homeRoof" d="M4.2 10.4L12 4l7.8 6.4" />
+          <path className="homeBody" d="M6.4 9.2V19a1 1 0 0 0 1 1h9.2a1 1 0 0 0 1-1V9.2" />
+          <path className="homeDoor" d="M10.3 20v-4.9a.9.9 0 0 1 .9-.9h1.6a.9.9 0 0 1 .9.9V20" />
         </svg>
       );
     case "compass":
@@ -76,19 +78,17 @@ export default function Icon(props: { name: IconName; size?: number; className?:
       );
     case "skin":
       return (
-        <svg {...common}>
-          <rect x="5.2" y="4.8" width="13.6" height="13.6" rx="2.8" />
-          <path d="M8.4 10.2h.01" />
-          <path d="M15.6 10.2h.01" />
-          <path d="M8.2 14.3c1.1.95 2.4 1.45 3.8 1.45s2.7-.5 3.8-1.45" />
+        <svg {...common} strokeWidth="2.35">
+          <path d="M9.55 5.5A2.45 2.45 0 1 1 14.35 5.5c0 1-.33 1.73-1.12 2.42-.82.73-1.23 1.18-1.23 2.18v1.2" />
+          <path d="M12 11.3 19.55 15.2c1.42.73 1.87 2.54.9 3.62-.45.51-1.08.78-1.8.78H5.35c-.72 0-1.35-.27-1.8-.78-.97-1.08-.52-2.89.9-3.62L12 11.3Z" />
         </svg>
       );
     case "bell":
       return (
         <svg {...common}>
-          <path d="M15 17H9c-1.2 0-2-.8-2-2v-3.2a5 5 0 0 1 10 0V15c0 1.2-.8 2-2 2z" />
-          <path d="M12 5V3.5" />
-          <path d="M10 20a2 2 0 0 0 4 0" />
+          <path className="bellBody" d="M15 17H9c-1.2 0-2-.8-2-2v-3.2a5 5 0 0 1 10 0V15c0 1.2-.8 2-2 2z" />
+          <path className="bellStem" d="M12 5V3.5" />
+          <path className="bellClapper" d="M10 20a2 2 0 0 0 4 0" />
         </svg>
       );
     case "plus":
@@ -150,6 +150,18 @@ export default function Icon(props: { name: IconName; size?: number; className?:
       return (
         <svg {...common}>
           <path d="M6 9l6 6 6-6" />
+        </svg>
+      );
+    case "chevron_left":
+      return (
+        <svg {...common}>
+          <path d="M15 6l-6 6 6 6" />
+        </svg>
+      );
+    case "chevron_right":
+      return (
+        <svg {...common}>
+          <path d="M9 6l6 6-6 6" />
         </svg>
       );
     case "download":
@@ -214,9 +226,9 @@ export default function Icon(props: { name: IconName; size?: number; className?:
     case "sparkles":
       return (
         <svg {...common}>
-          <path d="M12 2l1.2 4.3L17.5 8l-4.3 1.2L12 13.5l-1.2-4.3L6.5 8l4.3-1.7z" />
-          <path d="M19 13l.6 2.1L22 16l-2.4.9L19 19l-.6-2.1L16 16l2.4-.9z" />
-          <path d="M4.5 13l.5 1.7L7 15l-2 .7-.5 1.8-.5-1.8L2 15l2-.3z" />
+          <path className="sparkleMain" d="M12 2l1.2 4.3L17.5 8l-4.3 1.2L12 13.5l-1.2-4.3L6.5 8l4.3-1.7z" />
+          <path className="sparkleMinor sparkleMinorA" d="M19 13l.6 2.1L22 16l-2.4.9L19 19l-.6-2.1L16 16l2.4-.9z" />
+          <path className="sparkleMinor sparkleMinorB" d="M4.5 13l.5 1.7L7 15l-2 .7-.5 1.8-.5-1.8L2 15l2-.3z" />
         </svg>
       );
     case "layers":
