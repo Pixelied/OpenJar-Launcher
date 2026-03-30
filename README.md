@@ -31,8 +31,8 @@ Screenshots live in `readme-assets/images/`.
   <a href="readme-assets/images/instance library.png">
     <img src="readme-assets/images/instance library.png" width="49%" alt="Instance Library" />
   </a>
-  <a href="readme-assets/images/updates avaible.png">
-    <img src="readme-assets/images/updates avaible.png" width="49%" alt="Updates Avaible" />
+  <a href="readme-assets/images/updates available.png">
+    <img src="readme-assets/images/updates available.png" width="49%" alt="Updates Available" />
   </a>
 </p>
 
