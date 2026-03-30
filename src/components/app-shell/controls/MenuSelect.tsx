@@ -13,6 +13,8 @@ export default function MenuSelect({
   align,
   compact = false,
   compactPanelMinWidth,
+  panelMinWidth,
+  panelClassName,
 }: {
   value: string;
   labelPrefix: string;
@@ -23,6 +25,8 @@ export default function MenuSelect({
   align?: "start" | "end";
   compact?: boolean;
   compactPanelMinWidth?: number;
+  panelMinWidth?: number;
+  panelClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -31,19 +35,20 @@ export default function MenuSelect({
     () => options.reduce((max, option) => Math.max(max, option.label.length), 0),
     [options]
   );
-  const compactEstimatedMinWidth = useMemo(() => {
-    if (!compact) return 190;
-    const textEstimate = longestOptionLabel * 7 + 44;
-    const callerMin = compactPanelMinWidth ?? 0;
-    return Math.max(144, callerMin, textEstimate);
-  }, [compact, compactPanelMinWidth, longestOptionLabel]);
+  const estimatedMinWidth = useMemo(() => {
+    const textEstimate = compact ? longestOptionLabel * 7 + 44 : longestOptionLabel * 8 + 92;
+    const callerMin = Math.max(compactPanelMinWidth ?? 0, panelMinWidth ?? 0);
+    const baseMin = compact ? 144 : 220;
+    const cappedTextEstimate = compact ? textEstimate : Math.min(640, textEstimate);
+    return Math.max(baseMin, callerMin, cappedTextEstimate);
+  }, [compact, compactPanelMinWidth, longestOptionLabel, panelMinWidth]);
 
   const layout = usePortalDropdownLayout({
     open,
     rootRef,
     placement,
     estimatedHeight: 260,
-    minWidth: compactEstimatedMinWidth,
+    minWidth: estimatedMinWidth,
     align,
   });
 
@@ -92,7 +97,7 @@ export default function MenuSelect({
         ? createPortal(
             <div
               ref={panelRef}
-              className={`dropPanel portal ${layout.placement === "top" ? "top" : ""} ${compact ? "menuSelectCompactPanel" : ""}`}
+              className={`dropPanel portal ${layout.placement === "top" ? "top" : ""} ${compact ? "menuSelectCompactPanel" : ""} ${panelClassName ?? ""}`}
               style={{
                 top: layout.top,
                 left: layout.left,
@@ -113,7 +118,10 @@ export default function MenuSelect({
                     }}
                   >
                     <div>{o.label}</div>
-                    <div className="menuCheck">{o.value === value ? "✓" : ""}</div>
+                    <div
+                      className={`menuCheck multiSelectCheck ${o.value === value ? "checked" : ""}`}
+                      aria-hidden="true"
+                    />
                   </div>
                 ))}
               </div>

@@ -19,6 +19,7 @@ export default function MultiSelectDropdown({
   panelMinWidth = 300,
   panelEstimatedHeight = 420,
   allSelectedLabel,
+  allSelectedIsPlaceholder = false,
 }: {
   values: string[];
   placeholder: string;
@@ -35,6 +36,7 @@ export default function MultiSelectDropdown({
   panelMinWidth?: number;
   panelEstimatedHeight?: number;
   allSelectedLabel?: string;
+  allSelectedIsPlaceholder?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -107,8 +109,12 @@ export default function MultiSelectDropdown({
     [groups]
   );
 
+  const showingAllSelectedLabel = Boolean(
+    allSelectedLabel && totalOptionCount > 0 && label === allSelectedLabel
+  );
+
   const showValueStyle =
-    values.length > 0 || Boolean(allSelectedLabel && totalOptionCount > 0 && label === allSelectedLabel);
+    values.length > 0 && !(allSelectedIsPlaceholder && showingAllSelectedLabel);
 
   const toggle = (id: string) => {
     const set = new Set(values);
@@ -177,8 +183,11 @@ export default function MultiSelectDropdown({
                             style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
                             onClick={() => toggle(it.id)}
                           >
-                            <div style={{ paddingRight: 12 }}>{it.label}</div>
-                            <div style={{ opacity: checked ? 1 : 0.35, fontWeight: 1000 }}>{checked ? "✓" : ""}</div>
+                            <div className="multiSelectItemLabel">{it.label}</div>
+                            <span
+                              className={`menuCheck multiSelectCheck ${checked ? "checked" : ""}`}
+                              aria-hidden="true"
+                            />
                           </div>
                         );
                       })}

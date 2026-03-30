@@ -71,7 +71,10 @@ export default function InstancePickerDropdown({
               }}
             >
               <span>{item.name}</span>
-              <span className="menuCheck">{item.id === selected?.id ? "✓" : ""}</span>
+              <span
+                className={`menuCheck multiSelectCheck ${item.id === selected?.id ? "checked" : ""}`}
+                aria-hidden="true"
+              />
             </div>
           ))}
         </div>

@@ -63,16 +63,19 @@ export default function Icon(props: { name: IconName; size?: number; className?:
     case "box":
       return (
         <svg {...common}>
-          <path d="M21 16V8a2 2 0 0 0-1-1.73L13 2.27a2 2 0 0 0-2 0L4 6.27A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-          <path d="M3.3 7l8.7 5 8.7-5" />
-          <path d="M12 22V12" />
+          <path className="boxShell" d="M21 16V8a2 2 0 0 0-1-1.73L13 2.27a2 2 0 0 0-2 0L4 6.27A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <path className="boxLid" d="M3.3 7l8.7 5 8.7-5" />
+          <path className="boxSpine" d="M12 22V12" />
         </svg>
       );
     case "books":
       return (
         <svg {...common}>
-          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-          <path d="M6.5 2H19.1A.9.9 0 0 1 20 2.9V22H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+          <path className="booksShelf" d="M4.15 19.2A2.65 2.65 0 0 1 6.8 16.55H20" />
+          <path className="booksRear booksRearLeft" d="M6.75 1.6H19.02A.98.98 0 0 1 20 2.58v16.62H6.92A2.92 2.92 0 0 1 4 16.28V4.5a2.92 2.92 0 0 1 2.75-2.9z" />
+          <path className="booksRear booksRearRight" d="M6.75 1.6H19.02A.98.98 0 0 1 20 2.58v16.62H6.92A2.92 2.92 0 0 1 4 16.28V4.5a2.92 2.92 0 0 1 2.75-2.9z" />
+          <path className="booksFrontFill" d="M6.75 1.6H19.02A.98.98 0 0 1 20 2.58v16.62H6.92A2.92 2.92 0 0 1 4 16.28V4.5a2.92 2.92 0 0 1 2.75-2.9z" />
+          <path className="booksFront" d="M6.75 1.6H19.02A.98.98 0 0 1 20 2.58v16.62H6.92A2.92 2.92 0 0 1 4 16.28V4.5a2.92 2.92 0 0 1 2.75-2.9z" />
           <path className="bookCornerMark" d="M13.35 2.2v5.8l1.7-1.25L16.75 8V2.2" />
         </svg>
       );
@@ -168,8 +171,8 @@ export default function Icon(props: { name: IconName; size?: number; className?:
       return (
         <svg {...common}>
           <path d="M12 3v12" />
-          <path d="M7 10l5 5 5-5" />
-          <path d="M5 21h14" />
+          <path d="M7.4 11.2 12 15.8l4.6-4.6" />
+          <path d="M4.9 17.9v1.35A1.75 1.75 0 0 0 6.65 21h10.7a1.75 1.75 0 0 0 1.75-1.75V17.9" />
         </svg>
       );
     case "upload":
