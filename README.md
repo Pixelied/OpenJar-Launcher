@@ -11,20 +11,28 @@ Security notes live in [SECURITY.md](SECURITY.md). License terms live in [Licens
 Screenshots live in `readme-assets/images/`.
 
 <p align="center">
-  <a href="readme-assets/images/modpack maker.png">
-    <img src="readme-assets/images/modpack maker.png" width="49%" alt="Modpack Maker" />
+  <a href="readme-assets/images/discover content.png">
+    <img src="readme-assets/images/discover content.png" width="49%" alt="Discover content" />
   </a>
-  <a href="readme-assets/images/instance%20content.png">
-    <img src="readme-assets/images/instance%20content.png" width="49%" alt="Instance content" />
+  <a href="readme-assets/images/instance content.png">
+    <img src="readme-assets/images/instance content.png" width="49%" alt="Instance content" />
   </a>
 </p>
 
 <p align="center">
-  <a href="readme-assets/images/discover%20content.png">
-    <img src="readme-assets/images/discover%20content.png" width="49%" alt="Discover content" />
+  <a href="readme-assets/images/modpack maker.png">
+    <img src="readme-assets/images/modpack maker.png" width="49%" alt="Modpack Maker" />
   </a>
-  <a href="readme-assets/images/config%20editor.png">
-    <img src="readme-assets/images/config%20editor.png" width="49%" alt="Config editor" />
+  <a href="readme-assets/images/config editor.png">
+    <img src="readme-assets/images/config editor.png" width="49%" alt="Config editor" />
+  </a>
+</p>
+<p align="center">
+  <a href="readme-assets/images/instance library.png">
+    <img src="readme-assets/images/instance library.png" width="49%" alt="Instance Library" />
+  </a>
+  <a href="readme-assets/images/updates avaible.png">
+    <img src="readme-assets/images/updates avaible.png" width="49%" alt="Updates Avaible" />
   </a>
 </p>
 
