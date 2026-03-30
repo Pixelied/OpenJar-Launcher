@@ -13502,9 +13502,6 @@ export default function App() {
                         : "Arrange widgets and sections"}
                     </div>
                   </div>
-                  <span className="homeKpiActionIcon" aria-hidden="true">
-                    <Icon name="sliders" size={16} />
-                  </span>
                 </button>
               </div>
           </section>
