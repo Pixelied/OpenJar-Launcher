@@ -303,7 +303,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                   <div className="settingsHeroLead">
                     <div className="settingsHeroLeadLabel">At a glance</div>
                     <div className="settingsHeroLeadText">
-                      The essentials stay readable here while deeper controls live below in a steadier rhythm.
+                      Your current mode, language, launch defaults, account state, and updater health in one tighter pass.
                     </div>
                   </div>
   
@@ -711,7 +711,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                     <div className="settingSub">Checks for OpenJar Launcher releases when the app starts.</div>
                   </div>
                   {appUpdaterState?.release_notes ? (
-                    <div className="muted" style={{ marginTop: 8, whiteSpace: "pre-wrap" }}>
+                    <div className="settingsReleaseNotesExcerpt">
                       {appUpdaterState.release_notes.slice(0, 280)}
                       {appUpdaterState.release_notes.length > 280 ? "…" : ""}
                     </div>
@@ -880,7 +880,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                               Re-check selected instance
                             </button>
                           </div>
-                          <div className="muted" style={{ marginTop: 6 }}>
+                          <div className="settingsInlineStatus">
                             Selected instance: {selectedPermissionsInstance?.name ?? "None"}.
                           </div>
                           {selectedPermissionsChecklist.length > 0 ? (
@@ -898,7 +898,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                               ))}
                             </div>
                           ) : (
-                            <div className="muted" style={{ marginTop: 8 }}>
+                            <div className="settingsEmptyStateHint">
                               No permission report yet for the selected instance. Click Re-check selected instance.
                             </div>
                           )}
@@ -931,8 +931,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                             value={githubTokenPoolDraft}
                             onChange={(e) => setGithubTokenPoolDraft(e.target.value)}
                             placeholder="Paste one token per line (or comma/semicolon separated)"
-                            rows={4}
-                            style={{ marginTop: 8, resize: "vertical", minHeight: 96 }}
+                            rows={3}
                           />
                           {!githubTokenPoolStatus?.configured && !githubTokenPoolDraft.trim() ? (
                             <div className="githubTokenReadyHint">
@@ -970,7 +969,7 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                             </button>
                           </div>
                           {githubTokenPoolStatus ? (
-                            <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+                            <div className="settingsStatusStack">
                               <div className={githubTokenPoolStatus.keychain_available ? "noticeBox" : "warningBox"}>
                                 {githubTokenPoolStatus.message}
                               </div>

@@ -1050,7 +1050,7 @@ export default function ModpackMaker({
   return (
     <div className="mpmPage" style={{ maxWidth: 1440, margin: "0 auto" }}>
       {migrationPending ? (
-        <div className="card" style={{ marginTop: 12, padding: 14, borderRadius: 16 }}>
+        <div className="card" style={{ marginTop: 0, padding: 14, borderRadius: 16 }}>
           <div style={{ fontWeight: 900 }}>Legacy Creator migration available</div>
           <div className="muted" style={{ marginTop: 4 }}>
             Found old presets in local storage. Migration creates new ModpackSpec entries and reports skipped items.
@@ -1083,7 +1083,7 @@ export default function ModpackMaker({
       ) : null}
 
       {view === "home" ? (
-        <>
+        <div className="mpmHomeStack">
           <div className="card mpmShellCard mpmHomeCard" style={{ position: "relative", zIndex: 4 }}>
             <div className="mpmHomeHeader">
               <div className="mpmHeaderBlock">
@@ -1346,7 +1346,7 @@ export default function ModpackMaker({
               </div>
             )}
           </div>
-        </>
+        </div>
       ) : null}
 
       {view === "editor" && editorSpec ? (

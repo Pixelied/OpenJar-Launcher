@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import Icon from "../components/app-shell/Icon";
 import Modal from "../components/app-shell/Modal";
 import Dropdown from "../components/app-shell/controls/Dropdown";
@@ -147,6 +148,38 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
   } = props;
 
   const selectedInst = instances.find((i) => i.id === selectedId) ?? null;
+        const availableDiscoverSources =
+          discoverContentType === "mods"
+            ? [...DISCOVER_PROVIDER_SOURCES]
+            : DISCOVER_PROVIDER_SOURCES.filter((source) => source !== "github");
+        const discoverSourceGroups = DISCOVER_SOURCE_GROUPS
+          .map((group) => ({
+            ...group,
+            items: group.items.filter((item) => availableDiscoverSources.includes(item.id as any)),
+          }))
+          .filter((group) => group.items.length > 0);
+        const discoverSourceFilterValues = (() => {
+          const normalized = normalizeDiscoverProviderSources(discoverSources).filter((source) =>
+            availableDiscoverSources.includes(source)
+          );
+          return normalized.length > 0 ? normalized : [...availableDiscoverSources];
+        })();
+        const discoverSourceFilterActive =
+          discoverSourceFilterValues.length < availableDiscoverSources.length;
+        useEffect(() => {
+          const nextSources = normalizeDiscoverProviderSources(discoverSources).filter((source) =>
+            availableDiscoverSources.includes(source)
+          );
+          const resolved = nextSources.length > 0 ? nextSources : [...availableDiscoverSources];
+          const current = Array.isArray(discoverSources) ? discoverSources : [];
+          if (
+            current.length === resolved.length &&
+            resolved.every((source, index) => current[index] === source)
+          ) {
+            return;
+          }
+          setDiscoverSources(resolved);
+        }, [availableDiscoverSources, discoverSources, setDiscoverSources]);
         const discoverIncludesGithub = effectiveDiscoverSources.includes("github");
         const discoverIncludesCurseforge = effectiveDiscoverSources.includes("curseforge");
         const discoverOnlyCurseforge =
@@ -189,6 +222,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
           ? discoverFilterSupportNotes.join(" ")
           : null;
         const activeDiscoverFilterCount =
+          (discoverSourceFilterActive ? 1 : 0) +
           (filterVersion ? 1 : 0) +
           (filterLoaders.length > 0 ? 1 : 0) +
           (filterCategories.length > 0 ? 1 : 0) +
@@ -301,224 +335,89 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
               </div>
             ) : null}
   
-            <div className="discoverWorkspace">
-              <div className="discoverWorkspaceTop">
-                <div>
-                  <div className="discoverWorkspaceEyebrow">Search setup</div>
-                  <div className="discoverWorkspaceTitle">Filters and sources</div>
-                </div>
-                <div className="discoverWorkspaceStats">
-                  <span className="chip subtle">{activeDiscoverFilterCount} active filter{activeDiscoverFilterCount === 1 ? "" : "s"}</span>
-                  <span className="chip subtle">{totalHits} result{totalHits === 1 ? "" : "s"}</span>
-                </div>
-              </div>
-  
-              <div className="topRow" style={{ marginBottom: 8 }}>
-                <SegmentedControl
-                  value={discoverContentType}
-                  onChange={(v) => {
-                    setDiscoverContentType((v as DiscoverContentType) ?? "mods");
-                    setFilterLoaders([]);
-                    setOffset(0);
-                  }}
-                  options={DISCOVER_CONTENT_OPTIONS}
-                  variant="scroll"
-                />
-              </div>
-  
-              <div className="topRow discoverSearchRow">
-                <div className="searchGrow">
-                  <input
-                    className="input"
-                    value={q}
-                    onChange={(e) => {
-                      setQ(e.target.value);
-                      if (discoverErr) setDiscoverErr(null);
-                    }}
-                    placeholder={discoverPlaceholder}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") runSearch(0);
-                    }}
-                  />
-                </div>
-  
-                <div className="discoverSearchActions">
-                  <MenuSelect
-                    value={index}
-                    labelPrefix="Sort"
-                    options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
-                    onChange={(v) => {
-                      setIndex(v as any);
-                      setOffset(0);
-                    }}
-                  />
-  
-                  <MenuSelect
-                    value={String(limit)}
-                    labelPrefix="View"
-                    options={DISCOVER_VIEW_OPTIONS}
-                    align="end"
-                    onChange={(v) => {
-                      setLimit(parseInt(v, 10));
-                      setOffset(0);
-                    }}
-                  />
-  
-                  <div className="filterCtrl filterCtrlSource">
-                    <MultiSelectDropdown
-                      values={discoverSources}
-                      placeholder="Sources: All"
-                      allSelectedLabel="Sources: All"
-                      groups={DISCOVER_SOURCE_GROUPS}
-                      showSearch={false}
-                      showGroupHeaders={false}
-                      itemVariant="menu"
-                      clearLabel="All sources"
-                      panelMinWidth={220}
-                      panelEstimatedHeight={176}
-                      onChange={(values) => {
-                        const next = normalizeDiscoverProviderSources(values);
-                        setDiscoverSources(next.length > 0 ? next : [...DISCOVER_PROVIDER_SOURCES]);
-                        setOffset(0);
-                      }}
-                      onClear={() => {
-                        setDiscoverSources([...DISCOVER_PROVIDER_SOURCES]);
-                        setOffset(0);
-                      }}
-                    />
+            <div className="discoverLayout">
+              <div className="discoverMain">
+                <div className="discoverWorkspace">
+                  <div className="discoverWorkspaceTop">
+                    <div>
+                      <div className="discoverWorkspaceTitle">Search and install content</div>
+                    </div>
+                    <div className="discoverWorkspaceStats">
+                      <span className="chip subtle">{totalHits} result{totalHits === 1 ? "" : "s"}</span>
+                      <span className="chip subtle">{activeDiscoverFilterCount} active filter{activeDiscoverFilterCount === 1 ? "" : "s"}</span>
+                    </div>
                   </div>
-  
-                  <button className="btn primary" onClick={() => runSearch(0)} disabled={discoverBusy}>
-                    {discoverBusy ? "Searching…" : "Search"}
-                  </button>
-                </div>
-              </div>
-  
-              <div className="topRow discoverFilterRow">
-                <div className="discoverFiltersRight">
-                  <div className="filterCtrl filterCtrlVersion">
-                    <Dropdown
-                      value={filterVersion}
-                      placeholder="Game version: Any"
-                      groups={groupedDiscoverVersions}
-                      includeAny
-                      onPick={(v) => {
-                        setFilterVersion(v);
-                        setOffset(0);
-                      }}
-                    />
-                  </div>
-  
-                  <div className="filterCtrl filterCtrlLoader">
-                    <MultiSelectDropdown
-                      values={filterLoaders}
-                      placeholder="Loaders: Any"
-                      groups={DISCOVER_LOADER_GROUPS}
-                      showSearch={false}
-                      showGroupHeaders={false}
-                      disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
+
+                  <div className="topRow discoverTypeRow" style={{ marginBottom: 8 }}>
+                    <SegmentedControl
+                      value={discoverContentType}
                       onChange={(v) => {
-                        if (discoverContentType !== "mods") return;
-                        if (discoverOnlyCurseforge) return;
-                        setFilterLoaders(v);
+                        const nextType = (v as DiscoverContentType) ?? "mods";
+                        const nextAvailableSources =
+                          nextType === "mods"
+                            ? [...DISCOVER_PROVIDER_SOURCES]
+                            : DISCOVER_PROVIDER_SOURCES.filter((source) => source !== "github");
+                        const nextSources = normalizeDiscoverProviderSources(discoverSources).filter((source) =>
+                          nextAvailableSources.includes(source)
+                        );
+                        setDiscoverContentType(nextType);
+                        setDiscoverSources(nextSources.length > 0 ? nextSources : [...nextAvailableSources]);
+                        setFilterLoaders([]);
                         setOffset(0);
                       }}
+                      options={DISCOVER_CONTENT_OPTIONS}
+                      variant="scroll"
                     />
                   </div>
-  
-                  <div className="filterCtrl filterCtrlCategory">
-                    <MultiSelectDropdown
-                      values={filterCategories}
-                      placeholder="Categories: Any"
-                      groups={MOD_CATEGORY_GROUPS}
-                      searchPlaceholder="Search categories…"
-                      onChange={(v) => {
-                        setFilterCategories(v);
-                        setOffset(0);
-                      }}
-                    />
+
+                  <div className="topRow discoverSearchRow">
+                    <div className="searchGrow">
+                      <input
+                        className="input discoverSearchInput"
+                        value={q}
+                        onChange={(e) => {
+                          setQ(e.target.value);
+                          if (discoverErr) setDiscoverErr(null);
+                        }}
+                        placeholder={discoverPlaceholder}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") runSearch(0);
+                        }}
+                      />
+                    </div>
+
+                    <div className="discoverSearchActions">
+                      <MenuSelect
+                        value={index}
+                        labelPrefix="Sort"
+                        options={DISCOVER_SORT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                        onChange={(v) => {
+                          setIndex(v as any);
+                          setOffset(0);
+                        }}
+                      />
+
+                      <MenuSelect
+                        value={String(limit)}
+                        labelPrefix="View"
+                        options={DISCOVER_VIEW_OPTIONS}
+                        align="end"
+                        onChange={(v) => {
+                          setLimit(parseInt(v, 10));
+                          setOffset(0);
+                        }}
+                      />
+
+                      <button className="btn discoverSearchBtn" onClick={() => runSearch(0)} disabled={discoverBusy}>
+                        {discoverBusy ? "Searching…" : "Search"}
+                      </button>
+                    </div>
                   </div>
-  
-                  <label className="checkboxRow discoverCheckboxRow">
-                    <span
-                      className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
-                      onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
-                      role="checkbox"
-                      aria-checked={discoverAllVersions}
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setDiscoverAllVersions(!discoverAllVersions);
-                        }
-                      }}
-                    >
-                      {discoverAllVersions ? "✓" : ""}
-                    </span>
-                    Show all versions
-                  </label>
-  
-                  <button
-                    className="btn discoverClearBtn"
-                    onClick={() => {
-                      setFilterVersion(null);
-                      setFilterLoaders([]);
-                      setFilterCategories([]);
-                      setOffset(0);
-                    }}
-                    disabled={!filterVersion && filterLoaders.length === 0 && filterCategories.length === 0}
-                  >
-                    Clear filters
-                  </button>
                 </div>
-              </div>
-  
-              {discoverFilterSupportNotice ? (
-                <div className="warningBox" style={{ marginTop: 8 }}>{discoverFilterSupportNotice}</div>
-              ) : null}
-            </div>
-  
-            {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
-  
-            <div className="discoverResultsHeader">
-              <div className="discoverResultsInfo">
-                <div className="discoverResultsTitleRow">
-                  <div className="discoverResultsTitle">Results</div>
-                  <span className="chip subtle">{discoverContentTypeLabel}</span>
-                  <span className="chip subtle">
-                    {effectiveDiscoverSources.length} source{effectiveDiscoverSources.length === 1 ? "" : "s"}
-                  </span>
-                </div>
-                <div className="discoverResultsSub">
-                  {discoverBusy
-                    ? "Refreshing matches..."
-                    : `Showing ${hits.length} of ${totalHits} result${totalHits === 1 ? "" : "s"} on page ${page} of ${pages}.`}
-                </div>
-              </div>
-              <div className="discoverResultsPager">
-                <div className="pager pagerTop">
-                  <button
-                    className="btn"
-                    onClick={() => runSearch(Math.max(0, offset - limit))}
-                    disabled={discoverBusy || offset === 0}
-                  >
-                    Previous
-                  </button>
-                  <div className="pagerLabel">
-                    Page {page} / {pages}
-                  </div>
-                  <button
-                    className="btn"
-                    onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
-                    disabled={discoverBusy || offset + limit >= totalHits}
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            </div>
-  
-            <div className="resultsGrid">
+
+                {discoverErr ? <div className="errorBox">{discoverErr}</div> : null}
+
+                <div className="resultsGrid">
               {hits.map((h) => (
                 <div
                   className="resultCard"
@@ -552,9 +451,11 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                     <div className="resultDesc">{h.description}</div>
                     <div className="resultMetaRow">
                       <span className="chip subtle discoverMetaChip">{providerSourceLabel(h.source)}</span>
-                      <span className="resultMetaText">by {h.author}</span>
-                      <span className="resultMetaText">↓ {formatCompact(h.downloads)}</span>
-                      <span className="resultMetaText">♥ {formatCompact(h.follows)}</span>
+                      <div className="resultMetaPrimary">
+                        <span className="resultMetaText resultMetaStrong">by {h.author}</span>
+                        <span className="resultMetaText resultMetaStrong"><span className="resultArrowGlyph">↓</span> {formatCompact(h.downloads)}</span>
+                        <span className="resultMetaText resultMetaStrong"><span className="resultHeartGlyph">♥</span> {formatCompact(h.follows)}</span>
+                      </div>
                       {h.source === "github" && githubInstallStateChipLabel(h.install_state) ? (
                         <span className={githubStatusChipClass("installability", h.install_state)}>
                           {githubInstallStateChipLabel(h.install_state)}
@@ -566,20 +467,14 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                         </span>
                       ))}
                     </div>
-                    {h.source === "github" && githubInstallSummary(h) ? (
-                      <div className="muted" style={{ marginTop: 8, fontSize: 12.5 }}>
-                        {githubInstallSummary(h)}
-                      </div>
-                    ) : null}
                   </div>
   
                   <div
                     className="resultActions"
-                    style={{ alignSelf: "center" }}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <button
-                      className="btn ghost"
+                      className="btn subtle discoverActionBtn discoverViewBtn"
                       onClick={() => {
                         if (h.source === "modrinth") {
                           openProject(h.project_id, (h.content_type as DiscoverContentType) ?? discoverContentType);
@@ -601,7 +496,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                       View
                     </button>
                     <button
-                      className="btn"
+                      className="btn discoverActionBtn discoverAddBtn"
                       onClick={() =>
                         openAddToModpack({
                           source: normalizeDiscoverSource(h.source),
@@ -626,7 +521,7 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                       Add to modpack
                     </button>
                     <button
-                      className="btn primary installAction"
+                      className="btn installAction discoverActionBtn discoverInstallBtn"
                       onClick={() =>
                         openInstall({
                           source: normalizeDiscoverSource(h.source),
@@ -651,7 +546,10 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                       }
                       disabled={h.content_type === "modpacks" || !githubResultInstallSupported(h)}
                     >
-                      <Icon name="download" /> {h.content_type === "modpacks" ? "Template only" : "Install"}
+                      <span className="btnIcon">
+                        <Icon name="download" />
+                      </span>
+                      {h.content_type === "modpacks" ? "Template only" : "Install"}
                     </button>
                   </div>
                 </div>
@@ -662,26 +560,151 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                   No results.
                 </div>
               ) : null}
-            </div>
-  
-            <div className="pager">
-              <button
-                className="btn"
-                onClick={() => runSearch(Math.max(0, offset - limit))}
-                disabled={discoverBusy || offset === 0}
-              >
-                Previous
-              </button>
-              <div className="pagerLabel">
-                Page {page} / {pages}
+                </div>
+
+                <div className="pager">
+                  <button
+                    className="btn"
+                    onClick={() => runSearch(Math.max(0, offset - limit))}
+                    disabled={discoverBusy || offset === 0}
+                  >
+                    Previous
+                  </button>
+                  <div className="pagerLabel">
+                    Page {page} / {pages}
+                  </div>
+                  <button
+                    className="btn"
+                    onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
+                    disabled={discoverBusy || offset + limit >= totalHits}
+                  >
+                    Next
+                  </button>
+                </div>
               </div>
-              <button
-                className="btn"
-                onClick={() => runSearch(Math.min((pages - 1) * limit, offset + limit))}
-                disabled={discoverBusy || offset + limit >= totalHits}
-              >
-                Next
-              </button>
+
+              <aside className="discoverSidebar">
+                <div className="discoverSidebarSection">
+                  <div className="discoverSidebarTitle">Refine</div>
+                  <div className="discoverSidebarBody">
+                    <div className="filterCtrl filterCtrlSource">
+                      <MultiSelectDropdown
+                        values={discoverSourceFilterValues}
+                        placeholder="Sources: All"
+                        allSelectedLabel="Sources: All"
+                        allSelectedIsPlaceholder
+                        groups={discoverSourceGroups}
+                        showSearch={false}
+                        showGroupHeaders={false}
+                        itemVariant="menu"
+                        clearLabel="Use all sources"
+                        panelMinWidth={220}
+                        panelEstimatedHeight={176}
+                        onChange={(values) => {
+                          const next = normalizeDiscoverProviderSources(values).filter((source) =>
+                            availableDiscoverSources.includes(source)
+                          );
+                          setDiscoverSources(next.length > 0 ? next : [...availableDiscoverSources]);
+                          setOffset(0);
+                        }}
+                        onClear={() => {
+                          setDiscoverSources([...availableDiscoverSources]);
+                          setOffset(0);
+                        }}
+                      />
+                    </div>
+
+                    <div className="filterCtrl filterCtrlVersion">
+                      <Dropdown
+                        value={filterVersion}
+                        placeholder="Game version: Any"
+                        groups={groupedDiscoverVersions}
+                        includeAny
+                        onPick={(v) => {
+                          setFilterVersion(v);
+                          setOffset(0);
+                        }}
+                      />
+                    </div>
+
+                    <div className="filterCtrl filterCtrlLoader">
+                      <MultiSelectDropdown
+                        values={filterLoaders}
+                        placeholder="Loaders: Any"
+                        groups={DISCOVER_LOADER_GROUPS}
+                        showSearch={false}
+                        showGroupHeaders={false}
+                        disabled={discoverContentType !== "mods" || discoverOnlyCurseforge}
+                        onChange={(v) => {
+                          if (discoverContentType !== "mods") return;
+                          if (discoverOnlyCurseforge) return;
+                          setFilterLoaders(v);
+                          setOffset(0);
+                        }}
+                      />
+                    </div>
+
+                    <div className="filterCtrl filterCtrlCategory">
+                      <MultiSelectDropdown
+                        values={filterCategories}
+                        placeholder="Categories: Any"
+                        groups={MOD_CATEGORY_GROUPS}
+                        searchPlaceholder="Search categories…"
+                        onChange={(v) => {
+                          setFilterCategories(v);
+                          setOffset(0);
+                        }}
+                      />
+                    </div>
+
+                    <div className="discoverSidebarFooter">
+                      <label className="checkboxRow discoverCheckboxRow">
+                        <span
+                          className={`checkbox ${discoverAllVersions ? "checked" : ""}`}
+                          onClick={() => setDiscoverAllVersions(!discoverAllVersions)}
+                          role="checkbox"
+                          aria-checked={discoverAllVersions}
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setDiscoverAllVersions(!discoverAllVersions);
+                            }
+                          }}
+                        >
+                          {discoverAllVersions ? "✓" : ""}
+                        </span>
+                        Show all versions
+                      </label>
+
+                      <button
+                        className="btn subtle discoverClearBtn"
+                        onClick={() => {
+                          setDiscoverSources([...availableDiscoverSources]);
+                          setFilterVersion(null);
+                          setFilterLoaders([]);
+                          setFilterCategories([]);
+                          setDiscoverAllVersions(false);
+                          setOffset(0);
+                        }}
+                        disabled={
+                          !discoverSourceFilterActive &&
+                          !filterVersion &&
+                          filterLoaders.length === 0 &&
+                          filterCategories.length === 0 &&
+                          !discoverAllVersions
+                        }
+                      >
+                        Clear filters
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {discoverFilterSupportNotice ? (
+                  <div className="discoverSidebarNotice warningBox">{discoverFilterSupportNotice}</div>
+                ) : null}
+              </aside>
             </div>
           </div>
         );

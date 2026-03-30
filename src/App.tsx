@@ -189,7 +189,7 @@ import {
 import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
 import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
 import LibraryRoute from "./pages/LibraryRoute";
-import SkinsRoute from "./pages/SkinsRoute";
+import SkinsRoute, { MinecraftBreakOverlay, SKINS_PAGE_RUIN_FRAGMENTS } from "./pages/SkinsRoute";
 import DiscoverRoute from "./pages/DiscoverRoute";
 import ModpacksRoute from "./pages/ModpacksRoute";
 import AccountRoute from "./pages/AccountRoute";
@@ -5488,6 +5488,12 @@ export default function App() {
   const [skinViewerErr, setSkinViewerErr] = useState<string | null>(null);
   const [skinViewerPreparing, setSkinViewerPreparing] = useState(false);
   const [skinViewerBusy, setSkinViewerBusy] = useState(false);
+  const [skinViewerHitCombo, setSkinViewerHitCombo] = useState(0);
+  const [skinViewerComboPulseKey, setSkinViewerComboPulseKey] = useState(0);
+  const [skinViewerMiningActive, setSkinViewerMiningActive] = useState(false);
+  const [skinViewerMiningBreakStage, setSkinViewerMiningBreakStage] = useState(0);
+  const [skinViewerMineBurstKey, setSkinViewerMineBurstKey] = useState(0);
+  const [skinViewerPageBroken, setSkinViewerPageBroken] = useState(false);
   const [accountAppearanceBusy, setAccountAppearanceBusy] = useState(false);
   const [skinRenameDraft, setSkinRenameDraft] = useState("");
   const [skinViewerEpoch, setSkinViewerEpoch] = useState(0);
@@ -5496,7 +5502,8 @@ export default function App() {
   const accountSkinViewerRef = useRef<SkinViewer | null>(null);
   const accountSkinViewerResizeRef = useRef<ResizeObserver | null>(null);
   const skinViewerInputCleanupRef = useRef<(() => void) | null>(null);
-  const skinViewerEmoteTriggerRef = useRef<((mode?: "play" | "celebrate") => void) | null>(null);
+  const skinViewerEmoteTriggerRef = useRef<((mode?: "play" | "celebrate" | "prank") => void) | null>(null);
+  const skinViewerComboResetTimeoutRef = useRef<number | null>(null);
   const skinTextureCacheRef = useRef<Map<string, string>>(new Map());
   const capeTextureCacheRef = useRef<Map<string, string>>(new Map());
   const skinViewerNameTagTextRef = useRef<string | null>(null);
@@ -11282,7 +11289,7 @@ export default function App() {
       ? "Preparing 3D preview…"
       : skinViewerBusy
         ? "Loading 3D preview…"
-        : "Drag to rotate, scroll to zoom, click to punch, use Play emote for gestures";
+        : "Drag to rotate, scroll to zoom, click to punch, hold to mine, use Play emote for gestures";
 
   const resolveViewerTexture = async (
     src: string | null,
@@ -11758,6 +11765,13 @@ export default function App() {
     if (!showSkinViewer) {
       setSkinViewerPreparing(false);
       setSkinViewerBusy(false);
+      setSkinViewerHitCombo(0);
+      setSkinViewerMiningActive(false);
+      setSkinViewerMiningBreakStage(0);
+      if (skinViewerComboResetTimeoutRef.current != null) {
+        window.clearTimeout(skinViewerComboResetTimeoutRef.current);
+        skinViewerComboResetTimeoutRef.current = null;
+      }
       skinViewerNameTagTextRef.current = null;
       skinViewerEmoteTriggerRef.current = null;
       return;
@@ -11831,6 +11845,29 @@ export default function App() {
         amount: 1,
         arm: "right" as "right" | "left",
       };
+      const miningComboState = {
+        count: 0,
+        lastHitAt: 0,
+      };
+      const miningHoldState = {
+        pointerId: -1,
+        startX: 0,
+        startY: 0,
+        startedAt: 0,
+        moved: false,
+        active: false,
+        swingPhase: 0,
+        lastFrameAt: 0,
+        lastSwingAt: 0,
+        nextArm: "right" as "right" | "left",
+      };
+      let pageBroken = skinViewerPageBroken;
+      const pageBreakState = {
+        progress: pageBroken ? 1 : 0,
+        stage: pageBroken ? 9 : 0,
+        nextBurstAt: pageBroken ? 1 : 0.14,
+        lastTickAt: performance.now(),
+      };
       const idleEmoteNames = [
         "wave",
         "nod",
@@ -11849,8 +11886,9 @@ export default function App() {
         "stretch",
         "bow",
       ] as const;
+      type SkinViewerEmoteName = (typeof idleEmoteNames)[number] | "prank" | "mine";
       const emoteState = {
-        name: null as (typeof idleEmoteNames)[number] | null,
+        name: null as SkinViewerEmoteName | null,
         startedAt: 0,
         durationMs: 0,
         nextAt: performance.now() + 7000 + Math.random() * 5000,
@@ -11865,12 +11903,35 @@ export default function App() {
         emoteState.lastInteractionAt = now;
         if (!emoteState.name) queueNextEmote(now, minDelayMs);
       };
-      const startEmote = (next: (typeof idleEmoteNames)[number]) => {
+      const queueComboReset = () => {
+        if (skinViewerComboResetTimeoutRef.current != null) {
+          window.clearTimeout(skinViewerComboResetTimeoutRef.current);
+        }
+        skinViewerComboResetTimeoutRef.current = window.setTimeout(() => {
+          setSkinViewerHitCombo(0);
+          skinViewerComboResetTimeoutRef.current = null;
+        }, 1850);
+      };
+      const registerComboHit = (now: number) => {
+        if (now - miningComboState.lastHitAt > 1850) {
+          miningComboState.count = 0;
+        }
+        miningComboState.count += 1;
+        miningComboState.lastHitAt = now;
+        setSkinViewerHitCombo(miningComboState.count);
+        setSkinViewerComboPulseKey((prev) => prev + 1);
+        queueComboReset();
+      };
+      const startEmote = (next: SkinViewerEmoteName) => {
         emoteState.name = next;
         emoteState.startedAt = performance.now();
         emoteState.durationMs =
           next === "wave"
             ? 2200
+            : next === "mine"
+              ? 1600
+            : next === "prank"
+              ? 1700
             : next === "celebrate"
               ? 1800
               : next === "lookAround"
@@ -11888,6 +11949,10 @@ export default function App() {
         startEmote(next);
       };
       const playNextEmote = () => {
+        if (Math.random() < 0.22) {
+          startEmote("prank");
+          return;
+        }
         const next = playEmoteNames[playEmoteIdx % playEmoteNames.length] ?? "wave";
         playEmoteIdx = (playEmoteIdx + 1) % playEmoteNames.length;
         startEmote(next);
@@ -11896,6 +11961,8 @@ export default function App() {
         markInteraction(2200);
         if (mode === "celebrate") {
           startEmote("celebrate");
+        } else if (mode === "prank") {
+          startEmote("prank");
         } else {
           playNextEmote();
         }
@@ -11906,14 +11973,37 @@ export default function App() {
         y: 0,
         at: 0,
       };
-      const triggerAttack = () => {
+      const stopMining = () => {
+        miningHoldState.pointerId = -1;
+        miningHoldState.startedAt = 0;
+        miningHoldState.moved = false;
+        miningHoldState.active = false;
+        miningHoldState.swingPhase = 0;
+        miningHoldState.lastFrameAt = 0;
+        miningHoldState.lastSwingAt = 0;
+        setSkinViewerMiningActive(false);
+      };
+      const triggerAttack = ({
+        arm = "right",
+        amount = 1,
+        keepEmote = false,
+        countCombo = true,
+      }: {
+        arm?: "right" | "left";
+        amount?: number;
+        keepEmote?: boolean;
+        countCombo?: boolean;
+      } = {}) => {
+        if (pageBroken) return;
+        const now = performance.now();
         markInteraction(5200);
-        recoilState.startedAt = performance.now();
-        recoilState.amount = 0.118;
-        attackState.startedAt = performance.now();
-        attackState.amount = 1;
-        attackState.arm = "right";
-        emoteState.name = null;
+        recoilState.startedAt = now;
+        recoilState.amount = 0.118 * amount;
+        attackState.startedAt = now;
+        attackState.amount = amount;
+        attackState.arm = arm;
+        if (!keepEmote) emoteState.name = null;
+        if (countCombo) registerComboHit(now);
       };
       const onPointerDown = (event: PointerEvent) => {
         markInteraction(4200);
@@ -11921,6 +12011,26 @@ export default function App() {
         tapState.x = event.clientX;
         tapState.y = event.clientY;
         tapState.at = performance.now();
+        miningHoldState.pointerId = event.pointerId;
+        miningHoldState.startX = event.clientX;
+        miningHoldState.startY = event.clientY;
+        miningHoldState.startedAt = performance.now();
+        miningHoldState.moved = false;
+        miningHoldState.lastFrameAt = performance.now();
+        try {
+          canvas.setPointerCapture(event.pointerId);
+        } catch {}
+      };
+      const onPointerMove = (event: PointerEvent) => {
+        if (miningHoldState.pointerId !== event.pointerId) return;
+        const dx = event.clientX - miningHoldState.startX;
+        const dy = event.clientY - miningHoldState.startY;
+        if (Math.hypot(dx, dy) > 12) {
+          miningHoldState.moved = true;
+          if (miningHoldState.active) {
+            stopMining();
+          }
+        }
       };
       const onPointerUp = (event: PointerEvent) => {
         markInteraction(4200);
@@ -11929,16 +12039,25 @@ export default function App() {
         const dy = event.clientY - tapState.y;
         const distance = Math.hypot(dx, dy);
         const elapsed = performance.now() - tapState.at;
-        if (distance <= 9 && elapsed <= 300) {
+        const wasMining = miningHoldState.active;
+        stopMining();
+        if (!wasMining && distance <= 9 && elapsed <= 300) {
           triggerAttack();
         }
         tapState.pointerId = -1;
+        try {
+          canvas.releasePointerCapture(event.pointerId);
+        } catch {}
       };
       const onPointerCancel = () => {
         markInteraction(4200);
         tapState.pointerId = -1;
+        stopMining();
       };
       const onWheel = () => {
+        if (miningHoldState.active) {
+          stopMining();
+        }
         markInteraction(3600);
       };
       const controls = viewer.controls as unknown as {
@@ -11950,6 +12069,7 @@ export default function App() {
       controls.addEventListener?.("start", onControlStart);
       controls.addEventListener?.("change", onControlChange);
       canvas.addEventListener("pointerdown", onPointerDown);
+      canvas.addEventListener("pointermove", onPointerMove);
       canvas.addEventListener("pointerup", onPointerUp);
       canvas.addEventListener("pointercancel", onPointerCancel);
       canvas.addEventListener("wheel", onWheel, { passive: true });
@@ -11957,6 +12077,7 @@ export default function App() {
         controls.removeEventListener?.("start", onControlStart);
         controls.removeEventListener?.("change", onControlChange);
         canvas.removeEventListener("pointerdown", onPointerDown);
+        canvas.removeEventListener("pointermove", onPointerMove);
         canvas.removeEventListener("pointerup", onPointerUp);
         canvas.removeEventListener("pointercancel", onPointerCancel);
         canvas.removeEventListener("wheel", onWheel);
@@ -11966,6 +12087,69 @@ export default function App() {
       idle.speed = 0.78;
       idle.addAnimation((player, progress) => {
         const now = performance.now();
+        const pageDelta = Math.min(48, Math.max(0, now - pageBreakState.lastTickAt));
+        pageBreakState.lastTickAt = now;
+        if (
+          !pageBroken &&
+          miningHoldState.pointerId !== -1 &&
+          !miningHoldState.moved &&
+          !miningHoldState.active &&
+          now - miningHoldState.startedAt >= 260
+        ) {
+          miningHoldState.active = true;
+          miningHoldState.swingPhase = 0;
+          miningHoldState.lastFrameAt = now;
+          miningHoldState.lastSwingAt = now - 240;
+          setSkinViewerMiningActive(true);
+          startEmote("mine");
+        }
+        if (miningHoldState.active) {
+          const frameDelta = Math.min(48, Math.max(0, now - miningHoldState.lastFrameAt));
+          miningHoldState.lastFrameAt = now;
+          miningHoldState.swingPhase += frameDelta / 1350;
+          pageBreakState.progress = Math.min(1, pageBreakState.progress + pageDelta / 9000);
+          const nextStage = Math.min(9, Math.max(1, Math.ceil(pageBreakState.progress * 9)));
+          if (nextStage !== pageBreakState.stage) {
+            pageBreakState.stage = nextStage;
+            setSkinViewerMiningBreakStage(nextStage);
+          }
+          if (pageBreakState.progress >= pageBreakState.nextBurstAt && pageBreakState.nextBurstAt < 1) {
+            setSkinViewerMineBurstKey((prev) => prev + 1);
+            pageBreakState.nextBurstAt += 0.14;
+          }
+          if (emoteState.name !== "mine") {
+            startEmote("mine");
+          }
+          if (now - miningHoldState.lastSwingAt >= 215) {
+            triggerAttack({
+              arm: miningHoldState.nextArm,
+              amount: 0.76,
+              keepEmote: true,
+              countCombo: false,
+            });
+            miningHoldState.nextArm = miningHoldState.nextArm === "right" ? "left" : "right";
+            miningHoldState.lastSwingAt = now;
+          }
+          if (pageBreakState.progress >= 1) {
+            pageBreakState.progress = 1;
+            pageBreakState.stage = 9;
+            pageBroken = true;
+            setSkinViewerMiningBreakStage(9);
+            setSkinViewerPageBroken(true);
+            stopMining();
+          }
+        } else if (!pageBroken && pageBreakState.progress > 0) {
+          pageBreakState.progress = Math.max(0, pageBreakState.progress - pageDelta / 16000);
+          const nextStage =
+            pageBreakState.progress <= 0 ? 0 : Math.min(9, Math.max(1, Math.ceil(pageBreakState.progress * 9)));
+          if (nextStage !== pageBreakState.stage) {
+            pageBreakState.stage = nextStage;
+            setSkinViewerMiningBreakStage(nextStage);
+          }
+          if (pageBreakState.progress < pageBreakState.nextBurstAt - 0.18) {
+            pageBreakState.nextBurstAt = Math.max(0.14, pageBreakState.progress + 0.14);
+          }
+        }
         const breathing = Math.sin(progress * 2.4) * 0.055;
         const sway = Math.sin(progress * 0.92) * 0.085;
         const elapsed = now - recoilState.startedAt;
@@ -12019,6 +12203,7 @@ export default function App() {
         let emoteBodyPitch = 0;
         let emoteBodyRoll = 0;
         let emoteLift = 0;
+        let emoteForward = 0;
         let emoteLegRightX = 0;
         let emoteLegLeftX = 0;
         let emoteRootYaw = 0;
@@ -12064,6 +12249,41 @@ export default function App() {
           emoteHeadX = 0.28 * emotePeak;
           emoteRightX = -0.22 * emotePeak;
           emoteLeftX = -0.22 * emotePeak;
+        } else if (emoteState.name === "prank") {
+          const thrust = Math.sin(emoteProgress * Math.PI * 5.6) * emotePeak;
+          const swayPulse = Math.sin(emoteProgress * Math.PI * 3.2);
+          const brace = 0.38 + emotePeak * 0.18;
+          emoteBodyPitch = 0.14 * emotePeak + thrust * 0.18;
+          emoteBodyYaw = swayPulse * 0.024 * emotePeak;
+          emoteBodyRoll = swayPulse * 0.018 * emotePeak;
+          emoteHeadX = -0.07 * emotePeak - thrust * 0.05;
+          emoteHeadY = swayPulse * 0.05 * emotePeak;
+          emoteHeadForward = thrust * 0.03;
+          emoteRightX = -brace - thrust * 0.05;
+          emoteLeftX = -brace - thrust * 0.05;
+          emoteRightZ = -0.08 * emotePeak;
+          emoteLeftZ = 0.08 * emotePeak;
+          emoteLegRightX = -0.08 * emotePeak + thrust * 0.16;
+          emoteLegLeftX = -0.08 * emotePeak + thrust * 0.16;
+          emoteLift = -0.012 * emotePeak - Math.abs(thrust) * 0.022;
+          emoteForward = thrust * 0.07;
+          emoteRootYaw = swayPulse * 0.02 * emotePeak;
+        } else if (emoteState.name === "mine") {
+          const chop = Math.max(0, Math.sin(emoteProgress * Math.PI * 5.4));
+          const bob = Math.sin(emoteProgress * Math.PI * 2.7) * emotePeak;
+          emoteBodyPitch = 0.16 * emotePeak + chop * 0.1;
+          emoteHeadX = 0.08 * emotePeak + chop * 0.06;
+          emoteHeadY = -0.04 * emotePeak;
+          emoteRightX = -0.52 * emotePeak - chop * 1.18;
+          emoteRightY = -0.14 * chop;
+          emoteRightZ = -0.1 * emotePeak;
+          emoteLeftX = -0.18 * emotePeak + chop * 0.12;
+          emoteLeftZ = 0.08 * emotePeak;
+          emoteLegRightX = -0.04 * emotePeak - bob * 0.08;
+          emoteLegLeftX = -0.04 * emotePeak + bob * 0.08;
+          emoteLift = -0.01 * emotePeak - Math.abs(bob) * 0.018;
+          emoteForward = chop * 0.055;
+          emoteRootYaw = -0.03 * emotePeak;
         }
 
         let punchWindup = 0;
@@ -12133,7 +12353,7 @@ export default function App() {
           skin.head.position.z = emoteHeadForward;
         }
         player.position.y = 0.06 + breathing + emoteLift;
-        player.position.z = -recoil - punch * 0.055;
+        player.position.z = -recoil - punch * 0.055 + emoteForward;
         player.rotation.x = -recoil * 0.34 - punch * 0.06;
         player.rotation.y = sway + (punchRight ? -0.18 : 0.18) * punch + emoteBodyYaw * 0.26 + emoteRootYaw;
       });
@@ -12153,6 +12373,10 @@ export default function App() {
       setSkinViewerEpoch((v) => v + 1);
 
       if (disposed) {
+        if (skinViewerComboResetTimeoutRef.current != null) {
+          window.clearTimeout(skinViewerComboResetTimeoutRef.current);
+          skinViewerComboResetTimeoutRef.current = null;
+        }
         skinViewerInputCleanupRef.current?.();
         skinViewerInputCleanupRef.current = null;
         resizeObserver.disconnect();
@@ -12184,6 +12408,13 @@ export default function App() {
       accountSkinViewerResizeRef.current = null;
       accountSkinViewerRef.current?.dispose();
       accountSkinViewerRef.current = null;
+      if (skinViewerComboResetTimeoutRef.current != null) {
+        window.clearTimeout(skinViewerComboResetTimeoutRef.current);
+        skinViewerComboResetTimeoutRef.current = null;
+      }
+      setSkinViewerHitCombo(0);
+      setSkinViewerMiningActive(false);
+      setSkinViewerMiningBreakStage(0);
       skinViewerNameTagTextRef.current = null;
       skinViewerEmoteTriggerRef.current = null;
     };
@@ -12196,7 +12427,7 @@ export default function App() {
     const text = String(skinViewerNameTag ?? "").trim() || "Player";
     if (skinViewerNameTagTextRef.current === text && viewer.nameTag) return;
     viewer.nameTag = new NameTagObject(text, {
-      font: '700 64px "Avenir Next", "Helvetica Neue", sans-serif',
+      font: '400 64px "Minecraft", "Avenir Next", "Helvetica Neue", sans-serif',
       margin: [8, 16, 8, 16],
       textStyle: "rgba(246, 248, 255, 0.98)",
       backgroundStyle: "rgba(18, 24, 36, 0.55)",
@@ -13233,57 +13464,70 @@ export default function App() {
               </div>
             </div>
               <div className="homeKpis">
-                <div className="homeKpi">
-                  <div className="homeKpiLabel">Instances</div>
-                  <div className="homeKpiValue">{instances.length}</div>
+                <div className="homeKpiStats">
+                  <div className="homeKpi">
+                    <div className="homeKpiLabel">Instances</div>
+                    <div className="homeKpiValue">{instances.length}</div>
+                  </div>
+                  <div className="homeKpi">
+                    <div className="homeKpiLabel">Running</div>
+                    <div className="homeKpiValue">{runningInstances.length}</div>
+                  </div>
+                  <div className="homeKpi homeKpiWide">
+                    <div>
+                      <div className="homeKpiLabel">Pending updates</div>
+                      <div className="homeKpiMeta">Queued for review</div>
+                    </div>
+                    <div className="homeKpiValue">{scheduledUpdatesAvailableTotal}</div>
+                  </div>
                 </div>
-              <div className="homeKpi">
-                <div className="homeKpiLabel">Running</div>
-                <div className="homeKpiValue">{runningInstances.length}</div>
-              </div>
-                <div className="homeKpi">
-                  <div className="homeKpiLabel">Updates waiting</div>
-                  <div className="homeKpiValue">{scheduledUpdatesAvailableTotal}</div>
-                </div>
-                <div className="homeKpi">
-                  <div className="homeKpiLabel">Account</div>
-                  <div className="homeKpiValue">{selectedLauncherAccount ? "Online" : "Offline"}</div>
-                </div>
+                <button
+                  type="button"
+                  className={`homeKpiCustomize ${homeCustomizeOpen ? "active" : ""}`}
+                  onClick={() => {
+                    setHomeCustomizeOpen((prev) => !prev);
+                    setDraggedHomeWidgetId(null);
+                  }}
+                >
+                  <div className="homeKpiCustomizeMain">
+                    <div className="homeKpiLabel">Home layout</div>
+                    <div className="homeKpiCustomizeTitle">
+                      {homeCustomizeOpen ? "Done customizing" : "Customize home"}
+                    </div>
+                    <div className="homeKpiMeta">
+                      {homeCustomizeOpen
+                        ? hiddenHomeWidgetCount > 0
+                          ? `${hiddenHomeWidgetCount} hidden widget${hiddenHomeWidgetCount === 1 ? "" : "s"}`
+                          : "Drag, hide, and pin widgets"
+                        : "Arrange widgets and sections"}
+                    </div>
+                  </div>
+                  <span className="homeKpiActionIcon" aria-hidden="true">
+                    <Icon name="sliders" size={16} />
+                  </span>
+                </button>
               </div>
           </section>
 
-          <section className="card homeControlBar">
-            <div className="homeControlBarMain">
-              <div className="homeControlBarTitle">Workspace layout</div>
-              <div className="homeControlBarMeta">
-                {homeCustomizeOpen
-                  ? "Drag widgets in the page preview, or use the organizer below to show, hide, pin, and move them."
-                  : "Tune what appears on Home and where each section lives."}
+          {homeCustomizeOpen ? (
+            <section className="card homeControlBar">
+              <div className="homeControlBarMain">
+                <div className="homeControlBarTitle">Workspace layout</div>
+                <div className="homeControlBarMeta">
+                  Drag widgets in the page preview, or use the organizer below to show, hide, pin, and move them.
+                </div>
               </div>
-            </div>
-            <div className="homeControlBarActions">
-              {hiddenHomeWidgetCount > 0 ? (
-                <span className="chip subtle">{hiddenHomeWidgetCount} hidden</span>
-              ) : null}
-              {homeCustomizeOpen ? (
+              <div className="homeControlBarActions">
+                {hiddenHomeWidgetCount > 0 ? (
+                  <span className="chip subtle">{hiddenHomeWidgetCount} hidden</span>
+                ) : null}
                 <span className="chip subtle">Customization mode</span>
-              ) : null}
-              <button
-                className={`btn ${homeCustomizeOpen ? "primary" : ""}`}
-                onClick={() => {
-                  setHomeCustomizeOpen((prev) => !prev);
-                  setDraggedHomeWidgetId(null);
-                }}
-              >
-                {homeCustomizeOpen ? "Done customizing" : "Customize home"}
-              </button>
-              {homeCustomizeOpen ? (
                 <button className="btn" onClick={resetHomeLayout}>
                   Reset defaults
                 </button>
-              ) : null}
-            </div>
-          </section>
+              </div>
+            </section>
+          ) : null}
 
           {homeCustomizeOpen ? (
             <div className="card homeCustomizePanel">
@@ -13642,7 +13886,7 @@ export default function App() {
             : "Scheduled";
       return (
         <div className="page">
-          <div style={{ maxWidth: 1100 }}>
+          <div className="pageRouteStack" style={{ maxWidth: 1100 }}>
             <div className="pageRouteHeader">
               <div className="pageRouteEyebrow">Content updates</div>
               <div className="h1">Updates available</div>
@@ -14665,11 +14909,11 @@ export default function App() {
                   <div className="instHeroText">
                     <div className="instTitle">{inst.name || "Untitled instance"}</div>
                     <div className="instMetaRow">
-                      <span className="chip">{loaderLabel} {inst.mc_version}</span>
+                      <span className="chip instHeroMetaPill">{loaderLabel} {inst.mc_version}</span>
                       {launchStageLabel ? (
                         <span className="chip">{launchStage?.status === "starting" ? `Launching: ${launchStageLabel}` : launchStageLabel}</span>
                       ) : (
-                        <span className="chip subtle">{hasRunningForInstance ? "Running" : "Never played"}</span>
+                        <span className="chip subtle instHeroMetaPill">{hasRunningForInstance ? "Running" : "Never played"}</span>
                       )}
                       {hasLaunchFailure ? <span className="chip">Last launch failed</span> : null}
                     </div>
@@ -14677,41 +14921,43 @@ export default function App() {
                 </div>
 
                 <div className={`instHeroActions ${compactHeroActions ? "compact" : ""}`}>
-                  <MenuSelect
-                    value={launchMethodPick}
-                    labelPrefix={compactHeroActions ? "Mode" : "Launch"}
-                    options={[
-                      { value: "native", label: "Native" },
-                      { value: "prism", label: "Prism" },
-                    ]}
-                    onChange={(v) => setLaunchMethodPick((v as LaunchMethod) ?? "native")}
-                  />
-                  <button
-                    className={`btn instanceLaunchBtn ${isLaunchBusyForInstance ? "danger" : "primary"}`}
-                    onClick={() => onPlayInstance(inst, launchMethodPick)}
-                    disabled={launchCancelBusyInstanceId === inst.id}
-                    title={launchActionTitle}
-                  >
-                    <span className="btnIcon">
-                      <Icon name={isLaunchBusyForInstance ? "x" : "play"} size={18} />
-                    </span>
-                    {isLaunchBusyForInstance
-                      ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel")
-                      : "Launch"}
-                  </button>
-                  {hasRunningForInstance ? (
+                  <div className="instHeroPrimaryActions">
+                    <MenuSelect
+                      value={launchMethodPick}
+                      labelPrefix={compactHeroActions ? "Mode" : "Launch"}
+                      options={[
+                        { value: "native", label: "Native" },
+                        { value: "prism", label: "Prism" },
+                      ]}
+                      onChange={(v) => setLaunchMethodPick((v as LaunchMethod) ?? "native")}
+                    />
                     <button
-                      className="btn danger"
-                      onClick={() => onStopRunning(runningForInstance[0].launch_id)}
-                      title={
-                        runningForInstance.length > 1
-                          ? "Stop the most recent running session for this instance"
-                          : undefined
-                      }
+                      className={`btn instanceLaunchBtn ${isLaunchBusyForInstance ? "danger" : "primary"}`}
+                      onClick={() => onPlayInstance(inst, launchMethodPick)}
+                      disabled={launchCancelBusyInstanceId === inst.id}
+                      title={launchActionTitle}
                     >
-                      Stop
+                      <span className="btnIcon">
+                        <Icon name={isLaunchBusyForInstance ? "x" : "play"} size={18} />
+                      </span>
+                      {isLaunchBusyForInstance
+                        ? (launchCancelBusyInstanceId === inst.id ? "Cancelling…" : "Cancel")
+                        : "Launch"}
                     </button>
-                  ) : null}
+                    {hasRunningForInstance ? (
+                      <button
+                        className="btn danger"
+                        onClick={() => onStopRunning(runningForInstance[0].launch_id)}
+                        title={
+                          runningForInstance.length > 1
+                            ? "Stop the most recent running session for this instance"
+                            : undefined
+                        }
+                      >
+                        Stop
+                      </button>
+                    ) : null}
+                  </div>
                   <div className="instHeroTools">
                     {showOpenLaunchLogAction ? (
                       <button
@@ -15168,8 +15414,8 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="instanceContentMaintenanceGrid">
-                        <div className="instanceContentMaintenancePanel">
+                      <div className="instanceContentMaintenanceStack">
+                        <div className="instanceContentMaintenancePanel instanceContentMaintenancePanelPrimary">
                           <div className="instanceContentMaintenancePanelHead">
                             <div className="instanceContentMaintenanceTitle">Updates</div>
                             <div className="instanceContentMaintenanceSub">
@@ -15177,26 +15423,28 @@ export default function App() {
                             </div>
                           </div>
                           <div className="instanceContentUpdateRow">
-                            <button
-                              className="btn"
-                              onClick={() =>
-                                onCheckUpdates(inst, {
-                                  contentTypes: [instanceContentTypeToBackend(instanceContentType)],
-                                  persistScheduledCache: false,
-                                })
-                              }
-                              disabled={updateBusy || updateAllBusy}
-                            >
-                              {updateBusy ? "Checking…" : "Refresh"}
-                            </button>
-                            <button
-                              className="btn primary"
-                              onClick={() => onUpdateAll(inst, instanceContentType)}
-                              disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
-                            >
-                              {updateAllBusy ? "Updating…" : `Update all ${currentContentSectionLabel}`}
-                            </button>
-                            <span className="muted instanceContentControlHint">
+                            <div className="instanceContentUpdateActions">
+                              <button
+                                className="btn"
+                                onClick={() =>
+                                  onCheckUpdates(inst, {
+                                    contentTypes: [instanceContentTypeToBackend(instanceContentType)],
+                                    persistScheduledCache: false,
+                                  })
+                                }
+                                disabled={updateBusy || updateAllBusy}
+                              >
+                                {updateBusy ? "Checking…" : "Refresh"}
+                              </button>
+                              <button
+                                className="btn primary"
+                                onClick={() => onUpdateAll(inst, instanceContentType)}
+                                disabled={updateAllBusy || updateBusy || (updateCheck?.update_count ?? 0) === 0}
+                              >
+                                {updateAllBusy ? "Updating…" : `Update all ${currentContentSectionLabel}`}
+                              </button>
+                            </div>
+                            <span className="muted instanceContentControlHint instanceContentMaintenanceMeta">
                               {updateCheck?.update_count
                                 ? `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} ready`
                                 : `No check yet for ${currentContentSectionLabel}`}
@@ -15204,15 +15452,15 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="instanceContentMaintenancePanel">
-                          <div className="instanceContentMaintenancePanelHead">
-                            <div className="instanceContentMaintenanceTitle">Snapshots</div>
-                            <div className="instanceContentMaintenanceSub">
+                        <div className="instanceContentMaintenanceUtility">
+                          <div className="instanceContentMaintenanceUtilityCopy">
+                            <div className="instanceContentUtilityLabel">Snapshots</div>
+                            <div className="instanceContentUtilityText">
                               Roll back to the last safe point if something goes sideways.
                             </div>
                           </div>
                           {snapshots.length > 0 ? (
-                            <div className="instanceSnapshotRow">
+                            <div className="instanceSnapshotInline">
                               <MenuSelect
                                 value={rollbackSnapshotId ?? snapshots[0].id}
                                 labelPrefix="Snapshot"
@@ -15221,6 +15469,8 @@ export default function App() {
                                   label: formatSnapshotOptionLabel(s, resolveSnapshotProjectLabel),
                                 }))}
                                 align="start"
+                                panelMinWidth={560}
+                                panelClassName="instanceSnapshotMenuPanel"
                                 onChange={(v) => setRollbackSnapshotId(v)}
                               />
                               <button
@@ -15237,7 +15487,7 @@ export default function App() {
                               </button>
                             </div>
                           ) : (
-                            <div className="muted instanceContentControlHint">
+                            <div className="muted instanceContentUtilityText">
                               Installing or updating content creates a snapshot automatically.
                             </div>
                           )}
@@ -16309,7 +16559,7 @@ export default function App() {
                     <span className="quickPlayLabel">Host</span>
                     <input
                       className="input"
-                      placeholder="example.org"
+                      placeholder="mc.hypixel.net"
                       value={quickPlayDraftHost}
                       onChange={(e) => setQuickPlayDraftHost(e.target.value)}
                       disabled={quickPlayBusy}
@@ -17252,9 +17502,15 @@ export default function App() {
         setSkinPreviewEnabled,
         setSkinRenameDraft,
         skinPreviewEnabled,
+        skinViewerComboPulseKey,
         skinRenameDraft,
         skinViewerErr,
+        skinViewerHitCombo,
         skinViewerHintText,
+        skinViewerMineBurstKey,
+        skinViewerMiningActive,
+        skinViewerMiningBreakStage,
+        skinViewerPageBroken,
         skinViewerPreparing,
         skinViewerShadowStyle,
         toLocalIconSrc
@@ -17343,8 +17599,51 @@ export default function App() {
 
   return (
     <div className="appWrap">
+      {route === "skins" && (skinViewerMiningBreakStage > 0 || skinViewerPageBroken) ? (
+        <>
+          <div
+            className={`skinsPageMiningScreenOverlay${skinViewerMiningActive ? " is-active" : ""}${skinViewerPageBroken ? " is-broken" : ""}`}
+            aria-hidden="true"
+          >
+            <span className="skinsPageScreenGhost ghost-a" />
+            <span className="skinsPageScreenGhost ghost-b" />
+            <span className="skinsPageScreenStatic" />
+            <span className="skinsPageScreenSlice slice-a" />
+            <span className="skinsPageScreenSlice slice-b" />
+            <span className="skinsPageScreenSlice slice-c" />
+            <span className="skinsPageScreenSlice slice-d" />
+            <MinecraftBreakOverlay
+              stage={skinViewerPageBroken ? 9 : skinViewerMiningBreakStage}
+              className="skinsPageMiningScreenOverlaySvg"
+            />
+          </div>
+          {skinViewerPageBroken ? (
+            <div className="skinsPageRuinLayer" aria-hidden="true">
+              {SKINS_PAGE_RUIN_FRAGMENTS.map((fragment, idx) => (
+                <span
+                  key={`${fragment.left}-${fragment.top}-${idx}`}
+                  className={`skinsPageRuinFragment ${fragment.className}`}
+                  style={{
+                    left: fragment.left,
+                    top: fragment.top,
+                    width: `${fragment.width}px`,
+                    height: `${fragment.height}px`,
+                    transform: `rotate(${fragment.rotate}deg)`,
+                  }}
+                />
+              ))}
+              <span className="skinsPageGlitchBand band-a" />
+              <span className="skinsPageGlitchBand band-b" />
+              <span className="skinsPageGlitchBand band-c" />
+              <span className="skinsPageDustCloud cloud-a" />
+              <span className="skinsPageDustCloud cloud-b" />
+              <span className="skinsPageDustCloud cloud-c" />
+            </div>
+          ) : null}
+        </>
+      ) : null}
       <aside className="navRail">
-        <NavButton active={route === "home"} label={t("nav.home")} onClick={() => setRoute("home")}>
+        <NavButton className="homeWarm" active={route === "home"} label={t("nav.home")} onClick={() => setRoute("home")}>
           <Icon name="home" className="navIcon navHomeIcon" />
         </NavButton>
 
@@ -17352,12 +17651,12 @@ export default function App() {
           <Icon name="compass" className="navIcon compassIcon navAnimCompass" />
         </NavButton>
 
-        <NavButton className="boxPulse" active={route === "modpacks"} label={t("nav.creator_studio")} onClick={() => setRoute("modpacks")}>
+        <NavButton className="creatorForge" active={route === "modpacks"} label={t("nav.creator_studio")} onClick={() => setRoute("modpacks")}>
           <Icon name="box" className="navIcon navAnimBox" />
         </NavButton>
 
         <NavButton
-          className="booksTilt"
+          className="libraryStories"
           active={route === "library"}
           label={t("nav.library")}
           onClick={() => setRoute("library")}
@@ -17366,6 +17665,7 @@ export default function App() {
         </NavButton>
 
         <NavButton
+          className="bellChime"
           active={route === "updates"}
           label={t("nav.updates")}
           onClick={() => setRoute("updates")}
@@ -17379,7 +17679,7 @@ export default function App() {
           label={t("nav.skins")}
           onClick={() => setRoute("skins")}
         >
-          <Icon name="skin" className="navIcon" />
+          <Icon name="skin" className="navIcon navAnimSkin" />
         </NavButton>
 
         <div className="navDivider" />
@@ -17423,8 +17723,8 @@ export default function App() {
 
         <div className="navBottom">
           {isDevMode ? (
-            <NavButton active={route === "dev"} label={t("nav.dev")} onClick={() => setRoute("dev")}>
-              <Icon name="sparkles" className="navIcon" />
+            <NavButton className="sparkleFizz" active={route === "dev"} label={t("nav.dev")} onClick={() => setRoute("dev")}>
+              <Icon name="sparkles" className="navIcon navAnimSparkles" />
             </NavButton>
           ) : null}
           <NavButton className="profileBounce" active={route === "account"} label={t("nav.account")} onClick={() => setRoute("account")}>

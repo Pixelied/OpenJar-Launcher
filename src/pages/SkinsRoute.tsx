@@ -7,7 +7,7 @@ import MultiSelectDropdown from "../components/app-shell/controls/MultiSelectDro
 import SegmentedControl from "../components/app-shell/controls/SegmentedControl";
 import ModpackMaker from "./ModpackMaker";
 import ModpacksConfigEditor from "./ModpacksConfigEditor";
-import { LocalImage, RemoteImage } from "../components/app-shell/AsyncImage";
+import { RemoteImage } from "../components/app-shell/AsyncImage";
 import { formatBytes, formatCompact, formatDate, formatDateTime, humanizeToken, parseDateLike } from "../app/utils/format";
 import { getAppLanguageOption, type AppLanguage } from "../lib/i18n";
 import type { DiscoverContentType, Instance, LaunchMethod, LaunchPermissionChecklistItem } from "../types";
@@ -162,6 +162,39 @@ export function MinecraftBreakOverlay({ stage, className = "" }: { stage: number
   );
 }
 
+function SkinThumbFallback({
+  label,
+  tone = "default",
+}: {
+  label: string;
+  tone?: "default" | "missing";
+}) {
+  return (
+    <div className={`accountSkinThumbFallback ${tone === "missing" ? "is-missing" : ""}`}>
+      <span className="accountSkinThumbFallbackGlyph" aria-hidden="true">
+        {label.slice(0, 1).toUpperCase()}
+      </span>
+      <span className="accountSkinThumbFallbackText">
+        {tone === "missing" ? "Preview blocked" : "Preview unavailable"}
+      </span>
+    </div>
+  );
+}
+
+function SkinThumbFace({
+  src,
+  alt,
+  label,
+  tone = "default",
+}: {
+  src?: string | null;
+  alt: string;
+  label: string;
+  tone?: "default" | "missing";
+}) {
+  return <RemoteImage src={src} alt={alt} fallback={<SkinThumbFallback label={label} tone={tone} />} />;
+}
+
 export default function SkinsRoute(props: SkinsRouteProps) {
   const {
     accountAppearanceBusy,
@@ -269,7 +302,7 @@ export default function SkinsRoute(props: SkinsRouteProps) {
 
   return (
           <div className={`page skinsPageRoot${skinViewerPageBroken ? " is-broken" : ""}`}>
-            <div style={{ maxWidth: 1360 }}>
+            <div className="pageRouteStack" style={{ maxWidth: 1360 }}>
               <div className="pageRouteHeader">
                 <div className="pageRouteEyebrow">Appearance</div>
                 <div className="h1">Skins</div>
@@ -291,6 +324,15 @@ export default function SkinsRoute(props: SkinsRouteProps) {
                     style={skinViewerShadowStyle}
                   >
                     <canvas ref={accountSkinViewerCanvasRef} className="accountSkinViewerCanvas" />
+                    {skinViewerErr ? (
+                      <div className="accountSkinViewerFallback" role="status">
+                        <div className="accountSkinViewerFallbackBadge">Preview unavailable</div>
+                        <div className="accountSkinViewerFallbackTitle">Skin preview could not load</div>
+                        <div className="accountSkinViewerFallbackText">
+                          This skin may be blocked by the network or missing from the source. You can still keep browsing and apply another saved skin.
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="accountSkinViewerShadow" />
                     {comboHudVisible ? (
                       <div
@@ -473,18 +515,20 @@ export default function SkinsRoute(props: SkinsRouteProps) {
                           <div className="accountSkinChoiceThumb">
                             <div className="accountSkinChoiceThumbInner">
                               <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
-                                {frontThumb ? (
-                                  <img src={frontThumb} alt={`${skin.label} front preview`} />
-                                ) : (
-                                  <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                                )}
+                                <SkinThumbFace
+                                  src={frontThumb}
+                                  alt={`${skin.label} front preview`}
+                                  label={skin.label}
+                                  tone="missing"
+                                />
                               </div>
                               <div className="accountSkinChoiceFace accountSkinChoiceFaceBack">
-                                {backThumb ? (
-                                  <img src={backThumb} alt={`${skin.label} back preview`} />
-                                ) : (
-                                  <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                                )}
+                                <SkinThumbFace
+                                  src={backThumb}
+                                  alt={`${skin.label} back preview`}
+                                  label={skin.label}
+                                  tone="missing"
+                                />
                               </div>
                             </div>
                           </div>
@@ -522,18 +566,20 @@ export default function SkinsRoute(props: SkinsRouteProps) {
                           <div className="accountSkinChoiceThumb">
                             <div className="accountSkinChoiceThumbInner">
                               <div className="accountSkinChoiceFace accountSkinChoiceFaceFront">
-                                {frontThumb ? (
-                                  <img src={frontThumb} alt={`${skin.label} front preview`} />
-                                ) : (
-                                  <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                                )}
+                                <SkinThumbFace
+                                  src={frontThumb}
+                                  alt={`${skin.label} front preview`}
+                                  label={skin.label}
+                                  tone="missing"
+                                />
                               </div>
                               <div className="accountSkinChoiceFace accountSkinChoiceFaceBack">
-                                {backThumb ? (
-                                  <img src={backThumb} alt={`${skin.label} back preview`} />
-                                ) : (
-                                  <span>{skin.label.slice(0, 1).toUpperCase()}</span>
-                                )}
+                                <SkinThumbFace
+                                  src={backThumb}
+                                  alt={`${skin.label} back preview`}
+                                  label={skin.label}
+                                  tone="missing"
+                                />
                               </div>
                             </div>
                           </div>
