@@ -18,6 +18,34 @@
   <a href="#development">Development</a>
 </p>
 
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [Screenshots](#screenshots)
+- [Why OpenJar](#why-openjar)
+- [Core Features](#core-features)
+  - [Instances and settings sync](#instances-and-settings-sync)
+  - [Discover and install](#discover-and-install)
+  - [Installed content and maintenance](#installed-content-and-maintenance)
+  - [Updates and safer maintenance](#updates-and-safer-maintenance)
+  - [Launching, Quick Play, and voice-chat readiness](#launching-quick-play-and-voice-chat-readiness)
+  - [Health, timeline, and playtime](#health-timeline-and-playtime)
+  - [Logs, run reports, and Fix My Instance](#logs-run-reports-and-fix-my-instance)
+  - [Config Editor](#config-editor)
+  - [Creator Studio / Modpack Maker](#creator-studio--modpack-maker)
+  - [Friend Link](#friend-link)
+  - [Snapshots, world backups, and rollback](#snapshots-world-backups-and-rollback)
+  - [Storage Manager](#storage-manager)
+  - [Skins, capes, and account tools](#skins-capes-and-account-tools)
+  - [Settings, personalization, and language support](#settings-personalization-and-language-support)
+  - [Import and export](#import-and-export)
+- [Where your data lives](#where-your-data-lives)
+- [Platform support](#platform-support)
+- [Development](#development)
+
+</details>
+
 OpenJar Launcher is built around the parts of modded Minecraft that usually go wrong:
 instance sprawl, mystery jars, risky updates, broken configs, pack mismatch between friends, and the general feeling that once something breaks, you have to dig through random folders and logs to understand it.
 
