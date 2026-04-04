@@ -1304,87 +1304,341 @@ button, input, select { font-family: inherit; }
   position: fixed;
   inset: 0;
   z-index: calc(var(--z-modal) + 8);
-  background: rgba(3, 6, 12, 0.56);
+  background:
+    radial-gradient(1100px 720px at 50% 0%, color-mix(in srgb, var(--accent) 24%, transparent), transparent 72%),
+    rgba(3, 6, 12, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
   display: flex;
   justify-content: center;
   align-items: flex-start;
   padding: max(72px, calc(env(safe-area-inset-top) + 56px)) 18px 24px;
 }
 .commandPalettePanel{
-  width: min(760px, 100%);
+  width: min(880px, 100%);
   border-radius: 22px;
   border: 1px solid color-mix(in srgb, var(--stroke2) 86%, transparent);
-  background: color-mix(in srgb, var(--panel2) 95%, #000 5%);
-  box-shadow: var(--shadow);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel2) 94%, white 6%), color-mix(in srgb, var(--panel) 96%, transparent)),
+    color-mix(in srgb, var(--panel2) 95%, #000 5%);
+  box-shadow:
+    0 28px 90px rgba(0, 0, 0, 0.34),
+    0 0 0 1px color-mix(in srgb, var(--stroke2) 40%, transparent);
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 12px;
+  padding: 18px;
+}
+.commandPaletteTop{
+  display: grid;
+  gap: 8px;
 }
 .commandPaletteHeader{
   font-size: 13px;
   font-weight: 920;
   color: var(--muted);
-  letter-spacing: 0.03em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.commandPaletteTitleRow{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.commandPaletteTitle{
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3vw, 30px);
+  line-height: 1;
+  letter-spacing: -0.03em;
+  font-weight: 980;
+}
+.commandPaletteSub{
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+.commandPaletteMeta{
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.commandPaletteMetaPill{
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 74%, transparent);
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.commandPaletteMetaPill.emphasis{
+  border-color: color-mix(in srgb, var(--accent-ring) 58%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface) 58%);
+  color: var(--text);
+}
+.commandPaletteSearchShell{
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 58px;
+  padding: 0 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 80%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, white 4%), color-mix(in srgb, var(--panel2) 94%, transparent));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 7%, transparent);
+}
+.commandPaletteSearchIcon{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.commandPaletteSearchSvg{
+  opacity: 0.92;
 }
 .commandPaletteInput{
   width: 100%;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  min-height: 56px;
+  font-size: 15px;
+  font-weight: 800;
+  outline: none;
+}
+.commandPaletteInput:focus{
+  box-shadow: none;
+  border: 0;
+  outline: none;
+}
+.commandPaletteSearchShell .commandPaletteInput,
+.commandPaletteSearchShell .commandPaletteInput:hover,
+.commandPaletteSearchShell .commandPaletteInput:focus,
+.commandPaletteSearchShell .commandPaletteInput:focus-visible{
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent !important;
+  background-color: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  -webkit-box-shadow: none !important;
+}
+.commandPaletteSearchShell .commandPaletteInput:-webkit-autofill,
+.commandPaletteSearchShell .commandPaletteInput:-webkit-autofill:hover,
+.commandPaletteSearchShell .commandPaletteInput:-webkit-autofill:focus{
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px transparent inset !important;
+  transition: background-color 99999s ease-out 0s;
+}
+.commandPaletteSelectionHint{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+}
+.commandPaletteSelectionLabel{
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 40%, transparent);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .commandPaletteList{
   max-height: min(62vh, 520px);
   overflow: auto;
   display: grid;
-  gap: 10px;
+  gap: 14px;
   padding-right: 2px;
 }
 .commandPaletteGroup{
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 .commandPaletteGroupTitle{
   font-size: 11px;
   font-weight: 900;
   color: var(--muted);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
 }
 .commandPaletteGroupItems{
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 .commandPaletteItem{
   width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
   border: 1px solid color-mix(in srgb, var(--stroke) 66%, transparent);
-  background: color-mix(in srgb, var(--surface) 94%, var(--panel2) 6%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, white 4%), color-mix(in srgb, var(--panel2) 96%, transparent));
   color: var(--text);
-  border-radius: 12px;
-  padding: 9px 11px;
+  border-radius: 16px;
+  padding: 11px 12px;
   text-align: left;
   cursor: pointer;
-  transition: border-color 140ms var(--ease), background 140ms var(--ease), transform 140ms var(--ease);
+  transition:
+    border-color 140ms var(--ease),
+    background 140ms var(--ease),
+    transform 140ms var(--ease),
+    box-shadow 140ms var(--ease);
 }
 .commandPaletteItem:hover,
 .commandPaletteItem.active{
   border-color: color-mix(in srgb, var(--accent-ring) 72%, var(--stroke2));
-  background: color-mix(in srgb, var(--accent-soft) 46%, var(--surface) 54%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 54%, var(--surface) 46%), color-mix(in srgb, var(--surface) 96%, transparent));
   transform: translateY(-1px);
+  box-shadow:
+    0 14px 34px rgba(0, 0, 0, 0.12),
+    0 0 0 1px color-mix(in srgb, var(--accent-ring) 30%, transparent);
+}
+.commandPaletteItemIcon{
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 76%, transparent);
+  background: color-mix(in srgb, var(--panel2) 86%, transparent);
+  color: color-mix(in srgb, var(--accent-ring) 70%, var(--text));
+}
+.commandPaletteItemBody{
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.commandPaletteItemMain{
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .commandPaletteItemLabel{
-  font-size: 13px;
+  min-width: 0;
+  font-size: 14px;
   font-weight: 900;
   letter-spacing: -0.01em;
 }
+.commandPaletteItemBadge{
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 34%, transparent);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
 .commandPaletteItemDetail{
-  margin-top: 2px;
   font-size: 12px;
   color: var(--muted);
   font-weight: 760;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.commandPaletteItemArrow{
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 900;
+  opacity: 0.76;
 }
 .commandPaletteEmpty{
   border: 1px dashed var(--stroke2);
-  border-radius: 12px;
-  padding: 12px;
+  border-radius: 16px;
+  padding: 18px;
   color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+}
+.commandPaletteEmptyTitle{
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--text);
+}
+.commandPaletteEmptySub{
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 720;
+}
+.commandPaletteFooter{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+.commandPaletteKeyHint{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 820;
+}
+.commandPaletteKeyHint kbd{
+  min-width: 28px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 7px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 86%, transparent);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-weight: 900;
+}
+@media (max-width: 700px){
+  .commandPalettePanel{
+    padding: 14px;
+  }
+  .commandPaletteTitleRow{
+    display: grid;
+  }
+  .commandPaletteMeta{
+    justify-content: flex-start;
+  }
+  .commandPaletteItem{
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .commandPaletteItemArrow{
+    display: none;
+  }
+  .commandPaletteItemDetail{
+    white-space: normal;
+  }
 }
 .msCodeDialog{
   width: min(720px, calc(100vw - 36px));
@@ -3718,6 +3972,23 @@ button, input, select { font-family: inherit; }
   justify-content: space-between;
   gap: 12px;
 }
+.dropItemCopy{
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.dropItemTitle{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropItemMeta{
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.3;
+  color: var(--muted);
+}
 .dropItem + .dropItem{
   margin-top: 3px;
 }
@@ -3729,6 +4000,9 @@ button, input, select { font-family: inherit; }
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent-ring) 62%, transparent);
   color: var(--accent-text);
+}
+.dropItem.active .dropItemMeta{
+  color: color-mix(in srgb, var(--accent-text) 72%, var(--muted) 28%);
 }
 .dropItem.active:hover{
   background: color-mix(in srgb, var(--accent-soft) 84%, var(--surface) 16%);
@@ -9890,31 +10164,39 @@ button.instanceProviderBadge:disabled{
 .accountPage{
   max-width: 1200px;
 }
-.accountHero{
+.accountHeroSplit{
   margin-top: 16px;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 16px;
-  align-items: center;
-  padding: 20px;
-  border-radius: 24px;
-  border: 1px solid color-mix(in srgb, var(--stroke2) 70%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, white 3%), color-mix(in srgb, var(--surface-2) 90%, transparent));
-  box-shadow: var(--shadow-xs);
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.82fr);
+  gap: 14px;
+  align-items: start;
+}
+.accountProfileCard{
+  min-width: 0;
+  display: grid;
+  gap: 0;
+  padding: 16px 20px 10px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 60%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  box-shadow: none;
 }
 .accountAvatarWrap{
-  width: 88px;
-  height: 88px;
-  border-radius: 20px;
-  border: 1px solid var(--stroke2);
-  background: color-mix(in srgb, var(--surface) 52%, var(--surface-2) 48%);
+  width: 68px;
+  height: 68px;
+  border-radius: 15px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  background: rgba(127,127,127,0.08);
   display: grid;
   place-items: center;
   overflow: hidden;
-  font-size: 30px;
-  font-weight: 1000;
+  font-size: 24px;
+  font-weight: 900;
   color: var(--accent-text);
+  position: relative;
+  z-index: 0;
+  will-change: transform;
+  transition: transform 260ms var(--ease), border-color 220ms var(--ease), box-shadow 240ms var(--ease), background 220ms var(--ease), filter 220ms var(--ease);
 }
 .accountAvatarWrap > img{
   width: 100%;
@@ -9947,39 +10229,72 @@ button.instanceProviderBadge:disabled{
 .minecraftHeadLayer.hat{
   transform: translate(calc(-40px * var(--head-scale)), calc(-8px * var(--head-scale)));
 }
-.accountHeroMain{
+.accountHeroContent{
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding-bottom: 10px;
+}
+.accountHeroHeader{
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+.accountAvatarWrap:hover{
+  transform: scale(1.04) rotate(-3deg);
+  border-color: var(--stroke2);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--stroke2) 20%, transparent),
+    var(--shadowSoft);
+}
+.accountHeroIdentity{
   min-width: 0;
 }
 .accountHeroEyebrow{
-  font-size: 11px;
-  font-weight: 1000;
-  letter-spacing: 0.14em;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--muted);
 }
 .accountHeroName{
-  margin-top: 4px;
-  font-size: 28px;
-  font-weight: 980;
-  letter-spacing: -0.03em;
+  margin-top: 3px;
+  font-size: 23px;
+  font-weight: 860;
+  letter-spacing: -0.035em;
 }
 .accountHeroMeta{
-  margin-top: 8px;
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+  margin-top: 6px;
+  margin-left: -2px;
 }
-.accountStatusBadge{
+.accountHeroStatusBlock{
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.accountMetaPill{
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   border-radius: 999px;
-  border: 1px solid var(--stroke2);
-  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
-  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 74%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  padding: 5px 10px;
+  min-height: 28px;
   font-size: 11.5px;
-  font-weight: 900;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   line-height: 1;
+  white-space: nowrap;
+}
+.accountStatusBadge{
+  font-weight: 700;
 }
 .accountStatusDot{
   width: 8px;
@@ -9999,6 +10314,26 @@ button.instanceProviderBadge:disabled{
 .accountStatusText.tone-ok{
   color: rgba(21, 128, 61, 0.98);
 }
+.accountStatusBadge.tone-pending,
+.accountStatusText.tone-pending{
+  color: color-mix(in srgb, var(--accent-text) 86%, var(--text) 14%);
+}
+.accountHeroSecondaryFacts{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.accountHeroSecondaryFact{
+  color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
+}
+.accountHeroStatusTitle{
+  font-size: 16px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted) 12%);
+}
 .accountHeroSub{
   margin-top: 8px;
   color: var(--muted);
@@ -10010,12 +10345,161 @@ button.instanceProviderBadge:disabled{
   word-break: break-word;
 }
 .accountHeroLead{
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 13.5px;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  font-size: 12.75px;
+  font-weight: 650;
+  line-height: 1.38;
+  max-width: 50ch;
+}
+.accountHealthCard{
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  padding: 16px;
+  border-radius: 18px;
+}
+.accountHealthHeader{
+  display: grid;
+  gap: 4px;
+}
+.accountHealthMeta{
+  display: grid;
+  gap: 4px;
+  padding-top: 2px;
+}
+.accountHealthFoot{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 4px;
+}
+.accountHeroUtilityMeta{
+  display: grid;
+  gap: 3px;
+}
+.accountHeroUtilityLabel{
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+.accountHeroUtilityValue{
+  font-size: 14px;
   font-weight: 760;
+  letter-spacing: -0.015em;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted) 12%);
+}
+.accountHeroUtilityValue.tone-error{
+  color: rgba(185, 28, 28, 0.96);
+}
+.accountHeroUtilityValue.tone-warn{
+  color: rgba(146, 64, 14, 0.96);
+}
+.accountHeroUtilityValue.tone-ok{
+  color: rgba(21, 128, 61, 0.96);
+}
+.accountHeroUtilityValue.tone-pending{
+  color: color-mix(in srgb, var(--accent-text) 86%, var(--text) 14%);
+}
+.accountHeroUtilityText{
+  font-size: 11.5px;
   line-height: 1.45;
-  max-width: 58ch;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
+.accountHeroInfoRow{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 58%, transparent);
+}
+.accountHeroInfoItem{
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  line-height: 1;
+}
+.accountHeroInfoItemPrimary{
+  gap: 8px;
+  padding: 4px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+}
+.accountHeroInfoItemMeta{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
+.accountHeroInfoLabel{
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  white-space: nowrap;
+  line-height: 1;
+}
+.accountHeroInfoValue{
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 620;
+  color: color-mix(in srgb, var(--text) 74%, var(--muted) 26%);
+  letter-spacing: -0.005em;
+  line-height: 1;
+}
+.accountHeroInfoValueStrong{
+  font-weight: 700;
+  color: color-mix(in srgb, var(--text) 86%, var(--muted) 14%);
+}
+.accountHeroCopyBtn{
+  min-height: 22px;
+  padding: 0 4px;
+  border-radius: 9px;
+  font-size: 10.5px;
+  font-weight: 720;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.accountHeroCopyBtn:hover{
+  background: transparent;
+  border-color: transparent;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+.accountHeroCopyBtn.isCopied{
+  border-color: transparent;
+  color: rgba(21, 128, 61, 0.98);
+}
+.accountHeroActions{
+  display: grid;
+  gap: 8px;
+}
+.accountHeroActions .btn{
+  width: 100%;
+  min-width: 0;
+}
+.accountHeroActions.isQuiet{
+  min-width: 0;
+}
+.accountHeroActions.isQuiet .btn{
+  width: 100%;
+}
+.accountHeroActions.isQuiet .btn.subtle{
+  min-height: 34px;
+  padding-inline: 12px;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted) 22%);
+}
+.accountHeroActions .btn.ghost{
+  justify-content: center;
+  min-height: 32px;
+}
+.accountHeroActions .btn.ghost:hover{
+  color: var(--text);
 }
 .accountSummaryStrip{
   margin-top: 12px;
@@ -12556,6 +13040,31 @@ button.instanceProviderBadge:disabled{
   flex-direction: column;
   gap: 8px;
 }
+.accountSectionHeader{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.accountSectionHeaderCopy{
+  min-width: 0;
+}
+.accountSectionHeaderActions{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.accountSectionHeader .btn{
+  align-self: flex-start;
+}
+.accountSectionHint{
+  margin-top: 6px;
+  font-size: 11.5px;
+  font-weight: 680;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
 .accountDiagRow{
   display: flex;
   align-items: center;
@@ -12567,10 +13076,19 @@ button.instanceProviderBadge:disabled{
   background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
   font-size: 12.5px;
   font-weight: 860;
+  transition: transform 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease), box-shadow 180ms var(--ease);
 }
 .accountDiagRow strong{
   color: color-mix(in srgb, var(--text) 94%, white 6%);
   text-align: right;
+}
+.accountDiagRow:hover,
+.accountAssetRow:hover,
+.accountAccountRow:hover{
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--surface) 93%, var(--surface-2) 7%);
+  border-color: color-mix(in srgb, var(--stroke2) 70%, transparent);
+  box-shadow: var(--shadow-xs);
 }
 .accountAccountsList{
   margin-top: 10px;
@@ -12588,6 +13106,7 @@ button.instanceProviderBadge:disabled{
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+  transition: transform 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease), box-shadow 180ms var(--ease);
 }
 .accountAccountInfo{
   min-width: 0;
@@ -12619,6 +13138,7 @@ button.instanceProviderBadge:disabled{
   font-size: 12px;
   font-weight: 840;
   background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  transition: transform 160ms var(--ease), background 160ms var(--ease), border-color 160ms var(--ease), box-shadow 180ms var(--ease);
 }
 .accountAssetRow a{
   color: var(--accent-text);
@@ -12630,8 +13150,17 @@ button.instanceProviderBadge:disabled{
 }
 
 @media (max-width: 980px){
+  .accountHeroSplit{
+    grid-template-columns: 1fr;
+  }
+  .accountHeroHeader{
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
   .accountSummaryStrip{
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .accountHeroUtilityPanel{
+    padding: 12px;
   }
   .accountProfileSplit{
     grid-template-columns: 1fr;
@@ -12673,8 +13202,9 @@ button.instanceProviderBadge:disabled{
   .accountGrid{
     grid-template-columns: 1fr;
   }
-  .accountHero{
-    grid-template-columns: 1fr;
+  .accountAvatarWrap{
+    width: 56px;
+    height: 56px;
   }
   .skinsRouteLayoutRef{
     grid-template-columns: 1fr;
@@ -12791,7 +13321,11 @@ button.instanceProviderBadge:disabled{
   background: color-mix(in srgb, var(--surface-2) 76%, transparent);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
   position: relative;
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  transition:
+    background 220ms var(--ease),
+    border-color 220ms var(--ease),
+    box-shadow 220ms var(--ease),
+    transform 220ms cubic-bezier(0.22, 1.4, 0.36, 1);
 }
 .togglePill:after{
   content:"";
@@ -12805,10 +13339,25 @@ button.instanceProviderBadge:disabled{
   background: rgba(255,255,255,0.96);
   border: 1px solid var(--stroke);
   box-shadow: 0 6px 16px rgba(0,0,0,0.10);
-  transition: left var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+  transition:
+    left 250ms cubic-bezier(0.22, 1.45, 0.32, 1),
+    border-color 220ms var(--ease),
+    transform 250ms cubic-bezier(0.22, 1.45, 0.32, 1),
+    box-shadow 220ms var(--ease);
 }
 .toggleRow input:checked + .togglePill{ background: var(--accent-soft); border-color: var(--accent-ring); }
-.toggleRow input:checked + .togglePill:after{ left: 20px; border-color: var(--accent); }
+.toggleRow input:checked + .togglePill:after{
+  left: 20px;
+  border-color: var(--accent);
+  transform: translateY(-50%) scale(1.08);
+  box-shadow: 0 8px 18px rgba(0,0,0,0.14);
+}
+.toggleRow input:not(:checked) + .togglePill:after{
+  transform: translateY(-50%) scale(1);
+}
+.toggleRow:active .togglePill{
+  transform: scale(0.985);
+}
 .toggleRow input:focus-visible + .togglePill{
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.9),
@@ -17217,13 +17766,13 @@ body{
   padding: 16px;
   gap: 14px;
   border-radius: 18px;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
 }
 
 .accountAvatarWrap{
-  width: 72px;
-  height: 72px;
-  border-radius: 16px;
+  width: 64px;
+  height: 64px;
+  border-radius: 15px;
 }
 
 .accountHeroEyebrow{
@@ -17232,13 +17781,21 @@ body{
 }
 
 .accountHeroName{
-  font-size: 22px;
-  font-weight: 820;
+  font-size: 24px;
+  font-weight: 860;
 }
 
 .accountHeroLead{
-  font-size: 12.5px;
-  max-width: 50ch;
+  font-size: 13px;
+  max-width: 58ch;
+}
+
+.accountHeroDetails{
+  gap: 8px;
+}
+
+.accountHeroDetailChip{
+  padding: 7px 10px;
 }
 
 .accountSummaryStrip{
@@ -17480,6 +18037,11 @@ body{
   border-color: rgba(120, 120, 120, 0.14);
 }
 
+:root[data-theme="light"] .accountAvatarWrap{
+  background: #eeeeee;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
 :root[data-theme="light"] .resultCard:hover{
   transform: translateY(-2px);
   background: #ffffff;
@@ -17487,6 +18049,351 @@ body{
   box-shadow:
     0 10px 20px rgba(18, 24, 32, 0.06),
     0 3px 8px rgba(18, 24, 32, 0.04);
+}
+
+/* Create instance: two-step flow */
+.createEntryScreen{
+  display: grid;
+  gap: 16px;
+}
+
+.createEntryIntro{
+  display: grid;
+  gap: 4px;
+}
+
+.createEntryEyebrow{
+  font-size: 12px;
+  font-weight: 860;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.createEntryLead,
+.createEntryFoot{
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.createEntryList{
+  display: grid;
+  gap: 10px;
+}
+
+.createModeCard{
+  width: 100%;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 90%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.createModeCard:hover{
+  transform: translateY(-1px);
+  border-color: var(--control-border-hover);
+  background: var(--interactive-hover-bg);
+}
+
+.createModeCardIcon{
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 84%, transparent);
+  background: color-mix(in srgb, var(--surface) 90%, var(--surface-2) 10%);
+  color: var(--muted);
+}
+
+.createModeCardCopy{
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.createModeCardTitle{
+  font-size: 15px;
+  font-weight: 820;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.createModeCardText{
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.createModeCardChevron{
+  font-size: 24px;
+  line-height: 1;
+  color: var(--muted2);
+}
+
+.createDetailsScreen{
+  display: grid;
+  gap: 16px;
+}
+
+.createDetailsTop{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.createVisualRail{
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.createVisualMeta{
+  display: grid;
+  gap: 4px;
+}
+
+.createVisualTitle{
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.createVisualText{
+  font-size: 12.5px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.createLoaderVersionCard{
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+}
+
+.createLoaderVersionModes{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.createLoaderModeBtn{
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.createLoaderModeBtn:hover{
+  transform: translateY(-1px);
+  border-color: var(--control-border-hover);
+  color: var(--text);
+}
+
+.createLoaderModeBtn.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 78%, var(--control-border));
+  background: color-mix(in srgb, var(--accent-soft-2) 58%, var(--surface) 42%);
+  color: var(--accent-text);
+}
+
+.createLoaderVersionHelp{
+  font-size: 12px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.createInstanceModal .launcherCreateToolbar{
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 860px){
+  .createModeCard{
+    grid-template-columns: 46px minmax(0, 1fr) auto;
+    padding: 12px 14px;
+  }
+
+  .createModeCardIcon{
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+  }
+
+  .createDetailsTop{
+    align-items: flex-start;
+  }
+}
+
+/* Final dark-mode refinement pass */
+:root:not([data-theme="light"]){
+  --bg: #181b20;
+  --bg2: rgba(255,255,255,0.04);
+  --panel: #1f232a;
+  --panel2: #262b33;
+  --surface: #262b33;
+  --surface-2: #20242b;
+  --page-bg: #181b20;
+  --card-bg: #242930;
+  --section-bg: #20242b;
+  --btn-neutral-bg: #2b3039;
+  --control-border: rgba(255,255,255,0.08);
+  --control-border-hover: rgba(255,255,255,0.15);
+  --interactive-hover-bg: #2e343d;
+  --interactive-hover-border: rgba(255,255,255,0.18);
+  --stroke: rgba(255,255,255,0.05);
+  --stroke2: rgba(255,255,255,0.10);
+  --text: rgba(244, 246, 249, 0.96);
+  --muted: rgba(194, 199, 208, 0.78);
+  --muted2: rgba(153, 160, 171, 0.70);
+  --shadow: 0 22px 60px rgba(0, 0, 0, 0.40);
+  --shadowSoft: 0 12px 28px rgba(0, 0, 0, 0.22);
+  --shadow-xs: 0 8px 18px rgba(0, 0, 0, 0.14);
+  --shadow-sm: 0 14px 30px rgba(0, 0, 0, 0.20);
+  --dropdown-bg-solid: #242a32;
+  --dropdown-bg-soft-solid: #2a3039;
+}
+
+:root:not([data-theme="light"]) .content{
+  background: var(--page-bg);
+}
+
+:root:not([data-theme="light"]) .navRail{
+  background: #20242b;
+  border-right-color: rgba(255,255,255,0.06);
+  box-shadow: inset -1px 0 0 rgba(255,255,255,0.04);
+}
+
+:root:not([data-theme="light"]) .card,
+:root:not([data-theme="light"]) .discoverWorkspace,
+:root:not([data-theme="light"]) .libraryTopRow,
+:root:not([data-theme="light"]) .homePanel,
+:root:not([data-theme="light"]) .homeSpotlight,
+:root:not([data-theme="light"]) .resultCard,
+:root:not([data-theme="light"]) .instCard,
+:root:not([data-theme="light"]) .instPageTop,
+:root:not([data-theme="light"]) .instanceSectionShell,
+:root:not([data-theme="light"]) .instanceSideCard,
+:root:not([data-theme="light"]) .settingsSidebar,
+:root:not([data-theme="light"]) .settingsHeroCard,
+:root:not([data-theme="light"]) .settingsSectionCard,
+:root:not([data-theme="light"]) .accountCard,
+:root:not([data-theme="light"]) .accountHero,
+:root:not([data-theme="light"]) .createInstanceModal{
+  background: color-mix(in srgb, var(--surface) 92%, #2b313a 8%);
+  border-color: rgba(255,255,255,0.07);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .btn,
+:root:not([data-theme="light"]) .dropBtn,
+:root:not([data-theme="light"]) .menuSelectBtn,
+:root:not([data-theme="light"]) .input,
+:root:not([data-theme="light"]) .textarea{
+  background: #2b3039;
+  border-color: rgba(255,255,255,0.08);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .btn:hover,
+:root:not([data-theme="light"]) .dropBtn:hover,
+:root:not([data-theme="light"]) .menuSelectBtn:hover,
+:root:not([data-theme="light"]) .input:hover,
+:root:not([data-theme="light"]) .textarea:hover{
+  background: #313741;
+  border-color: rgba(255,255,255,0.14);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .btn.primary{
+  background: color-mix(in srgb, var(--accent-solid) 92%, #2b3039 8%);
+  border-color: color-mix(in srgb, var(--accent-solid) 84%, rgba(255,255,255,0.08) 16%);
+}
+
+:root:not([data-theme="light"]) .chip,
+:root:not([data-theme="light"]) .pill{
+  background: #2c3139;
+  border-color: rgba(255,255,255,0.08);
+}
+
+:root:not([data-theme="light"]) .discoverSidebarSection{
+  background: #20252c;
+  border-color: rgba(255,255,255,0.06);
+}
+
+:root:not([data-theme="light"]) .discoverSidebarNotice.warningBox,
+:root:not([data-theme="light"]) .topStatusBanner.warningBox{
+  color: rgba(247, 220, 177, 0.94);
+  border-color: rgba(200, 135, 56, 0.72);
+  background: rgba(85, 57, 27, 0.70);
+}
+
+:root:not([data-theme="light"]) .resultCard,
+:root:not([data-theme="light"]) .instCard,
+:root:not([data-theme="light"]) .instanceModsRow{
+  transition: transform var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+:root:not([data-theme="light"]) .resultCard:hover,
+:root:not([data-theme="light"]) .instCard:hover,
+:root:not([data-theme="light"]) .instanceModsRow:hover{
+  background: #2a3038;
+  border-color: rgba(255,255,255,0.12);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.16);
+}
+
+:root:not([data-theme="light"]) .resultCard:hover{
+  transform: translateY(-2px);
+}
+
+:root:not([data-theme="light"]) .libraryGrid .instCard:hover{
+  transform: translateY(-3px);
+}
+
+:root:not([data-theme="light"]) .instPageTop,
+:root:not([data-theme="light"]) .instanceContentWorkspaceCard,
+:root:not([data-theme="light"]) .instanceContentMaintenancePanelPrimary,
+:root:not([data-theme="light"]) .instanceContentMaintenanceUtility,
+:root:not([data-theme="light"]) .updatesCard,
+:root:not([data-theme="light"]) .updatesListRow{
+  background: #21262d;
+  border-color: rgba(255,255,255,0.06);
+}
+
+:root:not([data-theme="light"]) .homeKpi,
+:root:not([data-theme="light"]) .libraryHeroStat,
+:root:not([data-theme="light"]) .settingsHeroSummaryCard,
+:root:not([data-theme="light"]) .accountSummaryCard{
+  background: #2a2f37;
+  border-color: rgba(255,255,255,0.07);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .resultIcon,
+:root:not([data-theme="light"]) .instCardIcon,
+:root:not([data-theme="light"]) .instHeroIcon,
+:root:not([data-theme="light"]) .settingsRailButtonIcon{
+  background: #2d333c;
+  border-color: rgba(255,255,255,0.08);
 }
 
 :root[data-theme="light"] .resultCard:hover .resultIcon{

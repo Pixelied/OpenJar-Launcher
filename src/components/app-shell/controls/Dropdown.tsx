@@ -5,6 +5,8 @@ import usePortalDropdownLayout from "./usePortalDropdownLayout";
 
 type VersionItemLike = {
   id: string;
+  label?: string;
+  meta?: string;
 };
 
 export default function Dropdown({
@@ -67,7 +69,10 @@ export default function Dropdown({
     return groups
       .map((g) => ({
         group: g.group,
-        items: g.items.filter((it) => it.id.toLowerCase().includes(qq)),
+        items: g.items.filter((it) => {
+          const haystack = `${it.id} ${it.label ?? ""} ${it.meta ?? ""}`.toLowerCase();
+          return haystack.includes(qq);
+        }),
       }))
       .filter((g) => g.items.length > 0);
   }, [groups, q]);
@@ -138,7 +143,10 @@ export default function Dropdown({
                               setQ("");
                             }}
                           >
-                            {it.id}
+                            <div className="dropItemCopy">
+                              <div className="dropItemTitle">{it.label ?? it.id}</div>
+                              {it.meta ? <div className="dropItemMeta">{it.meta}</div> : null}
+                            </div>
                           </div>
                         ))}
                       </div>

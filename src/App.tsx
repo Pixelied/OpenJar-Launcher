@@ -86,11 +86,14 @@ import type {
   StorageInstanceSummary,
   StorageUsageEntry,
   StorageUsageOverview,
+  GrantedImagePathResult,
+  GrantedPathResult,
   SupportPerfAction,
 } from "./types";
 import {
   applySelectedAccountAppearance,
   beginMicrosoftLogin,
+  cancelMicrosoftLogin,
   cancelInstanceLaunch,
   clearDevCurseforgeApiKey,
   checkInstanceContentUpdates,
@@ -145,6 +148,9 @@ import {
   triggerInstanceMicrophonePermissionPrompt,
   readInstanceLogs,
   readLocalImageDataUrl,
+  pickInstanceIconFile,
+  pickExternalOpenPathGrants,
+  pickExternalSavePathGrant,
   revealConfigEditorFile,
   removeInstalledMod,
   listModpackSpecs,
@@ -266,7 +272,6 @@ import {
   SKIN_THUMB_3D_SIZE,
   SKIN_THUMB_FRAMING_VERSION,
   SKIN_VIEWER_LOAD_TIMEOUT_MS,
-  SUPPORT_BUNDLE_RAW_DEFAULT_KEY,
   TOP_ERROR_AUTO_HIDE_MS,
 } from "./app/constants";
 
@@ -301,6 +306,12 @@ type VersionItem = {
   id: string;
   type: "release" | "snapshot" | "old_beta" | "old_alpha" | string;
   release_time?: string;
+};
+
+type VersionDropdownItem = {
+  id: string;
+  label: string;
+  meta?: string;
 };
 
 type InstallTarget = {
@@ -969,6 +980,9 @@ type SavedCustomSkin = {
   preview_data_url?: string | null;
 };
 
+type SelectedInstanceIconGrant = GrantedImagePathResult;
+type SelectedPathGrant = GrantedPathResult;
+
 type InstanceLaunchHooksDraft = {
   enabled: boolean;
   pre_launch: string;
@@ -996,6 +1010,8 @@ function defaultInstanceSettings(): InstanceSettings {
     sync_minecraft_settings_target: "none",
     auto_update_installed_content: false,
     prefer_release_builds: true,
+    loader_version_strategy: "stable",
+    custom_loader_version: "",
     java_path: "",
     memory_mb: 4096,
     jvm_args: "",
@@ -1016,6 +1032,36 @@ function defaultLaunchHooksDraft(): InstanceLaunchHooksDraft {
     wrapper: "",
     post_exit: "",
   };
+}
+
+function createLoaderVersionPlaceholder(loader: Loader): string {
+  switch (loader) {
+    case "fabric":
+      return "e.g. 0.16.10";
+    case "forge":
+      return "e.g. 47.3.22";
+    case "neoforge":
+      return "e.g. 21.1.169";
+    case "quilt":
+      return "e.g. 0.27.0-beta.4";
+    default:
+      return "Enter loader version";
+  }
+}
+
+function createLoaderVersionModeNote(loader: Loader, mode: "stable" | "latest" | "custom"): string {
+  if (loader === "forge") {
+    if (mode === "stable") return "Stable uses Forge recommended builds when they exist.";
+    if (mode === "latest") return "Latest tracks the newest compatible Forge build.";
+    return "Custom lets you pin an exact Forge version.";
+  }
+  if (loader === "fabric") {
+    if (mode === "stable") return "Stable prefers the latest compatible stable Fabric loader.";
+    if (mode === "latest") return "Latest uses the newest compatible Fabric loader build.";
+    return "Custom lets you pin an exact Fabric loader version.";
+  }
+  if (mode === "custom") return "Custom lets you pin the exact loader build yourself.";
+  return "Choose how the launcher should prefer loader builds for this instance.";
 }
 
 function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): InstanceSettings {
@@ -1047,6 +1093,16 @@ function normalizeInstanceSettings(input?: Partial<InstanceSettings> | null): In
     notes: String(merged.notes ?? ""),
     sync_minecraft_settings: Boolean(merged.sync_minecraft_settings),
     sync_minecraft_settings_target: syncTarget,
+    loader_version_strategy:
+      String(merged.loader_version_strategy ?? "stable").trim().toLowerCase() === "latest"
+        ? "latest"
+        : String(merged.loader_version_strategy ?? "stable").trim().toLowerCase() === "custom"
+          ? "custom"
+          : "stable",
+    custom_loader_version:
+      String(merged.loader_version_strategy ?? "stable").trim().toLowerCase() === "custom"
+        ? String(merged.custom_loader_version ?? "").trim()
+        : "",
     java_path: String(merged.java_path ?? "").trim(),
     jvm_args: String(merged.jvm_args ?? "").trim(),
     graphics_preset: graphicsPreset,
@@ -2023,6 +2079,27 @@ function groupVersions(items: VersionItem[]) {
 }
 
 function groupAllVersions(items: VersionItem[]) {
+  const versionTypeLabel = (item: VersionItem) => {
+    if (/-rc\d+$/i.test(item.id)) return "Release candidate";
+    if (/-pre\d+$/i.test(item.id)) return "Pre-release";
+    if (/^\d{2}w\d{2}[a-z]$/i.test(item.id) || item.type === "snapshot") return "Snapshot";
+    if (item.type === "old_beta") return "Old Beta";
+    if (item.type === "old_alpha") return "Old Alpha";
+    return "Stable release";
+  };
+  const toDropdownItem = (item: VersionItem): VersionDropdownItem => ({
+    id: item.id,
+    label: item.id,
+    meta: versionTypeLabel(item),
+  });
+  const releaseLineKey = (id: string) => {
+    const trimmed = id.trim();
+    const explicit = trimmed.match(/^(\d+(?:\.\d+){1,2})-(?:pre|rc)\d+$/i);
+    if (explicit) return explicit[1];
+    const stable = trimmed.match(/^(\d+(?:\.\d+){1,2})$/);
+    if (stable) return stable[1];
+    return null;
+  };
   const unique = new Map<string, VersionItem>();
   for (const item of items) {
     const id = String(item.id ?? "").trim();
@@ -2030,81 +2107,77 @@ function groupAllVersions(items: VersionItem[]) {
     unique.set(id, item);
   }
   const sorted = Array.from(unique.values()).sort(compareVersionItems);
-  const releases = sorted.filter((v) => v.type === "release");
-  const releaseGroups = groupVersions(releases);
-
-  const releaseCandidates = sorted.filter((v) => /-rc\d+$/i.test(v.id));
-  const preReleases = sorted.filter((v) => /-pre\d+$/i.test(v.id));
+  const stableAndPreviews = sorted.filter((v) => {
+    if (v.type === "release") return true;
+    if (/-rc\d+$/i.test(v.id)) return true;
+    if (/-pre\d+$/i.test(v.id)) return true;
+    return false;
+  });
   const weeklySnapshots = sorted.filter((v) => /^\d{2}w\d{2}[a-z]$/i.test(v.id));
   const oldBeta = sorted.filter((v) => v.type === "old_beta");
   const oldAlpha = sorted.filter((v) => v.type === "old_alpha");
-
   const releaseLike = new Set([
-    ...releaseCandidates.map((v) => v.id),
-    ...preReleases.map((v) => v.id),
+    ...stableAndPreviews.map((v) => v.id),
     ...weeklySnapshots.map((v) => v.id),
   ]);
   const extraSnapshots = sorted.filter(
     (v) => v.type === "snapshot" && !releaseLike.has(v.id)
   );
 
-  const seriesKey = (id: string) => {
-    const match = id.trim().match(/^(\d+\.\d+)/);
-    return match?.[1] ?? "Other";
-  };
-  const compareSeriesDesc = (a: string, b: string) => {
-    const parse = (value: string) => value.split(".").map((n) => Number.parseInt(n, 10) || 0);
-    const pa = parse(a);
-    const pb = parse(b);
-    if ((pa[0] ?? 0) !== (pb[0] ?? 0)) return (pb[0] ?? 0) - (pa[0] ?? 0);
-    return (pb[1] ?? 0) - (pa[1] ?? 0);
-  };
-  const groupByKey = (arr: VersionItem[], keyFn: (id: string) => string) => {
-    const map = new Map<string, VersionItem[]>();
-    for (const item of arr) {
-      const key = keyFn(item.id);
-      const current = map.get(key) ?? [];
-      current.push(item);
-      map.set(key, current);
-    }
-    return map;
-  };
+  const lineBuckets = new Map<string, VersionItem[]>();
+  for (const item of stableAndPreviews) {
+    const key = releaseLineKey(item.id);
+    if (!key) continue;
+    const current = lineBuckets.get(key) ?? [];
+    current.push(item);
+    lineBuckets.set(key, current);
+  }
 
-  const rcBySeries = groupByKey(releaseCandidates, (id) => seriesKey(id));
-  const preBySeries = groupByKey(preReleases, (id) => seriesKey(id));
-  const snapshotsByYear = groupByKey(weeklySnapshots, (id) => {
-    const m = id.match(/^(\d{2})w\d{2}[a-z]$/i);
-    if (!m) return "Other";
-    const yy = Number.parseInt(m[1], 10);
-    if (!Number.isFinite(yy)) return "Other";
-    return String(yy >= 70 ? 1900 + yy : 2000 + yy);
-  });
+  const orderedLineKeys = Array.from(lineBuckets.entries())
+    .sort((a, b) => {
+      const aTs = toTimestamp(a[1][0]?.release_time);
+      const bTs = toTimestamp(b[1][0]?.release_time);
+      const aHas = Number.isFinite(aTs);
+      const bHas = Number.isFinite(bTs);
+      if (aHas && bHas && aTs !== bTs) return bTs - aTs;
+      if (aHas !== bHas) return aHas ? -1 : 1;
+      return compareReleaseIdDesc(b[0], a[0]);
+    })
+    .map(([key]) => key);
 
-  const out: { group: string; items: VersionItem[] }[] = [];
-  out.push(
-    ...releaseGroups.map((g) => ({
-      group: `Stable releases • ${g.group}`,
-      items: g.items,
-    }))
-  );
-  for (const key of Array.from(rcBySeries.keys()).sort(compareSeriesDesc)) {
-    const values = (rcBySeries.get(key) ?? []).sort(compareVersionItems);
+  const out: { group: string; items: VersionDropdownItem[] }[] = [];
+  for (const key of orderedLineKeys) {
+    const values = (lineBuckets.get(key) ?? []).sort(compareVersionItems);
     if (!values.length) continue;
-    out.push({ group: `Release candidates • ${key}`, items: values });
+    out.push({
+      group: `${key} line`,
+      items: values.map(toDropdownItem),
+    });
   }
-  for (const key of Array.from(preBySeries.keys()).sort(compareSeriesDesc)) {
-    const values = (preBySeries.get(key) ?? []).sort(compareVersionItems);
-    if (!values.length) continue;
-    out.push({ group: `Pre-releases • ${key}`, items: values });
+  if (weeklySnapshots.length) {
+    out.push({
+      group: "Snapshots",
+      items: weeklySnapshots.map(toDropdownItem),
+    });
   }
-  for (const key of Array.from(snapshotsByYear.keys()).sort((a, b) => Number(b) - Number(a))) {
-    const values = (snapshotsByYear.get(key) ?? []).sort(compareVersionItems);
-    if (!values.length) continue;
-    out.push({ group: `Snapshots • ${key}`, items: values });
+  if (extraSnapshots.length) {
+    out.push({
+      group: "Experimental snapshots",
+      items: extraSnapshots.map(toDropdownItem),
+    });
   }
-  if (extraSnapshots.length) out.push({ group: "Experimental / dev builds", items: extraSnapshots });
-  if (oldBeta.length) out.push({ group: "Old Beta", items: oldBeta });
-  if (oldAlpha.length) out.push({ group: "Old Alpha", items: oldAlpha });
+  if (oldBeta.length) {
+    out.push({
+      group: "Legacy beta",
+      items: oldBeta.map(toDropdownItem),
+    });
+  }
+  if (oldAlpha.length) {
+    out.push({
+      group: "Legacy alpha",
+      items: oldAlpha.map(toDropdownItem),
+    });
+  }
   return out;
 }
 
@@ -2421,15 +2494,6 @@ function readInstanceSettingsMode(): SettingsMode {
     return raw === "advanced" ? "advanced" : "basic";
   } catch {
     return "basic";
-  }
-}
-
-function readSupportBundleRawDefault(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return localStorage.getItem(SUPPORT_BUNDLE_RAW_DEFAULT_KEY) === "1";
-  } catch {
-    return false;
   }
 }
 
@@ -3906,7 +3970,8 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key.toLowerCase() !== "k") return;
+      const key = event.key.toLowerCase();
+      if (key !== "k" && key !== "p") return;
       if (!event.metaKey && !event.ctrlKey) return;
       if (commandPaletteOpen) {
         event.preventDefault();
@@ -4318,11 +4383,14 @@ export default function App() {
 
   // create modal state
   const [showCreate, setShowCreate] = useState(false);
+  const [createStep, setCreateStep] = useState<"picker" | "details">("picker");
   const [createMode, setCreateMode] = useState<"custom" | "file" | "launcher">("custom");
   const [name, setName] = useState("");
   const [loader, setLoader] = useState<Loader>("fabric");
-  const [createIconPath, setCreateIconPath] = useState<string | null>(null);
-  const [createPackFilePath, setCreatePackFilePath] = useState<string | null>(null);
+  const [createLoaderVersionMode, setCreateLoaderVersionMode] = useState<"stable" | "latest" | "custom">("stable");
+  const [createCustomLoaderVersion, setCreateCustomLoaderVersion] = useState("");
+  const [createIconSelection, setCreateIconSelection] = useState<SelectedInstanceIconGrant | null>(null);
+  const [createPackSelection, setCreatePackSelection] = useState<SelectedPathGrant | null>(null);
   const [launcherImportSources, setLauncherImportSources] = useState<LauncherImportSource[]>([]);
   const [launcherImportBusy, setLauncherImportBusy] = useState(false);
   const [selectedLauncherImportSourceId, setSelectedLauncherImportSourceId] = useState<string | null>(null);
@@ -4362,6 +4430,55 @@ export default function App() {
     [visibleCreateVersions, createAllVersions]
   );
 
+  const createModeDetails = useMemo(
+    () => ({
+      custom: {
+        label: "Custom setup",
+        icon: "box" as IconName,
+        description: "Start from scratch by picking a loader and game version.",
+      },
+      file: {
+        label: "Modpack base",
+        icon: "layers" as IconName,
+        description: "Use a modpack archive as your starting point.",
+      },
+      launcher: {
+        label: "Import instance",
+        icon: "upload" as IconName,
+        description: "Import an instance from another launcher install.",
+      },
+    }),
+    []
+  );
+
+  const createModeDetail = createModeDetails[createMode];
+  const showCustomLoaderBuildControls = createMode === "custom" && loader !== "vanilla";
+
+  function resetCreateModalState() {
+    setCreateStep("picker");
+    setCreateMode("custom");
+    setName("");
+    setLoader("fabric");
+    setCreateLoaderVersionMode("stable");
+    setCreateCustomLoaderVersion("");
+    setCreateIconSelection(null);
+    setCreatePackSelection(null);
+    setSelectedLauncherImportSourceId(null);
+    setCreateAllVersions(false);
+    setMcVersion(null);
+  }
+
+  function closeCreateModal() {
+    if (busy) return;
+    setShowCreate(false);
+    resetCreateModalState();
+  }
+
+  function openCreateDetails(nextMode: "custom" | "file" | "launcher") {
+    setCreateMode(nextMode);
+    setCreateStep("details");
+  }
+
   const groupedDiscoverVersions = useMemo(
     () =>
       discoverAllVersions
@@ -4394,12 +4511,9 @@ export default function App() {
   async function onPickCreateIcon() {
     setError(null);
     try {
-      const picked = await openDialog({
-        multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] }],
-      });
-      if (!picked || Array.isArray(picked)) return;
-      setCreateIconPath(picked);
+      const picked = await pickInstanceIconFile();
+      if (!picked) return;
+      setCreateIconSelection(picked);
     } catch (e: any) {
       setError(e?.toString?.() ?? String(e));
     }
@@ -4408,14 +4522,15 @@ export default function App() {
   async function onPickCreateModpackFile() {
     setError(null);
     try {
-      const picked = await openDialog({
+      const picked = await pickExternalOpenPathGrants({
+        purpose: "modpack_archive_import",
         multiple: false,
-        filters: [{ name: "Modpack archive", extensions: ["mrpack", "zip"] }],
       });
-      if (!picked || Array.isArray(picked)) return;
-      setCreatePackFilePath(picked);
+      const selected = picked[0] ?? null;
+      if (!selected) return;
+      setCreatePackSelection(selected);
       if (!name.trim()) {
-        setName(basenameWithoutExt(picked));
+        setName(basenameWithoutExt(selected.displayPath));
       }
     } catch (e: any) {
       setError(e?.toString?.() ?? String(e));
@@ -4539,12 +4654,9 @@ export default function App() {
     setError(null);
     setBusy("instance-icon");
     try {
-      const picked = await openDialog({
-        multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "bmp", "gif"] }],
-      });
-      if (!picked || Array.isArray(picked)) return;
-      await setInstanceIcon({ instanceId: inst.id, iconPath: picked });
+      const picked = await pickInstanceIconFile();
+      if (!picked) return;
+      await setInstanceIcon({ instanceId: inst.id, iconGrantId: picked.grantId });
       await refreshInstances();
       setInstallNotice(`Updated icon for ${inst.name}.`);
     } catch (e: any) {
@@ -4558,7 +4670,7 @@ export default function App() {
     setError(null);
     setBusy("instance-icon");
     try {
-      await setInstanceIcon({ instanceId: inst.id, iconPath: null });
+      await setInstanceIcon({ instanceId: inst.id, iconGrantId: null });
       await refreshInstances();
       setInstallNotice(`Removed icon for ${inst.name}.`);
     } catch (e: any) {
@@ -4759,13 +4871,26 @@ export default function App() {
       if (createMode === "custom") {
         if (!name.trim()) throw new Error("Name is required");
         if (!mcVersion) throw new Error("Pick a game version");
-        inst = await createInstance({ name, mcVersion, loader, iconPath: createIconPath });
+        if (showCustomLoaderBuildControls && createLoaderVersionMode === "custom" && !createCustomLoaderVersion.trim()) {
+          throw new Error("Enter a custom loader version");
+        }
+        inst = await createInstance({
+          name,
+          mcVersion,
+          loader,
+          loaderVersionStrategy: showCustomLoaderBuildControls ? createLoaderVersionMode : "stable",
+          customLoaderVersion:
+            showCustomLoaderBuildControls && createLoaderVersionMode === "custom"
+              ? createCustomLoaderVersion.trim()
+              : null,
+          iconGrantId: createIconSelection?.grantId ?? null,
+        });
       } else if (createMode === "file") {
-        if (!createPackFilePath) throw new Error("Pick a modpack archive first.");
+        if (!createPackSelection) throw new Error("Pick a modpack archive first.");
         const result: CreateInstanceFromModpackFileResult = await createInstanceFromModpackFile({
-          filePath: createPackFilePath,
+          grantId: createPackSelection.grantId,
           name: name.trim() || undefined,
-          iconPath: createIconPath,
+          iconGrantId: createIconSelection?.grantId ?? null,
         });
         inst = result.instance;
         if (result.warnings.length > 0) {
@@ -4782,7 +4907,7 @@ export default function App() {
         const result: ImportInstanceFromLauncherResult = await importInstanceFromLauncher({
           sourceId: selectedLauncherImportSourceId,
           name: name.trim() || undefined,
-          iconPath: createIconPath,
+          iconGrantId: createIconSelection?.grantId ?? null,
         });
         inst = result.instance;
         setInstallNotice(
@@ -4794,16 +4919,7 @@ export default function App() {
       setSelectedId(inst.id);
       setShowCreate(false);
       setRoute("library");
-
-      // reset
-      setCreateMode("custom");
-      setName("");
-      setLoader("fabric");
-      setCreateIconPath(null);
-      setCreatePackFilePath(null);
-      setSelectedLauncherImportSourceId(null);
-      setCreateAllVersions(false);
-      setMcVersion(null);
+      resetCreateModalState();
     } catch (e: any) {
       setError(e?.toString?.() ?? String(e));
     } finally {
@@ -5244,9 +5360,8 @@ export default function App() {
   const localResolverBackfillAtRef = useRef<Record<string, number>>({});
   const localResolverBusyRef = useRef<Record<string, boolean>>({});
   const [supportBundleModalInstanceId, setSupportBundleModalInstanceId] = useState<string | null>(null);
-  const [supportBundleIncludeRawLogs, setSupportBundleIncludeRawLogs] = useState<boolean>(() =>
-    readSupportBundleRawDefault()
-  );
+  const [supportBundleIncludeRawLogs, setSupportBundleIncludeRawLogs] = useState(false);
+  const [supportBundleRawLogsConfirmed, setSupportBundleRawLogsConfirmed] = useState(false);
   const [supportBundleBusy, setSupportBundleBusy] = useState(false);
   const [launchMethodPick, setLaunchMethodPick] = useState<LaunchMethod>("native");
   const [updateCheckCadence, setUpdateCheckCadence] = useState<SchedulerCadence>("daily");
@@ -5300,6 +5415,11 @@ export default function App() {
       translateAppText(appLanguage, key, vars),
     [appLanguage]
   );
+
+  useEffect(() => {
+    setSupportBundleIncludeRawLogs(false);
+    setSupportBundleRawLogsConfirmed(false);
+  }, [supportBundleModalInstanceId]);
   useEffect(() => {
     document.documentElement.lang = appLanguage;
   }, [appLanguage]);
@@ -6089,12 +6209,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(APP_UPDATER_AUTOCHECK_KEY, appUpdaterAutoCheck ? "1" : "0");
   }, [appUpdaterAutoCheck]);
-  useEffect(() => {
-    localStorage.setItem(
-      SUPPORT_BUNDLE_RAW_DEFAULT_KEY,
-      supportBundleIncludeRawLogs ? "1" : "0"
-    );
-  }, [supportBundleIncludeRawLogs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8583,12 +8697,15 @@ export default function App() {
     setError(null);
     setLauncherErr(null);
     try {
+      if (includeRawLogs && !supportBundleRawLogsConfirmed) {
+        throw new Error("Confirm that raw logs may contain sensitive information before exporting.");
+      }
       const suggested = `${inst.name.replace(/\s+/g, "-") || "instance"}-support-bundle.zip`;
-      const savePath = await saveDialog({
-        defaultPath: suggested,
-        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      const saveTarget = await pickExternalSavePathGrant({
+        purpose: "support_bundle_export",
+        suggestedName: suggested,
       });
-      if (!savePath || Array.isArray(savePath)) return;
+      if (!saveTarget) return;
       const perfPayload: SupportPerfAction[] = perfActions.slice(0, 150).map((entry) => ({
         id: entry.id,
         name: entry.name,
@@ -8599,12 +8716,12 @@ export default function App() {
       }));
       const out = await exportInstanceSupportBundle({
         instanceId: inst.id,
-        outputPath: savePath,
+        grantId: saveTarget.grantId,
         includeRawLogs,
         perfActions: perfPayload,
       });
       setInstallNotice(`${out.message} ${out.files_count} files exported (${out.redactions_applied} redactions).`);
-      await shellOpen(savePath);
+      await shellOpen(out.output_path);
     } catch (e: any) {
       const msg = e?.toString?.() ?? String(e);
       setLauncherErr(msg);
@@ -9056,11 +9173,11 @@ export default function App() {
       if (presets.length === 0) {
         throw new Error("No presets to export.");
       }
-      const savePath = await saveDialog({
-        defaultPath: "openjar-launcher-presets.json",
-        filters: [{ name: "JSON", extensions: ["json"] }],
+      const saveTarget = await pickExternalSavePathGrant({
+        purpose: "presets_export",
+        suggestedName: "openjar-launcher-presets.json",
       });
-      if (!savePath || Array.isArray(savePath)) return;
+      if (!saveTarget) return;
 
       const payload: PresetExportPayload = {
         format: "mpm-presets/v2",
@@ -9068,7 +9185,7 @@ export default function App() {
         presets,
       };
       const out = await exportPresetsJson({
-        outputPath: savePath,
+        grantId: saveTarget.grantId,
         payload,
       });
       setInstallNotice(`Exported ${out.items} preset(s) to ${out.path}`);
@@ -9083,13 +9200,14 @@ export default function App() {
     setPresetIoBusy(true);
     setError(null);
     try {
-      const picked = await openDialog({
+      const picked = await pickExternalOpenPathGrants({
+        purpose: "presets_import",
         multiple: false,
-        filters: [{ name: "JSON", extensions: ["json"] }],
       });
-      if (!picked || Array.isArray(picked)) return;
+      const selected = picked[0] ?? null;
+      if (!selected) return;
 
-      const imported = await importPresetsJson({ inputPath: picked });
+      const imported = await importPresetsJson({ grantId: selected.grantId });
       const values = Array.isArray(imported)
         ? imported
         : Array.isArray((imported as any)?.presets)
@@ -9292,18 +9410,12 @@ export default function App() {
     setInstallNotice(null);
     try {
       const backendContentType = instanceContentTypeToBackend(contentView);
-      const picked = await openDialog({
+      const pickedFiles = await pickExternalOpenPathGrants({
+        purpose: "local_mod_import",
+        contentType: backendContentType,
         multiple: true,
-        filters: [
-          {
-            name: `Minecraft ${localImportTypeLabel(contentView)}`,
-            extensions: localImportExtensionsForInstanceType(contentView),
-          },
-        ],
       });
-      if (!picked) return;
-      const filePaths = Array.isArray(picked) ? picked : [picked];
-      if (filePaths.length === 0) return;
+      if (pickedFiles.length === 0) return;
 
       const datapackWorlds =
         backendContentType === "datapacks"
@@ -9319,17 +9431,17 @@ export default function App() {
       setImportingInstanceId(inst.id);
       let successCount = 0;
       const failedPaths: string[] = [];
-      for (const filePath of filePaths) {
+      for (const pickedFile of pickedFiles) {
         try {
           await importLocalModFile({
             instanceId: inst.id,
-            filePath,
+            grantId: pickedFile.grantId,
             contentType: backendContentType,
             targetWorlds: backendContentType === "datapacks" ? datapackWorlds : undefined,
           });
           successCount += 1;
         } catch {
-          failedPaths.push(filePath);
+          failedPaths.push(pickedFile.displayPath);
         }
       }
       await refreshInstalledMods(inst.id, { autoIdentifyAfterRefresh: successCount > 0 });
@@ -9723,12 +9835,12 @@ export default function App() {
     setInstallNotice(null);
     try {
       const suggested = `${inst.name.replace(/\s+/g, "-") || "instance"}-mods.zip`;
-      const savePath = await saveDialog({
-        defaultPath: suggested,
-        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      const saveTarget = await pickExternalSavePathGrant({
+        purpose: "instance_mods_export",
+        suggestedName: suggested,
       });
-      if (!savePath || Array.isArray(savePath)) return;
-      const out = await exportInstanceModsZip({ instanceId: inst.id, outputPath: savePath });
+      if (!saveTarget) return;
+      const out = await exportInstanceModsZip({ instanceId: inst.id, grantId: saveTarget.grantId });
       setInstallNotice(`Exported ${out.files_count} file(s) to ${out.output_path}`);
     } catch (e: any) {
       setLauncherErr(e?.toString?.() ?? String(e));
@@ -10074,6 +10186,25 @@ export default function App() {
       } else {
         setInstallNotice("Microsoft sign-in started in your browser.");
       }
+    } catch (e: any) {
+      setLauncherErr(e?.toString?.() ?? String(e));
+    } finally {
+      setLauncherBusy(false);
+    }
+  }
+
+  async function onCancelMicrosoftLogin() {
+    if (!msLoginSessionId) return;
+    setLauncherBusy(true);
+    setLauncherErr(null);
+    try {
+      await cancelMicrosoftLogin({ sessionId: msLoginSessionId });
+      setInstallNotice("Microsoft sign-in cancelled.");
+      setMsLoginSessionId(null);
+      setMsLoginState(null);
+      setMsCodePromptVisible(false);
+      setMsCodePrompt(null);
+      setMsCodeCopied(false);
     } catch (e: any) {
       setLauncherErr(e?.toString?.() ?? String(e));
     } finally {
@@ -11237,6 +11368,12 @@ export default function App() {
           setMsCodeCopied(false);
         } else if (state.status === "error") {
           setLauncherErr(state.message ?? "Microsoft login failed.");
+          setMsLoginSessionId(null);
+          setMsCodePromptVisible(false);
+          setMsCodePrompt(null);
+          setMsCodeCopied(false);
+        } else if (state.status === "cancelled") {
+          setInstallNotice(state.message ?? "Microsoft sign-in cancelled.");
           setMsLoginSessionId(null);
           setMsCodePromptVisible(false);
           setMsCodePrompt(null);
@@ -12544,26 +12681,51 @@ export default function App() {
     const paletteInstance = paletteInstanceId
       ? instances.find((inst) => inst.id === paletteInstanceId) ?? null
       : null;
+    const paletteInstanceSummary = paletteInstance
+      ? `${paletteInstance.name} • ${humanizeToken(paletteInstance.loader)} ${paletteInstance.mc_version}`
+      : "No instance selected";
     const items: CommandPaletteItem[] = [
-      { id: "route:home", label: "Go to Home", group: "Navigation", keywords: ["route"], run: () => setRoute("home") },
-      { id: "route:discover", label: "Go to Discover", group: "Navigation", keywords: ["mods", "search"], run: () => setRoute("discover") },
-      { id: "route:modpacks", label: "Go to Creator Studio", group: "Navigation", keywords: ["modpack", "creator"], run: () => setRoute("modpacks") },
-      { id: "route:library", label: "Go to Library", group: "Navigation", keywords: ["instances"], run: () => setRoute("library") },
-      { id: "route:updates", label: "Go to Updates", group: "Navigation", keywords: ["scheduled"], run: () => setRoute("updates") },
-      { id: "route:skins", label: "Go to Skins", group: "Navigation", run: () => setRoute("skins") },
-      { id: "route:account", label: "Go to Account", group: "Navigation", run: () => setRoute("account") },
-      { id: "route:settings", label: "Go to Settings", group: "Navigation", run: () => setRoute("settings") },
+      { id: "route:home", label: "Go to Home", group: "Navigation", icon: "home", keywords: ["route"], detail: "Jump to dashboard, activity, and recent launches.", run: () => setRoute("home") },
+      { id: "route:discover", label: "Go to Discover", group: "Navigation", icon: "compass", keywords: ["mods", "search"], detail: "Browse Modrinth, CurseForge, and GitHub content.", run: () => setRoute("discover") },
+      { id: "route:modpacks", label: "Go to Creator Studio", group: "Navigation", icon: "layers", keywords: ["modpack", "creator"], detail: "Build, export, and manage modpack specs.", run: () => setRoute("modpacks") },
+      { id: "route:library", label: "Go to Library", group: "Navigation", icon: "books", keywords: ["instances"], detail: "Review your instance collection and activity.", run: () => setRoute("library") },
+      { id: "route:updates", label: "Go to Updates", group: "Navigation", icon: "bell", keywords: ["scheduled"], detail: "See update checks, rules, and applied changes.", run: () => setRoute("updates") },
+      { id: "route:skins", label: "Go to Skins", group: "Navigation", icon: "skin", detail: "Manage skins, capes, and live previews.", run: () => setRoute("skins") },
+      { id: "route:account", label: "Go to Account", group: "Navigation", icon: "user", detail: "Inspect Minecraft account diagnostics and cosmetics.", run: () => setRoute("account") },
+      { id: "route:settings", label: "Go to Settings", group: "Navigation", icon: "gear", detail: "Open launcher defaults, accounts, Java, and updates.", run: () => setRoute("settings") },
       {
         id: "action:create-instance",
         label: "Create instance",
         group: "Actions",
+        icon: "plus",
+        detail: "Start a fresh custom instance, import a modpack, or clone another launcher.",
         keywords: ["new", "instance"],
         run: () => setShowCreate(true),
+      },
+      {
+        id: "action:play-selected-instance",
+        label: paletteInstance ? `Play ${paletteInstance.name}` : "Play selected instance",
+        group: "Actions",
+        icon: "play",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance
+          ? `Launch with ${humanizeToken(launchMethodPick)}`
+          : "Create or select an instance first.",
+        keywords: ["launch", "run", "play", "selected instance"],
+        run: () => {
+          if (!paletteInstance) {
+            setInstallNotice("Create or select an instance first.");
+            return;
+          }
+          void onPlayInstance(paletteInstance);
+        },
       },
       {
         id: "action:check-content-updates",
         label: "Run content update checks now",
         group: "Actions",
+        icon: "sparkles",
+        detail: "Run provider update checks immediately instead of waiting for schedule.",
         keywords: ["updates", "scheduled"],
         run: () => void runScheduledUpdateChecks("manual"),
       },
@@ -12571,6 +12733,9 @@ export default function App() {
         id: "action:open-instance-settings",
         label: "Open selected instance settings",
         group: "Actions",
+        icon: "sliders",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance ? paletteInstanceSummary : "Create or select an instance first.",
         keywords: ["instance", "settings", "modal"],
         run: () => {
           if (!paletteInstanceId) {
@@ -12586,6 +12751,9 @@ export default function App() {
         id: "action:open-instance",
         label: "Open selected instance page",
         group: "Actions",
+        icon: "box",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance ? paletteInstanceSummary : "Create or select an instance first.",
         keywords: ["instance", "content"],
         run: () => {
           if (!paletteInstanceId) {
@@ -12601,6 +12769,9 @@ export default function App() {
         id: "action:open-instance-folder",
         label: "Open selected instance folder",
         group: "Actions",
+        icon: "folder",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance ? paletteInstanceSummary : "Create or select an instance first.",
         keywords: ["files", "folder", "path"],
         run: () => {
           if (!paletteInstance) {
@@ -12614,6 +12785,9 @@ export default function App() {
         id: "action:open-mods-folder",
         label: "Open selected mods folder",
         group: "Actions",
+        icon: "folder",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance ? `${paletteInstance.name} mods folder` : "Create or select an instance first.",
         keywords: ["mods", "folder", "jar"],
         run: () => {
           if (!paletteInstance) {
@@ -12627,6 +12801,9 @@ export default function App() {
         id: "action:open-launch-logs",
         label: "Open selected launch logs",
         group: "Actions",
+        icon: "books",
+        badge: paletteInstance ? "Selected instance" : "Unavailable",
+        detail: paletteInstance ? `${paletteInstance.name} latest launch log` : "Create or select an instance first.",
         keywords: ["logs", "crash", "debug"],
         run: () => {
           if (!paletteInstanceId) {
@@ -12643,6 +12820,8 @@ export default function App() {
         id: "action:customize-home",
         label: homeCustomizeOpen ? "Finish home customization" : "Customize home widgets",
         group: "Actions",
+        icon: homeCustomizeOpen ? "check_circle" : "sparkles",
+        detail: homeCustomizeOpen ? "Apply the current home layout changes." : "Rearrange and tune the home dashboard.",
         keywords: ["home", "widgets", "layout"],
         run: () => {
           setRoute("home");
@@ -12653,10 +12832,39 @@ export default function App() {
         id: "action:check-app-updates",
         label: "Check app updates now",
         group: "Actions",
+        icon: "download",
+        detail: "Ask the launcher updater for a fresh app update check.",
         keywords: ["launcher", "update"],
         run: () => void onCheckAppUpdate({ silent: false }),
       },
     ];
+
+    for (const inst of instances) {
+      items.push({
+        id: `instance:open:${inst.id}`,
+        label: `Open ${inst.name}`,
+        group: "Instances",
+        icon: "box",
+        badge: inst.id === selectedId ? "Current" : undefined,
+        detail: `${humanizeToken(inst.loader)} ${inst.mc_version}`,
+        keywords: ["instance", inst.name, inst.loader, inst.mc_version],
+        run: () => {
+          setSelectedId(inst.id);
+          setRoute("instance");
+          setInstanceTab("content");
+        },
+      });
+      items.push({
+        id: `instance:play:${inst.id}`,
+        label: `Play ${inst.name}`,
+        group: "Instances",
+        icon: "play",
+        badge: launchBusyInstanceIds.includes(inst.id) ? "Busy" : undefined,
+        detail: `Launch with ${humanizeToken(launchMethodPick)}`,
+        keywords: ["play", "launch", inst.name, inst.loader, inst.mc_version],
+        run: () => void onPlayInstance(inst),
+      });
+    }
 
     const settingShortcuts: Array<{
       id: string;
@@ -12665,23 +12873,24 @@ export default function App() {
       advanced?: boolean;
       target: "global" | "instance";
       keywords?: string[];
+      icon?: CommandPaletteItem["icon"];
     }> = [
-      { id: "global:appearance", label: "Settings: Appearance", target: "global", keywords: ["theme", "accent"] },
-      { id: "global:launch-method", label: "Settings: Default launch method", target: "global", keywords: ["prism", "native"] },
-      { id: "global:java-path", label: "Settings: Java executable", target: "global", advanced: true, keywords: ["java"] },
-      { id: "global:permissions", label: "Settings: Launch permissions", target: "global", advanced: true, keywords: ["microphone", "voice"] },
-      { id: "global:github-api", label: "Settings: GitHub API auth", target: "global", advanced: true, keywords: ["github", "token", "rate limit"] },
-      { id: "global:oauth-client", label: "Settings: OAuth client override", target: "global", advanced: true, keywords: ["oauth", "client id"] },
-      { id: "global:account", label: "Settings: Microsoft account", target: "global", keywords: ["login"] },
-      { id: "global:app-updates", label: "Settings: App updates", target: "global", keywords: ["update"] },
-      { id: "global:content-visuals", label: "Settings: Content and visuals", target: "global", keywords: ["visuals", "content"] },
-      { id: "instance:general", label: "Instance settings: General", target: "instance", keywords: ["name", "notes"] },
-      { id: "instance:installation", label: "Instance settings: Installation", target: "instance", keywords: ["loader", "minecraft"] },
-      { id: "instance:java-runtime", label: "Instance settings: Java runtime", target: "instance", advanced: true, keywords: ["java"] },
-      { id: "instance:java-memory", label: "Instance settings: Memory", target: "instance", keywords: ["ram"] },
-      { id: "instance:jvm-args", label: "Instance settings: JVM arguments", target: "instance", advanced: true, keywords: ["jvm"] },
-      { id: "instance:graphics", label: "Instance settings: Window and graphics", target: "instance", keywords: ["window", "graphics"] },
-      { id: "instance:hooks", label: "Instance settings: Launch hooks", target: "instance", advanced: true, keywords: ["hooks"] },
+      { id: "global:appearance", label: "Settings: Appearance", target: "global", keywords: ["theme", "accent"], icon: "sparkles" },
+      { id: "global:launch-method", label: "Settings: Default launch method", target: "global", keywords: ["prism", "native"], icon: "play" },
+      { id: "global:java-path", label: "Settings: Java executable", target: "global", advanced: true, keywords: ["java"], icon: "cpu" },
+      { id: "global:permissions", label: "Settings: Launch permissions", target: "global", advanced: true, keywords: ["microphone", "voice"], icon: "sliders" },
+      { id: "global:github-api", label: "Settings: GitHub API auth", target: "global", advanced: true, keywords: ["github", "token", "rate limit"], icon: "layers" },
+      { id: "global:oauth-client", label: "Settings: OAuth client override", target: "global", advanced: true, keywords: ["oauth", "client id"], icon: "user" },
+      { id: "global:account", label: "Settings: Microsoft account", target: "global", keywords: ["login"], icon: "user" },
+      { id: "global:app-updates", label: "Settings: App updates", target: "global", keywords: ["update"], icon: "download" },
+      { id: "global:content-visuals", label: "Settings: Content and visuals", target: "global", keywords: ["visuals", "content"], icon: "skin" },
+      { id: "instance:general", label: "Instance settings: General", target: "instance", keywords: ["name", "notes"], icon: "box" },
+      { id: "instance:installation", label: "Instance settings: Installation", target: "instance", keywords: ["loader", "minecraft"], icon: "download" },
+      { id: "instance:java-runtime", label: "Instance settings: Java runtime", target: "instance", advanced: true, keywords: ["java"], icon: "cpu" },
+      { id: "instance:java-memory", label: "Instance settings: Memory", target: "instance", keywords: ["ram"], icon: "cpu" },
+      { id: "instance:jvm-args", label: "Instance settings: JVM arguments", target: "instance", advanced: true, keywords: ["jvm"], icon: "sliders" },
+      { id: "instance:graphics", label: "Instance settings: Window and graphics", target: "instance", keywords: ["window", "graphics"], icon: "sparkles" },
+      { id: "instance:hooks", label: "Instance settings: Launch hooks", target: "instance", advanced: true, keywords: ["hooks"], icon: "layers" },
     ];
 
     for (const shortcut of settingShortcuts) {
@@ -12689,14 +12898,24 @@ export default function App() {
         id: `setting:${shortcut.id}`,
         label: shortcut.label,
         group: "Settings",
+        icon: shortcut.icon ?? "gear",
         detail: shortcut.detail,
+        badge: shortcut.target === "instance" ? (paletteInstance ? "Selected instance" : "Unavailable") : undefined,
         keywords: shortcut.keywords,
         run: () => openSettingAnchor(shortcut.id, { advanced: shortcut.advanced, target: shortcut.target }),
       });
     }
 
     return items;
-  }, [instances, selectedId, settingsMode, instanceSettingsMode, homeCustomizeOpen]);
+  }, [
+    homeCustomizeOpen,
+    instanceSettingsMode,
+    instances,
+    launchBusyInstanceIds,
+    launchMethodPick,
+    selectedId,
+    settingsMode,
+  ]);
 
   const installProgressPercentValue = useMemo(() => {
     if (!installProgress) return null;
@@ -13731,13 +13950,11 @@ export default function App() {
         setSettingsAccountManageId,
         setSettingsMode,
         setSkinPreviewEnabled,
-        setSupportBundleIncludeRawLogs,
         setTheme,
         settingsAccountManageId,
         settingsMode,
         settingsRailItems,
         skinPreviewEnabled,
-        supportBundleIncludeRawLogs,
         t,
         theme,
         triggerInstanceMicrophonePrompt
@@ -14243,6 +14460,7 @@ export default function App() {
         msCodePrompt,
         msLoginSessionId,
         onBeginMicrosoftLogin,
+        onCancelMicrosoftLogin,
         onLogoutAccount,
         onSelectAccount,
         refreshAccountDiagnostics,
@@ -17859,6 +18077,14 @@ export default function App() {
       <CommandPalette
         open={commandPaletteOpen}
         items={commandPaletteItems}
+        contextLabel={
+          selectedId
+            ? (() => {
+                const inst = instances.find((item) => item.id === selectedId);
+                return inst ? `${inst.name} · ${humanizeToken(inst.loader)} ${inst.mc_version}` : undefined;
+              })()
+            : undefined
+        }
         onClose={() => setCommandPaletteOpen(false)}
       />
 
@@ -18994,7 +19220,13 @@ export default function App() {
                   <input
                     type="checkbox"
                     checked={supportBundleIncludeRawLogs}
-                    onChange={(e) => setSupportBundleIncludeRawLogs(e.target.checked)}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSupportBundleIncludeRawLogs(checked);
+                      if (!checked) {
+                        setSupportBundleRawLogsConfirmed(false);
+                      }
+                    }}
                     disabled={supportBundleBusy}
                   />
                   <span className="togglePill" />
@@ -19003,6 +19235,18 @@ export default function App() {
                 <div className="muted" style={{ marginTop: 8 }}>
                   Redaction is enabled by default. Only include raw logs when explicitly requested for debugging.
                 </div>
+                {supportBundleIncludeRawLogs ? (
+                  <label className="toggleRow" style={{ marginTop: 12 }}>
+                    <input
+                      type="checkbox"
+                      checked={supportBundleRawLogsConfirmed}
+                      onChange={(e) => setSupportBundleRawLogsConfirmed(e.target.checked)}
+                      disabled={supportBundleBusy}
+                    />
+                    <span className="togglePill" />
+                    <span>I understand raw logs may include sensitive information.</span>
+                  </label>
+                ) : null}
               </div>
               <div className="footerBar">
                 <button className="btn" onClick={() => setSupportBundleModalInstanceId(null)} disabled={supportBundleBusy}>
@@ -19011,7 +19255,7 @@ export default function App() {
                 <button
                   className="btn primary"
                   onClick={() => void onExportSupportBundle(inst, supportBundleIncludeRawLogs)}
-                  disabled={supportBundleBusy}
+                  disabled={supportBundleBusy || (supportBundleIncludeRawLogs && !supportBundleRawLogsConfirmed)}
                 >
                   {supportBundleBusy ? "Exporting…" : "Export bundle"}
                 </button>
@@ -19023,188 +19267,265 @@ export default function App() {
 
       {showCreate ? (
         <Modal
-          title="Creating an instance"
+          title="Create instance"
           className="createInstanceModal"
-          onClose={() => (busy ? null : setShowCreate(false))}
+          onClose={closeCreateModal}
         >
           <div className="modalBody createInstanceModalBody">
-            <SegTabs
-              tabs={[
-                { id: "custom", label: "Custom" },
-                { id: "file", label: "From File" },
-                { id: "launcher", label: "Import From Launcher" },
-              ]}
-              active={createMode}
-              onChange={(id) => setCreateMode(id as any)}
-            />
-
-            <div style={{ height: 18 }} />
-
-            <div className="split">
-              <div className="iconBox" title={createIconPath ?? "No icon selected"}>
-                {createIconPath ? (
-                  <LocalImage
-                    path={createIconPath}
-                    alt="Instance icon preview"
-                    fallback={<div style={{ fontSize: 54, fontWeight: 900, opacity: 0.6 }}>⬚</div>}
-                  />
-                ) : (
-                  <div style={{ fontSize: 54, fontWeight: 900, opacity: 0.6 }}>⬚</div>
-                )}
+            {createStep === "picker" ? (
+              <div className="createEntryScreen">
+                <div className="createEntryIntro">
+                  <div className="createEntryEyebrow">Choose instance type</div>
+                  <div className="createEntryLead">
+                    Pick how you want to start this instance, then we’ll handle the setup details.
+                  </div>
+                </div>
+                <div className="createEntryList">
+                  {(["custom", "file", "launcher"] as const).map((mode) => {
+                    const meta = createModeDetails[mode];
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        className="createModeCard"
+                        onClick={() => openCreateDetails(mode)}
+                      >
+                        <span className="createModeCardIcon" aria-hidden="true">
+                          <Icon name={meta.icon} size={20} />
+                        </span>
+                        <span className="createModeCardCopy">
+                          <span className="createModeCardTitle">{meta.label}</span>
+                          <span className="createModeCardText">{meta.description}</span>
+                        </span>
+                        <span className="createModeCardChevron" aria-hidden="true">›</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="createEntryFoot">
+                  An instance is a Minecraft setup with a specific loader, version, and content stack.
+                </div>
               </div>
-
-              <div>
-                <div className="toolbarRow">
-                  <button className="btn" onClick={() => void onPickCreateIcon()} disabled={busy !== null}>
-                    <span className="btnIcon">
-                      <Icon name="upload" size={17} />
-                    </span>
-                    Select icon
+            ) : (
+              <div className="createDetailsScreen">
+                <div className="createDetailsTop">
+                  <button className="btn subtle" onClick={() => setCreateStep("picker")} disabled={busy !== null}>
+                    Change instance type
                   </button>
-                  <button className="btn" onClick={() => setCreateIconPath(null)} disabled={busy !== null || !createIconPath}>
-                    <span className="btnIcon">
-                      <Icon name="x" size={17} />
-                    </span>
-                    Remove icon
-                  </button>
+                  <span className="chip subtle">{createModeDetail.label}</span>
                 </div>
 
-                {createMode === "custom" ? (
-                  <>
-                    <div className="sectionLabel sectionLabelTight">
-                      Name
-                    </div>
-                    <input
-                      className="input"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="e.g. Horror Pack"
-                    />
-
-                    <div className="sectionLabel">Loader</div>
-                    <div className="pillRow">
-                      {(["vanilla", "fabric", "forge", "neoforge", "quilt"] as Loader[]).map((value) => (
-                        <div
-                          key={value}
-                          className={`pill ${loader === value ? "active" : ""}`}
-                          onClick={() => setLoader(value)}
-                        >
-                          {loader === value ? "✓ " : ""}
-                          {value === "vanilla"
-                            ? "Vanilla"
-                            : value === "neoforge"
-                              ? "NeoForge"
-                              : value[0].toUpperCase() + value.slice(1)}
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="sectionLabel">Game version</div>
-                    <div className="rowBetween createVersionRow">
-                      <div style={{ flex: 1 }}>
-                        <Dropdown
-                          value={mcVersion}
-                          placeholder="Select game version"
-                          groups={groupedCreateVersions}
-                          onPick={setMcVersion}
-                          placement="top"
+                <div className="split">
+                  <div className="createVisualRail">
+                    <div className="iconBox" title={createIconSelection?.displayPath ?? "No icon selected"}>
+                      {createIconSelection ? (
+                        <img
+                          src={createIconSelection.previewDataUrl}
+                          alt="Instance icon preview"
+                          loading="lazy"
+                          decoding="async"
                         />
-                        {manifestError ? (
-                          <div style={{ marginTop: 8, color: "var(--muted2)", fontWeight: 900, fontSize: 12 }}>
-                            Couldn’t fetch official list (using fallback).
-                          </div>
-                        ) : null}
-                      </div>
-
-                      <div
-                        className="checkboxRow"
-                        onClick={() => setCreateAllVersions((v) => !v)}
-                        title="Includes snapshots / pre-releases / RCs"
-                      >
-                        <div className={`checkbox ${createAllVersions ? "checked" : ""}`}>
-                          <div />
-                        </div>
-                        <div>Show all versions</div>
-                      </div>
+                      ) : (
+                        <div style={{ fontSize: 54, fontWeight: 900, opacity: 0.6 }}>⬚</div>
+                      )}
                     </div>
-                  </>
-                ) : null}
+                    <div className="createVisualMeta">
+                      <div className="createVisualTitle">{createModeDetail.label}</div>
+                      <div className="createVisualText">{createModeDetail.description}</div>
+                    </div>
+                  </div>
 
-                {createMode === "file" ? (
-                  <>
-                    <div className="sectionLabel sectionLabelTight">Modpack archive</div>
+                  <div>
                     <div className="toolbarRow">
-                      <button className="btn" onClick={() => void onPickCreateModpackFile()} disabled={busy !== null}>
+                      <button className="btn" onClick={() => void onPickCreateIcon()} disabled={busy !== null}>
                         <span className="btnIcon">
                           <Icon name="upload" size={17} />
                         </span>
-                        Select .mrpack/.zip
+                        Select icon
                       </button>
-                      <button className="btn" onClick={() => setCreatePackFilePath(null)} disabled={busy !== null || !createPackFilePath}>
+                      <button className="btn" onClick={() => setCreateIconSelection(null)} disabled={busy !== null || !createIconSelection}>
                         <span className="btnIcon">
                           <Icon name="x" size={17} />
                         </span>
-                        Clear
+                        Remove icon
                       </button>
                     </div>
-                    <input
-                      className="input"
-                      value={createPackFilePath ?? ""}
-                      onChange={(e) => setCreatePackFilePath(e.target.value)}
-                      placeholder="/path/to/modpack.mrpack"
-                    />
-                    <div className="sectionLabel">Instance name (optional)</div>
-                    <input
-                      className="input"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Defaults to pack name"
-                    />
-                  </>
-                ) : null}
 
-                {createMode === "launcher" ? (
-                  <>
-                    <div className="sectionLabel sectionLabelTight">Launcher source</div>
-                    <div className="toolbarRow">
-                      <button className="btn" onClick={() => void refreshLauncherImportSources()} disabled={launcherImportBusy || busy !== null}>
-                        {launcherImportBusy ? "Refreshing…" : "Refresh sources"}
-                      </button>
-                    </div>
-                    <MenuSelect
-                      value={selectedLauncherImportSourceId ?? ""}
-                      labelPrefix="Source"
-                      onChange={(v) => setSelectedLauncherImportSourceId(v)}
-                      options={launcherImportSources.map((item) => ({
-                        value: item.id,
-                        label: `${item.label} · ${item.loader} · ${item.mc_version}`,
-                      }))}
-                      placement="top"
-                    />
-                    <div className="sectionLabel">Instance name (optional)</div>
-                    <input
-                      className="input"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder="Defaults to source name"
-                    />
-                  </>
-                ) : null}
+                    {createMode === "custom" ? (
+                      <>
+                        <div className="sectionLabel sectionLabelTight">Name</div>
+                        <input
+                          className="input"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="e.g. Horror Pack"
+                        />
+
+                        <div className="sectionLabel">Loader</div>
+                        <div className="pillRow">
+                          {(["vanilla", "fabric", "forge", "neoforge", "quilt"] as Loader[]).map((value) => (
+                            <div
+                              key={value}
+                              className={`pill ${loader === value ? "active" : ""}`}
+                              onClick={() => setLoader(value)}
+                            >
+                              {value === "vanilla"
+                                ? "Vanilla"
+                                : value === "neoforge"
+                                  ? "NeoForge"
+                                  : value[0].toUpperCase() + value.slice(1)}
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="sectionLabel">Game version</div>
+                        <div className="rowBetween createVersionRow">
+                          <div style={{ flex: 1 }}>
+                            <Dropdown
+                              value={mcVersion}
+                              placeholder="Select game version"
+                              groups={groupedCreateVersions}
+                              onPick={setMcVersion}
+                              placement="top"
+                            />
+                            {manifestError ? (
+                              <div style={{ marginTop: 8, color: "var(--muted2)", fontWeight: 700, fontSize: 12 }}>
+                                Couldn’t fetch the official version list, so fallback versions are shown.
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <div
+                            className="checkboxRow"
+                            onClick={() => setCreateAllVersions((v) => !v)}
+                            title="Includes snapshots / pre-releases / RCs"
+                          >
+                            <div className={`checkbox ${createAllVersions ? "checked" : ""}`}>
+                              <div />
+                            </div>
+                            <div>Show all versions</div>
+                          </div>
+                        </div>
+
+                        {showCustomLoaderBuildControls ? (
+                          <>
+                            <div className="sectionLabel">Loader build</div>
+                            <div className="createLoaderVersionCard">
+                              <div className="createLoaderVersionModes">
+                                {([
+                                  { value: "stable", label: "Most stable" },
+                                  { value: "latest", label: "Latest" },
+                                  { value: "custom", label: "Other / custom" },
+                                ] as const).map((option) => (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    className={`createLoaderModeBtn ${createLoaderVersionMode === option.value ? "active" : ""}`}
+                                    onClick={() => setCreateLoaderVersionMode(option.value)}
+                                  >
+                                    {option.label}
+                                  </button>
+                                ))}
+                              </div>
+                              <div className="createLoaderVersionHelp">
+                                {createLoaderVersionModeNote(loader, createLoaderVersionMode)}
+                              </div>
+                              {createLoaderVersionMode === "custom" ? (
+                                <input
+                                  className="input"
+                                  value={createCustomLoaderVersion}
+                                  onChange={(e) => setCreateCustomLoaderVersion(e.target.value)}
+                                  placeholder={createLoaderVersionPlaceholder(loader)}
+                                />
+                              ) : null}
+                            </div>
+                          </>
+                        ) : null}
+                      </>
+                    ) : null}
+
+                    {createMode === "file" ? (
+                      <>
+                        <div className="sectionLabel sectionLabelTight">Modpack archive</div>
+                        <div className="toolbarRow">
+                          <button className="btn" onClick={() => void onPickCreateModpackFile()} disabled={busy !== null}>
+                            <span className="btnIcon">
+                              <Icon name="upload" size={17} />
+                            </span>
+                            Select .mrpack/.zip
+                          </button>
+                          <button className="btn" onClick={() => setCreatePackSelection(null)} disabled={busy !== null || !createPackSelection}>
+                            <span className="btnIcon">
+                              <Icon name="x" size={17} />
+                            </span>
+                            Clear
+                          </button>
+                        </div>
+                        <input
+                          className="input"
+                          value={createPackSelection?.displayPath ?? ""}
+                          readOnly
+                          placeholder="/path/to/modpack.mrpack"
+                        />
+                        <div className="sectionLabel">Instance name (optional)</div>
+                        <input
+                          className="input"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Defaults to pack name"
+                        />
+                      </>
+                    ) : null}
+
+                    {createMode === "launcher" ? (
+                      <>
+                        <div className="sectionLabel sectionLabelTight">Launcher source</div>
+                        <div className="toolbarRow launcherCreateToolbar">
+                          <button className="btn" onClick={() => void refreshLauncherImportSources()} disabled={launcherImportBusy || busy !== null}>
+                            {launcherImportBusy ? "Refreshing…" : "Refresh sources"}
+                          </button>
+                        </div>
+                        <MenuSelect
+                          value={selectedLauncherImportSourceId ?? ""}
+                          labelPrefix="Source"
+                          onChange={(v) => setSelectedLauncherImportSourceId(v)}
+                          options={launcherImportSources.map((item) => ({
+                            value: item.id,
+                            label: `${item.label} · ${item.loader} · ${item.mc_version}`,
+                          }))}
+                          placement="top"
+                        />
+                        <div className="sectionLabel">Instance name (optional)</div>
+                        <input
+                          className="input"
+                          value={name}
+                          onChange={(e) => setName(e.target.value)}
+                          placeholder="Defaults to source name"
+                        />
+                      </>
+                    ) : null}
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           <div className="footerBar">
-            <button className="btn" onClick={() => setShowCreate(false)} disabled={busy !== null}>
+            <button className="btn" onClick={closeCreateModal} disabled={busy !== null}>
               ✕ Cancel
             </button>
             <button
               className="btn primary"
               onClick={onCreate}
               disabled={
+                createStep !== "details" ||
                 busy !== null ||
                 (createMode === "custom" && (!name.trim() || !mcVersion)) ||
-                (createMode === "file" && !createPackFilePath) ||
+                (createMode === "custom" &&
+                  showCustomLoaderBuildControls &&
+                  createLoaderVersionMode === "custom" &&
+                  !createCustomLoaderVersion.trim()) ||
+                (createMode === "file" && !createPackSelection) ||
                 (createMode === "launcher" && !selectedLauncherImportSourceId)
               }
             >
@@ -20504,6 +20825,9 @@ export default function App() {
               </button>
               <button className="btn" onClick={() => setMsCodePromptVisible(false)}>
                 Hide
+              </button>
+              <button className="btn ghost" onClick={onCancelMicrosoftLogin}>
+                Cancel sign-in
               </button>
             </div>
             <div className="muted">

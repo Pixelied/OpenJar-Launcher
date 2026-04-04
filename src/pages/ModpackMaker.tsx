@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog, save as saveDialog } from "@tauri-apps/api/dialog";
 import type {
   CreatorConflictSuggestion,
+  GrantedPathResult,
   Instance,
   Layer,
   LayerDiffResult,
@@ -27,6 +27,8 @@ import {
   importModpackSpecJson,
   listModpackSpecs,
   migrateLegacyCreatorPresets,
+  pickExternalOpenPathGrants,
+  pickExternalSavePathGrant,
   previewUpdateModpackFromInstance,
   previewTemplateLayerUpdate,
   resolveLocalModpackEntries,
@@ -794,7 +796,7 @@ export default function ModpackMaker({
   }
 
   async function runLocalJarImport(
-    filePaths: string[],
+    selections: GrantedPathResult[],
     modeLabel = "import",
     importContentType: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" = localImportContentType
   ) {
@@ -806,13 +808,13 @@ export default function ModpackMaker({
       onError(`Layer "${selectedLayer.name}" is frozen. Unfreeze before adding content.`);
       return;
     }
-    if (filePaths.length === 0) return;
+    if (selections.length === 0) return;
 
     setLocalJarQueueItems(
-      filePaths.map((path, index) => ({
+      selections.map((selection, index) => ({
         index,
-        path,
-        file_name: fileLabelFromPath(path),
+        path: selection.displayPath,
+        file_name: fileLabelFromPath(selection.displayPath),
         status: "queued",
         message: "Queued",
         dedupe_basis: null,
@@ -821,13 +823,13 @@ export default function ModpackMaker({
         resolved: false,
       }))
     );
-    setLocalJarQueueTotal(filePaths.length);
+    setLocalJarQueueTotal(selections.length);
     setImportLocalJarsBusy(true);
     try {
       const out = await importLocalJarsToModpackLayer({
         modpackId: editorSpec.id,
         layerId: selectedLayer.id,
-        filePaths,
+        grantIds: selections.map((selection) => selection.grantId),
         contentType: importContentType,
         autoIdentify: autoIdentifyLocalJarsEnabled,
       });
@@ -852,27 +854,28 @@ export default function ModpackMaker({
 
   async function addLocalContentFromComputer() {
     const importContentType = normalizeLocalContentType(localImportContentType);
-    const picked = await openDialog({
+    const picked = await pickExternalOpenPathGrants({
+      purpose: "modpack_local_jar_import",
+      contentType: importContentType,
       multiple: true,
-      filters: [
-        {
-          name: `Minecraft ${localImportTypeLabel(importContentType)}`,
-          extensions: localImportExtensionsForType(importContentType),
-        },
-      ],
     });
-    if (!picked) return;
-    const filePaths = Array.isArray(picked) ? picked : [picked];
-    await runLocalJarImport(filePaths, "import", importContentType);
+    if (picked.length === 0) return;
+    await runLocalJarImport(picked, "import", importContentType);
   }
 
   async function retryFailedLocalJars() {
-    const retryPaths = Array.from(new Set(failedLocalJarPaths));
-    if (retryPaths.length === 0) {
+    if (failedLocalJarPaths.length === 0) {
       onNotice("No failed local file imports to retry.");
       return;
     }
-    await runLocalJarImport(retryPaths, "retry", normalizeLocalContentType(localImportContentType));
+    const importContentType = normalizeLocalContentType(localImportContentType);
+    const picked = await pickExternalOpenPathGrants({
+      purpose: "modpack_local_jar_import",
+      contentType: importContentType,
+      multiple: true,
+    });
+    if (picked.length === 0) return;
+    await runLocalJarImport(picked, "retry", importContentType);
   }
 
   async function identifyLocalJarsInCreator(mode: "missing_only" | "all" = "all") {
@@ -1162,14 +1165,15 @@ export default function ModpackMaker({
                         disabled={busy}
                         onClick={async () => {
                           setHomeActionsOpen(false);
-                          const picked = await openDialog({
+                          const picked = await pickExternalOpenPathGrants({
+                            purpose: "modpack_spec_import",
                             multiple: false,
-                            filters: [{ name: "JSON", extensions: ["json"] }],
                           });
-                          if (!picked || Array.isArray(picked)) return;
+                          const selected = picked[0] ?? null;
+                          if (!selected) return;
                           setBusy(true);
                           try {
-                            const out = await importModpackSpecJson({ inputPath: picked });
+                            const out = await importModpackSpecJson({ grantId: selected.grantId });
                             await refreshSpecs();
                             onNotice(`Imported modpack spec data from ${out.path}.`);
                           } catch (err: any) {
@@ -1188,16 +1192,16 @@ export default function ModpackMaker({
                         onClick={async () => {
                           setHomeActionsOpen(false);
                           if (!selectedSpec) return;
-                          const target = await saveDialog({
-                            defaultPath: `${selectedSpec.name.replace(/\s+/g, "-").toLowerCase()}.modpack-spec.json`,
-                            filters: [{ name: "JSON", extensions: ["json"] }],
+                          const target = await pickExternalSavePathGrant({
+                            purpose: "modpack_spec_export",
+                            suggestedName: `${selectedSpec.name.replace(/\s+/g, "-").toLowerCase()}.modpack-spec.json`,
                           });
-                          if (!target || Array.isArray(target)) return;
+                          if (!target) return;
                           setBusy(true);
                           try {
                             const out = await exportModpackSpecJson({
                               modpackId: selectedSpec.id,
-                              outputPath: target,
+                              grantId: target.grantId,
                             });
                             onNotice(`Exported spec to ${out.path}.`);
                           } catch (err: any) {

@@ -82,6 +82,8 @@ import type {
   WriteWorldConfigFileResult,
   SupportBundleResult,
   SupportPerfAction,
+  GrantedImagePathResult,
+  GrantedPathResult,
   WorldRollbackResult,
 } from "./types";
 
@@ -93,15 +95,17 @@ export function createInstance(input: {
   name: string;
   mcVersion: string;
   loader: Loader;
-  iconPath?: string | null;
+  loaderVersionStrategy?: "stable" | "latest" | "custom";
+  customLoaderVersion?: string | null;
+  iconGrantId?: string | null;
 }): Promise<Instance> {
   return invoke("create_instance", { args: input });
 }
 
 export function createInstanceFromModpackFile(input: {
-  filePath: string;
+  grantId: string;
   name?: string;
-  iconPath?: string | null;
+  iconGrantId?: string | null;
 }): Promise<CreateInstanceFromModpackFileResult> {
   return invoke("create_instance_from_modpack_file", { args: input });
 }
@@ -113,7 +117,7 @@ export function listLauncherImportSources(): Promise<LauncherImportSource[]> {
 export function importInstanceFromLauncher(input: {
   sourceId: string;
   name?: string;
-  iconPath?: string | null;
+  iconGrantId?: string | null;
 }): Promise<ImportInstanceFromLauncherResult> {
   return invoke("import_instance_from_launcher", { args: input });
 }
@@ -130,15 +134,46 @@ export function updateInstance(input: {
 
 export function setInstanceIcon(input: {
   instanceId: string;
-  iconPath?: string | null;
+  iconGrantId?: string | null;
 }): Promise<Instance> {
   return invoke("set_instance_icon", { args: input });
 }
 
 export function readLocalImageDataUrl(input: {
-  path: string;
+  path?: string;
+  grantId?: string;
 }): Promise<string> {
   return invoke("read_local_image_data_url", { args: input });
+}
+
+export function pickInstanceIconFile(): Promise<GrantedImagePathResult | null> {
+  return invoke("pick_instance_icon_file");
+}
+
+export function pickExternalOpenPathGrants(input: {
+  purpose:
+    | "modpack_archive_import"
+    | "local_mod_import"
+    | "modpack_local_jar_import"
+    | "presets_import"
+    | "modpack_spec_import"
+    | string;
+  contentType?: string;
+  multiple?: boolean;
+}): Promise<GrantedPathResult[]> {
+  return invoke("pick_external_open_path_grants", { args: input });
+}
+
+export function pickExternalSavePathGrant(input: {
+  purpose:
+    | "presets_export"
+    | "modpack_spec_export"
+    | "instance_mods_export"
+    | "support_bundle_export"
+    | string;
+  suggestedName?: string;
+}): Promise<GrantedPathResult | null> {
+  return invoke("pick_external_save_path_grant", { args: input });
 }
 
 export function detectJavaRuntimes(): Promise<JavaRuntimeCandidate[]> {
@@ -425,6 +460,12 @@ export function pollMicrosoftLogin(input: {
   return invoke("poll_microsoft_login", { args: input });
 }
 
+export function cancelMicrosoftLogin(input: {
+  sessionId: string;
+}): Promise<MicrosoftLoginState> {
+  return invoke("cancel_microsoft_login", { args: input });
+}
+
 export function selectLauncherAccount(input: {
   accountId: string;
 }): Promise<LauncherSettings> {
@@ -455,14 +496,14 @@ export function cancelInstanceLaunch(input: {
 
 export function exportInstanceModsZip(input: {
   instanceId: string;
-  outputPath?: string;
+  grantId: string;
 }): Promise<ExportModsResult> {
   return invoke("export_instance_mods_zip", { args: input });
 }
 
 export function exportInstanceSupportBundle(input: {
   instanceId: string;
-  outputPath?: string;
+  grantId: string;
   includeRawLogs?: boolean;
   perfActions?: SupportPerfAction[];
 }): Promise<SupportBundleResult> {
@@ -706,14 +747,14 @@ export function importProviderModpackTemplate(input: {
 }
 
 export function exportPresetsJson(input: {
-  outputPath: string;
+  grantId: string;
   payload: unknown;
 }): Promise<PresetsJsonIoResult> {
   return invoke("export_presets_json", { args: input });
 }
 
 export function importPresetsJson(input: {
-  inputPath: string;
+  grantId: string;
 }): Promise<unknown> {
   return invoke("import_presets_json", { args: input });
 }
@@ -748,14 +789,14 @@ export function deleteModpackSpec(input: {
 }
 
 export function importModpackSpecJson(input: {
-  inputPath: string;
+  grantId: string;
 }): Promise<SpecIoResult> {
   return invoke("import_modpack_spec_json", { args: input });
 }
 
 export function exportModpackSpecJson(input: {
   modpackId: string;
-  outputPath: string;
+  grantId: string;
 }): Promise<SpecIoResult> {
   return invoke("export_modpack_spec_json", { args: input });
 }

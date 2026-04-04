@@ -20,6 +20,8 @@ export type InstanceSettings = {
   sync_minecraft_settings_target: string;
   auto_update_installed_content: boolean;
   prefer_release_builds: boolean;
+  loader_version_strategy: "stable" | "latest" | "custom" | string;
+  custom_loader_version: string;
   java_path: string;
   memory_mb: number;
   jvm_args: string;
@@ -233,7 +235,7 @@ export type PruneMissingInstalledEntriesResult = {
 
 export type ImportLocalModFileInput = {
   instanceId: string;
-  filePath: string;
+  grantId: string;
   contentType?: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string;
   targetWorlds?: string[];
 };
@@ -296,6 +298,15 @@ export type SupportBundleResult = {
   files_count: number;
   redactions_applied: number;
   message: string;
+};
+
+export type GrantedPathResult = {
+  grantId: string;
+  displayPath: string;
+};
+
+export type GrantedImagePathResult = GrantedPathResult & {
+  previewDataUrl: string;
 };
 
 export type CreatorConflictSuggestion = {
@@ -1309,7 +1320,7 @@ export type ModpackImportLocalJarsResult = {
 export type ImportLocalJarsToModpackLayerInput = {
   modpackId: string;
   layerId: string;
-  filePaths: string[];
+  grantIds: string[];
   contentType?: "mods" | "resourcepacks" | "shaderpacks" | "datapacks" | string;
   autoIdentify?: boolean;
 };

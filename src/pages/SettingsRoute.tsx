@@ -123,13 +123,11 @@ export type SettingsRouteProps = {
   setSettingsAccountManageId: any;
   setSettingsMode: any;
   setSkinPreviewEnabled: any;
-  setSupportBundleIncludeRawLogs: any;
   setTheme: any;
   settingsAccountManageId: any;
   settingsMode: any;
   settingsRailItems: any;
   skinPreviewEnabled: any;
-  supportBundleIncludeRawLogs: any;
   t: any;
   theme: any;
   triggerInstanceMicrophonePrompt: any;
@@ -214,13 +212,11 @@ export default function SettingsRoute(props: SettingsRouteProps) {
     setSettingsAccountManageId,
     setSettingsMode,
     setSkinPreviewEnabled,
-    setSupportBundleIncludeRawLogs,
     setTheme,
     settingsAccountManageId,
     settingsMode,
     settingsRailItems,
     skinPreviewEnabled,
-    supportBundleIncludeRawLogs,
     t,
     theme,
     triggerInstanceMicrophonePrompt
@@ -808,15 +804,6 @@ export default function SettingsRoute(props: SettingsRouteProps) {
                           />
                           <span className="togglePill" />
                           <span>Keep Discover add tray pinned</span>
-                        </label>
-                        <label className="toggleRow settingsToggleRow">
-                          <input
-                            type="checkbox"
-                            checked={supportBundleIncludeRawLogs}
-                            onChange={() => setSupportBundleIncludeRawLogs((prev) => !prev)}
-                          />
-                          <span className="togglePill" />
-                          <span>Include raw logs by default in support bundles</span>
                         </label>
                         <div className="row">
                           <MenuSelect

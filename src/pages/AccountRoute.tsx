@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import Icon from "../components/app-shell/Icon";
 import Modal from "../components/app-shell/Modal";
 import Dropdown from "../components/app-shell/controls/Dropdown";
@@ -60,6 +61,7 @@ export type AccountRouteProps = {
   msCodePrompt: any;
   msLoginSessionId: any;
   onBeginMicrosoftLogin: any;
+  onCancelMicrosoftLogin: any;
   onLogoutAccount: any;
   onSelectAccount: any;
   refreshAccountDiagnostics: any;
@@ -94,6 +96,7 @@ export default function AccountRoute(props: AccountRouteProps) {
     msCodePrompt,
     msLoginSessionId,
     onBeginMicrosoftLogin,
+    onCancelMicrosoftLogin,
     onLogoutAccount,
     onSelectAccount,
     refreshAccountDiagnostics,
@@ -111,49 +114,164 @@ export default function AccountRoute(props: AccountRouteProps) {
     updateAutoApplyMode,
     updateCheckCadence
   } = props;
+  const [uuidCopied, setUuidCopied] = useState(false);
 
   const diag = accountDiagnostics;
-        const account = diag?.account ?? selectedLauncherAccount;
-        const uuid = diag?.minecraft_uuid ?? account?.id ?? null;
-        const username = diag?.minecraft_username ?? account?.username ?? "No account connected";
-        const skinTexture = toLocalIconSrc(diag?.skin_url) ?? "";
-        const avatarSources = minecraftAvatarSources(uuid);
-        const avatarSrc =
-          toLocalIconSrc(
-            avatarSources[Math.min(accountAvatarSourceIdx, Math.max(avatarSources.length - 1, 0))] ?? ""
-          ) ?? "";
-        const connectionRaw = String(diag?.status ?? (account ? "connected" : "not_connected")).toLowerCase();
-        const tokenRaw = String(diag?.token_exchange_status ?? "idle").toLowerCase();
-        const isDisconnected =
-          !account ||
-          connectionRaw.includes("not_connected") ||
-          connectionRaw.includes("offline") ||
-          connectionRaw.includes("idle");
-        const isUnverified = !isDisconnected && (!diag?.entitlements_ok || tokenRaw.includes("error"));
-        const accountStatusTone = isDisconnected ? "error" : isUnverified ? "warn" : "ok";
-        const accountStatusLabel = isDisconnected
-          ? "Not Connected"
-          : isUnverified
-            ? "Not verified"
-            : "Connected / verified";
-        const authBannerMessage = isDisconnected
-          ? "Your launcher is not connected to a Microsoft account, so native launch and profile sync are unavailable."
-          : isUnverified
-            ? "Account connected, but entitlement verification is incomplete. Reconnect to refresh auth tokens."
-            : diag?.last_error || accountDiagnosticsErr
-              ? "Authentication returned an error. Reconnect to re-establish a healthy token chain."
-              : null;
-        const showAuthBrokenBanner = Boolean(authBannerMessage);
+  const account = diag?.account ?? selectedLauncherAccount;
+  const uuid = diag?.minecraft_uuid ?? account?.id ?? null;
+  const username = diag?.minecraft_username ?? account?.username ?? "No account connected";
+  const skinTexture = toLocalIconSrc(diag?.skin_url) ?? "";
+  const avatarSources = minecraftAvatarSources(uuid);
+  const avatarSrc =
+    toLocalIconSrc(
+      avatarSources[Math.min(accountAvatarSourceIdx, Math.max(avatarSources.length - 1, 0))] ?? ""
+    ) ?? "";
+  const connectionRaw = String(diag?.status ?? (account ? "connected" : "not_connected")).toLowerCase();
+  const tokenRaw = String(diag?.token_exchange_status ?? "idle").toLowerCase();
+  const tokenStatusLabel = humanizeToken(diag?.token_exchange_status ?? "idle");
+  const lastRefreshedAt = parseDateLike(diag?.last_refreshed_at);
+  const hasEntitlement = Boolean(diag?.entitlements_ok);
+  const hasDiagnosticsError = Boolean(diag?.last_error || accountDiagnosticsErr);
+  const isWaitingForLogin = Boolean(msLoginSessionId);
+  const isDisconnected =
+    !account ||
+    connectionRaw.includes("not_connected") ||
+    connectionRaw.includes("offline") ||
+    connectionRaw.includes("idle");
+  const isUnverified = !isDisconnected && (!hasEntitlement || tokenRaw.includes("error") || hasDiagnosticsError);
+  const cardState = isWaitingForLogin
+    ? "waiting"
+    : isDisconnected
+      ? "disconnected"
+      : isUnverified
+        ? "attention"
+        : "ready";
+  const lastCheckedLabel = lastRefreshedAt
+    ? relativeTimeFromMs(lastRefreshedAt.getTime())
+    : "Not checked yet";
+  const lastCheckedTitle = lastRefreshedAt
+    ? formatDateTime(diag?.last_refreshed_at, "Never")
+    : "Never";
+  const shortUuid =
+    typeof uuid === "string" && uuid.length > 18
+      ? `${uuid.slice(0, 8)}…${uuid.slice(-8)}`
+      : (uuid ?? "Not available");
+  const showTokenMetaChip = Boolean(diag?.token_exchange_status) && tokenRaw !== "ok" && tokenRaw !== "idle";
+
+  const statusTone =
+    cardState === "ready"
+      ? "ok"
+      : cardState === "attention"
+        ? "warn"
+        : cardState === "disconnected"
+          ? "error"
+          : "pending";
+  const statusBadgeLabel =
+    cardState === "waiting"
+      ? "Waiting for login"
+      : cardState === "disconnected"
+        ? "Not connected"
+        : cardState === "attention"
+          ? "Needs attention"
+          : "Connected";
+  const statusTitle =
+    cardState === "waiting"
+      ? "Finish Microsoft sign-in"
+      : cardState === "disconnected"
+        ? "Connect your Microsoft account"
+        : cardState === "attention"
+          ? "Reconnect to restore a healthy session"
+          : "Ready for native launch";
+  const statusDescription =
+    cardState === "waiting"
+      ? (msCodePrompt
+          ? "Finish the Microsoft sign-in flow with the device code, then come back here to continue."
+          : "Complete the Microsoft sign-in flow in your browser to finish connecting this launcher profile.")
+      : cardState === "disconnected"
+        ? "Native launch, entitlement checks, and profile sync will stay unavailable until a Microsoft account is connected."
+        : cardState === "attention"
+          ? (diag?.last_error || accountDiagnosticsErr
+              ? "Authentication hit an error during the last refresh. Reconnect to renew the token chain and re-run verification."
+              : "The account is connected, but ownership or token verification is still incomplete right now.")
+          : "This profile is connected, verified, and ready for entitlement checks, profile sync, and native launch.";
+  const statusSecondaryFacts = [
+    cardState === "ready" && hasEntitlement ? "Owns Minecraft" : null,
+    cardState === "attention" && !hasEntitlement ? "Ownership not verified yet" : null,
+    cardState === "attention" && showTokenMetaChip ? tokenStatusLabel : null,
+  ].filter(Boolean) as string[];
+  const healthSummaryLabel =
+    cardState === "ready"
+      ? "Healthy"
+      : cardState === "waiting"
+        ? "Waiting for sign-in"
+        : cardState === "attention"
+          ? "Needs recovery"
+          : "Not connected";
+  const healthSummaryText =
+    cardState === "ready"
+      ? "Diagnostics are passing and the profile is ready for use."
+      : cardState === "waiting"
+        ? "Finish the Microsoft sign-in flow to complete setup."
+        : cardState === "attention"
+          ? "Refresh or reconnect to restore a healthy token chain."
+          : "Connect Microsoft to enable native launch and sync.";
+  const primaryActionLabel =
+    cardState === "waiting"
+      ? (msCodePrompt ? "Show code" : "Waiting for browser…")
+      : cardState === "disconnected"
+        ? "Connect Microsoft"
+        : cardState === "attention"
+          ? "Reconnect"
+          : (accountDiagnosticsBusy ? "Checking…" : "Refresh diagnostics");
+  const primaryActionClass =
+    cardState === "ready"
+      ? "btn subtle"
+      : "btn primary";
+  const primaryActionDisabled =
+    launcherBusy ||
+    (cardState === "waiting" && !msCodePrompt) ||
+    (cardState === "ready" && accountDiagnosticsBusy);
+
+  function handlePrimaryAction() {
+    if (cardState === "waiting") {
+      if (msCodePrompt) setMsCodePromptVisible(true);
+      return;
+    }
+    if (cardState === "ready") {
+      void refreshAccountDiagnostics().catch(() => null);
+      return;
+    }
+    onBeginMicrosoftLogin();
+  }
   
-        return (
-          <div className="accountPage">
-            <div className="pageRouteHeader">
-              <div className="pageRouteEyebrow">Account</div>
-              <div className="h1">Account</div>
-              <div className="p">Connection status, launcher profile details, and skin setup in one calmer workspace.</div>
-            </div>
+  useEffect(() => {
+    if (!uuidCopied) return;
+    const timer = window.setTimeout(() => setUuidCopied(false), 1400);
+    return () => window.clearTimeout(timer);
+  }, [uuidCopied]);
+
+  async function copyUuid() {
+    if (!uuid) return;
+    try {
+      await navigator.clipboard.writeText(uuid);
+      setUuidCopied(true);
+    } catch {
+      setUuidCopied(false);
+    }
+  }
   
-            <div className="accountHero card">
+  return (
+    <div className="accountPage">
+      <div className="pageRouteHeader">
+        <div className="pageRouteEyebrow">Account</div>
+        <div className="h1">Account</div>
+        <div className="p">Connection status, launcher profile details, and skin setup in one calmer workspace.</div>
+      </div>
+  
+      <div className="accountHeroSplit">
+        <div className="card accountProfileCard">
+          <div className="accountHeroContent">
+            <div className="accountHeroHeader">
               <div className="accountAvatarWrap">
                 {accountAvatarFromSkin ? (
                   <img src={accountAvatarFromSkin} alt="Minecraft avatar" />
@@ -172,53 +290,119 @@ export default function AccountRoute(props: AccountRouteProps) {
                   <span>{username?.slice(0, 1)?.toUpperCase() ?? "?"}</span>
                 )}
               </div>
-              <div className="accountHeroMain">
+              <div className="accountHeroIdentity">
                 <div className="accountHeroEyebrow">Minecraft profile</div>
                 <div className="accountHeroName">{username}</div>
                 <div className="accountHeroMeta">
-                  <span className={`accountStatusBadge tone-${accountStatusTone}`}>
+                  <span className={`accountMetaPill accountStatusBadge tone-${statusTone}`}>
                     <span className="accountStatusDot" aria-hidden="true" />
-                    {accountStatusLabel}
+                    {statusBadgeLabel}
                   </span>
-                  {diag?.entitlements_ok ? <span className="chip">Owns Minecraft</span> : null}
-                  {diag?.token_exchange_status ? <span className="chip subtle">{humanizeToken(diag.token_exchange_status)}</span> : null}
-                </div>
-                <div className="accountHeroSub">
-                  UUID: {uuid ?? "Not available"}
-                </div>
-                <div className="accountHeroLead">
-                  {isDisconnected
-                    ? "Connect a Microsoft account to unlock native launch, entitlement checks, and profile sync."
-                    : isUnverified
-                      ? "The account is connected, but verification is still incomplete right now."
-                      : "Your launcher account is connected and ready for native launch workflows."}
-                </div>
-                <div className="row" style={{ marginTop: 10 }}>
-                  <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                    {msLoginSessionId ? "Waiting for login…" : "Connect / Reconnect"}
-                  </button>
-                  {msLoginSessionId && msCodePrompt ? (
-                    <button className="btn" onClick={() => setMsCodePromptVisible(true)}>
-                      Show code
-                    </button>
+                  {statusSecondaryFacts.length ? (
+                    <div className="accountHeroSecondaryFacts" aria-label="Account details">
+                      {statusSecondaryFacts.map((fact) => (
+                        <span key={fact} className="accountMetaPill accountHeroSecondaryFact">
+                          {fact}
+                        </span>
+                      ))}
+                    </div>
                   ) : null}
-                  <button className="btn" onClick={() => refreshAccountDiagnostics().catch(() => null)} disabled={accountDiagnosticsBusy}>
-                    {accountDiagnosticsBusy ? "Refreshing…" : "Refresh diagnostics"}
-                  </button>
                 </div>
               </div>
             </div>
-            {showAuthBrokenBanner ? (
-              <div className="card accountAuthBanner">
-                <div className="accountAuthBannerMain">
-                  <div className="accountAuthBannerTitle">Authentication needs attention</div>
-                  <div className="accountAuthBannerText">{authBannerMessage}</div>
-                </div>
-                <button className="btn primary" onClick={onBeginMicrosoftLogin} disabled={launcherBusy}>
-                  {msLoginSessionId ? "Waiting for login…" : "Reconnect"}
+            <div className="accountHeroStatusBlock">
+              <div className="accountHeroStatusTitle">{statusTitle}</div>
+              <div className="accountHeroLead">{statusDescription}</div>
+            </div>
+          </div>
+          <div className="accountHeroInfoRow">
+            {uuid ? (
+              <div className="accountHeroInfoItem accountHeroInfoItemPrimary" title={uuid}>
+                <span className="accountHeroInfoLabel">UUID</span>
+                <span className="accountHeroInfoValue accountHeroInfoValueStrong">{shortUuid}</span>
+                <button
+                  className={`btn ghost accountHeroCopyBtn ${uuidCopied ? "isCopied" : ""}`}
+                  onClick={() => void copyUuid()}
+                  type="button"
+                >
+                  {uuidCopied ? "Copied" : "Copy"}
                 </button>
               </div>
             ) : null}
+          </div>
+        </div>
+
+        <div className="card accountCard accountHealthCard">
+          <div className="accountHealthHeader">
+            <div className="accountHeroUtilityLabel">Health</div>
+            <div className={`accountHeroUtilityValue tone-${statusTone}`}>{healthSummaryLabel}</div>
+          </div>
+          <div className="accountHeroUtilityText">{healthSummaryText}</div>
+          <div className="accountHealthMeta">
+            <div className="accountHeroUtilityLabel">Last check</div>
+            <div className="accountHeroUtilityValue">{lastCheckedLabel}</div>
+            <div className="accountHeroUtilityText" title={lastCheckedTitle}>
+              {lastCheckedTitle}
+            </div>
+          </div>
+          <div className={`accountHeroActions ${cardState === "ready" ? "isQuiet" : ""}`}>
+            <button
+              className={primaryActionClass}
+              onClick={handlePrimaryAction}
+              disabled={primaryActionDisabled}
+              type="button"
+            >
+              {primaryActionLabel}
+            </button>
+            {cardState === "attention" ? (
+              <button
+                className="btn ghost"
+                onClick={onBeginMicrosoftLogin}
+                disabled={launcherBusy}
+                type="button"
+              >
+                Reconnect anyway
+              </button>
+            ) : null}
+            {cardState === "waiting" ? (
+              <button
+                className="btn ghost"
+                onClick={() => refreshAccountDiagnostics().catch(() => null)}
+                disabled={accountDiagnosticsBusy}
+                type="button"
+              >
+                {accountDiagnosticsBusy ? "Checking…" : "Check status"}
+              </button>
+            ) : null}
+            {cardState === "waiting" ? (
+              <button
+                className="btn ghost"
+                onClick={onCancelMicrosoftLogin}
+                disabled={launcherBusy}
+                type="button"
+              >
+                Cancel sign-in
+              </button>
+            ) : null}
+            {cardState === "attention" ? (
+              <button
+                className="btn ghost"
+                onClick={() => refreshAccountDiagnostics().catch(() => null)}
+                disabled={accountDiagnosticsBusy}
+                type="button"
+              >
+                {accountDiagnosticsBusy ? "Checking…" : "Check again"}
+              </button>
+            ) : null}
+          </div>
+          {hasDiagnosticsError ? (
+            <div className="accountHealthFoot">
+              <span className="accountHeroInfoLabel">Status</span>
+              <span className="accountHeroInfoValue">Refresh needs attention</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
   
             <div className="accountSummaryStrip">
               <div className="accountSummaryCard">
@@ -313,7 +497,7 @@ export default function AccountRoute(props: AccountRouteProps) {
                 <div className="accountDiagList">
                   <div className="accountDiagRow">
                     <span>Connection</span>
-                    <strong className={`accountStatusText tone-${accountStatusTone}`}>{accountStatusLabel}</strong>
+                    <strong className={`accountStatusText tone-${statusTone}`}>{statusBadgeLabel}</strong>
                   </div>
                   <div className="accountDiagRow">
                     <span>Entitlements</span>
@@ -343,8 +527,46 @@ export default function AccountRoute(props: AccountRouteProps) {
               </div>
   
               <div className="card accountCard">
-                <div className="settingTitle">Accounts</div>
-                <div className="settingSub">Choose which connected account should be used for native launch.</div>
+                <div className="accountSectionHeader">
+                  <div className="accountSectionHeaderCopy">
+                    <div className="settingTitle">Accounts</div>
+                    <div className="settingSub">Choose which connected account should be used for native launch.</div>
+                    {msLoginSessionId ? (
+                      <div className="accountSectionHint">
+                        Microsoft sign-in is already in progress.
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="accountSectionHeaderActions">
+                    {msLoginSessionId && msCodePrompt ? (
+                      <button
+                        className="btn subtle"
+                        onClick={() => setMsCodePromptVisible(true)}
+                        type="button"
+                      >
+                        Show code
+                      </button>
+                    ) : null}
+                    {msLoginSessionId ? (
+                      <button
+                        className="btn ghost"
+                        onClick={onCancelMicrosoftLogin}
+                        disabled={launcherBusy}
+                        type="button"
+                      >
+                        Cancel
+                      </button>
+                    ) : null}
+                    <button
+                      className="btn subtle"
+                      onClick={onBeginMicrosoftLogin}
+                      disabled={launcherBusy || Boolean(msLoginSessionId)}
+                      type="button"
+                    >
+                      {msLoginSessionId ? "Waiting for login…" : "Add account"}
+                    </button>
+                  </div>
+                </div>
                 <div className="accountAccountsList">
                   {launcherAccounts.length === 0 ? (
                     <div className="muted">No connected accounts.</div>
