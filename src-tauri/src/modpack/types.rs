@@ -400,16 +400,16 @@ pub struct DeleteModpackSpecArgs {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImportModpackSpecJsonArgs {
-    #[serde(alias = "inputPath")]
-    pub input_path: String,
+    #[serde(alias = "grantId")]
+    pub grant_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ExportModpackSpecJsonArgs {
     #[serde(alias = "modpackId")]
     pub modpack_id: String,
-    #[serde(alias = "outputPath")]
-    pub output_path: String,
+    #[serde(alias = "grantId")]
+    pub grant_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -519,8 +519,8 @@ pub struct ImportLocalJarsToLayerArgs {
     pub modpack_id: String,
     #[serde(alias = "layerId")]
     pub layer_id: String,
-    #[serde(alias = "filePaths")]
-    pub file_paths: Vec<String>,
+    #[serde(alias = "grantIds")]
+    pub grant_ids: Vec<String>,
     #[serde(alias = "contentType", default)]
     pub content_type: Option<String>,
     #[serde(alias = "autoIdentify", default)]

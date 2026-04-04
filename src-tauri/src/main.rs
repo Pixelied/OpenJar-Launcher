@@ -16,7 +16,9 @@ use std::io::{Cursor, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(all(not(test), target_os = "macos"))]
+use std::process::{Output, Stdio};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
@@ -46,6 +48,10 @@ pub(crate) use test_support::{
 const USER_AGENT: &str = "OpenJarLauncher/0.1.6 (Tauri)";
 const KEYRING_SERVICE: &str = "OpenJar Launcher";
 const KEYRING_SELECTED_REFRESH_ALIAS: &str = "msa_refresh_selected";
+const SECURE_STORAGE_VERIFY_ATTEMPTS: usize = 5;
+const SECURE_STORAGE_VERIFY_RETRY_DELAY_MS: u64 = 60;
+#[cfg(all(not(test), target_os = "macos"))]
+const MACOS_SECURITY_CLI_TIMEOUT_MS: u64 = 3500;
 const LEGACY_KEYRING_SERVICES: [&str; 5] = [
     "ModpackManager",
     "com.adrien.modpackmanager",
@@ -59,6 +65,17 @@ const LAUNCHER_TOKEN_FALLBACK_FILE: &str = "tokens_fallback.json";
 const LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE: &str = "tokens_recovery_fallback.json";
 #[cfg(debug_assertions)]
 const LAUNCHER_TOKEN_DEBUG_FALLBACK_FILE: &str = "tokens_debug_fallback.json";
+const EXTERNAL_PATH_GRANT_TTL_SECS: u64 = 300;
+const EXTERNAL_PATH_PURPOSE_INSTANCE_ICON: &str = "instance_icon";
+const EXTERNAL_PATH_PURPOSE_MODPACK_ARCHIVE_IMPORT: &str = "modpack_archive_import";
+const EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT: &str = "local_mod_import";
+const EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT: &str = "modpack_local_jar_import";
+const EXTERNAL_PATH_PURPOSE_PRESETS_IMPORT: &str = "presets_import";
+const EXTERNAL_PATH_PURPOSE_PRESETS_EXPORT: &str = "presets_export";
+const EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT: &str = "modpack_spec_import";
+const EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT: &str = "modpack_spec_export";
+const EXTERNAL_PATH_PURPOSE_INSTANCE_MODS_EXPORT: &str = "instance_mods_export";
+const EXTERNAL_PATH_PURPOSE_SUPPORT_BUNDLE_EXPORT: &str = "support_bundle_export";
 const MS_TOKEN_URL: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";
 const MS_DEVICE_CODE_URL: &str =
     "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
@@ -518,6 +535,7 @@ fn is_dev_mode_enabled() -> bool {
 }
 
 fn load_dev_curseforge_key_into_runtime_env(app: &tauri::AppHandle) {
+    let _ = app;
     if !is_dev_mode_enabled() {
         return;
     }
@@ -534,15 +552,6 @@ fn load_dev_curseforge_key_into_runtime_env(app: &tauri::AppHandle) {
         Ok(None) => {}
         Err(e) => {
             eprintln!("dev curseforge keyring preload failed: {e}");
-        }
-    }
-    match read_dev_curseforge_key_file(app) {
-        Ok(Some(v)) => {
-            std::env::set_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV, v);
-        }
-        Ok(None) => {}
-        Err(e) => {
-            eprintln!("dev curseforge file preload failed: {e}");
         }
     }
 }
@@ -748,6 +757,10 @@ struct InstanceSettings {
     auto_update_installed_content: bool,
     #[serde(default = "default_true")]
     prefer_release_builds: bool,
+    #[serde(default = "default_loader_version_strategy")]
+    loader_version_strategy: String,
+    #[serde(default)]
+    custom_loader_version: String,
     #[serde(default)]
     java_path: String,
     #[serde(default = "default_memory_mb")]
@@ -780,6 +793,8 @@ impl Default for InstanceSettings {
             sync_minecraft_settings_target: default_sync_minecraft_settings_target(),
             auto_update_installed_content: false,
             prefer_release_builds: true,
+            loader_version_strategy: default_loader_version_strategy(),
+            custom_loader_version: String::new(),
             java_path: String::new(),
             memory_mb: default_memory_mb(),
             jvm_args: String::new(),
@@ -912,8 +927,12 @@ struct CreateInstanceArgs {
     #[serde(alias = "mcVersion", alias = "mc_version")]
     mc_version: String,
     loader: String,
-    #[serde(alias = "iconPath", alias = "icon_path", default)]
-    icon_path: Option<String>,
+    #[serde(alias = "loaderVersionStrategy", alias = "loader_version_strategy", default)]
+    loader_version_strategy: Option<String>,
+    #[serde(alias = "customLoaderVersion", alias = "custom_loader_version", default)]
+    custom_loader_version: Option<String>,
+    #[serde(alias = "iconGrantId", default)]
+    icon_grant_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -925,13 +944,16 @@ struct DeleteInstanceArgs {
 struct SetInstanceIconArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
-    #[serde(alias = "iconPath", alias = "icon_path", default)]
-    icon_path: Option<String>,
+    #[serde(alias = "iconGrantId", default)]
+    icon_grant_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct ReadLocalImageDataUrlArgs {
-    path: String,
+    #[serde(alias = "grantId", default)]
+    grant_id: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1050,8 +1072,8 @@ struct RemoveInstalledModArgs {
 struct ImportLocalModFileArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
-    #[serde(alias = "filePath")]
-    file_path: String,
+    #[serde(alias = "grantId")]
+    grant_id: String,
     #[serde(alias = "contentType", default)]
     content_type: Option<String>,
     #[serde(alias = "targetWorlds", default)]
@@ -1082,8 +1104,8 @@ struct LaunchInstanceArgs {
 struct ExportInstanceModsZipArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
-    #[serde(alias = "outputPath", default)]
-    output_path: Option<String>,
+    #[serde(alias = "grantId")]
+    grant_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1180,8 +1202,8 @@ struct SupportPerfAction {
 struct ExportInstanceSupportBundleArgs {
     #[serde(alias = "instanceId")]
     instance_id: String,
-    #[serde(alias = "outputPath", default)]
-    output_path: Option<String>,
+    #[serde(alias = "grantId")]
+    grant_id: String,
     #[serde(alias = "includeRawLogs", default)]
     include_raw_logs: Option<bool>,
     #[serde(alias = "perfActions", default)]
@@ -1190,6 +1212,12 @@ struct ExportInstanceSupportBundleArgs {
 
 #[derive(Debug, Deserialize)]
 struct PollMicrosoftLoginArgs {
+    #[serde(alias = "sessionId")]
+    session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CancelMicrosoftLoginArgs {
     #[serde(alias = "sessionId")]
     session_id: String,
 }
@@ -1300,12 +1328,12 @@ struct RevealConfigEditorFileArgs {
 
 #[derive(Debug, Deserialize)]
 struct CreateInstanceFromModpackFileArgs {
-    #[serde(alias = "filePath")]
-    file_path: String,
+    #[serde(alias = "grantId")]
+    grant_id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(alias = "iconPath", alias = "icon_path", default)]
-    icon_path: Option<String>,
+    #[serde(alias = "iconGrantId", default)]
+    icon_grant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1331,8 +1359,8 @@ struct ImportInstanceFromLauncherArgs {
     source_id: String,
     #[serde(default)]
     name: Option<String>,
-    #[serde(alias = "iconPath", alias = "icon_path", default)]
-    icon_path: Option<String>,
+    #[serde(alias = "iconGrantId", default)]
+    icon_grant_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1551,15 +1579,15 @@ struct GetGithubProjectArgs {
 
 #[derive(Debug, Deserialize)]
 struct ExportPresetsJsonArgs {
-    #[serde(alias = "outputPath")]
-    output_path: String,
+    #[serde(alias = "grantId")]
+    grant_id: String,
     payload: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
 struct ImportPresetsJsonArgs {
-    #[serde(alias = "inputPath")]
-    input_path: String,
+    #[serde(alias = "grantId")]
+    grant_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2208,6 +2236,45 @@ struct LauncherTokenFallbackStore {
     refresh_tokens: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone)]
+struct ExternalPathGrant {
+    purpose: &'static str,
+    path: PathBuf,
+    allow_missing: bool,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrantedPathResult {
+    grant_id: String,
+    display_path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GrantedImagePathResult {
+    grant_id: String,
+    display_path: String,
+    preview_data_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PickExternalOpenPathGrantsArgs {
+    purpose: String,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    multiple: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PickExternalSavePathGrantArgs {
+    purpose: String,
+    #[serde(alias = "suggestedName", default)]
+    suggested_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct BeginMicrosoftLoginResult {
     session_id: String,
@@ -2220,7 +2287,7 @@ struct BeginMicrosoftLoginResult {
 
 #[derive(Debug, Clone, Serialize)]
 struct MicrosoftLoginState {
-    status: String, // pending | success | error
+    status: String, // pending | success | error | cancelled
     message: Option<String>,
     account: Option<LauncherAccount>,
 }
@@ -2732,6 +2799,224 @@ struct AppState {
     running: Arc<Mutex<HashMap<String, RunningProcess>>>,
     launch_cancelled: Arc<Mutex<HashSet<String>>>,
     stop_requested_launches: Arc<Mutex<HashSet<String>>>,
+    external_path_grants: Arc<Mutex<HashMap<String, ExternalPathGrant>>>,
+}
+
+fn cleanup_expired_external_path_grants(
+    grants: &mut HashMap<String, ExternalPathGrant>,
+    now: Instant,
+) {
+    grants.retain(|_, grant| grant.expires_at > now);
+}
+
+fn register_external_path_grant_with_ttl(
+    state: &AppState,
+    purpose: &'static str,
+    path: PathBuf,
+    allow_missing: bool,
+    ttl: Duration,
+) -> Result<GrantedPathResult, String> {
+    let now = Instant::now();
+    let mut grants = state
+        .external_path_grants
+        .lock()
+        .map_err(|_| "lock external path grants failed".to_string())?;
+    cleanup_expired_external_path_grants(&mut grants, now);
+    let grant_id = format!("grant_{}", Uuid::new_v4());
+    let display_path = path.display().to_string();
+    grants.insert(
+        grant_id.clone(),
+        ExternalPathGrant {
+            purpose,
+            path,
+            allow_missing,
+            expires_at: now + ttl,
+        },
+    );
+    Ok(GrantedPathResult {
+        grant_id,
+        display_path,
+    })
+}
+
+pub(crate) fn register_external_path_grant(
+    state: &AppState,
+    purpose: &'static str,
+    path: PathBuf,
+    allow_missing: bool,
+) -> Result<GrantedPathResult, String> {
+    register_external_path_grant_with_ttl(
+        state,
+        purpose,
+        path,
+        allow_missing,
+        Duration::from_secs(EXTERNAL_PATH_GRANT_TTL_SECS),
+    )
+}
+
+pub(crate) fn consume_external_path_grant(
+    state: &AppState,
+    expected_purpose: &'static str,
+    grant_id: &str,
+) -> Result<PathBuf, String> {
+    let trimmed = grant_id.trim();
+    if trimmed.is_empty() {
+        return Err("grantId is required".to_string());
+    }
+
+    let now = Instant::now();
+    let grant = {
+        let mut grants = state
+            .external_path_grants
+            .lock()
+            .map_err(|_| "lock external path grants failed".to_string())?;
+        cleanup_expired_external_path_grants(&mut grants, now);
+        grants
+            .remove(trimmed)
+            .ok_or_else(|| "Path grant is missing, expired, or already used.".to_string())?
+    };
+
+    if grant.purpose != expected_purpose {
+        return Err(format!(
+            "Path grant purpose mismatch. Expected '{expected_purpose}'."
+        ));
+    }
+    if grant.expires_at <= now {
+        return Err("Path grant expired. Pick the file again.".to_string());
+    }
+
+    if grant.allow_missing {
+        if grant.path.exists() && !grant.path.is_file() {
+            return Err("Selected export path is not a file.".to_string());
+        }
+        let parent = grant
+            .path
+            .parent()
+            .ok_or_else(|| "Selected export path is invalid.".to_string())?;
+        if !parent.exists() || !parent.is_dir() {
+            return Err("Selected export folder no longer exists.".to_string());
+        }
+        return Ok(grant.path);
+    }
+
+    if !grant.path.exists() || !grant.path.is_file() {
+        return Err("Selected file is no longer available on disk.".to_string());
+    }
+    Ok(grant.path)
+}
+
+fn normalize_external_open_path_purpose(raw: &str) -> Result<&'static str, String> {
+    match raw.trim() {
+        EXTERNAL_PATH_PURPOSE_MODPACK_ARCHIVE_IMPORT => {
+            Ok(EXTERNAL_PATH_PURPOSE_MODPACK_ARCHIVE_IMPORT)
+        }
+        EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT => Ok(EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT),
+        EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT => {
+            Ok(EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT)
+        }
+        EXTERNAL_PATH_PURPOSE_PRESETS_IMPORT => Ok(EXTERNAL_PATH_PURPOSE_PRESETS_IMPORT),
+        EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT => Ok(EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT),
+        _ => Err("Unsupported open-picker purpose".to_string()),
+    }
+}
+
+fn normalize_external_save_path_purpose(raw: &str) -> Result<&'static str, String> {
+    match raw.trim() {
+        EXTERNAL_PATH_PURPOSE_PRESETS_EXPORT => Ok(EXTERNAL_PATH_PURPOSE_PRESETS_EXPORT),
+        EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT => Ok(EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT),
+        EXTERNAL_PATH_PURPOSE_INSTANCE_MODS_EXPORT => {
+            Ok(EXTERNAL_PATH_PURPOSE_INSTANCE_MODS_EXPORT)
+        }
+        EXTERNAL_PATH_PURPOSE_SUPPORT_BUNDLE_EXPORT => {
+            Ok(EXTERNAL_PATH_PURPOSE_SUPPORT_BUNDLE_EXPORT)
+        }
+        _ => Err("Unsupported save-picker purpose".to_string()),
+    }
+}
+
+fn external_local_content_filter(
+    content_type: &str,
+) -> Result<(&'static str, &'static [&'static str]), String> {
+    match normalize_lock_content_type(content_type).as_str() {
+        "mods" => Ok(("Minecraft mods", &["jar"])),
+        "resourcepacks" => Ok(("Resource packs", &["zip"])),
+        "shaderpacks" => Ok(("Shader packs", &["zip", "jar"])),
+        "datapacks" => Ok(("Data packs", &["zip"])),
+        _ => Err("Unsupported content type for local import".to_string()),
+    }
+}
+
+fn pick_single_file_dialog(
+    filter_name: &str,
+    extensions: &[&str],
+) -> Result<Option<PathBuf>, String> {
+    let (tx, rx) = mpsc::channel();
+    tauri::api::dialog::FileDialogBuilder::new()
+        .add_filter(filter_name, extensions)
+        .pick_file(move |picked| {
+            let _ = tx.send(picked);
+        });
+    rx.recv()
+        .map_err(|_| "File picker did not return a selection.".to_string())
+}
+
+fn pick_multiple_files_dialog(
+    filter_name: &str,
+    extensions: &[&str],
+) -> Result<Option<Vec<PathBuf>>, String> {
+    let (tx, rx) = mpsc::channel();
+    tauri::api::dialog::FileDialogBuilder::new()
+        .add_filter(filter_name, extensions)
+        .pick_files(move |picked| {
+            let _ = tx.send(picked);
+        });
+    rx.recv()
+        .map_err(|_| "File picker did not return a selection.".to_string())
+}
+
+fn pick_save_file_dialog(
+    suggested_name: Option<&str>,
+    filter_name: &str,
+    extensions: &[&str],
+) -> Result<Option<PathBuf>, String> {
+    let (tx, rx) = mpsc::channel();
+    let mut builder = tauri::api::dialog::FileDialogBuilder::new().add_filter(filter_name, extensions);
+    if let Some(name) = suggested_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        builder = builder.set_file_name(name);
+    }
+    builder.save_file(move |picked| {
+        let _ = tx.send(picked);
+    });
+    rx.recv()
+        .map_err(|_| "Save dialog did not return a selection.".to_string())
+}
+
+fn local_image_data_url_for_path(path: &Path) -> Result<String, String> {
+    if !path.exists() || !path.is_file() {
+        return Err("image file not found".to_string());
+    }
+
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.trim().to_ascii_lowercase())
+        .ok_or_else(|| "image file must have an extension".to_string())?;
+    if !allowed_icon_extension(&ext) {
+        return Err("image must be png/jpg/jpeg/webp/bmp/gif".to_string());
+    }
+
+    let bytes = fs::read(path).map_err(|e| format!("read image failed: {e}"))?;
+    if bytes.len() > MAX_LOCAL_IMAGE_BYTES {
+        return Err("image file is too large (max 8MB)".to_string());
+    }
+
+    let mime =
+        image_mime_for_extension(&ext).ok_or_else(|| "unsupported image type".to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{mime};base64,{encoded}"))
 }
 
 fn app_instances_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -3905,13 +4190,12 @@ fn launcher_dev_curseforge_key_path(app: &tauri::AppHandle) -> Result<PathBuf, S
     Ok(launcher_dir(app)?.join("dev_curseforge_api_key.txt"))
 }
 
-fn read_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<Option<String>, String> {
-    let p = launcher_dev_curseforge_key_path(app)?;
-    if !p.exists() {
+fn read_dev_curseforge_key_file_at_path(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
         return Ok(None);
     }
-    let raw =
-        fs::read_to_string(&p).map_err(|e| format!("read dev curseforge key file failed: {e}"))?;
+    let raw = fs::read_to_string(path)
+        .map_err(|e| format!("read dev curseforge key file failed: {e}"))?;
     let trimmed = raw.trim().to_string();
     if trimmed.is_empty() {
         return Ok(None);
@@ -3919,18 +4203,9 @@ fn read_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<Option<String>
     Ok(Some(trimmed))
 }
 
-fn write_dev_curseforge_key_file(app: &tauri::AppHandle, key: &str) -> Result<(), String> {
-    let p = launcher_dev_curseforge_key_path(app)?;
-    if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("mkdir launcher dir failed: {e}"))?;
-    }
-    fs::write(&p, key).map_err(|e| format!("write dev curseforge key file failed: {e}"))
-}
-
-fn clear_dev_curseforge_key_file(app: &tauri::AppHandle) -> Result<(), String> {
-    let p = launcher_dev_curseforge_key_path(app)?;
-    if p.exists() {
-        fs::remove_file(&p).map_err(|e| format!("clear dev curseforge key file failed: {e}"))?;
+fn clear_dev_curseforge_key_file_at_path(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| format!("clear dev curseforge key file failed: {e}"))?;
     }
     Ok(())
 }
@@ -4222,38 +4497,6 @@ fn remove_refresh_token_debug_fallback(
     Ok(())
 }
 
-fn persist_refresh_token_recovery_fallback(
-    app: &tauri::AppHandle,
-    account: &LauncherAccount,
-    refresh_token: &str,
-) -> Result<(), String> {
-    let path = launcher_token_recovery_fallback_path(app)?;
-    let mut store = read_token_fallback_store_at_path(&path)?;
-    for key in refresh_token_lookup_keys(account, std::slice::from_ref(account)) {
-        store.refresh_tokens.insert(key, refresh_token.to_string());
-    }
-    write_token_fallback_store_at_path(&path, &store)
-}
-
-fn read_refresh_token_recovery_fallback(
-    app: &tauri::AppHandle,
-    account: &LauncherAccount,
-    accounts: &[LauncherAccount],
-) -> Result<Option<String>, String> {
-    let path = launcher_token_recovery_fallback_path(app)?;
-    let store = read_token_fallback_store_at_path(&path)?;
-    for key in refresh_token_lookup_keys(account, accounts) {
-        if let Some(token) = store.refresh_tokens.get(&key) {
-            let trimmed = token.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            return Ok(Some(trimmed.to_string()));
-        }
-    }
-    Ok(None)
-}
-
 fn remove_refresh_token_recovery_fallback(
     app: &tauri::AppHandle,
     account: &LauncherAccount,
@@ -4353,6 +4596,10 @@ fn default_snapshot_retention_count() -> u32 {
 
 fn default_snapshot_max_age_days() -> u32 {
     DEFAULT_SNAPSHOT_MAX_AGE_DAYS
+}
+
+fn default_loader_version_strategy() -> String {
+    "stable".to_string()
 }
 
 fn default_update_check_cadence() -> String {
@@ -5223,7 +5470,21 @@ fn normalize_instance_settings(mut settings: InstanceSettings) -> InstanceSettin
     settings.world_backup_retention_count = settings.world_backup_retention_count.clamp(1, 2);
     settings.snapshot_retention_count = settings.snapshot_retention_count.clamp(1, 20);
     settings.snapshot_max_age_days = settings.snapshot_max_age_days.clamp(1, 90);
+    settings.loader_version_strategy =
+        normalize_loader_version_strategy(&settings.loader_version_strategy);
+    settings.custom_loader_version = settings.custom_loader_version.trim().to_string();
+    if settings.loader_version_strategy != "custom" {
+        settings.custom_loader_version.clear();
+    }
     settings
+}
+
+fn normalize_loader_version_strategy(input: &str) -> String {
+    match input.trim().to_lowercase().as_str() {
+        "latest" => "latest".to_string(),
+        "custom" => "custom".to_string(),
+        _ => default_loader_version_strategy(),
+    }
 }
 
 fn parse_loader_for_instance(input: &str) -> Option<String> {
@@ -9409,6 +9670,16 @@ fn set_login_session_state(
     }
 }
 
+fn get_login_session_status(
+    state: &Arc<Mutex<HashMap<String, MicrosoftLoginState>>>,
+    session_id: &str,
+) -> Option<String> {
+    state
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(session_id).map(|entry| entry.status.clone()))
+}
+
 fn keyring_unavailable_hint() -> &'static str {
     #[cfg(target_os = "linux")]
     {
@@ -9434,7 +9705,11 @@ fn keyring_error_with_action(operation: &str, error: &KeyringError) -> String {
 }
 
 #[cfg(not(test))]
-fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
+fn token_keyring_set_secret_via_keyring(
+    service: &str,
+    username: &str,
+    secret: &str,
+) -> Result<(), String> {
     let entry = KeyringEntry::new(service, username)
         .map_err(|e| keyring_error_with_action("keyring init", &e))?;
     entry
@@ -9443,7 +9718,10 @@ fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Resu
 }
 
 #[cfg(not(test))]
-fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
+fn token_keyring_get_secret_via_keyring(
+    service: &str,
+    username: &str,
+) -> Result<Option<String>, String> {
     let entry = KeyringEntry::new(service, username)
         .map_err(|e| keyring_error_with_action("keyring init", &e))?;
     match entry.get_password() {
@@ -9454,7 +9732,7 @@ fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<Stri
 }
 
 #[cfg(not(test))]
-fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), String> {
+fn token_keyring_delete_secret_via_keyring(service: &str, username: &str) -> Result<(), String> {
     let entry = KeyringEntry::new(service, username)
         .map_err(|e| keyring_error_with_action("keyring init", &e))?;
     match entry.delete_credential() {
@@ -9463,25 +9741,205 @@ fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), Stri
     }
 }
 
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_item_not_found(output: &Output) -> bool {
+    String::from_utf8_lossy(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("could not be found in the keychain")
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_error(operation: &str, output: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        "unknown macOS security CLI failure".to_string()
+    };
+    format!("{operation} failed: {detail}")
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_wait_with_timeout(
+    child: &mut Child,
+    operation: &str,
+) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("{operation} failed: poll macOS security CLI failed: {e}"))?
+        {
+            Some(_status) => return Ok(()),
+            None => {
+                if started.elapsed() >= Duration::from_millis(MACOS_SECURITY_CLI_TIMEOUT_MS) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "{operation} failed: macOS keychain prompt did not complete within {}ms",
+                        MACOS_SECURITY_CLI_TIMEOUT_MS
+                    ));
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+        }
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_set_secret(
+    service: &str,
+    username: &str,
+    secret: &str,
+) -> Result<(), String> {
+    let mut child = Command::new("/usr/bin/security")
+        .arg("add-generic-password")
+        .arg("-U")
+        .arg("-s")
+        .arg(service)
+        .arg("-a")
+        .arg(username)
+        .arg("-w")
+        .arg(secret)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("keyring write failed: launch macOS security CLI failed: {e}"))?;
+    macos_security_cli_wait_with_timeout(&mut child, "keyring write")?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("keyring write failed: wait macOS security CLI failed: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(macos_security_cli_error("keyring write", &output))
+    }
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
+    let mut child = Command::new("/usr/bin/security")
+        .arg("find-generic-password")
+        .arg("-s")
+        .arg(service)
+        .arg("-a")
+        .arg(username)
+        .arg("-w")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("keyring read failed: launch macOS security CLI failed: {e}"))?;
+    macos_security_cli_wait_with_timeout(&mut child, "keyring read")?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("keyring read failed: wait macOS security CLI failed: {e}"))?;
+    if output.status.success() {
+        let mut value = String::from_utf8(output.stdout)
+            .map_err(|e| format!("keyring read failed: macOS security CLI returned non-utf8 data: {e}"))?;
+        if value.ends_with('\n') {
+            value.pop();
+            if value.ends_with('\r') {
+                value.pop();
+            }
+        }
+        return Ok(Some(value));
+    }
+    if macos_security_cli_item_not_found(&output) {
+        return Ok(None);
+    }
+    Err(macos_security_cli_error("keyring read", &output))
+}
+
+#[cfg(all(not(test), target_os = "macos"))]
+fn macos_security_cli_delete_secret(service: &str, username: &str) -> Result<bool, String> {
+    let mut child = Command::new("/usr/bin/security")
+        .arg("delete-generic-password")
+        .arg("-s")
+        .arg(service)
+        .arg("-a")
+        .arg(username)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("keyring delete failed: launch macOS security CLI failed: {e}"))?;
+    macos_security_cli_wait_with_timeout(&mut child, "keyring delete")?;
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("keyring delete failed: wait macOS security CLI failed: {e}"))?;
+    if output.status.success() {
+        return Ok(true);
+    }
+    if macos_security_cli_item_not_found(&output) {
+        return Ok(false);
+    }
+    Err(macos_security_cli_error("keyring delete", &output))
+}
+
+#[cfg(not(test))]
+fn token_keyring_set_secret(service: &str, username: &str, secret: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if !secret.contains('\n') && !secret.contains('\r') {
+            match macos_security_cli_set_secret(service, username, secret) {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    eprintln!(
+                        "macOS security CLI write fallback failed for alias '{}' in service '{}': {}. Falling back to keyring crate.",
+                        username, service, err
+                    );
+                }
+            }
+        }
+    }
+    token_keyring_set_secret_via_keyring(service, username, secret)
+}
+
+#[cfg(not(test))]
+fn token_keyring_get_secret(service: &str, username: &str) -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        match macos_security_cli_get_secret(service, username) {
+            Ok(Some(secret)) => return Ok(Some(secret)),
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!(
+                    "macOS security CLI read fallback failed for alias '{}' in service '{}': {}. Falling back to keyring crate.",
+                    username, service, err
+                );
+            }
+        }
+    }
+    token_keyring_get_secret_via_keyring(service, username)
+}
+
+#[cfg(not(test))]
+fn token_keyring_delete_secret(service: &str, username: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        match macos_security_cli_delete_secret(service, username) {
+            Ok(true) => return Ok(()),
+            Ok(false) => {}
+            Err(err) => {
+                eprintln!(
+                    "macOS security CLI delete fallback failed for alias '{}' in service '{}': {}. Falling back to keyring crate.",
+                    username, service, err
+                );
+            }
+        }
+    }
+    token_keyring_delete_secret_via_keyring(service, username)
+}
+
 fn keyring_set_refresh_token(account_id: &str, refresh_token: &str) -> Result<(), String> {
     let keys = vec![account_id.to_string()];
     for key in keys {
         for username in keyring_alias_usernames_for_key(&key) {
             token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
-            for legacy_service in LEGACY_KEYRING_SERVICES {
-                if legacy_service == KEYRING_SERVICE {
-                    continue;
-                }
-                if let Err(err) = token_keyring_set_secret(legacy_service, &username, refresh_token)
-                {
-                    eprintln!(
-                        "legacy secure-storage mirror write failed for alias '{}' in service '{}': {}",
-                        username, legacy_service, err
-                    );
-                }
-            }
         }
-        runtime_refresh_token_cache_set(&key, refresh_token);
     }
     Ok(())
 }
@@ -9494,46 +9952,13 @@ fn keyring_set_refresh_token_for_account(
     for key in keys {
         for username in keyring_alias_usernames_for_key(&key) {
             token_keyring_set_secret(KEYRING_SERVICE, &username, refresh_token)?;
-            for legacy_service in LEGACY_KEYRING_SERVICES {
-                if legacy_service == KEYRING_SERVICE {
-                    continue;
-                }
-                if let Err(err) = token_keyring_set_secret(legacy_service, &username, refresh_token)
-                {
-                    eprintln!(
-                        "legacy secure-storage mirror write failed for alias '{}' in service '{}': {}",
-                        username, legacy_service, err
-                    );
-                }
-            }
         }
-        runtime_refresh_token_cache_set(&key, refresh_token);
     }
     Ok(())
 }
 
 fn keyring_set_selected_refresh_token(refresh_token: &str) -> Result<(), String> {
-    token_keyring_set_secret(
-        KEYRING_SERVICE,
-        KEYRING_SELECTED_REFRESH_ALIAS,
-        refresh_token,
-    )?;
-    for legacy_service in LEGACY_KEYRING_SERVICES {
-        if legacy_service == KEYRING_SERVICE {
-            continue;
-        }
-        if let Err(err) = token_keyring_set_secret(
-            legacy_service,
-            KEYRING_SELECTED_REFRESH_ALIAS,
-            refresh_token,
-        ) {
-            eprintln!(
-                "legacy selected refresh-token alias mirror write failed in service '{}': {}",
-                legacy_service, err
-            );
-        }
-    }
-    Ok(())
+    token_keyring_set_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS, refresh_token)
 }
 
 fn keyring_get_selected_refresh_token() -> Result<Option<String>, String> {
@@ -9561,16 +9986,6 @@ fn keyring_get_selected_refresh_token() -> Result<Option<String>, String> {
         };
         if token.trim().is_empty() {
             continue;
-        }
-        if service != KEYRING_SERVICE {
-            if let Err(err) =
-                token_keyring_set_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS, &token)
-            {
-                eprintln!(
-                    "selected refresh-token alias canonical mirror write failed from service '{}': {}",
-                    service, err
-                );
-            }
         }
         return Ok(Some(token));
     }
@@ -9639,6 +10054,25 @@ fn keyring_set_dev_curseforge_key(value: &str) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn verify_dev_curseforge_key_secure_storage_write(expected: &str) -> Result<(), String> {
+    verify_secure_storage_write_with_retry(|| {
+        match token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)? {
+            Some(value) if value.trim() == expected => Ok(true),
+            Some(_) | None => Ok(false),
+        }
+    })
+    .map_err(|_| {
+        "Secure storage verification failed after writing the dev CurseForge API key. Ensure your OS keychain is unlocked and try again."
+            .to_string()
+    })
+}
+
+fn log_secure_storage_verification_warning(context: &str, err: &str) {
+    eprintln!(
+        "secure storage verification warning for {context}: {err}. Continuing because the keychain write itself succeeded."
+    );
 }
 
 fn keyring_delete_dev_curseforge_key() -> Result<(), String> {
@@ -9758,7 +10192,24 @@ fn keyring_delete_github_token_pool() -> Result<(), String> {
 }
 
 fn persist_refresh_token_for_account(account_id: &str, refresh_token: &str) -> Result<(), String> {
-    keyring_set_refresh_token(account_id, refresh_token)
+    if refresh_token.trim().is_empty() {
+        return Err("Refusing to persist an empty Microsoft refresh token.".to_string());
+    }
+    keyring_set_refresh_token(account_id, refresh_token)?;
+    if let Err(err) = verify_secure_storage_write_with_retry(|| {
+        match token_keyring_get_secret(KEYRING_SERVICE, &keyring_username_for_account(account_id))?
+        {
+            Some(value) if value.trim() == refresh_token => Ok(true),
+            Some(_) | None => Ok(false),
+        }
+    }) {
+        log_secure_storage_verification_warning(
+            &format!("refresh token alias '{}'", keyring_username_for_account(account_id)),
+            &err,
+        );
+    }
+    runtime_refresh_token_cache_set(account_id, refresh_token);
+    Ok(())
 }
 
 fn persist_refresh_token_for_account_with_app(
@@ -9786,8 +10237,14 @@ fn persist_refresh_token_for_launcher_account(
     account: &LauncherAccount,
     refresh_token: &str,
 ) -> Result<(), String> {
+    if refresh_token.trim().is_empty() {
+        return Err("Refusing to persist an empty Microsoft refresh token.".to_string());
+    }
     keyring_set_refresh_token_for_account(account, refresh_token)?;
-    keyring_set_selected_refresh_token(refresh_token)
+    verify_refresh_token_secure_storage_write(account, refresh_token)?;
+    runtime_refresh_token_cache_set(&account.id, refresh_token);
+    runtime_refresh_token_cache_set(&account.username, refresh_token);
+    Ok(())
 }
 
 fn persist_refresh_token_for_launcher_account_with_app(
@@ -9796,18 +10253,6 @@ fn persist_refresh_token_for_launcher_account_with_app(
     refresh_token: &str,
 ) -> Result<(), String> {
     persist_refresh_token_for_launcher_account(account, refresh_token)?;
-    if let Err(err) = persist_refresh_token_recovery_fallback(app, account, refresh_token) {
-        eprintln!(
-            "refresh-token recovery fallback write failed for selected account '{}': {}",
-            account.id, err
-        );
-    }
-    if let Err(err) = verify_refresh_token_secure_storage_write(account, refresh_token) {
-        eprintln!(
-            "refresh-token secure-storage verification warning for account '{}': {}",
-            account.id, err
-        );
-    }
     #[cfg(debug_assertions)]
     {
         if let Err(err) = persist_refresh_token_debug_fallback(app, account, refresh_token) {
@@ -9875,6 +10320,32 @@ fn keyring_service_candidates() -> Vec<&'static str> {
     candidates
 }
 
+fn verify_secure_storage_write_with_retry<F>(mut check: F) -> Result<(), String>
+where
+    F: FnMut() -> Result<bool, String>,
+{
+    let mut last_err: Option<String> = None;
+    for attempt in 0..SECURE_STORAGE_VERIFY_ATTEMPTS {
+        match check() {
+            Ok(true) => return Ok(()),
+            Ok(false) => {
+                last_err = None;
+            }
+            Err(err) => {
+                last_err = Some(err);
+            }
+        }
+        if attempt + 1 < SECURE_STORAGE_VERIFY_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(
+                SECURE_STORAGE_VERIFY_RETRY_DELAY_MS,
+            ));
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        "secure storage verification did not find the expected value".to_string()
+    }))
+}
+
 fn secure_storage_contains_refresh_token_for_aliases(
     aliases: &[String],
     expected_refresh_token: &str,
@@ -9910,11 +10381,6 @@ fn secure_storage_contains_refresh_token_for_aliases(
             }
         }
     }
-    if let Some(selected) = keyring_get_selected_refresh_token()? {
-        if selected == expected_refresh_token {
-            return Ok(true);
-        }
-    }
     if let Some(err) = canonical_read_err {
         return Err(err);
     }
@@ -9942,11 +10408,13 @@ fn verify_refresh_token_secure_storage_write(
         push_unique(&mut aliases, alias);
     }
 
-    if secure_storage_contains_refresh_token_for_aliases(&aliases, refresh_token)? {
-        return Ok(());
-    }
-
-    Err("Secure storage verification failed after writing refresh token. Reconnect Microsoft account and ensure your OS keychain is unlocked.".to_string())
+    verify_secure_storage_write_with_retry(|| {
+        secure_storage_contains_refresh_token_for_aliases(&aliases, refresh_token)
+    })
+    .map_err(|_| {
+        "Secure storage verification failed after writing refresh token. Reconnect Microsoft account and ensure your OS keychain is unlocked."
+            .to_string()
+    })
 }
 
 fn recover_refresh_token_from_known_accounts(
@@ -10058,6 +10526,9 @@ fn read_refresh_token_from_keyring_aliases_only(
             let Some(token) = token else {
                 continue;
             };
+            if token.trim().is_empty() {
+                continue;
+            }
 
             let is_canonical = *service == KEYRING_SERVICE && username == &canonical_username;
             if !is_canonical {
@@ -10067,11 +10538,6 @@ fn read_refresh_token_from_keyring_aliases_only(
                         account.id, e
                     );
                 }
-            } else if let Err(e) = keyring_set_selected_refresh_token(&token) {
-                eprintln!(
-                    "refresh token selected-alias write failed for account {}: {}",
-                    account.id, e
-                );
             }
             runtime_refresh_token_cache_set(&account.id, &token);
             runtime_refresh_token_cache_set(&account.username, &token);
@@ -10155,6 +10621,8 @@ fn keyring_get_refresh_token_for_account(
     account: &LauncherAccount,
     accounts: &[LauncherAccount],
 ) -> Result<String, String> {
+    #[cfg(not(debug_assertions))]
+    let _ = app;
     match read_refresh_token_from_keyring(account, accounts) {
         Ok(token) => Ok(token),
         Err(err) => {
@@ -10165,27 +10633,14 @@ fn keyring_get_refresh_token_for_account(
                 {
                     if let Some(token) = read_refresh_token_debug_fallback(app, account, accounts)?
                     {
-                        if let Err(write_err) = persist_refresh_token_for_launcher_account_with_app(
-                            app, account, &token,
-                        ) {
-                            eprintln!(
-                                "debug refresh-token recovery write-back failed for account '{}': {}",
-                                account.id, write_err
-                            );
-                        }
+                        runtime_refresh_token_cache_set(&account.id, &token);
+                        runtime_refresh_token_cache_set(&account.username, &token);
+                        eprintln!(
+                            "using debug refresh-token fallback for account '{}' without immediate secure-storage write-back",
+                            account.id
+                        );
                         return Ok(token);
                     }
-                }
-                if let Some(token) = read_refresh_token_recovery_fallback(app, account, accounts)? {
-                    if let Err(write_err) =
-                        persist_refresh_token_for_launcher_account_with_app(app, account, &token)
-                    {
-                        eprintln!(
-                            "refresh-token recovery fallback write-back failed for account '{}': {}",
-                            account.id, write_err
-                        );
-                    }
-                    return Ok(token);
                 }
             }
             Err(err)
@@ -10281,7 +10736,7 @@ fn migrate_legacy_refresh_tokens_from_path(
             summary.skipped += 1;
             continue;
         }
-        match keyring_set_refresh_token(account_id, refresh_token) {
+        match persist_refresh_token_for_account(account_id, refresh_token) {
             Ok(()) => summary.migrated += 1,
             Err(e) => {
                 summary.failed += 1;
@@ -10293,8 +10748,10 @@ fn migrate_legacy_refresh_tokens_from_path(
         }
     }
 
-    fs::remove_file(path).map_err(|e| format!("remove launcher token fallback failed: {e}"))?;
-    summary.fallback_files_removed = 1;
+    if summary.failed == 0 {
+        fs::remove_file(path).map_err(|e| format!("remove launcher token fallback failed: {e}"))?;
+        summary.fallback_files_removed = 1;
+    }
     Ok(summary)
 }
 
@@ -10309,6 +10766,9 @@ fn legacy_token_fallback_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
     if let Ok(current) = launcher_token_fallback_path(app) {
         push_unique(&mut out, current);
     }
+    if let Ok(current) = launcher_token_recovery_fallback_path(app) {
+        push_unique(&mut out, current);
+    }
     if let Some(data_dir) = tauri::api::path::data_dir() {
         for legacy_app_id in [
             "com.adrien.modpackmanager",
@@ -10316,12 +10776,11 @@ fn legacy_token_fallback_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
             "openjar-launcher",
             "modpack-manager",
         ] {
+            let launcher_root = data_dir.join(legacy_app_id).join("launcher");
+            push_unique(&mut out, launcher_root.join(LAUNCHER_TOKEN_FALLBACK_FILE));
             push_unique(
                 &mut out,
-                data_dir
-                    .join(legacy_app_id)
-                    .join("launcher")
-                    .join(LAUNCHER_TOKEN_FALLBACK_FILE),
+                launcher_root.join(LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE),
             );
         }
     }
@@ -10331,7 +10790,17 @@ fn legacy_token_fallback_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
 fn migrate_legacy_refresh_tokens_to_keyring(app: &tauri::AppHandle) -> Result<(), String> {
     let mut summary = LegacyTokenMigrationSummary::default();
     for path in legacy_token_fallback_paths(app) {
-        let path_summary = migrate_legacy_refresh_tokens_from_path(&path)?;
+        let path_summary = match migrate_legacy_refresh_tokens_from_path(&path) {
+            Ok(path_summary) => path_summary,
+            Err(err) => {
+                eprintln!(
+                    "legacy refresh-token migration warning for '{}': {}",
+                    path.display(),
+                    err
+                );
+                continue;
+            }
+        };
         summary.migrated += path_summary.migrated;
         summary.skipped += path_summary.skipped;
         summary.failed += path_summary.failed;
@@ -10349,11 +10818,84 @@ fn migrate_legacy_refresh_tokens_to_keyring(app: &tauri::AppHandle) -> Result<()
         summary.migrated, summary.skipped, summary.failed, summary.fallback_files_removed
     );
     if summary.failed > 0 {
-        return Err(format!(
-            "Failed to migrate {} legacy refresh token(s) to OS secure storage. {}",
-            summary.failed,
+        eprintln!(
+            "legacy refresh-token fallback migration left plaintext file(s) in place because secure storage migration was incomplete. {}",
             keyring_unavailable_hint()
-        ));
+        );
+    }
+    Ok(())
+}
+
+fn legacy_dev_curseforge_key_paths(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    fn push_unique(out: &mut Vec<PathBuf>, path: PathBuf) {
+        if !out.iter().any(|existing| existing == &path) {
+            out.push(path);
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Ok(current) = launcher_dev_curseforge_key_path(app) {
+        push_unique(&mut out, current);
+    }
+    if let Some(data_dir) = tauri::api::path::data_dir() {
+        for legacy_app_id in [
+            "com.adrien.modpackmanager",
+            "io.github.pixelied.openjarlauncher",
+            "openjar-launcher",
+            "modpack-manager",
+        ] {
+            push_unique(
+                &mut out,
+                data_dir
+                    .join(legacy_app_id)
+                    .join("launcher")
+                    .join("dev_curseforge_api_key.txt"),
+            );
+        }
+    }
+    out
+}
+
+fn migrate_legacy_dev_curseforge_key_from_path(path: &Path) -> Result<bool, String> {
+    let Some(value) = read_dev_curseforge_key_file_at_path(path)? else {
+        return Ok(false);
+    };
+    keyring_set_dev_curseforge_key(&value)?;
+    if let Err(err) = verify_dev_curseforge_key_secure_storage_write(&value) {
+        log_secure_storage_verification_warning("legacy dev CurseForge key migration", &err);
+    }
+    clear_dev_curseforge_key_file_at_path(path)?;
+    Ok(true)
+}
+
+fn migrate_legacy_dev_curseforge_key_to_keyring(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut migrated = 0usize;
+    let mut failed = 0usize;
+    for path in legacy_dev_curseforge_key_paths(app) {
+        match migrate_legacy_dev_curseforge_key_from_path(&path) {
+            Ok(true) => migrated += 1,
+            Ok(false) => {}
+            Err(err) => {
+                failed += 1;
+                eprintln!(
+                    "legacy dev CurseForge key migration warning for '{}': {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+    if migrated > 0 || failed > 0 {
+        eprintln!(
+            "legacy dev CurseForge key migration complete: migrated={}, failed={}",
+            migrated, failed
+        );
+    }
+    if failed > 0 {
+        eprintln!(
+            "legacy dev CurseForge key plaintext file(s) were left in place because secure storage migration was incomplete. {}",
+            keyring_unavailable_hint()
+        );
     }
     Ok(())
 }
@@ -10495,6 +11037,12 @@ fn microsoft_refresh_access_token(
     client_id: &str,
     refresh_token: &str,
 ) -> Result<MsoTokenResponse, String> {
+    if refresh_token.trim().is_empty() {
+        return Err(
+            "No refresh token found in secure storage for the selected account. Click Connect / Reconnect to repair account credentials."
+                .to_string(),
+        );
+    }
     let params = [
         ("client_id", client_id),
         ("grant_type", "refresh_token"),
@@ -10507,10 +11055,29 @@ fn microsoft_refresh_access_token(
         .form(&params)
         .send()
         .map_err(|e| format!("Microsoft refresh failed: {e}"))?;
-    if !res.status().is_success() {
+    let status = res.status();
+    if !status.is_success() {
+        let detail = res.text().unwrap_or_default();
+        let trimmed = detail.trim();
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.contains("invalid_grant")
+                || lower.contains("interaction_required")
+                || lower.contains("expired")
+                || lower.contains("revoked")
+            {
+                return Err(
+                    "Microsoft refresh token was rejected. Reconnect Microsoft account to continue."
+                        .to_string(),
+                );
+            }
+        }
+        if trimmed.is_empty() {
+            return Err(format!("Microsoft refresh failed with status {status}"));
+        }
+        let detail = trimmed.chars().take(220).collect::<String>();
         return Err(format!(
-            "Microsoft refresh failed with status {}",
-            res.status()
+            "Microsoft refresh failed with status {status}: {detail}"
         ));
     }
     res.json::<MsoTokenResponse>()
@@ -10886,7 +11453,19 @@ fn apply_minecraft_cape(
     Ok(())
 }
 
-fn resolve_fabric_loader_version(client: &Client, mc_version: &str) -> Result<String, String> {
+fn resolve_fabric_loader_version(
+    client: &Client,
+    mc_version: &str,
+    strategy: &str,
+    custom_version: Option<&str>,
+) -> Result<String, String> {
+    if strategy == "custom" {
+        let custom = custom_version.unwrap_or_default().trim();
+        if custom.is_empty() {
+            return Err("Pick a custom Fabric loader version first.".to_string());
+        }
+        return Ok(custom.to_string());
+    }
     let url = format!("https://meta.fabricmc.net/v2/versions/loader/{mc_version}");
     let resp = client
         .get(url)
@@ -10902,13 +11481,42 @@ fn resolve_fabric_loader_version(client: &Client, mc_version: &str) -> Result<St
     let items = resp
         .json::<Vec<serde_json::Value>>()
         .map_err(|e| format!("parse Fabric loader lookup failed: {e}"))?;
-    for it in &items {
-        if let Some(v) = it
-            .get("loader")
-            .and_then(|x| x.get("version"))
-            .and_then(|x| x.as_str())
-        {
-            return Ok(v.to_string());
+    if strategy == "latest" {
+        for it in &items {
+            if let Some(v) = it
+                .get("loader")
+                .and_then(|x| x.get("version"))
+                .and_then(|x| x.as_str())
+            {
+                return Ok(v.to_string());
+            }
+        }
+    } else {
+        for it in &items {
+            let stable = it
+                .get("loader")
+                .and_then(|x| x.get("stable"))
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            if !stable {
+                continue;
+            }
+            if let Some(v) = it
+                .get("loader")
+                .and_then(|x| x.get("version"))
+                .and_then(|x| x.as_str())
+            {
+                return Ok(v.to_string());
+            }
+        }
+        for it in &items {
+            if let Some(v) = it
+                .get("loader")
+                .and_then(|x| x.get("version"))
+                .and_then(|x| x.as_str())
+            {
+                return Ok(v.to_string());
+            }
         }
     }
     Err(format!(
@@ -10917,7 +11525,19 @@ fn resolve_fabric_loader_version(client: &Client, mc_version: &str) -> Result<St
     ))
 }
 
-fn resolve_forge_loader_version(client: &Client, mc_version: &str) -> Result<String, String> {
+fn resolve_forge_loader_version(
+    client: &Client,
+    mc_version: &str,
+    strategy: &str,
+    custom_version: Option<&str>,
+) -> Result<String, String> {
+    if strategy == "custom" {
+        let custom = custom_version.unwrap_or_default().trim();
+        if custom.is_empty() {
+            return Err("Pick a custom Forge loader version first.".to_string());
+        }
+        return Ok(custom.to_string());
+    }
     let url = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
     let resp = client
         .get(url)
@@ -10937,12 +11557,20 @@ fn resolve_forge_loader_version(client: &Client, mc_version: &str) -> Result<Str
         .get("promos")
         .and_then(|x| x.as_object())
         .ok_or_else(|| "Forge promotions payload missing promos".to_string())?;
-    let rec_key = format!("{mc_version}-recommended");
-    if let Some(v) = promos.get(&rec_key).and_then(|x| x.as_str()) {
+    let preferred_key = if strategy == "latest" {
+        format!("{mc_version}-latest")
+    } else {
+        format!("{mc_version}-recommended")
+    };
+    if let Some(v) = promos.get(&preferred_key).and_then(|x| x.as_str()) {
         return Ok(v.to_string());
     }
-    let latest_key = format!("{mc_version}-latest");
-    if let Some(v) = promos.get(&latest_key).and_then(|x| x.as_str()) {
+    let fallback_key = if strategy == "latest" {
+        format!("{mc_version}-recommended")
+    } else {
+        format!("{mc_version}-latest")
+    };
+    if let Some(v) = promos.get(&fallback_key).and_then(|x| x.as_str()) {
         return Ok(v.to_string());
     }
     let mut candidates: Vec<String> = promos
@@ -18487,14 +19115,30 @@ fn resolve_native_loader(
     instance: &Instance,
 ) -> Result<(Option<String>, Option<String>), String> {
     let loader = instance.loader.to_lowercase();
+    let strategy = normalize_loader_version_strategy(&instance.settings.loader_version_strategy);
+    let custom_loader_version = if strategy == "custom" {
+        Some(instance.settings.custom_loader_version.trim())
+    } else {
+        None
+    };
     match loader.as_str() {
         "vanilla" => Ok((None, None)),
         "fabric" => {
-            let version = resolve_fabric_loader_version(client, &instance.mc_version)?;
+            let version = resolve_fabric_loader_version(
+                client,
+                &instance.mc_version,
+                &strategy,
+                custom_loader_version,
+            )?;
             Ok((Some("fabric".to_string()), Some(version)))
         }
         "forge" => {
-            let version = resolve_forge_loader_version(client, &instance.mc_version)?;
+            let version = resolve_forge_loader_version(
+                client,
+                &instance.mc_version,
+                &strategy,
+                custom_loader_version,
+            )?;
             Ok((Some("forge".to_string()), Some(version)))
         }
         other => Err(format!(
@@ -18618,17 +19262,6 @@ fn launch_prism_instance(
     ))
 }
 
-fn default_export_filename(instance_name: &str) -> String {
-    let date = Local::now().format("%Y-%m-%d").to_string();
-    let base = sanitize_filename(&instance_name.replace(' ', "-"));
-    let clean = if base.is_empty() {
-        "instance".to_string()
-    } else {
-        base
-    };
-    format!("{clean}-mods-{date}.zip")
-}
-
 fn build_selected_microsoft_auth(
     app: &tauri::AppHandle,
     client: &Client,
@@ -18718,13 +19351,10 @@ fn main() {
         })
         .manage(AppState::default())
         .setup(|app| {
+            if let Err(err) = migrate_legacy_dev_curseforge_key_to_keyring(&app.handle()) {
+                eprintln!("legacy dev curseforge key migration warning: {err}");
+            }
             load_dev_curseforge_key_into_runtime_env(&app.handle());
-            if let Err(err) = migrate_legacy_refresh_tokens_to_keyring(&app.handle()) {
-                eprintln!("legacy refresh-token migration warning: {err}");
-            }
-            if let Err(err) = migrate_selected_refresh_alias(&app.handle()) {
-                eprintln!("selected refresh-token alias migration warning: {err}");
-            }
             match cleanup_stale_runtime_sessions_startup(&app.handle()) {
                 Ok(removed) if removed > 0 => {
                     eprintln!("startup cleanup removed {removed} stale runtime session folder(s)");
@@ -18748,6 +19378,9 @@ fn main() {
             commands::impls::update_instance,
             commands::impls::set_instance_icon,
             commands::impls::read_local_image_data_url,
+            commands::impls::pick_instance_icon_file,
+            commands::impls::pick_external_open_path_grants,
+            commands::impls::pick_external_save_path_grant,
             commands::impls::detect_java_runtimes,
             commands::impls::delete_instance,
             commands::impls::search_discover_content,
@@ -18785,6 +19418,7 @@ fn main() {
             commands::impls::logout_microsoft_account,
             commands::impls::begin_microsoft_login,
             commands::impls::poll_microsoft_login,
+            commands::impls::cancel_microsoft_login,
             commands::impls::list_running_instances,
             commands::impls::stop_running_instance,
             commands::impls::cancel_instance_launch,

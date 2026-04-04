@@ -19,6 +19,10 @@ use crate::modpack::store::{
     read_store, remove_spec, set_instance_link, upsert_spec, write_store,
 };
 use crate::modpack::types::*;
+use crate::{
+    consume_external_path_grant, AppState, EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT,
+    EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT, EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT,
+};
 use reqwest::blocking::Client;
 use std::collections::VecDeque;
 use std::fs;
@@ -94,14 +98,16 @@ pub fn delete_modpack_spec(
 #[tauri::command]
 pub fn import_modpack_spec_json(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: ImportModpackSpecJsonArgs,
 ) -> Result<SpecIoResult, String> {
-    let path_text = args.input_path.trim();
-    if path_text.is_empty() {
-        return Err("inputPath is required".to_string());
-    }
+    let path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT,
+        &args.grant_id,
+    )?;
     let raw =
-        fs::read_to_string(path_text).map_err(|e| format!("read spec import file failed: {e}"))?;
+        fs::read_to_string(&path).map_err(|e| format!("read spec import file failed: {e}"))?;
     let value: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse spec import file failed: {e}"))?;
 
@@ -140,7 +146,7 @@ pub fn import_modpack_spec_json(
     write_store(&app, &store)?;
 
     Ok(SpecIoResult {
-        path: path_text.to_string(),
+        path: path.display().to_string(),
         items: store.specs.len(),
     })
 }
@@ -148,17 +154,18 @@ pub fn import_modpack_spec_json(
 #[tauri::command]
 pub fn export_modpack_spec_json(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: ExportModpackSpecJsonArgs,
 ) -> Result<SpecIoResult, String> {
-    let path_text = args.output_path.trim();
-    if path_text.is_empty() {
-        return Err("outputPath is required".to_string());
-    }
     let store = read_store(&app)?;
     let spec =
         get_spec(&store, &args.modpack_id).ok_or_else(|| "Modpack spec not found".to_string())?;
 
-    let path = std::path::PathBuf::from(path_text);
+    let path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT,
+        &args.grant_id,
+    )?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir export dir failed: {e}"))?;
     }
@@ -919,9 +926,10 @@ fn adaptive_local_jar_import_workers(total_files: usize) -> usize {
 #[tauri::command]
 pub fn import_local_jars_to_modpack_layer(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: ImportLocalJarsToLayerArgs,
 ) -> Result<ModpackImportLocalJarsResult, String> {
-    if args.file_paths.is_empty() {
+    if args.grant_ids.is_empty() {
         return Err("Pick at least one local file.".to_string());
     }
     let content_type = normalize_content_type(args.content_type.as_deref().unwrap_or("mods"));
@@ -946,9 +954,21 @@ pub fn import_local_jars_to_modpack_layer(
     }
 
     let auto_identify = args.auto_identify.unwrap_or(false);
-    let total = args.file_paths.len();
+    let resolved_paths = args
+        .grant_ids
+        .iter()
+        .map(|grant_id| {
+            consume_external_path_grant(
+                &state,
+                EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT,
+                grant_id,
+            )
+            .map(|path| path.display().to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let total = resolved_paths.len();
 
-    for (idx, path_text) in args.file_paths.iter().enumerate() {
+    for (idx, path_text) in resolved_paths.iter().enumerate() {
         emit_local_jar_import_progress(
             &app,
             &args,
@@ -961,7 +981,7 @@ pub fn import_local_jars_to_modpack_layer(
     }
 
     let queue = Arc::new(Mutex::new(
-        args.file_paths
+        resolved_paths
             .iter()
             .cloned()
             .enumerate()
@@ -1027,7 +1047,7 @@ pub fn import_local_jars_to_modpack_layer(
 
     for (idx, outcome_opt) in outcomes_by_index.into_iter().enumerate() {
         let Some(outcome) = outcome_opt else {
-            let raw_path = args.file_paths.get(idx).cloned().unwrap_or_default();
+            let raw_path = resolved_paths.get(idx).cloned().unwrap_or_default();
             warnings.push(format!(
                 "Skipped '{}': import worker did not return a result.",
                 raw_path

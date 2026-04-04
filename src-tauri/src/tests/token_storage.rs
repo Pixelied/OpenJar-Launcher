@@ -89,7 +89,7 @@ fn keyring_unavailable_returns_actionable_error() {
 }
 
 #[test]
-fn persist_launcher_refresh_token_succeeds_when_post_write_verification_cannot_read() {
+fn persist_launcher_refresh_token_fails_when_post_write_verification_cannot_read() {
     let _guard = test_secure_storage_guard();
     clear_test_token_keyring_store();
     set_test_token_keyring_available(true);
@@ -103,17 +103,126 @@ fn persist_launcher_refresh_token_succeeds_when_post_write_verification_cannot_r
         username: "player_verify_read_fail".to_string(),
         added_at: "now".to_string(),
     };
-    persist_refresh_token_for_launcher_account(&account, "refresh_token_verify_read_fail")
-        .expect("persist should not fail when verification read is unavailable");
+    let err = persist_refresh_token_for_launcher_account(&account, "refresh_token_verify_read_fail")
+        .expect_err("persist should fail when verification read is unavailable");
+    assert!(
+        err.contains("Secure storage verification failed") || err.contains("keyring read failed")
+    );
 
     set_test_token_keyring_read_failure(KEYRING_SERVICE, false);
     for service in LEGACY_KEYRING_SERVICES {
         set_test_token_keyring_read_failure(service, false);
     }
-    let canonical_alias = keyring_username_for_account(&account.id);
-    let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_alias)
-        .expect("read canonical persisted token after clearing simulated read failures");
-    assert_eq!(canonical.as_deref(), Some("refresh_token_verify_read_fail"));
+
+    let canonical_username = keyring_username_for_account(&account.id);
+    let canonical = token_keyring_get_secret(KEYRING_SERVICE, &canonical_username)
+        .expect("read canonical stored value after failed verification");
+    assert_eq!(
+        canonical.as_deref(),
+        Some("refresh_token_verify_read_fail")
+    );
+}
+
+#[test]
+fn persist_launcher_refresh_token_verification_ignores_selected_alias() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(true);
+
+    token_keyring_set_secret(
+        KEYRING_SERVICE,
+        KEYRING_SELECTED_REFRESH_ALIAS,
+        "refresh_token_selected_only",
+    )
+    .expect("seed selected refresh alias");
+    set_test_token_keyring_read_failure(KEYRING_SERVICE, true);
+
+    let account = LauncherAccount {
+        id: "acct_verify_selected_alias".to_string(),
+        username: "player_verify_selected_alias".to_string(),
+        added_at: "now".to_string(),
+    };
+    let err = persist_refresh_token_for_launcher_account(&account, "refresh_token_selected_only")
+        .expect_err("persist should fail when only the selected alias can be read back");
+    assert!(
+        err.contains("Secure storage verification failed") || err.contains("keyring read failed")
+    );
+
+    set_test_token_keyring_read_failure(KEYRING_SERVICE, false);
+}
+
+#[test]
+fn legacy_recovery_fallback_migration_moves_to_keyring_and_deletes_file() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(true);
+    let dir = make_temp_dir("legacy-recovery-migration");
+    let fallback_path = dir.join(LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE);
+
+    let legacy_payload = serde_json::json!({
+        "refresh_tokens": {
+            "acct_recovery": "refresh_token_recovery"
+        }
+    });
+    fs::write(
+        &fallback_path,
+        serde_json::to_string_pretty(&legacy_payload).expect("serialize legacy payload"),
+    )
+    .expect("write legacy recovery fallback");
+
+    let summary =
+        migrate_legacy_refresh_tokens_from_path(&fallback_path).expect("migrate recovery fallback");
+    assert_eq!(summary.migrated, 1);
+    assert_eq!(summary.fallback_files_removed, 1);
+    assert!(!fallback_path.exists());
+
+    let account = LauncherAccount {
+        id: "acct_recovery".to_string(),
+        username: "user_recovery".to_string(),
+        added_at: "now".to_string(),
+    };
+    let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+        .expect("read migrated refresh token");
+    assert_eq!(token, "refresh_token_recovery");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_fallback_migration_leaves_plaintext_file_when_secure_storage_unavailable() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(false);
+    let dir = make_temp_dir("legacy-fallback-stays");
+    let fallback_path = dir.join(LAUNCHER_TOKEN_RECOVERY_FALLBACK_FILE);
+
+    let legacy_payload = serde_json::json!({
+        "refresh_tokens": {
+            "acct_stays": "refresh_token_stays"
+        }
+    });
+    fs::write(
+        &fallback_path,
+        serde_json::to_string_pretty(&legacy_payload).expect("serialize legacy payload"),
+    )
+    .expect("write legacy fallback");
+
+    let summary =
+        migrate_legacy_refresh_tokens_from_path(&fallback_path).expect("attempt migration");
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.fallback_files_removed, 0);
+    assert!(fallback_path.exists());
+
+    set_test_token_keyring_available(true);
+    let account = LauncherAccount {
+        id: "acct_stays".to_string(),
+        username: "user_stays".to_string(),
+        added_at: "now".to_string(),
+    };
+    let err = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+        .expect_err("plaintext fallback should not be used for auth");
+    assert!(err.contains("No refresh token found in secure storage"));
+
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -252,9 +361,11 @@ fn read_refresh_token_recovers_from_selected_alias_in_legacy_service() {
         .expect("recover token from selected alias in legacy service");
     assert_eq!(token, "refresh_token_selected_legacy");
 
-    let canonical_selected =
-        token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
-            .expect("read canonical selected alias");
+    let canonical_selected = token_keyring_get_secret(
+        KEYRING_SERVICE,
+        &keyring_username_for_account(&account.id),
+    )
+    .expect("read canonical account alias");
     assert_eq!(
         canonical_selected.as_deref(),
         Some("refresh_token_selected_legacy")
@@ -283,6 +394,62 @@ fn read_refresh_token_recovers_from_selected_alias_even_if_legacy_read_fails() {
     let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
         .expect("recover token from selected alias despite legacy read failure");
     assert_eq!(token, "refresh_token_selected_canonical");
+}
+
+#[test]
+fn read_refresh_token_from_canonical_alias_does_not_rewrite_selected_alias() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(true);
+
+    let account = LauncherAccount {
+        id: "acct_canonical_no_selected".to_string(),
+        username: "player_canonical_no_selected".to_string(),
+        added_at: "now".to_string(),
+    };
+    persist_refresh_token_for_launcher_account(
+        &account,
+        "refresh_token_canonical_no_selected",
+    )
+    .expect("persist canonical refresh token");
+
+    let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+        .expect("read canonical refresh token");
+    assert_eq!(token, "refresh_token_canonical_no_selected");
+
+    let selected = token_keyring_get_secret(KEYRING_SERVICE, KEYRING_SELECTED_REFRESH_ALIAS)
+        .expect("read selected alias");
+    assert_eq!(selected, None);
+}
+
+#[test]
+fn read_refresh_token_ignores_blank_canonical_alias_and_recovers_from_selected_alias() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(true);
+
+    let account = LauncherAccount {
+        id: "acct_blank_canonical".to_string(),
+        username: "player_blank_canonical".to_string(),
+        added_at: "now".to_string(),
+    };
+
+    token_keyring_set_secret(
+        KEYRING_SERVICE,
+        &keyring_username_for_account(&account.id),
+        "   ",
+    )
+    .expect("seed blank canonical alias");
+    token_keyring_set_secret(
+        KEYRING_SERVICE,
+        KEYRING_SELECTED_REFRESH_ALIAS,
+        "refresh_token_selected_recovery",
+    )
+    .expect("seed selected refresh alias");
+
+    let token = read_refresh_token_from_keyring(&account, std::slice::from_ref(&account))
+        .expect("recover from selected alias");
+    assert_eq!(token, "refresh_token_selected_recovery");
 }
 
 #[test]
@@ -392,4 +559,44 @@ fn dev_curseforge_key_migrates_from_legacy_service_to_canonical_service() {
     let canonical = token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
         .expect("read canonical migrated dev curseforge key");
     assert_eq!(canonical.as_deref(), Some("legacy_dev_cf_key"));
+}
+
+#[test]
+fn legacy_dev_curseforge_key_file_migrates_to_keyring_and_deletes_file() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(true);
+    let dir = make_temp_dir("legacy-dev-cf");
+    let key_path = dir.join("dev_curseforge_api_key.txt");
+    fs::write(&key_path, "legacy_dev_file_key").expect("write legacy dev key file");
+
+    let migrated =
+        migrate_legacy_dev_curseforge_key_from_path(&key_path).expect("migrate dev key file");
+    assert!(migrated);
+    assert!(!key_path.exists());
+
+    let canonical = token_keyring_get_secret(KEYRING_SERVICE, DEV_CURSEFORGE_KEY_KEYRING_USER)
+        .expect("read canonical dev key");
+    assert_eq!(canonical.as_deref(), Some("legacy_dev_file_key"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn legacy_dev_curseforge_key_file_remains_when_secure_storage_unavailable() {
+    let _guard = test_secure_storage_guard();
+    clear_test_token_keyring_store();
+    set_test_token_keyring_available(false);
+    let dir = make_temp_dir("legacy-dev-cf-stays");
+    let key_path = dir.join("dev_curseforge_api_key.txt");
+    fs::write(&key_path, "legacy_dev_file_key").expect("write legacy dev key file");
+
+    let err = migrate_legacy_dev_curseforge_key_from_path(&key_path)
+        .expect_err("migration should fail without secure storage");
+    assert!(err.contains("keyring"));
+    assert!(key_path.exists());
+    set_test_token_keyring_available(true);
+    let key = keyring_get_dev_curseforge_key().expect("read dev curseforge key");
+    assert!(key.is_none());
+
+    let _ = fs::remove_dir_all(&dir);
 }

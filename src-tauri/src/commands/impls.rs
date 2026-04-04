@@ -724,9 +724,143 @@ pub(crate) fn get_dev_mode_state() -> Result<bool, String> {
     Ok(is_dev_mode_enabled())
 }
 
+fn open_path_in_shell_with_audit(
+    path: &Path,
+    create_if_missing: bool,
+    context: &str,
+) -> Result<(), String> {
+    eprintln!("shell-open [{context}]: {}", path.display());
+    open_path_in_shell(path, create_if_missing)
+}
+
+fn reveal_path_in_shell_with_audit(
+    path: &Path,
+    allow_parent_fallback: bool,
+    context: &str,
+) -> Result<(PathBuf, bool), String> {
+    eprintln!("shell-reveal [{context}]: {}", path.display());
+    reveal_path_in_shell(path, allow_parent_fallback)
+}
+
+fn resolve_renderer_allowed_instance_icon_path(
+    app: &tauri::AppHandle,
+    path: &Path,
+) -> Result<PathBuf, String> {
+    let instances_dir = app_instances_dir(app)?;
+    let resolved_instances_dir =
+        fs::canonicalize(&instances_dir).unwrap_or_else(|_| instances_dir.clone());
+    let resolved = fs::canonicalize(path).map_err(|e| format!("image file not found: {e}"))?;
+    let relative = resolved
+        .strip_prefix(&resolved_instances_dir)
+        .map_err(|_| "Only launcher-managed instance icons may be read without a picker grant.".to_string())?;
+    let Some(parent) = relative.parent() else {
+        return Err("Only launcher-managed instance icons may be read without a picker grant.".to_string());
+    };
+    if parent.components().count() != 1 {
+        return Err("Only launcher-managed instance icons may be read without a picker grant.".to_string());
+    }
+    let file_stem = resolved
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    if file_stem != "icon" {
+        return Err("Only launcher-managed instance icons may be read without a picker grant.".to_string());
+    }
+    Ok(resolved)
+}
+
+#[tauri::command]
+pub(crate) fn pick_instance_icon_file(
+    state: tauri::State<AppState>,
+) -> Result<Option<GrantedImagePathResult>, String> {
+    let Some(path) = pick_single_file_dialog(
+        "Images",
+        &["png", "jpg", "jpeg", "webp", "bmp", "gif"],
+    )?
+    else {
+        return Ok(None);
+    };
+    let preview_data_url = local_image_data_url_for_path(&path)?;
+    let granted = register_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, path, false)?;
+    Ok(Some(GrantedImagePathResult {
+        grant_id: granted.grant_id,
+        display_path: granted.display_path,
+        preview_data_url,
+    }))
+}
+
+#[tauri::command]
+pub(crate) fn pick_external_open_path_grants(
+    state: tauri::State<AppState>,
+    args: PickExternalOpenPathGrantsArgs,
+) -> Result<Vec<GrantedPathResult>, String> {
+    let purpose = normalize_external_open_path_purpose(&args.purpose)?;
+    let wants_multiple = args.multiple.unwrap_or(false);
+
+    let (filter_name, extensions): (&str, &[&str]) = match purpose {
+        EXTERNAL_PATH_PURPOSE_MODPACK_ARCHIVE_IMPORT => {
+            if wants_multiple {
+                return Err("Modpack archive picker only supports a single file.".to_string());
+            }
+            ("Modpack archive", &["mrpack", "zip"])
+        }
+        EXTERNAL_PATH_PURPOSE_PRESETS_IMPORT | EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_IMPORT => {
+            if wants_multiple {
+                return Err("JSON import picker only supports a single file.".to_string());
+            }
+            ("JSON", &["json"])
+        }
+        EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT | EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT => {
+            external_local_content_filter(args.content_type.as_deref().unwrap_or("mods"))?
+        }
+        _ => return Err("Unsupported open-picker purpose".to_string()),
+    };
+
+    let picked_paths = if wants_multiple {
+        pick_multiple_files_dialog(filter_name, extensions)?.unwrap_or_default()
+    } else {
+        pick_single_file_dialog(filter_name, extensions)?
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+
+    let mut granted = Vec::with_capacity(picked_paths.len());
+    for path in picked_paths {
+        granted.push(register_external_path_grant(&state, purpose, path, false)?);
+    }
+    Ok(granted)
+}
+
+#[tauri::command]
+pub(crate) fn pick_external_save_path_grant(
+    state: tauri::State<AppState>,
+    args: PickExternalSavePathGrantArgs,
+) -> Result<Option<GrantedPathResult>, String> {
+    let purpose = normalize_external_save_path_purpose(&args.purpose)?;
+    let (filter_name, extensions): (&str, &[&str]) = match purpose {
+        EXTERNAL_PATH_PURPOSE_PRESETS_EXPORT | EXTERNAL_PATH_PURPOSE_MODPACK_SPEC_EXPORT => {
+            ("JSON", &["json"])
+        }
+        EXTERNAL_PATH_PURPOSE_INSTANCE_MODS_EXPORT | EXTERNAL_PATH_PURPOSE_SUPPORT_BUNDLE_EXPORT => {
+            ("Zip archive", &["zip"])
+        }
+        _ => return Err("Unsupported save-picker purpose".to_string()),
+    };
+    let Some(path) = pick_save_file_dialog(args.suggested_name.as_deref(), filter_name, extensions)? else {
+        return Ok(None);
+    };
+    Ok(Some(register_external_path_grant(
+        &state,
+        purpose,
+        path,
+        true,
+    )?))
+}
+
 #[tauri::command]
 pub(crate) fn set_dev_curseforge_api_key(
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     args: SetDevCurseforgeApiKeyArgs,
 ) -> Result<String, String> {
     if !is_dev_mode_enabled() {
@@ -736,23 +870,12 @@ pub(crate) fn set_dev_curseforge_api_key(
     if trimmed.is_empty() {
         return Err("API key cannot be empty.".to_string());
     }
+    keyring_set_dev_curseforge_key(&trimmed)?;
+    if let Err(err) = verify_dev_curseforge_key_secure_storage_write(&trimmed) {
+        log_secure_storage_verification_warning("dev CurseForge API key", &err);
+    }
     std::env::set_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV, &trimmed);
-    let mut notes: Vec<String> = Vec::new();
-    if let Err(e) = keyring_set_dev_curseforge_key(&trimmed) {
-        notes.push(format!("Secure keychain save failed ({e})."));
-    }
-    write_dev_curseforge_key_file(&app, &trimmed)?;
-    if notes.is_empty() {
-        Ok(
-            "Saved dev CurseForge API key. It is active immediately for this app session."
-                .to_string(),
-        )
-    } else {
-        Ok(format!(
-            "Saved dev CurseForge API key to local fallback file and activated it. {}",
-            notes.join(" ")
-        ))
-    }
+    Ok("Saved dev CurseForge API key. It is active immediately for this app session.".to_string())
 }
 
 #[tauri::command]
@@ -760,19 +883,10 @@ pub(crate) fn clear_dev_curseforge_api_key(app: tauri::AppHandle) -> Result<Stri
     if !is_dev_mode_enabled() {
         return Err("Dev mode is disabled. Set MPM_DEV_MODE=1 and restart.".to_string());
     }
+    let _ = app;
     std::env::remove_var(DEV_RUNTIME_CURSEFORGE_API_KEY_ENV);
-    let mut notes: Vec<String> = Vec::new();
-    if let Err(e) = keyring_delete_dev_curseforge_key() {
-        notes.push(format!("Keychain clear failed ({e})."));
-    }
-    if let Err(e) = clear_dev_curseforge_key_file(&app) {
-        notes.push(format!("Local fallback clear failed ({e})."));
-    }
-    if notes.is_empty() {
-        Ok("Cleared saved dev CurseForge API key.".to_string())
-    } else {
-        Ok(format!("Cleared runtime key. {}", notes.join(" ")))
-    }
+    keyring_delete_dev_curseforge_key()?;
+    Ok("Cleared saved dev CurseForge API key.".to_string())
 }
 
 #[tauri::command]
@@ -1039,6 +1153,13 @@ pub(crate) async fn begin_microsoft_login(
         };
 
         loop {
+            if matches!(
+                get_login_session_status(&sessions, &session_id_for_thread).as_deref(),
+                Some("cancelled")
+            ) {
+                return;
+            }
+
             if Instant::now() >= deadline {
                 set_login_session_state(
                     &sessions,
@@ -1073,6 +1194,13 @@ pub(crate) async fn begin_microsoft_login(
                     return;
                 }
             };
+
+            if matches!(
+                get_login_session_status(&sessions, &session_id_for_thread).as_deref(),
+                Some("cancelled")
+            ) {
+                return;
+            }
 
             if response.status().is_success() {
                 let token = match response.json::<MsoTokenResponse>() {
@@ -1227,6 +1355,24 @@ pub(crate) fn poll_microsoft_login(
 }
 
 #[tauri::command]
+pub(crate) fn cancel_microsoft_login(
+    state: tauri::State<AppState>,
+    args: CancelMicrosoftLoginArgs,
+) -> Result<MicrosoftLoginState, String> {
+    let mut guard = state
+        .login_sessions
+        .lock()
+        .map_err(|_| "lock login sessions failed".to_string())?;
+    let entry = guard
+        .get_mut(&args.session_id)
+        .ok_or_else(|| "login session not found".to_string())?;
+    entry.status = "cancelled".to_string();
+    entry.message = Some("Microsoft sign-in cancelled.".to_string());
+    entry.account = None;
+    Ok(entry.clone())
+}
+
+#[tauri::command]
 pub(crate) fn list_running_instances(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
@@ -1378,7 +1524,7 @@ pub(crate) fn open_instance_path(
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let (target, resolved_path, create_if_missing) =
         resolve_target_instance_path(&instance_dir, &args.target)?;
-    open_path_in_shell(&resolved_path, create_if_missing)?;
+    open_path_in_shell_with_audit(&resolved_path, create_if_missing, "instance_path")?;
     Ok(OpenInstancePathResult {
         target,
         path: resolved_path.display().to_string(),
@@ -1413,7 +1559,8 @@ pub(crate) fn reveal_config_editor_file(
                     &args.instance_id,
                     &read.path,
                 )?;
-            let (opened, revealed_file) = reveal_path_in_shell(&resolved, true)?;
+            let (opened, revealed_file) =
+                reveal_path_in_shell_with_audit(&resolved, true, "config_editor_instance_file")?;
             return Ok(RevealConfigEditorFileResult {
                 opened_path: opened.display().to_string(),
                 revealed_file,
@@ -1426,7 +1573,8 @@ pub(crate) fn reveal_config_editor_file(
             });
         }
 
-        let (opened, _) = reveal_path_in_shell(&instance_dir, false)?;
+        let (opened, _) =
+            reveal_path_in_shell_with_audit(&instance_dir, false, "config_editor_instance_root")?;
         return Ok(RevealConfigEditorFileResult {
             opened_path: opened.display().to_string(),
             revealed_file: false,
@@ -1450,7 +1598,8 @@ pub(crate) fn reveal_config_editor_file(
             .ok_or_else(|| "path is required for world scope".to_string())?;
         let world_root = world_root_dir(&instances_dir, &args.instance_id, &world_id)?;
         let (resolved, _) = resolve_world_file_path(&world_root, &file_path, true)?;
-        let (opened, revealed_file) = reveal_path_in_shell(&resolved, true)?;
+        let (opened, revealed_file) =
+            reveal_path_in_shell_with_audit(&resolved, true, "config_editor_world_file")?;
         return Ok(RevealConfigEditorFileResult {
             opened_path: opened.display().to_string(),
             revealed_file,
@@ -1931,7 +2080,8 @@ pub(crate) async fn reveal_storage_usage_path(
         let scope = args.scope.trim().to_ascii_lowercase();
         let (root, _, _) = storage_scope_root(&app, &scope, args.instance_id.as_deref())?;
         let (target, _) = resolve_storage_base_path(&scope, &root, args.relative_path.as_deref())?;
-        let (opened, revealed_file) = reveal_path_in_shell(&target, true)?;
+        let (opened, revealed_file) =
+            reveal_path_in_shell_with_audit(&target, true, "storage_usage_path")?;
         Ok(StorageRevealResult {
             opened_path: opened.display().to_string(),
             revealed_file,
@@ -3549,13 +3699,9 @@ pub(crate) fn import_provider_modpack_template(
 
 #[tauri::command]
 pub(crate) fn export_presets_json(
+    state: tauri::State<AppState>,
     args: ExportPresetsJsonArgs,
 ) -> Result<PresetsJsonIoResult, String> {
-    let path_text = args.output_path.trim();
-    if path_text.is_empty() {
-        return Err("outputPath is required".to_string());
-    }
-
     let items = if let Some(arr) = args.payload.as_array() {
         arr.len()
     } else if let Some(arr) = args.payload.get("presets").and_then(|v| v.as_array()) {
@@ -3564,7 +3710,11 @@ pub(crate) fn export_presets_json(
         return Err("Preset payload must be an array or { presets: [] }".to_string());
     };
 
-    let path = PathBuf::from(path_text);
+    let path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_PRESETS_EXPORT,
+        &args.grant_id,
+    )?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir export directory failed: {e}"))?;
     }
@@ -3580,16 +3730,14 @@ pub(crate) fn export_presets_json(
 
 #[tauri::command]
 pub(crate) fn import_presets_json(
+    state: tauri::State<AppState>,
     args: ImportPresetsJsonArgs,
 ) -> Result<serde_json::Value, String> {
-    let path_text = args.input_path.trim();
-    if path_text.is_empty() {
-        return Err("inputPath is required".to_string());
-    }
-    let path = PathBuf::from(path_text);
-    if !path.exists() || !path.is_file() {
-        return Err("Preset file does not exist".to_string());
-    }
+    let path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_PRESETS_IMPORT,
+        &args.grant_id,
+    )?;
     let raw = fs::read_to_string(&path).map_err(|e| format!("read presets file failed: {e}"))?;
     let parsed: serde_json::Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse presets file failed: {e}"))?;
@@ -3867,10 +4015,16 @@ fn apply_selected_account_appearance_inner(
 #[tauri::command]
 pub(crate) async fn export_instance_mods_zip(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     args: ExportInstanceModsZipArgs,
 ) -> Result<ExportModsResult, String> {
+    let grant_path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_INSTANCE_MODS_EXPORT,
+        &args.grant_id,
+    )?;
     run_blocking_task("export instance mods zip", move || {
-        export_instance_mods_zip_inner(app, args)
+        export_instance_mods_zip_inner(app, args, grant_path)
     })
     .await
 }
@@ -3878,24 +4032,16 @@ pub(crate) async fn export_instance_mods_zip(
 fn export_instance_mods_zip_inner(
     app: tauri::AppHandle,
     args: ExportInstanceModsZipArgs,
+    output: PathBuf,
 ) -> Result<ExportModsResult, String> {
     let instances_dir = app_instances_dir(&app)?;
-    let instance = find_instance(&instances_dir, &args.instance_id)?;
+    let _ = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let mods_dir = instance_dir.join("mods");
     if !mods_dir.exists() {
         return Err("Instance mods folder does not exist".to_string());
     }
 
-    let output = if let Some(custom) = args.output_path.as_ref() {
-        PathBuf::from(custom)
-    } else {
-        let base = home_dir()
-            .map(|h| h.join("Downloads"))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| instance_dir.clone());
-        base.join(default_export_filename(&instance.name))
-    };
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir export directory failed: {e}"))?;
     }
@@ -3953,7 +4099,8 @@ fn create_instance_internal(
     clean_mc: String,
     loader_lc: String,
     origin: String,
-    icon_path: Option<String>,
+    icon_path: Option<PathBuf>,
+    settings: InstanceSettings,
 ) -> Result<Instance, String> {
     if clean_name.trim().is_empty() {
         return Err("name is required".to_string());
@@ -3981,7 +4128,7 @@ fn create_instance_internal(
         loader: loader_lc,
         created_at: now_iso(),
         icon_path: None,
-        settings: InstanceSettings::default(),
+        settings: normalize_instance_settings(settings),
     };
 
     let inst_dir = dir.join(folder_name);
@@ -3993,12 +4140,7 @@ fn create_instance_internal(
         .map_err(|e| format!("mkdir shaderpacks failed: {e}"))?;
     fs::create_dir_all(inst_dir.join("saves")).map_err(|e| format!("mkdir saves failed: {e}"))?;
 
-    let picked_icon_path = icon_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from);
-    if let Some(icon_source) = picked_icon_path {
+    if let Some(icon_source) = icon_path {
         inst.icon_path = Some(copy_instance_icon_to_dir(&icon_source, &inst_dir)?);
     }
 
@@ -4013,6 +4155,7 @@ fn create_instance_internal(
 #[tauri::command]
 pub(crate) fn create_instance(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: CreateInstanceArgs,
 ) -> Result<Instance, String> {
     let loader_lc = parse_loader_for_instance(&args.loader)
@@ -4026,38 +4169,57 @@ pub(crate) fn create_instance(
     if clean_mc.is_empty() {
         return Err("mc_version is required".into());
     }
+    let mut settings = InstanceSettings::default();
+    settings.loader_version_strategy = normalize_loader_version_strategy(
+        args.loader_version_strategy.as_deref().unwrap_or("stable"),
+    );
+    settings.custom_loader_version = args.custom_loader_version.unwrap_or_default().trim().to_string();
+    let icon_path = args
+        .icon_grant_id
+        .as_deref()
+        .map(|grant_id| consume_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, grant_id))
+        .transpose()?;
     create_instance_internal(
         &app,
         clean_name,
         clean_mc,
         loader_lc,
         "custom".to_string(),
-        args.icon_path,
+        icon_path,
+        settings,
     )
 }
 
 #[tauri::command]
 pub(crate) fn create_instance_from_modpack_file(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: CreateInstanceFromModpackFileArgs,
 ) -> Result<CreateInstanceFromModpackFileResult, String> {
-    let file_path = PathBuf::from(args.file_path.trim());
-    if !file_path.exists() || !file_path.is_file() {
-        return Err("Selected modpack archive was not found.".to_string());
-    }
+    let file_path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_MODPACK_ARCHIVE_IMPORT,
+        &args.grant_id,
+    )?;
     let (default_name, mc_version, loader, override_roots, mut warnings) =
         parse_modpack_file_info(&file_path)?;
     let final_name = sanitize_name(args.name.as_deref().unwrap_or(&default_name));
     if final_name.trim().is_empty() {
         return Err("Imported modpack name is empty.".to_string());
     }
+    let icon_path = args
+        .icon_grant_id
+        .as_deref()
+        .map(|grant_id| consume_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, grant_id))
+        .transpose()?;
     let instance = create_instance_internal(
         &app,
         final_name,
         mc_version,
         loader,
         "downloaded".to_string(),
-        args.icon_path.clone(),
+        icon_path,
+        InstanceSettings::default(),
     )?;
     let instances_dir = app_instances_dir(&app)?;
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
@@ -4081,6 +4243,7 @@ pub(crate) fn list_launcher_import_sources() -> Result<Vec<LauncherImportSource>
 #[tauri::command]
 pub(crate) fn import_instance_from_launcher(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: ImportInstanceFromLauncherArgs,
 ) -> Result<ImportInstanceFromLauncherResult, String> {
     let source = list_launcher_import_sources_inner()
@@ -4097,13 +4260,19 @@ pub(crate) fn import_instance_from_launcher(
         return Err("Imported instance name is required.".to_string());
     }
     let loader = parse_loader_for_instance(&source.loader).unwrap_or_else(|| "vanilla".to_string());
+    let icon_path = args
+        .icon_grant_id
+        .as_deref()
+        .map(|grant_id| consume_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, grant_id))
+        .transpose()?;
     let instance = create_instance_internal(
         &app,
         final_name,
         source.mc_version.clone(),
         loader,
         "downloaded".to_string(),
-        args.icon_path.clone(),
+        icon_path,
+        InstanceSettings::default(),
     )?;
     let instances_dir = app_instances_dir(&app)?;
     let instance_dir = instance_dir_for_instance(&instances_dir, &instance);
@@ -4306,6 +4475,7 @@ pub(crate) fn detect_java_runtimes() -> Result<Vec<JavaRuntimeCandidate>, String
 #[tauri::command]
 pub(crate) fn set_instance_icon(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     args: SetInstanceIconArgs,
 ) -> Result<Instance, String> {
     let dir = app_instances_dir(&app)?;
@@ -4321,11 +4491,10 @@ pub(crate) fn set_instance_icon(
     fs::create_dir_all(&inst_dir).map_err(|e| format!("mkdir instance dir failed: {e}"))?;
 
     let next_icon_path = args
-        .icon_path
+        .icon_grant_id
         .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from);
+        .map(|grant_id| consume_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, grant_id))
+        .transpose()?;
     inst.icon_path = if let Some(path) = next_icon_path {
         Some(copy_instance_icon_to_dir(&path, &inst_dir)?)
     } else {
@@ -4340,34 +4509,29 @@ pub(crate) fn set_instance_icon(
 }
 
 #[tauri::command]
-pub(crate) fn read_local_image_data_url(args: ReadLocalImageDataUrlArgs) -> Result<String, String> {
-    let trimmed = args.path.trim();
-    if trimmed.is_empty() {
+pub(crate) fn read_local_image_data_url(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    args: ReadLocalImageDataUrlArgs,
+) -> Result<String, String> {
+    let path = if let Some(grant_id) = args
+        .grant_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        consume_external_path_grant(&state, EXTERNAL_PATH_PURPOSE_INSTANCE_ICON, grant_id)?
+    } else if let Some(path) = args
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        resolve_renderer_allowed_instance_icon_path(&app, Path::new(path))?
+    } else {
         return Err("path is required".to_string());
-    }
-    let path = Path::new(trimmed);
-    if !path.exists() || !path.is_file() {
-        return Err("image file not found".to_string());
-    }
-
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.trim().to_ascii_lowercase())
-        .ok_or_else(|| "image file must have an extension".to_string())?;
-    if !allowed_icon_extension(&ext) {
-        return Err("image must be png/jpg/jpeg/webp/bmp/gif".to_string());
-    }
-
-    let bytes = fs::read(path).map_err(|e| format!("read image failed: {e}"))?;
-    if bytes.len() > MAX_LOCAL_IMAGE_BYTES {
-        return Err("image file is too large (max 8MB)".to_string());
-    }
-
-    let mime =
-        image_mime_for_extension(&ext).ok_or_else(|| "unsupported image type".to_string())?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    Ok(format!("data:{mime};base64,{encoded}"))
+    };
+    local_image_data_url_for_path(&path)
 }
 
 #[tauri::command]
@@ -5104,10 +5268,16 @@ fn preview_modrinth_install_inner(
 #[tauri::command]
 pub(crate) async fn import_local_mod_file(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     args: ImportLocalModFileArgs,
 ) -> Result<InstalledMod, String> {
+    let source_path = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT,
+        &args.grant_id,
+    )?;
     run_blocking_task("import local mod file", move || {
-        import_local_mod_file_inner(app, args)
+        import_local_mod_file_inner(app, args, source_path)
     })
     .await
 }
@@ -5115,6 +5285,7 @@ pub(crate) async fn import_local_mod_file(
 fn import_local_mod_file_inner(
     app: tauri::AppHandle,
     args: ImportLocalModFileArgs,
+    source_path: PathBuf,
 ) -> Result<InstalledMod, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
@@ -5125,7 +5296,6 @@ fn import_local_mod_file_inner(
         return Err("Unsupported content type for local import".to_string());
     }
 
-    let source_path = PathBuf::from(&args.file_path);
     if !source_path.exists() || !source_path.is_file() {
         return Err("Selected file does not exist".into());
     }
@@ -7696,10 +7866,16 @@ pub(crate) fn preflight_launch_compatibility(
 #[tauri::command]
 pub(crate) async fn export_instance_support_bundle(
     app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     args: ExportInstanceSupportBundleArgs,
 ) -> Result<SupportBundleResult, String> {
+    let output = consume_external_path_grant(
+        &state,
+        EXTERNAL_PATH_PURPOSE_SUPPORT_BUNDLE_EXPORT,
+        &args.grant_id,
+    )?;
     run_blocking_task("export instance support bundle", move || {
-        export_instance_support_bundle_inner(app, args)
+        export_instance_support_bundle_inner(app, args, output)
     })
     .await
 }
@@ -7707,29 +7883,12 @@ pub(crate) async fn export_instance_support_bundle(
 fn export_instance_support_bundle_inner(
     app: tauri::AppHandle,
     args: ExportInstanceSupportBundleArgs,
+    output: PathBuf,
 ) -> Result<SupportBundleResult, String> {
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
     let include_raw_logs = args.include_raw_logs.unwrap_or(false);
-    let output = if let Some(custom) = args.output_path.as_ref() {
-        PathBuf::from(custom)
-    } else {
-        let base = home_dir()
-            .map(|h| h.join("Downloads"))
-            .filter(|p| p.exists())
-            .unwrap_or_else(|| instance_dir.clone());
-        let name = sanitize_filename(&instance.name.replace(' ', "-"));
-        base.join(format!(
-            "{}-support-bundle-{}.zip",
-            if name.is_empty() {
-                "instance"
-            } else {
-                name.as_str()
-            },
-            Local::now().format("%Y%m%d-%H%M%S")
-        ))
-    };
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("mkdir export directory failed: {e}"))?;
     }

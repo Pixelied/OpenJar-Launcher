@@ -4,6 +4,7 @@ mod github_provider;
 mod instance_health;
 mod local_provider_preference;
 mod lock_entry_names;
+mod path_grants;
 mod runtime_and_playtime;
 mod storage_usage;
 mod token_storage;
