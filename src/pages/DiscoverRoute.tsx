@@ -589,17 +589,11 @@ export default function DiscoverRoute(props: DiscoverRouteProps) {
                   <div className="discoverSidebarBody">
                     <div className="filterCtrl filterCtrlSource">
                       <MultiSelectDropdown
-                        values={discoverSourceFilterValues}
+                        values={discoverSourceFilterActive ? discoverSourceFilterValues : []}
                         placeholder="Sources: All"
-                        allSelectedLabel="Sources: All"
-                        allSelectedIsPlaceholder
                         groups={discoverSourceGroups}
                         showSearch={false}
                         showGroupHeaders={false}
-                        itemVariant="menu"
-                        clearLabel="Use all sources"
-                        panelMinWidth={220}
-                        panelEstimatedHeight={176}
                         onChange={(values) => {
                           const next = normalizeDiscoverProviderSources(values).filter((source) =>
                             availableDiscoverSources.includes(source)

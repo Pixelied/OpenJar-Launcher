@@ -73,11 +73,22 @@ fn text_contains_any(text: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| text.contains(needle))
 }
 
-fn collect_evidence(lines: &[String], needles: &[&str], limit: usize) -> Vec<String> {
+fn is_preflight_noise_line(line: &str) -> bool {
+    line.to_ascii_lowercase()
+        .contains("[openjar] launch preflight:")
+}
+
+fn collect_matching_evidence<F>(lines: &[String], limit: usize, mut predicate: F) -> Vec<String>
+where
+    F: FnMut(&str, &str) -> bool,
+{
     let mut out = Vec::<String>::new();
     for line in lines {
+        if is_preflight_noise_line(line) {
+            continue;
+        }
         let lower = line.to_lowercase();
-        if !text_contains_any(&lower, needles) {
+        if !predicate(line, &lower) {
             continue;
         }
         let cleaned = clean_snippet(line);
@@ -90,6 +101,10 @@ fn collect_evidence(lines: &[String], needles: &[&str], limit: usize) -> Vec<Str
         }
     }
     out
+}
+
+fn collect_evidence(lines: &[String], needles: &[&str], limit: usize) -> Vec<String> {
+    collect_matching_evidence(lines, limit, |_, lower| text_contains_any(lower, needles))
 }
 
 fn detect_phase(lines: &[String]) -> Option<String> {
@@ -215,6 +230,113 @@ fn extract_config_path(line: &str) -> Option<String> {
     None
 }
 
+fn clean_mod_display_name(raw: &str) -> String {
+    raw.trim()
+        .trim_end_matches(".disabled")
+        .trim_end_matches(".jar")
+        .trim()
+        .to_string()
+}
+
+fn lock_entry_reference_tokens(entry: &crate::LockEntry) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    for raw in [&entry.project_id, &entry.name, &entry.filename] {
+        for token in raw
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter_map(|part| {
+                let normalized = normalize_mod_token(part);
+                (!normalized.is_empty()).then_some(normalized)
+            })
+        {
+            if token.len() < 4 || out.contains(&token) {
+                continue;
+            }
+            out.push(token);
+        }
+    }
+    out.sort_by_key(|token| std::cmp::Reverse(token.len()));
+    out
+}
+
+fn find_matching_mod_from_lines(
+    lock: &Lockfile,
+    lines: &[String],
+) -> Option<(String, String)> {
+    let contexts = lines
+        .iter()
+        .map(|line| line.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let mut best: Option<(usize, String, String)> = None;
+
+    for entry in &lock.entries {
+        if !entry.enabled || normalize_lock_content_type(&entry.content_type) != "mods" {
+            continue;
+        }
+        let tokens = lock_entry_reference_tokens(entry);
+        if tokens.is_empty() {
+            continue;
+        }
+        let mut score = 0usize;
+        for context in &contexts {
+            let context_has_stack_hint =
+                context.contains("caused by") || context.contains(".oninitialize") || context.contains("exception");
+            for token in &tokens {
+                if !context.contains(token) {
+                    continue;
+                }
+                score += if context_has_stack_hint { 3 } else { 1 };
+            }
+        }
+        if score == 0 {
+            continue;
+        }
+        let label = clean_mod_display_name(&entry.name);
+        let candidate = (score, label.clone(), tokens[0].clone());
+        match best.as_ref() {
+            Some((best_score, _, _)) if *best_score >= score => {}
+            _ => best = Some(candidate),
+        }
+    }
+
+    best.map(|(_, label, token)| (label, token))
+}
+
+fn linkage_error_kind(lower: &str) -> Option<&'static str> {
+    if lower.contains("noclassdeffounderror") || lower.contains("classnotfoundexception") {
+        Some("missing_class")
+    } else if lower.contains("nosuchmethoderror")
+        || lower.contains("nosuchfielderror")
+        || lower.contains("incompatibleclasschangeerror")
+        || lower.contains("abstractmethoderror")
+        || lower.contains("bootstrapmethoderror")
+    {
+        Some("api_mismatch")
+    } else {
+        None
+    }
+}
+
+fn extract_linkage_symbol(line: &str) -> Option<String> {
+    for marker in [
+        "NoClassDefFoundError:",
+        "ClassNotFoundException:",
+        "NoSuchMethodError:",
+        "NoSuchFieldError:",
+        "IncompatibleClassChangeError:",
+        "AbstractMethodError:",
+        "BootstrapMethodError:",
+    ] {
+        if let Some(idx) = line.find(marker) {
+            let tail = line[idx + marker.len()..].trim();
+            if !tail.is_empty() {
+                return Some(clean_snippet(tail));
+            }
+        }
+    }
+    None
+}
+
 fn push_or_update_finding(findings: &mut Vec<RunFinding>, mut next: RunFinding) {
     next.confidence = clamp_confidence(next.confidence);
     if let Some(existing) = findings.iter_mut().find(|item| item.id == next.id) {
@@ -329,6 +451,105 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
         );
     }
 
+    let linkage_indices = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, line)| {
+            let lower = line.to_ascii_lowercase();
+            (!is_preflight_noise_line(line) && linkage_error_kind(&lower).is_some()).then_some(idx)
+        })
+        .collect::<Vec<_>>();
+    if let Some(first_idx) = linkage_indices.first().copied() {
+        let context = lines
+            .iter()
+            .skip(first_idx)
+            .take(8)
+            .filter(|line| !is_preflight_noise_line(line))
+            .cloned()
+            .collect::<Vec<_>>();
+        let evidence = context
+            .iter()
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                linkage_error_kind(&lower).is_some()
+                    || lower.contains("caused by")
+                    || lower.contains(".oninitialize")
+                    || lower.contains(".on_initialize")
+                    || lower.contains("exception")
+            })
+            .map(|line| clean_snippet(line))
+            .filter(|line| !line.is_empty())
+            .take(3)
+            .collect::<Vec<_>>();
+        let (mod_label, mod_token) =
+            find_matching_mod_from_lines(input.lock, &context).unwrap_or_default();
+        if !mod_token.is_empty() {
+            suspect_mod_tokens.insert(mod_token.clone());
+        }
+        let symbol = extract_linkage_symbol(&lines[first_idx]);
+        let lower = lines[first_idx].to_ascii_lowercase();
+        let explanation = match linkage_error_kind(&lower) {
+            Some("missing_class") => {
+                if mod_label.is_empty() {
+                    "A mod or addon crashed because a class it expects is missing at runtime."
+                        .to_string()
+                } else {
+                    format!(
+                        "{mod_label} crashed during startup because it references a missing class or dependency."
+                    )
+                }
+            }
+            _ => {
+                if mod_label.is_empty() {
+                    "A mod or addon crashed because it expects a different API than the one currently loaded."
+                        .to_string()
+                } else {
+                    format!(
+                        "{mod_label} crashed during startup because it expects a different API than the installed mod/library versions provide."
+                    )
+                }
+            }
+        };
+        let likely_fix = if let Some(symbol) = symbol.as_ref() {
+            if symbol.to_ascii_lowercase().contains("meteordevelopment/")
+                || symbol.to_ascii_lowercase().contains("starscript")
+            {
+                Some(
+                    "Update or remove the crashing Meteor addon so it matches your current Meteor build, then retest."
+                        .to_string(),
+                )
+            } else {
+                Some(
+                    "Update or remove the crashing mod/addon and align it with the current Minecraft, loader, and dependency versions."
+                        .to_string(),
+                )
+            }
+        } else {
+            Some(
+                "Update or remove the crashing mod/addon and retest with only known-compatible versions."
+                    .to_string(),
+            )
+        };
+        push_or_update_finding(
+            &mut findings,
+            RunFinding {
+                id: "mod_linkage_or_api_mismatch".to_string(),
+                category: "mod_loading".to_string(),
+                title: if mod_label.is_empty() {
+                    "Mod crashed due to missing class or API mismatch".to_string()
+                } else {
+                    format!("Incompatible mod/addon crashed: {mod_label}")
+                },
+                explanation,
+                confidence: 0.99,
+                evidence,
+                likely_fix,
+                mod_id: (!mod_label.is_empty()).then_some(mod_label),
+                file_path: None,
+            },
+        );
+    }
+
     let loader_mismatch_lines = collect_evidence(
         &lines,
         &[
@@ -364,18 +585,14 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
         );
     }
 
-    let dependency_lines = collect_evidence(
-        &lines,
-        &[
-            "missing mandatory dependency",
-            "depends on",
-            "requires",
-            "mod loading has failed",
-            "could not find required",
-            "is missing",
-        ],
-        4,
-    );
+    let dependency_lines = collect_matching_evidence(&lines, 4, |_, lower| {
+        lower.contains("missing mandatory dependency")
+            || lower.contains("depends on")
+            || lower.contains("could not find required")
+            || lower.contains("mod loading has failed")
+            || lower.contains("recommends any version")
+            || (lower.contains("requires") && !lower.contains("java runtime"))
+    });
     if !dependency_lines.is_empty() {
         let mut mod_hint: Option<String> = None;
         for line in &dependency_lines {
@@ -391,12 +608,33 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 break;
             }
         }
+        let has_required_dependency_failure = dependency_lines.iter().any(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("missing mandatory dependency")
+                || lower.contains("depends on")
+                || lower.contains("could not find required")
+                || (lower.contains("requires") && !lower.contains("recommend"))
+        });
+        let only_recommended_dependency = !has_required_dependency_failure
+            && dependency_lines
+                .iter()
+                .any(|line| line.to_ascii_lowercase().contains("recommend"));
         let title = if let Some(token) = mod_hint.as_ref() {
-            format!("Mod did not load: {}", token)
+            if only_recommended_dependency {
+                format!("Recommended dependency missing: {}", token)
+            } else {
+                format!("Mod did not load: {}", token)
+            }
         } else {
-            "Mod did not load".to_string()
+            if only_recommended_dependency {
+                "Recommended dependency missing".to_string()
+            } else {
+                "Mod did not load".to_string()
+            }
         };
-        let reason = if dependency_lines
+        let reason = if only_recommended_dependency {
+            "A mod reported a missing recommended dependency. This may affect features, but it is often not the main crash root cause."
+        } else if dependency_lines
             .iter()
             .any(|line| line.to_lowercase().contains("missing mandatory dependency"))
         {
@@ -415,11 +653,15 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
                 category: "mod_loading".to_string(),
                 title,
                 explanation: reason.to_string(),
-                confidence: 0.94,
+                confidence: if only_recommended_dependency { 0.58 } else { 0.94 },
                 evidence: dependency_lines,
                 likely_fix: Some(
-                    "Install required dependencies or align versions to one compatible set."
-                        .to_string(),
+                    if only_recommended_dependency {
+                        "Install the recommended companion mod if you need it, but prioritize stronger crash errors first.".to_string()
+                    } else {
+                        "Install required dependencies or align versions to one compatible set."
+                            .to_string()
+                    },
                 ),
                 mod_id: mod_hint,
                 file_path: None,
@@ -456,19 +698,31 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
         );
     }
 
-    let core_conflict_lines = collect_evidence(
-        &lines,
-        &[
-            "architectury",
-            "cloth-config",
-            "forge config api",
-            "fabric-api",
-            "duplicate",
-            "already present",
-            "incompatible",
-        ],
-        4,
-    );
+    let core_conflict_lines = collect_matching_evidence(&lines, 4, |_, lower| {
+        let has_core_library = text_contains_any(
+            lower,
+            &[
+                "architectury",
+                "cloth-config",
+                "forge config api",
+                "fabric-api",
+                "resourceful lib",
+                "bookshelf",
+            ],
+        );
+        let has_conflict_signal = text_contains_any(
+            lower,
+            &[
+                "duplicate",
+                "already present",
+                "conflict",
+                "conflicting",
+                "incompatible",
+                "present twice",
+            ],
+        );
+        has_core_library && has_conflict_signal
+    });
     if core_conflict_lines.len() >= 2 {
         push_or_update_finding(
             &mut findings,
@@ -569,20 +823,29 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
         );
     }
 
-    let config_lines = collect_evidence(
-        &lines,
-        &[
-            "config",
-            "toml",
-            "json",
-            "yaml",
-            "properties",
-            "failed to parse",
-            "parse error",
-            "invalid config",
-        ],
-        5,
-    );
+    let config_lines = collect_matching_evidence(&lines, 5, |_, lower| {
+        let parse_signal = text_contains_any(
+            lower,
+            &[
+                "failed to parse",
+                "parse error",
+                "invalid config",
+                "could not parse",
+                "malformed json",
+                "toml parse",
+                "deserializ",
+                "syntax error",
+            ],
+        );
+        let config_signal = lower.contains("config/")
+            || lower.contains(".json")
+            || lower.contains(".toml")
+            || lower.contains(".yaml")
+            || lower.contains(".yml")
+            || lower.contains(".properties")
+            || lower.contains(" config ");
+        parse_signal && config_signal
+    });
     if !config_lines.is_empty() {
         for line in &config_lines {
             if let Some(path) = extract_config_path(line) {
@@ -634,18 +897,15 @@ pub(crate) fn classify(input: &ClassifierInput<'_>) -> ClassifierOutput {
         );
     }
 
-    let gpu_lines = collect_evidence(
-        &lines,
-        &[
-            "opengl",
-            "glfw error",
-            "failed to create context",
-            "shader",
-            "driver",
-            "renderer",
-        ],
-        4,
-    );
+    let gpu_lines = collect_matching_evidence(&lines, 4, |_, lower| {
+        lower.contains("glfw error")
+            || lower.contains("failed to create context")
+            || lower.contains("opengl error")
+            || lower.contains("shader compilation failed")
+            || lower.contains("failed to compile shader")
+            || (lower.contains("renderer") && lower.contains("failed"))
+            || (lower.contains("driver") && lower.contains("failed"))
+    });
     if !gpu_lines.is_empty() {
         push_or_update_finding(
             &mut findings,
@@ -955,6 +1215,104 @@ mod tests {
             .findings
             .iter()
             .any(|item| item.id == "gpu_or_render_path"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn promotes_specific_mod_linkage_error_and_ignores_preflight_noise() {
+        let instance = make_instance("fabric", "1.21.11");
+        let lock = Lockfile {
+            version: 2,
+            entries: vec![
+                make_lock_entry("asteroide-0.2.2-1.21.1.jar", true),
+                make_lock_entry("Cloth Config 21.11.153 Fabric.jar", true),
+                make_lock_entry("Architectury API 19.0.1.jar", true),
+                make_lock_entry("fabric-renderer-api-v1-8.0.3.jar", true),
+            ],
+        };
+        let dir = make_temp_instance_dir();
+        for entry in &lock.entries {
+            fs::write(dir.join("mods").join(&entry.filename), b"jar").expect("write jar");
+        }
+
+        let launch_log = "\
+[OpenJar] Launch preflight: mod_jar=Cloth Config 21.11.153 Fabric.jar\n\
+[OpenJar] Launch preflight: mod_jar=Architectury API 19.0.1.jar\n\
+[OpenJar] Launch preflight: mod_jar=fabric-renderer-api-v1 8.0.3+f4ffd2e53e\n\
+Game exited with status Some(255)";
+        let crash_log = "\
+Caused by: java.lang.NoClassDefFoundError: meteordevelopment/starscript/utils/StarscriptError\n\
+\tat dev.openjar.asteroide.AsteroideAddon.onInitialize(AsteroideAddon.java:44)";
+
+        let output = classify(&ClassifierInput {
+            instance: &instance,
+            lock: &lock,
+            instance_dir: &dir,
+            launch_log_text: launch_log,
+            crash_log_text: crash_log,
+            java_major: Some(21),
+            required_java_major: 21,
+            exit_code: Some(255),
+            exit_message: Some("Game exited with status Some(255)"),
+        });
+
+        assert_eq!(
+            output.findings.first().map(|item| item.id.as_str()),
+            Some("mod_linkage_or_api_mismatch")
+        );
+        let root = output
+            .findings
+            .iter()
+            .find(|item| item.id == "mod_linkage_or_api_mismatch")
+            .expect("root linkage finding");
+        assert!(root.title.to_ascii_lowercase().contains("asteroide"));
+        assert!(root
+            .likely_fix
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .contains("meteor"));
+        assert!(!output
+            .findings
+            .iter()
+            .any(|item| item.id == "config_parse_error"));
+        assert!(!output
+            .findings
+            .iter()
+            .any(|item| item.id == "gpu_or_render_path"));
+        assert!(!output
+            .findings
+            .iter()
+            .any(|item| item.id == "core_library_conflict"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recommended_dependency_is_not_ranked_like_hard_failure() {
+        let instance = make_instance("fabric", "1.21.11");
+        let lock = Lockfile::default();
+        let dir = make_temp_instance_dir();
+        let output = classify(&ClassifierInput {
+            instance: &instance,
+            lock: &lock,
+            instance_dir: &dir,
+            launch_log_text: "Mod 'ImmediatelyFast' (immediatelyfast) 1.14.2+1.21.11 recommends any version of sodium, which is missing!",
+            crash_log_text: "",
+            java_major: Some(21),
+            required_java_major: 21,
+            exit_code: Some(255),
+            exit_message: None,
+        });
+
+        let finding = output
+            .findings
+            .iter()
+            .find(|item| item.id == "mod_did_not_load")
+            .expect("dependency finding");
+        assert!(finding.title.contains("Recommended dependency missing"));
+        assert!(finding.confidence < 0.7);
+
         let _ = fs::remove_dir_all(dir);
     }
 }

@@ -1,54 +1,31 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Icon from "../Icon";
 import usePortalDropdownLayout from "./usePortalDropdownLayout";
 
-export default function MenuSelect({
-  value,
-  labelPrefix,
+export default function ActionMenu({
   buttonLabel,
-  options,
-  onChange,
-  placement,
+  items,
+  onAction,
   align,
   compact = false,
-  compactPanelMinWidth,
   panelMinWidth,
-  panelClassName,
 }: {
-  value: string;
-  labelPrefix: string;
-  buttonLabel?: string;
-  options: { value: string; label: string }[];
-  onChange: (v: string) => void;
-  placement?: "top" | "bottom";
+  buttonLabel: string;
+  items: { value: string; label: string; disabled?: boolean }[];
+  onAction: (value: string) => void;
   align?: "start" | "end";
   compact?: boolean;
-  compactPanelMinWidth?: number;
   panelMinWidth?: number;
-  panelClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const longestOptionLabel = useMemo(
-    () => options.reduce((max, option) => Math.max(max, option.label.length), 0),
-    [options]
-  );
-  const estimatedMinWidth = useMemo(() => {
-    const textEstimate = compact ? longestOptionLabel * 7 + 44 : longestOptionLabel * 8 + 92;
-    const callerMin = Math.max(compactPanelMinWidth ?? 0, panelMinWidth ?? 0);
-    const baseMin = compact ? 144 : 220;
-    const cappedTextEstimate = compact ? textEstimate : Math.min(640, textEstimate);
-    return Math.max(baseMin, callerMin, cappedTextEstimate);
-  }, [compact, compactPanelMinWidth, longestOptionLabel, panelMinWidth]);
-
   const layout = usePortalDropdownLayout({
     open,
     rootRef,
-    placement,
-    estimatedHeight: 260,
-    minWidth: estimatedMinWidth,
+    estimatedHeight: 220,
+    minWidth: panelMinWidth ?? (compact ? 180 : 220),
     align,
   });
 
@@ -78,26 +55,20 @@ export default function MenuSelect({
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  const label = useMemo(() => {
-    const hit = options.find((o) => o.value === value);
-    return hit?.label ?? value;
-  }, [options, value]);
-  const triggerLabel = buttonLabel ?? `${labelPrefix}: ${label}`;
-
   return (
-    <div className={`dropdown menuSelect ${compact ? "compact" : ""} ${open ? "open" : ""}`} ref={rootRef}>
-      <div className="dropBtn value menuSelectBtn" onClick={() => setOpen((o) => !o)}>
-        <div>{triggerLabel}</div>
-        <span className="menuSelectCaret" aria-hidden="true">
+    <div className={`dropdown actionMenu ${compact ? "compact" : ""} ${open ? "open" : ""}`} ref={rootRef}>
+      <button type="button" className="dropBtn value actionMenuBtn" onClick={() => setOpen((prev) => !prev)}>
+        <div>{buttonLabel}</div>
+        <span className="dropCaret" aria-hidden="true">
           <Icon name="chevron_down" size={11} />
         </span>
-      </div>
+      </button>
 
       {open && layout
         ? createPortal(
             <div
               ref={panelRef}
-              className={`dropPanel portal ${layout.placement === "top" ? "top" : ""} ${compact ? "menuSelectCompactPanel" : ""} ${panelClassName ?? ""}`}
+              className={`dropPanel portal actionMenuPanel ${layout.placement === "top" ? "top" : ""}`}
               style={{
                 top: layout.top,
                 left: layout.left,
@@ -108,17 +79,19 @@ export default function MenuSelect({
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className="dropPanelBody">
-                {options.map((o) => (
-                  <div
-                    key={o.value}
-                    className={`menuItem ${o.value === value ? "active" : ""}`}
+                {items.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className="menuItem actionMenuItem"
+                    disabled={item.disabled}
                     onClick={() => {
-                      onChange(o.value);
                       setOpen(false);
+                      window.setTimeout(() => onAction(item.value), 0);
                     }}
                   >
-                    <div>{o.label}</div>
-                  </div>
+                    <span>{item.label}</span>
+                  </button>
                 ))}
               </div>
             </div>,

@@ -149,6 +149,7 @@ fn github_release_selection_match_detects_same_release_label() {
         &selection,
         "gh_release:999",
         "v7",
+        "test-mod-1.2.0.jar",
         &HashMap::new(),
     ));
 }
@@ -208,6 +209,112 @@ fn github_release_selector_enforces_instance_compatibility() {
         None,
     );
     assert!(incompatible.is_none());
+}
+
+#[test]
+fn github_release_selector_prefers_exact_patch_asset_within_same_release() {
+    let repo = sample_repo();
+    let releases = vec![release_with_assets(
+        9,
+        "2026-03-01T00:00:00Z",
+        vec![
+            "asteroide-0.2.2-1.21.1.jar",
+            "asteroide-0.2.2-1.21.4.jar",
+            "asteroide-0.2.2-1.21.jar",
+        ],
+    )];
+
+    let selected = select_github_release_with_asset(
+        &repo,
+        &releases,
+        "asteroide",
+        Some("1.21.4"),
+        Some("fabric"),
+        None,
+        None,
+    )
+    .expect("expected exact patch github asset");
+
+    assert_eq!(selected.release.id, 9);
+    assert_eq!(selected.asset.name, "asteroide-0.2.2-1.21.4.jar");
+}
+
+#[test]
+fn github_release_selector_accepts_minor_only_asset_as_fallback() {
+    let repo = sample_repo();
+    let releases = vec![release_with_assets(
+        10,
+        "2026-03-02T00:00:00Z",
+        vec!["test-mod-fabric-1.19.jar"],
+    )];
+
+    let selected = select_github_release_with_asset(
+        &repo,
+        &releases,
+        "test mod",
+        Some("1.19.4"),
+        Some("fabric"),
+        None,
+        None,
+    )
+    .expect("expected minor-only github asset fallback");
+
+    assert_eq!(selected.asset.name, "test-mod-fabric-1.19.jar");
+}
+
+#[test]
+fn github_same_release_newer_asset_is_not_treated_as_current() {
+    let repo = sample_repo();
+    let releases = vec![release_with_assets(
+        12,
+        "2026-03-04T00:00:00Z",
+        vec![
+            "asteroide-0.2.2-1.21.1.jar",
+            "asteroide-0.2.2-1.21.11.jar",
+        ],
+    )];
+
+    let selected = select_github_release_with_asset(
+        &repo,
+        &releases,
+        "asteroide-0.2.2-1.21.1",
+        Some("1.21.11"),
+        Some("fabric"),
+        None,
+        None,
+    )
+    .expect("expected exact asset for target patch");
+
+    assert_eq!(selected.asset.name, "asteroide-0.2.2-1.21.11.jar");
+    assert!(!github_release_selection_matches_current(
+        &selected,
+        "gh_release:12",
+        "v12",
+        "asteroide-0.2.2-1.21.1.jar",
+        &HashMap::new(),
+    ));
+}
+
+#[test]
+fn github_release_selector_rejects_wrong_explicit_patch_asset() {
+    let repo = sample_repo();
+    let releases = vec![release_with_assets(
+        11,
+        "2026-03-03T00:00:00Z",
+        vec!["test-mod-fabric-1.18.2.jar"],
+    )];
+
+    let selected = select_github_release_with_asset(
+        &repo,
+        &releases,
+        "test mod",
+        Some("1.18.4"),
+        Some("fabric"),
+        None,
+        None,
+    );
+
+    assert!(selected.is_none());
 }
 
 #[test]

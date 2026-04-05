@@ -535,6 +535,7 @@ pub(crate) fn capture_and_store_run_report(
     let mut top_causes = classifier_out
         .findings
         .iter()
+        .filter(|item| item.id != "failure_phase" && item.id != "nonzero_exit_code")
         .take(3)
         .map(|item| item.title.clone())
         .collect::<Vec<_>>();

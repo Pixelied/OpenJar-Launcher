@@ -2382,19 +2382,38 @@ button, input, select { font-family: inherit; }
 }
 
 .searchPill{
-  display:flex;
-  align-items:center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 14px;
-  border: 1px solid var(--stroke);
-  background: rgba(127,127,127,0.08);
+  position: relative;
+  display: block;
+  min-height: 44px;
+}
+.searchPill > :first-child{
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  pointer-events: none;
+  color: var(--muted);
+  opacity: 0.72;
 }
 .searchPill .input{
-  border: none;
-  background: transparent;
+  padding-left: 46px;
+  padding-right: 14px;
+  min-height: 44px;
+  line-height: normal;
+  background: #fff;
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
   box-shadow: none;
-  padding: 0;
+}
+.searchPill .input:hover{
+  background: #fff;
+  border-color: color-mix(in srgb, var(--stroke) 58%, transparent);
+}
+.searchPill .input:focus,
+.searchPill .input:focus-visible{
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ring) 70%, transparent);
 }
 .installList{
   margin-top: 10px;
@@ -3758,10 +3777,6 @@ button, input, select { font-family: inherit; }
   overflow: visible;
   text-overflow: clip;
 }
-.dropPanel.menuSelectCompactPanel .menuCheck{
-  width: 16px;
-  flex-basis: 16px;
-}
 .dropPanel.portal{
   position: fixed;
   top: 0;
@@ -3769,6 +3784,40 @@ button, input, select { font-family: inherit; }
   z-index: var(--z-dropdown);
   width: 280px;
   background: var(--dropdown-bg-solid);
+}
+.actionMenuBtn{
+  width: auto;
+  min-width: 0;
+  justify-content: flex-start;
+  padding-right: 11px;
+}
+.actionMenuPanel{
+  min-width: 196px;
+  padding: 4px;
+  border-radius: 14px;
+}
+.actionMenuItem{
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  line-height: 1.15;
+  color: var(--text);
+  cursor: pointer;
+}
+.actionMenuItem:hover{
+  background: color-mix(in srgb, var(--surface) 84%, var(--surface-2) 16%);
+}
+.actionMenuItem:disabled{
+  opacity: 0.5;
+  cursor: default;
+}
+.actionMenuItem:disabled:hover{
+  background: transparent;
 }
 .multiSelectPanel{
   padding: 8px;
@@ -5316,19 +5365,58 @@ button, input, select { font-family: inherit; }
   white-space: nowrap;
 }
 .librarySearch{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  padding: 10px 12px;
-  border-radius: 16px;
-  border:1px solid var(--stroke);
-  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
-  box-shadow: none;
+  position: relative;
+  display:block;
   min-width: 220px;
   flex: 1 1 340px;
 }
-.librarySearch .input{ border:none; background: transparent; padding:0; box-shadow:none; flex:1; }
-.librarySearch .navIcon{ opacity: 0.75; }
+.librarySearch > :first-child{
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  pointer-events: none;
+  color: var(--muted);
+  opacity: 0.72;
+}
+.librarySearch .input,
+.librarySearch .input:hover,
+.librarySearch .input:focus,
+.librarySearch .input:focus-visible{
+  padding-left: 46px;
+  padding-right: 44px;
+  min-height: 44px;
+  line-height: normal;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+  color: var(--text);
+  caret-color: var(--text);
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
+  background: #fff !important;
+  box-shadow:none !important;
+}
+.librarySearch .input::placeholder{
+  color: rgba(116, 123, 133, 0.74);
+}
+.librarySearch .input:hover{
+  border-color: color-mix(in srgb, var(--stroke) 58%, transparent);
+}
+.librarySearch .input:focus,
+.librarySearch .input:focus-visible{
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%) !important;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ring) 70%, transparent) !important;
+}
+.librarySearch .iconBtn{
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+}
 .libraryGroupList{
   display: flex;
   flex-direction: column;
@@ -7135,23 +7223,59 @@ button, input, select { font-family: inherit; }
 .instToolbar{ display:flex; align-items:center; justify-content: space-between; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .instToolbar{ position: relative; z-index: 20; }
 .instToolbarLeft{
-  display:flex;
-  align-items:center;
-  gap: 10px;
-  padding: 11px 14px;
-  border-radius: 16px;
-  border:1px solid color-mix(in srgb, var(--stroke2) 66%, var(--stroke));
-  background: color-mix(in srgb, var(--surface) 99%, var(--surface-2) 1%);
-  box-shadow: none;
+  position: relative;
+  display:block;
   min-width: 280px;
   flex: 1 1 360px;
 }
-.instToolbarLeft .input{ border:none; background: transparent; padding:0; box-shadow:none; flex:1; }
+.instToolbarLeft > :first-child{
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  pointer-events: none;
+}
+.instToolbarLeft .input,
+.instToolbarLeft .input:hover,
+.instToolbarLeft .input:focus,
+.instToolbarLeft .input:focus-visible{
+  padding-left: 46px;
+  padding-right: 44px;
+  min-height: 44px;
+  line-height: normal;
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 800;
+  letter-spacing: 0;
+  color: var(--text);
+  caret-color: var(--text);
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
+  background: #fff !important;
+  box-shadow:none !important;
+}
+.instToolbarLeft .input::placeholder{
+  color: rgba(116, 123, 133, 0.74);
+}
+.instToolbarLeft .input:hover{
+  border-color: color-mix(in srgb, var(--stroke) 58%, transparent);
+}
+.instToolbarLeft .input:focus,
+.instToolbarLeft .input:focus-visible{
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%) !important;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ring) 70%, transparent) !important;
+}
 .instToolbarLeft .navIcon{ opacity: 0.7; color: var(--muted); }
 .instToolbarClearBtn{
   width: 32px;
   height: 32px;
   min-width: 32px;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
 }
 .instToolbarClearBtn.hidden{
   visibility: hidden;
@@ -7183,6 +7307,8 @@ button, input, select { font-family: inherit; }
     color-mix(in srgb, var(--surface) 99%, transparent);
   display: grid;
   gap: 14px;
+  position: relative;
+  isolation: isolate;
 }
 .instanceContentWorkspaceHead{
   display: flex;
@@ -7984,9 +8110,18 @@ button, input, select { font-family: inherit; }
 .instanceModsRow.disabled .instanceModIcon{
   border-color: color-mix(in srgb, var(--stroke) 84%, transparent);
   background: color-mix(in srgb, var(--surface) 92%, transparent);
+  transform: rotate(-7deg);
 }
 .instanceModsRow.disabled .instanceModIcon img{
   filter: grayscale(92%) saturate(0.55);
+  transform: scale(1.08);
+}
+.instanceModsRow.disabled:hover .instanceModIcon{
+  transform: rotate(-7deg);
+  border-color: color-mix(in srgb, var(--stroke2) 72%, transparent);
+}
+.instanceModsRow.disabled:hover .instanceModIcon img{
+  transform: scale(1.1);
 }
 .instanceModsSelectCell{
   display: flex;
@@ -8017,16 +8152,16 @@ button, input, select { font-family: inherit; }
   justify-content: center;
   color: var(--muted);
   flex: 0 0 44px;
-  transition: transform 180ms var(--ease), border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease), filter 180ms var(--ease);
+  overflow: hidden;
+  isolation: isolate;
+  backface-visibility: hidden;
+  transform-origin: center;
+  transition: border-color 180ms var(--ease), background 180ms var(--ease), box-shadow 180ms var(--ease), filter 180ms var(--ease);
 }
 .instanceModsRow:hover .instanceModIcon{
-  transform: scale(1.02) rotate(-2deg);
   border-color: var(--stroke2);
   background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
-  box-shadow:
-    0 0 0 1px rgba(255,255,255,0.92),
-    0 0 0 4px color-mix(in srgb, var(--stroke2) 12%, transparent),
-    var(--shadowSoft);
+  box-shadow: var(--shadow-xs);
 }
 .instanceModIcon img{
   width: 100%;
@@ -8034,6 +8169,13 @@ button, input, select { font-family: inherit; }
   border-radius: 12px;
   object-fit: cover;
   display: block;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  transform-origin: center;
+  transition: transform 180ms var(--ease), filter 180ms var(--ease);
+}
+.instanceModsRow:hover .instanceModIcon img{
+  transform: scale(1.02);
 }
 .instanceModsNameText{
   min-width: 0;
@@ -18049,6 +18191,619 @@ body{
   box-shadow:
     0 10px 20px rgba(18, 24, 32, 0.06),
     0 3px 8px rgba(18, 24, 32, 0.04);
+}
+
+/* Final instance content toolbar + release-check cleanup */
+.instTabsRow{
+  justify-content: flex-start;
+  gap: 14px;
+}
+
+.instTabsActions{
+  margin-left: auto;
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.instTabsActionCluster{
+  width: max-content;
+  max-width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.instTabsActionCluster > *{
+  flex: 0 0 auto;
+  margin: 0 !important;
+}
+
+.instTabsActionCluster .actionMenu{
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.instTabsActionCluster > .btn,
+.instTabsActionCluster > .dropdown{
+  width: auto;
+  min-width: 0;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.instanceReleaseCheckCard{
+  display: grid;
+  gap: 8px;
+  width: min(100%, 980px);
+  max-width: 100%;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  align-self: flex-start;
+}
+
+.instanceReleaseCheckHead{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.instanceReleaseCheckEyebrow{
+  font-size: 9.5px;
+  font-weight: 780;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
+}
+
+.instanceReleaseCheckTitle{
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.18;
+  font-weight: 800;
+  letter-spacing: -0.016em;
+  color: var(--text);
+}
+
+.instanceReleaseCheckHead .chip{
+  align-self: flex-start;
+  background: transparent;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 680;
+}
+
+.instanceReleaseCheckList{
+  display: grid;
+  gap: 0;
+}
+
+.instanceReleaseCheckRow{
+  display: grid;
+  gap: 5px;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 28%, transparent);
+}
+
+.instanceReleaseCheckRow:first-child{
+  padding-top: 0;
+  border-top: 0;
+}
+
+.instanceReleaseCheckRowTop{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
+}
+
+.instanceReleaseCheckRowMain{
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.instanceReleaseCheckRowTitle{
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  font-weight: 780;
+  letter-spacing: -0.014em;
+  color: var(--text);
+}
+
+.instanceReleaseCheckBadges{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.instanceReleaseCheckBadges .chip{
+  padding: 2px 7px;
+  background: transparent;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.instanceReleaseCheckVersion{
+  align-self: start;
+  white-space: nowrap;
+  text-align: right;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 36%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+}
+
+.instanceReleaseCheckMeta{
+  max-width: 64ch;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 11px;
+  line-height: 1.34;
+}
+
+.instanceReleaseCheckMore{
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 24%, transparent);
+  font-size: 11.5px;
+}
+
+.discoverSourcePanel{
+  padding: 6px;
+  border-radius: 16px;
+}
+
+.discoverSourcePanel .dropPanelBody{
+  display: grid;
+  gap: 2px;
+}
+
+.discoverSourcePanel .menuItem.discoverSourceItem{
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 720;
+  color: var(--text);
+}
+
+.discoverSourcePanel .menuItem.discoverSourceItem + .menuItem.discoverSourceItem{
+  margin-top: 0;
+}
+
+.discoverSourcePanel .menuItem.discoverSourceItem:hover{
+  background: color-mix(in srgb, var(--surface) 84%, var(--surface-2) 16%);
+  border-color: transparent;
+}
+
+.discoverSourcePanel .menuItem.discoverSourceItem.active{
+  background: color-mix(in srgb, var(--surface) 76%, var(--accent-soft) 24%);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.discoverSourcePanel .menuItem.discoverSourceItem.active:hover{
+  background: color-mix(in srgb, var(--surface) 72%, var(--accent-soft) 28%);
+}
+
+.discoverSourcePanel .multiSelectCheck{
+  width: 14px;
+  height: 14px;
+  flex-basis: 14px;
+}
+
+.discoverSourcePanel .multiSelectFooter{
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 28%, transparent);
+}
+
+.discoverSourcePanel .dropMiniBtn{
+  height: 32px;
+  padding-inline: 11px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+@media (max-width: 980px){
+  .instanceReleaseCheckRowTop{
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .instanceReleaseCheckVersion{
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 980px){
+  .instTabsRow{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .instTabsActions{
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .instTabsActionCluster{
+    width: 100%;
+    display: flex;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* Final release-check row spacing */
+.updatesListRow{
+  padding: 10px 12px;
+  border-radius: 13px;
+}
+
+.updatesListTop{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 16px;
+}
+
+.updatesListName{
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.updatesListTitle{
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  font-weight: 790;
+  letter-spacing: -0.012em;
+}
+
+.updatesListBadges{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.updatesListBadges .chip{
+  padding: 2px 7px;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.updatesListVersion{
+  padding-top: 0;
+  align-self: start;
+  text-align: right;
+  font-size: 11.5px;
+  line-height: 1.2;
+}
+
+.updatesListMeta{
+  margin-top: 6px;
+  max-width: 70ch;
+  padding-right: 4px;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .updatesListVersion{
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+/* Final instance release-check tuning */
+.instanceContentResultsShell{
+  gap: 8px;
+  padding-top: 6px;
+  margin-bottom: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 34%, transparent);
+}
+
+.updatesCard{
+  padding: 2px 0 0;
+}
+
+.updatesCardHead{
+  align-items: flex-start;
+  gap: 8px 10px;
+  padding: 0;
+}
+
+.updatesCardHead .chip{
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 680;
+}
+
+.updatesCardEyebrow{
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+}
+
+.updatesCardTitle{
+  font-size: 13px;
+  line-height: 1.18;
+  font-weight: 820;
+  letter-spacing: -0.015em;
+}
+
+.updatesList{
+  margin-top: 6px;
+  gap: 6px;
+}
+
+.updatesListRow{
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+}
+
+.updatesListTop{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.updatesListName{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  line-height: 1.22;
+  font-weight: 780;
+}
+
+.updatesListName .chip{
+  padding: 2px 7px;
+  font-size: 9.75px;
+  font-weight: 660;
+}
+
+.updatesListVersion{
+  flex: 0 0 auto;
+  padding-top: 1px;
+  color: color-mix(in srgb, var(--text) 74%, var(--muted) 26%);
+  font-size: 11.5px;
+  line-height: 1.2;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.updatesListMeta{
+  margin-top: 4px;
+  max-width: 72ch;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
+  font-size: 11px;
+  line-height: 1.32;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .updatesListVersion{
+    white-space: normal;
+  }
+}
+
+.instanceContentWorkspaceCard.dropActive{
+  position: relative;
+  z-index: 40;
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--stroke) 76%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-ring) 22%, transparent);
+}
+
+.instanceContentDropOverlay{
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-soft) 20%, transparent), transparent 60%),
+    color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.instanceContentDropOverlayFrame{
+  position: absolute;
+  inset: 14px;
+  border-radius: 22px;
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 44%, var(--stroke2) 56%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent-soft) 22%, transparent),
+      color-mix(in srgb, var(--surface) 12%, transparent)
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.52) 50%, transparent),
+    0 12px 28px rgba(17, 24, 39, 0.05);
+}
+
+.instanceContentDropOverlayCard{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  max-width: 440px;
+  padding: 18px 22px 16px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 2%), color-mix(in srgb, var(--accent-soft) 8%, var(--surface) 92%));
+  box-shadow:
+    0 18px 38px rgba(17, 24, 39, 0.08),
+    0 3px 10px rgba(17, 24, 39, 0.05);
+  text-align: center;
+}
+
+.instanceContentDropOverlayIcon{
+  width: 46px;
+  height: 46px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--accent) 76%, var(--text) 24%);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 52%, white 48%), color-mix(in srgb, var(--accent-soft) 72%, transparent));
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.72),
+    0 8px 18px rgba(17, 24, 39, 0.06);
+}
+
+.instanceContentDropOverlayEyebrow{
+  margin-top: 12px;
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.instanceContentDropOverlayTitle{
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.022em;
+  color: var(--text);
+}
+
+.instanceContentDropOverlaySub{
+  margin-top: 6px;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 620;
+  color: var(--muted);
+}
+
+.instanceContentDropOverlayHint{
+  margin-top: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  background: color-mix(in srgb, var(--surface) 86%, var(--surface-2) 14%);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--muted) 80%, var(--text) 20%);
+}
+
+.instanceContentResultsShell{
+  gap: 8px;
+  padding-top: 8px;
+  margin-bottom: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 36%, transparent);
+}
+
+.updatesCard{
+  padding-top: 4px;
+}
+
+.updatesCardHead{
+  align-items: flex-start;
+  gap: 8px 12px;
+  padding: 0 0 2px;
+}
+
+.updatesCardTitle{
+  font-size: 13.5px;
+  line-height: 1.2;
+  font-weight: 820;
+  letter-spacing: -0.015em;
+}
+
+.updatesList{
+  margin-top: 6px;
+  gap: 8px;
+}
+
+.updatesListRow{
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.updatesListTop{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.updatesListName{
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.updatesListVersion{
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted) 22%);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.updatesListMeta{
+  margin-top: 5px;
+  max-width: 76ch;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .updatesListVersion{
+    white-space: normal;
+  }
 }
 
 /* Create instance: two-step flow */

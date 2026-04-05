@@ -164,6 +164,20 @@ export function pickExternalOpenPathGrants(input: {
   return invoke("pick_external_open_path_grants", { args: input });
 }
 
+export function grantExternalOpenPaths(input: {
+  purpose:
+    | "modpack_archive_import"
+    | "local_mod_import"
+    | "modpack_local_jar_import"
+    | "presets_import"
+    | "modpack_spec_import"
+    | string;
+  paths: string[];
+  contentType?: string;
+}): Promise<GrantedPathResult[]> {
+  return invoke("grant_external_open_paths", { args: input });
+}
+
 export function pickExternalSavePathGrant(input: {
   purpose:
     | "presets_export"

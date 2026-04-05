@@ -20,6 +20,8 @@ export default function MultiSelectDropdown({
   panelEstimatedHeight = 420,
   allSelectedLabel,
   allSelectedIsPlaceholder = false,
+  panelClassName,
+  itemClassName,
 }: {
   values: string[];
   placeholder: string;
@@ -37,6 +39,8 @@ export default function MultiSelectDropdown({
   panelEstimatedHeight?: number;
   allSelectedLabel?: string;
   allSelectedIsPlaceholder?: boolean;
+  panelClassName?: string;
+  itemClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -143,7 +147,7 @@ export default function MultiSelectDropdown({
         ? createPortal(
             <div
               ref={panelRef}
-              className={`dropPanel portal multiSelectPanel ${layout.placement === "top" ? "top" : ""} ${showSearch ? "hasSearch" : "noSearch"}`}
+              className={`dropPanel portal multiSelectPanel ${layout.placement === "top" ? "top" : ""} ${showSearch ? "hasSearch" : "noSearch"} ${panelClassName ?? ""}`}
               style={{
                 top: layout.top,
                 left: layout.left,
@@ -179,7 +183,7 @@ export default function MultiSelectDropdown({
                         return (
                           <div
                             key={it.id}
-                            className={`${itemVariant === "menu" ? "menuItem" : "dropItem"} ${checked ? "active" : ""}`}
+                            className={`${itemVariant === "menu" ? "menuItem" : "dropItem"} ${checked ? "active" : ""} ${itemClassName ?? ""}`}
                             style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}
                             onClick={() => toggle(it.id)}
                           >

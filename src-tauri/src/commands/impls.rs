@@ -833,6 +833,68 @@ pub(crate) fn pick_external_open_path_grants(
 }
 
 #[tauri::command]
+pub(crate) fn grant_external_open_paths(
+    state: tauri::State<AppState>,
+    args: GrantExternalOpenPathsArgs,
+) -> Result<Vec<GrantedPathResult>, String> {
+    let purpose = normalize_external_open_path_purpose(&args.purpose)?;
+    if args.paths.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let explicit_content_type = args
+        .content_type
+        .as_deref()
+        .map(normalize_lock_content_type)
+        .filter(|value| is_supported_local_content_type(value));
+    let mut granted: Vec<GrantedPathResult> = Vec::new();
+    let mut seen_paths: HashSet<PathBuf> = HashSet::new();
+
+    for raw_path in args.paths {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(trimmed);
+        if !path.exists() || !path.is_file() {
+            return Err(format!("Dropped file is no longer available: {}", path.display()));
+        }
+        if !seen_paths.insert(path.clone()) {
+            continue;
+        }
+
+        match purpose {
+            EXTERNAL_PATH_PURPOSE_LOCAL_MOD_IMPORT | EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT => {
+                let ext = path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_lowercase();
+                let is_allowed = if purpose == EXTERNAL_PATH_PURPOSE_MODPACK_LOCAL_JAR_IMPORT {
+                    ext == "jar"
+                } else if let Some(content_type) = explicit_content_type.as_deref() {
+                    local_file_extension_allowed(content_type, &ext)
+                } else {
+                    local_file_extension_allowed_for_any_supported_type(&ext)
+                };
+                if !is_allowed {
+                    return Err(format!(
+                        "Unsupported dropped file '{}' for local content import.",
+                        path.display()
+                    ));
+                }
+            }
+            _ => {}
+        }
+
+        granted.push(register_external_path_grant(&state, purpose, path, false)?);
+    }
+
+    Ok(granted)
+}
+
+#[tauri::command]
 pub(crate) fn pick_external_save_path_grant(
     state: tauri::State<AppState>,
     args: PickExternalSavePathGrantArgs,
@@ -4746,26 +4808,6 @@ fn install_modrinth_mod_inner(
                 message: Some(format!("Installing {} into the instance…", safe_filename)),
             },
         );
-        let post_process_started = Instant::now();
-        fs::rename(&tmp_path, &final_path).map_err(|e| format!("move mod file failed: {e}"))?;
-        stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
-        maybe_log_download_profile(&item.project_id, &stream_result.profile);
-
-        remove_replaced_entries_for_project(
-            &mut lock,
-            &instance_dir,
-            &item.project_id,
-            Some(&safe_filename),
-        )?;
-        let removed = remove_conflicting_local_mod_entries_for_filename(
-            &mut lock,
-            &instance_dir,
-            &safe_filename,
-        )?;
-        if !removed.is_empty() {
-            removed_local_conflicts.extend(removed);
-        }
-
         let fallback_name = item
             .version
             .name
@@ -4788,7 +4830,7 @@ fn install_modrinth_mod_inner(
             fallback_name
         };
 
-        let new_entry = LockEntry {
+        let mut new_entry = LockEntry {
             source: "modrinth".into(),
             project_id: item.project_id.clone(),
             version_id: item.version.id.clone(),
@@ -4821,6 +4863,14 @@ fn install_modrinth_mod_inner(
             }],
             local_analysis: None,
         };
+        validate_lock_entry_uniqueness(&lock, &new_entry)?;
+
+        let post_process_started = Instant::now();
+        fs::rename(&tmp_path, &final_path).map_err(|e| format!("move mod file failed: {e}"))?;
+        stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+        maybe_log_download_profile(&item.project_id, &stream_result.profile);
+
+        enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut new_entry)?;
 
         lock.entries.push(new_entry.clone());
         lock_changed = true;
@@ -5290,26 +5340,9 @@ fn import_local_mod_file_inner(
     let instances_dir = app_instances_dir(&app)?;
     let instance = find_instance(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
-    let normalized_content_type =
-        normalize_lock_content_type(args.content_type.as_deref().unwrap_or("mods"));
-    if !is_supported_local_content_type(&normalized_content_type) {
-        return Err("Unsupported content type for local import".to_string());
-    }
 
     if !source_path.exists() || !source_path.is_file() {
         return Err("Selected file does not exist".into());
-    }
-    let ext = source_path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    if !local_file_extension_allowed(&normalized_content_type, &ext) {
-        return Err(format!(
-            "Only {} files are supported for local {} import",
-            local_file_extension_hint(&normalized_content_type),
-            content_type_display_name(&normalized_content_type)
-        ));
     }
 
     let source_name = source_path
@@ -5322,6 +5355,32 @@ fn import_local_mod_file_inner(
     }
 
     let file_bytes = fs::read(&source_path).map_err(|e| format!("read file failed: {e}"))?;
+    let requested_content_type = args
+        .content_type
+        .as_deref()
+        .map(normalize_lock_content_type)
+        .filter(|value| is_supported_local_content_type(value));
+    let normalized_content_type = if let Some(requested) = requested_content_type {
+        let ext = source_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !local_file_extension_allowed(&requested, &ext) {
+            return Err(format!(
+                "Only {} files are supported for local {} import",
+                local_file_extension_hint(&requested),
+                content_type_display_name(&requested)
+            ));
+        }
+        requested
+    } else {
+        detect_local_content_type_for_import(&source_path, &file_bytes).ok_or_else(|| {
+            "Could not determine whether this file is a mod, resource pack, shader pack, or datapack."
+                .to_string()
+        })?
+    };
+
     if normalized_content_type == "mods" {
         ensure_local_mod_loader_compatible(&instance, &safe_filename, &file_bytes)?;
         let mods_dir = instance_dir.join("mods");
@@ -5345,14 +5404,6 @@ fn import_local_mod_file_inner(
     } else {
         vec![]
     };
-    write_download_to_content_targets(
-        &instance_dir,
-        &normalized_content_type,
-        &safe_filename,
-        &worlds,
-        &file_bytes,
-    )?;
-
     let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let previous_pin = lock
         .entries
@@ -5403,16 +5454,7 @@ fn import_local_mod_file_inner(
             && normalize_lock_content_type(&e.content_type) == normalized_content_type)
     });
 
-    if let Some(found) = detected_provider_for_activation.as_ref() {
-        remove_replaced_entries_for_content(
-            &mut lock,
-            &instance_dir,
-            &found.project_id,
-            &normalized_content_type,
-        )?;
-    }
-
-    let new_entry = if let Some(found) = detected_provider_for_activation {
+    let mut new_entry = if let Some(found) = detected_provider_for_activation {
         LockEntry {
             source: found.source,
             project_id: found.project_id,
@@ -5464,6 +5506,15 @@ fn import_local_mod_file_inner(
             local_analysis,
         }
     };
+    validate_lock_entry_uniqueness(&lock, &new_entry)?;
+    write_download_to_content_targets(
+        &instance_dir,
+        &normalized_content_type,
+        &safe_filename,
+        &new_entry.target_worlds,
+        &file_bytes,
+    )?;
+    enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut new_entry)?;
 
     lock.entries.push(new_entry.clone());
     lock.entries
@@ -8017,8 +8068,13 @@ pub(crate) fn list_installed_mods(
 ) -> Result<Vec<InstalledMod>, String> {
     let instances_dir = app_instances_dir(&app)?;
     let _ = find_instance(&instances_dir, &args.instance_id)?;
-    let lock = read_lockfile(&instances_dir, &args.instance_id)?;
     let instance_dir = instance_dir_for_id(&instances_dir, &args.instance_id)?;
+    let mut lock = read_lockfile(&instances_dir, &args.instance_id)?;
+    if dedupe_installed_mod_entries(&mut lock, &instance_dir)? {
+        lock.entries
+            .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        write_lockfile(&instances_dir, &args.instance_id, &lock)?;
+    }
 
     let mut out: Vec<InstalledMod> = lock
         .entries
@@ -8814,6 +8870,39 @@ mod tests {
         entry
     }
 
+    fn sample_duplicate_mod_entry(
+        source: &str,
+        project_id: &str,
+        filename: &str,
+        display_name: &str,
+    ) -> LockEntry {
+        LockEntry {
+            source: source.to_string(),
+            project_id: project_id.to_string(),
+            version_id: format!("{source}:{filename}"),
+            name: display_name.to_string(),
+            version_number: "1.0.0".to_string(),
+            filename: filename.to_string(),
+            content_type: "mods".to_string(),
+            target_scope: "instance".to_string(),
+            target_worlds: vec![],
+            pinned_version: None,
+            enabled: true,
+            hashes: HashMap::new(),
+            provider_candidates: vec![ProviderCandidate {
+                source: source.to_string(),
+                project_id: project_id.to_string(),
+                version_id: format!("{source}:{filename}"),
+                name: display_name.to_string(),
+                version_number: "1.0.0".to_string(),
+                confidence: None,
+                reason: None,
+                verification_status: None,
+            }],
+            local_analysis: None,
+        }
+    }
+
     fn sample_instance(id: &str, name: &str) -> Instance {
         Instance {
             id: id.to_string(),
@@ -8942,6 +9031,67 @@ mod tests {
             verification_status: Some("verified".to_string()),
         }];
         assert!(!lock_entry_has_untrusted_github_mapping(&valid_entry));
+    }
+
+    #[test]
+    fn higher_priority_mod_source_replaces_existing_duplicate() {
+        let instance_dir = temp_path("duplicate-priority-replace");
+        fs::create_dir_all(instance_dir.join("mods")).unwrap();
+
+        let mut lock = Lockfile {
+            version: 2,
+            entries: vec![sample_duplicate_mod_entry(
+                "github",
+                "gh:CaffeineMC/sodium-fabric",
+                "sodium-github.jar",
+                "Sodium",
+            )],
+        };
+        let mut incoming = sample_duplicate_mod_entry(
+            "modrinth",
+            "AANobbMI",
+            "sodium-modrinth.jar",
+            "Sodium",
+        );
+        incoming.pinned_version = Some("keep-me".to_string());
+
+        validate_lock_entry_uniqueness(&lock, &incoming).unwrap();
+        enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut incoming).unwrap();
+
+        assert!(lock.entries.is_empty());
+        assert_eq!(incoming.source, "modrinth");
+        assert_eq!(incoming.project_id, "AANobbMI");
+        assert_eq!(incoming.pinned_version.as_deref(), Some("keep-me"));
+
+        let _ = fs::remove_dir_all(&instance_dir);
+    }
+
+    #[test]
+    fn lower_priority_mod_source_is_blocked_by_existing_duplicate() {
+        let instance_dir = temp_path("duplicate-priority-block");
+        fs::create_dir_all(instance_dir.join("mods")).unwrap();
+
+        let lock = Lockfile {
+            version: 2,
+            entries: vec![sample_duplicate_mod_entry(
+                "modrinth",
+                "AANobbMI",
+                "sodium-modrinth.jar",
+                "Sodium",
+            )],
+        };
+        let incoming = sample_duplicate_mod_entry(
+            "github",
+            "gh:CaffeineMC/sodium-fabric",
+            "sodium-github.jar",
+            "Sodium",
+        );
+
+        let err = validate_lock_entry_uniqueness(&lock, &incoming).unwrap_err();
+        assert!(err.contains("Modrinth"));
+        assert!(err.contains("Sodium"));
+
+        let _ = fs::remove_dir_all(&instance_dir);
     }
 
     #[test]

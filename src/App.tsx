@@ -150,6 +150,7 @@ import {
   readLocalImageDataUrl,
   pickInstanceIconFile,
   pickExternalOpenPathGrants,
+  grantExternalOpenPaths,
   pickExternalSavePathGrant,
   revealConfigEditorFile,
   removeInstalledMod,
@@ -211,6 +212,7 @@ import GlobalTooltipLayer from "./components/app-shell/GlobalTooltipLayer";
 import Dropdown from "./components/app-shell/controls/Dropdown";
 import MultiSelectDropdown from "./components/app-shell/controls/MultiSelectDropdown";
 import MenuSelect from "./components/app-shell/controls/MenuSelect";
+import ActionMenu from "./components/app-shell/controls/ActionMenu";
 import SegmentedControl from "./components/app-shell/controls/SegmentedControl";
 import ActivityFeed from "./components/activity/ActivityFeed";
 import FullHistoryView from "./components/activity/FullHistoryView";
@@ -465,7 +467,7 @@ type InstanceContentSort =
   | "source"
   | "enabled_first"
   | "disabled_first";
-type InstanceContentBulkAction = "__menu" | "add_local" | "identify_local" | "clean_missing";
+type InstanceContentBulkAction = "add_local" | "identify_local" | "clean_missing";
 
 type LaunchOutcomeEntry = {
   at: number;
@@ -1184,6 +1186,47 @@ function localImportTypeLabel(input: "mods" | "resourcepacks" | "datapacks" | "s
   if (input === "resourcepacks") return "resourcepack";
   if (input === "datapacks") return "datapack";
   return "shaderpack";
+}
+
+function localImportDialogFilter(input: "mods" | "resourcepacks" | "datapacks" | "shaders") {
+  if (input === "mods") return { name: "Minecraft mods", extensions: ["jar"] };
+  if (input === "resourcepacks") return { name: "Resource packs", extensions: ["zip"] };
+  if (input === "datapacks") return { name: "Data packs", extensions: ["zip"] };
+  return { name: "Shader packs", extensions: ["zip", "jar"] };
+}
+
+function backendLocalImportTypeLabel(input?: string) {
+  const normalized = normalizeCreatorEntryType(input);
+  if (normalized === "resourcepacks") return "resource pack";
+  if (normalized === "datapacks") return "datapack";
+  if (normalized === "shaderpacks") return "shader pack";
+  return "mod";
+}
+
+function formatImportedLocalContentSummary(counts: Record<string, number>) {
+  const order = ["mods", "resourcepacks", "shaderpacks", "datapacks"];
+  const parts = order
+    .map((contentType) => {
+      const count = Number(counts[contentType] ?? 0);
+      if (!count) return null;
+      const label = backendLocalImportTypeLabel(contentType);
+      return `${count} ${label}${count === 1 ? "" : "s"}`;
+    })
+    .filter((value): value is string => Boolean(value));
+  return parts.join(", ");
+}
+
+function coerceDroppedFilePaths(payload: unknown): string[] {
+  if (Array.isArray(payload)) {
+    return payload.map((value) => String(value ?? "").trim()).filter(Boolean);
+  }
+  if (payload && typeof payload === "object" && "paths" in payload) {
+    const maybePaths = (payload as { paths?: unknown }).paths;
+    if (Array.isArray(maybePaths)) {
+      return maybePaths.map((value) => String(value ?? "").trim()).filter(Boolean);
+    }
+  }
+  return [];
 }
 
 function normalizeUpdatableContentType(input?: string): UpdatableContentType | null {
@@ -5046,9 +5089,13 @@ export default function App() {
   const installedModsLoadSeqRef = useRef(0);
   const selectedInstanceIdRef = useRef<string | null>(selectedId);
   const routeRef = useRef(route);
+  const instanceTabRef = useRef(instanceTab);
+  const instancesRef = useRef(instances);
+  const instanceContentDropHideTimerRef = useRef<number | null>(null);
   const [selectedModVersionIds, setSelectedModVersionIds] = useState<string[]>([]);
   const [modsBusy, setModsBusy] = useState(false);
   const [modsErr, setModsErr] = useState<string | null>(null);
+  const [instanceContentDropActive, setInstanceContentDropActive] = useState(false);
   const [cleanMissingBusyInstanceId, setCleanMissingBusyInstanceId] = useState<string | null>(null);
   const [toggleBusyVersion, setToggleBusyVersion] = useState<string | null>(null);
   const [providerSwitchBusyKey, setProviderSwitchBusyKey] = useState<string | null>(null);
@@ -5087,6 +5134,23 @@ export default function App() {
   useLayoutEffect(() => {
     routeRef.current = route;
   }, [route]);
+
+  useLayoutEffect(() => {
+    instanceTabRef.current = instanceTab;
+  }, [instanceTab]);
+
+  useLayoutEffect(() => {
+    instancesRef.current = instances;
+  }, [instances]);
+
+  useEffect(() => {
+    return () => {
+      if (instanceContentDropHideTimerRef.current != null) {
+        window.clearTimeout(instanceContentDropHideTimerRef.current);
+        instanceContentDropHideTimerRef.current = null;
+      }
+    };
+  }, []);
 
   const canMutateVisibleInstalledMods = useCallback(
     (instanceId: string) =>
@@ -9401,54 +9465,57 @@ export default function App() {
     }
   }
 
-  async function onAddContentFromFile(
+  const importGrantedLocalContentFiles = useCallback(async (
     inst: Instance,
-    contentView: "mods" | "resourcepacks" | "datapacks" | "shaders"
-  ) {
-    setError(null);
-    setModsErr(null);
-    setInstallNotice(null);
+    pickedFiles: GrantedPathResult[],
+    options?: {
+      contentView?: "mods" | "resourcepacks" | "datapacks" | "shaders";
+      sourceLabel?: string;
+    }
+  ) => {
+    if (pickedFiles.length === 0) return;
+    const backendContentType = options?.contentView
+      ? instanceContentTypeToBackend(options.contentView)
+      : undefined;
+    const datapackWorlds =
+      backendContentType === "datapacks"
+        ? (await listInstanceWorlds({ instanceId: inst.id })).map((world) => world.id)
+        : [];
+    if (backendContentType === "datapacks" && datapackWorlds.length === 0) {
+      setModsErr(
+        "No worlds found in this instance. Create a world first, then add local datapacks."
+      );
+      return;
+    }
+
+    setImportingInstanceId(inst.id);
+    let successCount = 0;
+    const failedPaths: string[] = [];
+    const importedByType: Record<string, number> = {};
     try {
-      const backendContentType = instanceContentTypeToBackend(contentView);
-      const pickedFiles = await pickExternalOpenPathGrants({
-        purpose: "local_mod_import",
-        contentType: backendContentType,
-        multiple: true,
-      });
-      if (pickedFiles.length === 0) return;
-
-      const datapackWorlds =
-        backendContentType === "datapacks"
-          ? (await listInstanceWorlds({ instanceId: inst.id })).map((world) => world.id)
-          : [];
-      if (backendContentType === "datapacks" && datapackWorlds.length === 0) {
-        setModsErr(
-          "No worlds found in this instance. Create a world first, then add local datapacks."
-        );
-        return;
-      }
-
-      setImportingInstanceId(inst.id);
-      let successCount = 0;
-      const failedPaths: string[] = [];
       for (const pickedFile of pickedFiles) {
         try {
-          await importLocalModFile({
+          const imported = await importLocalModFile({
             instanceId: inst.id,
             grantId: pickedFile.grantId,
             contentType: backendContentType,
             targetWorlds: backendContentType === "datapacks" ? datapackWorlds : undefined,
           });
           successCount += 1;
+          const importedType = normalizeCreatorEntryType(imported.content_type);
+          importedByType[importedType] = (importedByType[importedType] ?? 0) + 1;
         } catch {
           failedPaths.push(pickedFile.displayPath);
         }
       }
       await refreshInstalledMods(inst.id, { autoIdentifyAfterRefresh: successCount > 0 });
       if (successCount > 0) {
-        const typeLabel = localImportTypeLabel(contentView);
+        const importedSummary = formatImportedLocalContentSummary(importedByType);
+        const sourceLabel = options?.sourceLabel?.trim() || "your computer";
         setInstallNotice(
-          `Added ${successCount} local ${typeLabel} file${successCount === 1 ? "" : "s"} from your computer.`
+          importedSummary
+            ? `Added ${importedSummary} from ${sourceLabel}.`
+            : `Added ${successCount} local file${successCount === 1 ? "" : "s"} from ${sourceLabel}.`
         );
       }
       if (failedPaths.length > 0) {
@@ -9462,10 +9529,43 @@ export default function App() {
           }`
         );
       }
-    } catch (e: any) {
-      setError(e?.toString?.() ?? String(e));
     } finally {
       setImportingInstanceId(null);
+    }
+  }, [refreshInstalledMods]);
+
+  async function onAddContentFromFile(
+    inst: Instance,
+    contentView: "mods" | "resourcepacks" | "datapacks" | "shaders"
+  ) {
+    setError(null);
+    setModsErr(null);
+    setInstallNotice(null);
+    try {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      const backendContentType = instanceContentTypeToBackend(contentView);
+      const picked = await openDialog({
+        multiple: true,
+        filters: [localImportDialogFilter(contentView)],
+      });
+      const pickedPaths = Array.isArray(picked)
+        ? picked.map((value) => String(value ?? "").trim()).filter(Boolean)
+        : picked
+          ? [String(picked).trim()].filter(Boolean)
+          : [];
+      if (pickedPaths.length === 0) return;
+      const pickedFiles = await grantExternalOpenPaths({
+        purpose: "local_mod_import",
+        contentType: backendContentType,
+        paths: pickedPaths,
+      });
+      if (pickedFiles.length === 0) return;
+      await importGrantedLocalContentFiles(inst, pickedFiles, {
+        contentView,
+        sourceLabel: "your computer",
+      });
+    } catch (e: any) {
+      setError(e?.toString?.() ?? String(e));
     }
   }
 
@@ -11181,6 +11281,86 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const clearDropHideTimer = () => {
+      if (instanceContentDropHideTimerRef.current != null) {
+        window.clearTimeout(instanceContentDropHideTimerRef.current);
+        instanceContentDropHideTimerRef.current = null;
+      }
+    };
+    const closeDropTarget = () => {
+      clearDropHideTimer();
+      setInstanceContentDropActive(false);
+    };
+    const canAcceptDroppedContent = () =>
+      routeRef.current === "instance" &&
+      instanceTabRef.current === "content" &&
+      Boolean(selectedInstanceIdRef.current);
+
+    const importDroppedPaths = async (paths: string[]) => {
+      closeDropTarget();
+      const normalizedPaths = Array.from(new Set(paths.map((value) => value.trim()).filter(Boolean)));
+      if (normalizedPaths.length === 0) return;
+      if (!canAcceptDroppedContent()) {
+        setInstallNotice("Open an instance's Content tab to drop files directly into the launcher.");
+        return;
+      }
+      const instanceId = selectedInstanceIdRef.current;
+      const inst = instancesRef.current.find((entry) => entry.id === instanceId);
+      if (!inst) return;
+      if (importingInstanceId === inst.id) {
+        setInstallNotice("A local content import is already running for this instance.");
+        return;
+      }
+      setError(null);
+      setModsErr(null);
+      setInstallNotice(null);
+      try {
+        const grants = await grantExternalOpenPaths({
+          purpose: "local_mod_import",
+          paths: normalizedPaths,
+        });
+        await importGrantedLocalContentFiles(inst, grants, {
+          sourceLabel: "drag and drop",
+        });
+      } catch (e: any) {
+        setModsErr(e?.toString?.() ?? String(e));
+      }
+    };
+
+    const hoverOff = listen("tauri://file-drop-hover", () => {
+      if (!canAcceptDroppedContent()) return;
+      clearDropHideTimer();
+      setInstanceContentDropActive(true);
+    });
+    const cancelOff = listen("tauri://file-drop-cancelled", () => {
+      clearDropHideTimer();
+      instanceContentDropHideTimerRef.current = window.setTimeout(() => {
+        setInstanceContentDropActive(false);
+        instanceContentDropHideTimerRef.current = null;
+      }, 120);
+    });
+    const dropOff = listen<unknown>("tauri://file-drop", (event) => {
+      void importDroppedPaths(coerceDroppedFilePaths(event.payload));
+    });
+
+    return () => {
+      hoverOff.then((unlisten) => unlisten()).catch(() => null);
+      cancelOff.then((unlisten) => unlisten()).catch(() => null);
+      dropOff.then((unlisten) => unlisten()).catch(() => null);
+    };
+  }, [importGrantedLocalContentFiles, importingInstanceId]);
+
+  useEffect(() => {
+    if (route !== "instance" || instanceTab !== "content") {
+      if (instanceContentDropHideTimerRef.current != null) {
+        window.clearTimeout(instanceContentDropHideTimerRef.current);
+        instanceContentDropHideTimerRef.current = null;
+      }
+      setInstanceContentDropActive(false);
+    }
+  }, [instanceTab, route]);
 
   useEffect(() => {
     const off = listen<InstanceLaunchStateEvent>("instance_launch_state", (event) => {
@@ -15374,22 +15554,19 @@ export default function App() {
                 />
                 <div className="instTabsActions">
                   {instanceTab === "content" ? (
-                    <>
+                    <div className="instTabsActionCluster">
                       <button className="btn primary installAction" onClick={() => setRoute("discover")}>
                         <span className="btnIcon">
                           <Icon name="plus" size={18} />
                         </span>
                         Install content
                       </button>
-                      <MenuSelect
-                        value="__menu"
-                        labelPrefix="Actions"
+                      <ActionMenu
                         buttonLabel="More"
                         compact
-                        compactPanelMinWidth={196}
-                        onChange={(value) => {
-                          const action = (value as InstanceContentBulkAction | null) ?? "__menu";
-                          if (action === "__menu") return;
+                        panelMinWidth={248}
+                        align="end"
+                        onAction={(action) => {
                           if (action === "add_local") {
                             if (importingInstanceId === inst.id) {
                               setInstallNotice("Local file import is already in progress for this instance.");
@@ -15410,29 +15587,28 @@ export default function App() {
                             });
                             return;
                           }
-                          if (action === "clean_missing") {
-                            if (
-                              cleanMissingBusyInstanceId === inst.id ||
-                              modsBusy ||
-                              Boolean(localResolverBusyRef.current[inst.id])
-                            ) {
-                              setInstallNotice("Clean missing entries is not available while other content tasks are running.");
-                              return;
-                            }
-                            void onCleanMissingInstalledEntries(inst, instanceContentType);
+                          if (
+                            cleanMissingBusyInstanceId === inst.id ||
+                            modsBusy ||
+                            Boolean(localResolverBusyRef.current[inst.id])
+                          ) {
+                            setInstallNotice("Clean missing entries is not available while other content tasks are running.");
+                            return;
                           }
+                          void onCleanMissingInstalledEntries(inst, instanceContentType);
                         }}
-                        options={[
-                          { value: "__menu", label: "More" },
+                        items={[
                           {
                             value: "add_local",
                             label: importingInstanceId === inst.id ? "Add local file (busy)" : "Add local file",
+                            disabled: importingInstanceId === inst.id,
                           },
                           {
                             value: "identify_local",
                             label: localResolverBusyRef.current[inst.id]
                               ? "Identify local files (busy)"
                               : "Identify local files",
+                            disabled: Boolean(localResolverBusyRef.current[inst.id]),
                           },
                           {
                             value: "clean_missing",
@@ -15442,9 +15618,12 @@ export default function App() {
                               Boolean(localResolverBusyRef.current[inst.id])
                                 ? "Clean missing entries (busy)"
                                 : "Clean missing entries",
+                            disabled:
+                              cleanMissingBusyInstanceId === inst.id ||
+                              modsBusy ||
+                              Boolean(localResolverBusyRef.current[inst.id]),
                           },
                         ]}
-                        align="end"
                       />
                       <button
                         className="btn subtle"
@@ -15466,9 +15645,9 @@ export default function App() {
                         </span>
                         {isInstanceActivityPanelOpen ? "Hide activity" : "Show activity"}
                       </button>
-                    </>
+                    </div>
                   ) : instanceTab === "worlds" ? (
-                    <>
+                    <div className="instTabsActionCluster">
                       <button
                         className="btn"
                         onClick={async () => {
@@ -15485,7 +15664,7 @@ export default function App() {
                         </span>
                         Open instance folder
                       </button>
-                    </>
+                    </div>
                   ) : (
                     <></>
                   )}
@@ -15495,7 +15674,24 @@ export default function App() {
               <div className={`card instPanel ${instanceTab === "content" ? "instPanelContent" : ""}`}>
                 {instanceTab === "content" ? (
                   <div className="instanceContentWrap">
-                    <div className="instanceContentWorkspaceCard">
+                    <div className={`instanceContentWorkspaceCard ${instanceContentDropActive ? "dropActive" : ""}`}>
+                      {instanceContentDropActive ? (
+                        <div className="instanceContentDropOverlay" aria-hidden="true">
+                          <div className="instanceContentDropOverlayFrame" />
+                          <div className="instanceContentDropOverlayCard">
+                            <div className="instanceContentDropOverlayIcon">
+                              <Icon name="upload" size={20} />
+                            </div>
+                            <div className="instanceContentDropOverlayEyebrow">Drop target</div>
+                            <div className="instanceContentDropOverlayTitle">Drop files to import</div>
+                            <div className="instanceContentDropOverlaySub">
+                              Mods, resource packs, shader packs, and datapacks will be sorted automatically for this
+                              instance.
+                            </div>
+                            <div className="instanceContentDropOverlayHint">Release to start import</div>
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="instanceContentWorkspaceHead">
                         <div className="instanceContentWorkspaceIntro">
                           <div className="instanceContentWorkspaceEyebrow">Instance content</div>
@@ -15715,11 +15911,11 @@ export default function App() {
 
                     <div className="instanceContentResultsShell">
                       {updateCheck ? (
-                        <div className="card updatesCard">
-                          <div className="updatesCardHead">
+                        <div className="instanceReleaseCheckCard">
+                          <div className="instanceReleaseCheckHead">
                             <div>
-                              <div className="updatesCardEyebrow">Release check</div>
-                              <div className="updatesCardTitle">
+                              <div className="instanceReleaseCheckEyebrow">Release check</div>
+                              <div className="instanceReleaseCheckTitle">
                                 {updateCheck.update_count === 0
                                   ? `Checked ${updateCheck.checked_entries} entr${updateCheck.checked_entries === 1 ? "y" : "ies"} - all up to date`
                                   : `${updateCheck.update_count} update${updateCheck.update_count === 1 ? "" : "s"} available`}
@@ -15728,26 +15924,33 @@ export default function App() {
                             <span className="chip subtle">{currentContentSectionLabel}</span>
                           </div>
                           {updateCheck.update_count > 0 ? (
-                            <div className="updatesList">
+                            <div className="instanceReleaseCheckList">
                               {updateCheck.updates.slice(0, 8).map((u) => (
-                                <div key={`${u.source}:${u.content_type}:${u.project_id}`} className="updatesListRow">
-                                  <div className="updatesListName">
-                                    {u.name}
-                                    <span className="chip subtle" style={{ marginLeft: 8 }}>{u.source}</span>
-                                    <span className="chip subtle" style={{ marginLeft: 6 }}>{u.content_type}</span>
-                                  </div>
-                                  <div className="updatesListMeta">
-                                    {u.current_version_number} → {u.latest_version_number}
-                                    {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
-                                      <div className="muted" style={{ marginTop: 4 }}>
-                                        {u.compatibility_notes[0]}
+                                <div
+                                  key={`${u.source}:${u.content_type}:${u.project_id}`}
+                                  className="instanceReleaseCheckRow"
+                                >
+                                  <div className="instanceReleaseCheckRowTop">
+                                    <div className="instanceReleaseCheckRowMain">
+                                      <div className="instanceReleaseCheckRowTitle">{u.name}</div>
+                                      <div className="instanceReleaseCheckBadges">
+                                        <span className="chip subtle">{u.source}</span>
+                                        <span className="chip subtle">{u.content_type}</span>
                                       </div>
-                                    ) : null}
+                                    </div>
+                                    <div className="instanceReleaseCheckVersion">
+                                      {u.current_version_number} → {u.latest_version_number}
+                                    </div>
                                   </div>
+                                  {Array.isArray(u.compatibility_notes) && u.compatibility_notes.length > 0 ? (
+                                    <div className="instanceReleaseCheckMeta">{u.compatibility_notes[0]}</div>
+                                  ) : null}
                                 </div>
                               ))}
                               {updateCheck.updates.length > 8 ? (
-                                <div className="muted">+{updateCheck.updates.length - 8} more</div>
+                                <div className="instanceReleaseCheckMore muted">
+                                  +{updateCheck.updates.length - 8} more
+                                </div>
                               ) : null}
                             </div>
                           ) : null}
@@ -18998,6 +19201,8 @@ export default function App() {
           const runReport = inst ? instanceRunReportById[inst.id] ?? null : null;
           const topCauses = (runReport?.topCauses?.length ? runReport.topCauses : plan?.causes ?? []).slice(0, 3);
           const findings = (runReport?.findings ?? []).slice(0, 6);
+          const primaryFinding = findings[0] ?? null;
+          const secondaryFindings = findings.slice(1);
           const recentChanges = (runReport?.recentChanges ?? []).slice(-8);
           if (!inst || !plan) return null;
           return (
@@ -19020,31 +19225,50 @@ export default function App() {
                       </span>
                     ) : null}
                   </div>
-                  <div className="row launchFixCauseChips">
-                    {topCauses.length > 0 ? (
-                      topCauses.map((cause) => (
-                        <span key={cause} className="chip subtle">{cause}</span>
-                      ))
-                    ) : (
-                      <span className="muted">No high-confidence causes available yet.</span>
-                    )}
-                  </div>
-                  {findings.length > 0 ? (
+                  {primaryFinding ? (
                     <div className="launchFixFindingsList">
-                      {findings.map((finding) => (
-                        <div key={finding.id} className="launchFixFindingItem">
-                          <div className="rowBetween" style={{ gap: 10 }}>
-                            <div style={{ fontWeight: 800 }}>{finding.title}</div>
-                            <span className="chip subtle">{Math.round((finding.confidence ?? 0) * 100)}%</span>
-                          </div>
-                          <div className="muted">{finding.explanation}</div>
-                          {finding.modId ? (
-                            <div className="muted">Mod: {finding.modId}</div>
-                          ) : null}
-                          {finding.evidence?.[0] ? (
-                            <div className="muted">Evidence: {finding.evidence[0]}</div>
-                          ) : null}
+                      <div className="launchFixFindingItem">
+                        <div className="rowBetween" style={{ gap: 10 }}>
+                          <div style={{ fontWeight: 900 }}>Most likely root cause</div>
+                          <span className="chip subtle">{Math.round((primaryFinding.confidence ?? 0) * 100)}%</span>
                         </div>
+                        <div style={{ fontWeight: 800 }}>{primaryFinding.title}</div>
+                        <div className="muted">{primaryFinding.explanation}</div>
+                        {primaryFinding.modId ? (
+                          <div className="muted">Likely mod: {primaryFinding.modId}</div>
+                        ) : null}
+                        {primaryFinding.evidence?.[0] ? (
+                          <div className="muted">Evidence: {primaryFinding.evidence[0]}</div>
+                        ) : null}
+                        {primaryFinding.likelyFix ? (
+                          <div className="muted">Suggested fix: {primaryFinding.likelyFix}</div>
+                        ) : null}
+                      </div>
+                      {secondaryFindings.length > 0 ? (
+                        <>
+                          <div style={{ marginTop: 6, fontWeight: 820 }}>Other signals</div>
+                          {secondaryFindings.map((finding) => (
+                            <div key={finding.id} className="launchFixFindingItem">
+                              <div className="rowBetween" style={{ gap: 10 }}>
+                                <div style={{ fontWeight: 800 }}>{finding.title}</div>
+                                <span className="chip subtle">{Math.round((finding.confidence ?? 0) * 100)}%</span>
+                              </div>
+                              <div className="muted">{finding.explanation}</div>
+                              {finding.modId ? (
+                                <div className="muted">Likely mod: {finding.modId}</div>
+                              ) : null}
+                              {finding.evidence?.[0] ? (
+                                <div className="muted">Evidence: {finding.evidence[0]}</div>
+                              ) : null}
+                            </div>
+                          ))}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : topCauses.length > 0 ? (
+                    <div className="row launchFixCauseChips">
+                      {topCauses.map((cause) => (
+                        <span key={cause} className="chip subtle">{cause}</span>
                       ))}
                     </div>
                   ) : null}

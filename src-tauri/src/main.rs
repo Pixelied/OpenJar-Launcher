@@ -719,7 +719,8 @@ fn parse_github_release_id(raw: &str) -> Option<u64> {
         return None;
     }
     if let Some(rest) = trimmed.strip_prefix("gh_release:") {
-        return rest.trim().parse::<u64>().ok().filter(|value| *value > 0);
+        let numeric = rest.trim().split(':').next().unwrap_or("").trim();
+        return numeric.parse::<u64>().ok().filter(|value| *value > 0);
     }
     trimmed.parse::<u64>().ok().filter(|value| *value > 0)
 }
@@ -2266,6 +2267,14 @@ struct PickExternalOpenPathGrantsArgs {
     content_type: Option<String>,
     #[serde(default)]
     multiple: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GrantExternalOpenPathsArgs {
+    purpose: String,
+    paths: Vec<String>,
+    #[serde(alias = "contentType", default)]
+    content_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -8383,6 +8392,110 @@ fn local_file_extension_hint(content_type: &str) -> &'static str {
     }
 }
 
+fn local_file_extension_allowed_for_any_supported_type(ext: &str) -> bool {
+    let ext_lc = ext.trim().to_ascii_lowercase();
+    supported_local_content_types()
+        .iter()
+        .any(|content_type| local_file_extension_allowed(content_type, &ext_lc))
+}
+
+fn archive_entry_path_is_likely_shader_content(path: &str) -> bool {
+    let lower = path.trim().replace('\\', "/").to_ascii_lowercase();
+    lower.starts_with("shaders/")
+        || lower.contains("/shaders/")
+        || lower.ends_with(".fsh")
+        || lower.ends_with(".vsh")
+        || lower.ends_with(".glsl")
+        || lower.ends_with(".properties")
+}
+
+fn detect_local_archive_content_type(file_bytes: &[u8]) -> Option<String> {
+    let mut archive = ZipArchive::new(Cursor::new(file_bytes)).ok()?;
+    let mut saw_pack_mcmeta = false;
+    let mut saw_assets = false;
+    let mut saw_data = false;
+    let mut saw_shader_content = false;
+
+    for idx in 0..archive.len().min(512) {
+        let Ok(file) = archive.by_index(idx) else {
+            continue;
+        };
+        let lower = file.name().trim().replace('\\', "/").to_ascii_lowercase();
+        if lower.is_empty() {
+            continue;
+        }
+        if lower == "pack.mcmeta" || lower.ends_with("/pack.mcmeta") {
+            saw_pack_mcmeta = true;
+        }
+        if lower.starts_with("assets/") || lower.contains("/assets/") {
+            saw_assets = true;
+        }
+        if lower.starts_with("data/") || lower.contains("/data/") {
+            saw_data = true;
+        }
+        if archive_entry_path_is_likely_shader_content(&lower) {
+            saw_shader_content = true;
+        }
+    }
+
+    if saw_data && saw_pack_mcmeta {
+        return Some("datapacks".to_string());
+    }
+    if saw_assets && saw_pack_mcmeta {
+        return Some("resourcepacks".to_string());
+    }
+    if saw_shader_content {
+        return Some("shaderpacks".to_string());
+    }
+    if saw_assets {
+        return Some("resourcepacks".to_string());
+    }
+    if saw_data {
+        return Some("datapacks".to_string());
+    }
+    None
+}
+
+fn detect_local_content_type_for_import(path: &Path, file_bytes: &[u8]) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let lower_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+
+    if ext == "jar" {
+        if !detect_mod_loader_hints_from_jar(file_bytes).is_empty() {
+            return Some("mods".to_string());
+        }
+        if detect_local_archive_content_type(file_bytes).as_deref() == Some("shaderpacks") {
+            return Some("shaderpacks".to_string());
+        }
+        return Some("mods".to_string());
+    }
+    if ext == "zip" {
+        if let Some(detected) = detect_local_archive_content_type(file_bytes) {
+            return Some(detected);
+        }
+        if lower_name.contains("shader") {
+            return Some("shaderpacks".to_string());
+        }
+        if lower_name.contains("resourcepack") || lower_name.contains("resource-pack") {
+            return Some("resourcepacks".to_string());
+        }
+        if lower_name.contains("datapack") || lower_name.contains("data-pack") {
+            return Some("datapacks".to_string());
+        }
+    }
+    None
+}
+
 fn local_entry_file_read_path(
     instance_dir: &Path,
     entry: &LockEntry,
@@ -11773,37 +11886,369 @@ fn count_plan_install_actions(
         .count()
 }
 
-fn remove_replaced_entries_for_project(
-    lock: &mut Lockfile,
-    instance_dir: &Path,
-    project_id: &str,
-    keep_enabled_filename: Option<&str>,
-) -> Result<(), String> {
-    let keep = keep_enabled_filename.unwrap_or("");
-    let replaced: Vec<LockEntry> = lock
-        .entries
-        .iter()
-        .filter(|e| e.project_id == project_id)
-        .cloned()
-        .collect();
-    lock.entries.retain(|e| e.project_id != project_id);
+fn provider_project_identity_keys(source: &str, project_id: &str) -> Vec<String> {
+    let normalized_source = source.trim().to_ascii_lowercase();
+    let trimmed_project = project_id.trim();
+    if trimmed_project.is_empty() {
+        return vec![];
+    }
 
-    for old in replaced {
-        let (old_enabled, old_disabled) = mod_paths(instance_dir, &old.filename);
-        if old.filename != keep && old_enabled.exists() {
-            fs::remove_file(&old_enabled)
-                .map_err(|e| format!("remove old mod file '{}' failed: {e}", old.filename))?;
+    let mut out = Vec::new();
+    match normalized_source.as_str() {
+        "modrinth" => {
+            let normalized = normalize_provider_match_key(trimmed_project);
+            if !normalized.is_empty() {
+                out.push(normalized);
+            }
         }
-        if old_disabled.exists() {
-            fs::remove_file(&old_disabled).map_err(|e| {
-                format!(
-                    "remove old disabled mod file '{}' failed: {e}",
-                    old.filename
-                )
-            })?;
+        "github" => {
+            if let Ok((owner, repo)) = parse_github_project_id(trimmed_project) {
+                let repo_key = normalize_provider_match_key(&repo);
+                if !repo_key.is_empty() {
+                    out.push(repo_key);
+                }
+                let full_key = normalize_provider_match_key(&format!("{owner} {repo}"));
+                if !full_key.is_empty() {
+                    out.push(full_key);
+                }
+            }
+        }
+        _ => {}
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn lock_entry_identity_keys(entry: &LockEntry) -> HashSet<String> {
+    let normalized_content_type = normalize_lock_content_type(&entry.content_type);
+    let mut out = HashSet::new();
+
+    if normalized_content_type != "mods" {
+        return out;
+    }
+
+    let canonical_name =
+        normalize_provider_match_key(&canonical_lock_entry_name(&entry.content_type, &entry.filename, &entry.name));
+    if !canonical_name.is_empty() {
+        out.insert(canonical_name);
+    }
+
+    let fallback_name = normalize_provider_match_key(&entry.name);
+    if !fallback_name.is_empty() {
+        out.insert(fallback_name);
+    }
+
+    for candidate in lock_entry_provider_candidates(entry) {
+        let candidate_name = normalize_provider_match_key(&candidate.name);
+        if !candidate_name.is_empty() {
+            out.insert(candidate_name);
+        }
+        for key in provider_project_identity_keys(&candidate.source, &candidate.project_id) {
+            out.insert(key);
         }
     }
+
+    out
+}
+
+fn lock_entries_share_content_target(a: &LockEntry, b: &LockEntry) -> bool {
+    let a_type = normalize_lock_content_type(&a.content_type);
+    let b_type = normalize_lock_content_type(&b.content_type);
+    if a_type != b_type || a.filename != b.filename {
+        return false;
+    }
+
+    let a_scope = normalize_target_scope(&a.target_scope);
+    let b_scope = normalize_target_scope(&b.target_scope);
+    if a_scope != b_scope {
+        return false;
+    }
+
+    if a_type != "datapacks" {
+        return true;
+    }
+
+    let mut a_worlds = a.target_worlds.clone();
+    let mut b_worlds = b.target_worlds.clone();
+    a_worlds.sort();
+    b_worlds.sort();
+    a_worlds == b_worlds
+}
+
+fn remove_lock_entry_files_if_unreferenced(
+    lock: &Lockfile,
+    instance_dir: &Path,
+    old: &LockEntry,
+) -> Result<(), String> {
+    if lock
+        .entries
+        .iter()
+        .any(|entry| lock_entries_share_content_target(entry, old))
+    {
+        return Ok(());
+    }
+
+    let normalized = normalize_lock_content_type(&old.content_type);
+    match normalized.as_str() {
+        "mods" => {
+            let (old_enabled, old_disabled) = mod_paths(instance_dir, &old.filename);
+            if old_enabled.exists() {
+                fs::remove_file(&old_enabled)
+                    .map_err(|e| format!("remove old mod file '{}' failed: {e}", old.filename))?;
+            }
+            if old_disabled.exists() {
+                fs::remove_file(&old_disabled).map_err(|e| {
+                    format!(
+                        "remove old disabled mod file '{}' failed: {e}",
+                        old.filename
+                    )
+                })?;
+            }
+        }
+        "resourcepacks" | "shaderpacks" => {
+            let (enabled_path, disabled_path) =
+                content_paths_for_type(instance_dir, &normalized, &old.filename);
+            if enabled_path.exists() {
+                fs::remove_file(&enabled_path)
+                    .map_err(|e| format!("remove old file '{}' failed: {e}", enabled_path.display()))?;
+            }
+            if disabled_path.exists() {
+                fs::remove_file(&disabled_path).map_err(|e| {
+                    format!(
+                        "remove old disabled file '{}' failed: {e}",
+                        disabled_path.display()
+                    )
+                })?;
+            }
+        }
+        "datapacks" => {
+            for world in &old.target_worlds {
+                let (enabled_path, disabled_path) =
+                    datapack_world_paths(instance_dir, world, &old.filename);
+                if enabled_path.exists() {
+                    fs::remove_file(&enabled_path).map_err(|e| {
+                        format!(
+                            "remove old datapack '{}' failed: {e}",
+                            enabled_path.display()
+                        )
+                    })?;
+                }
+                if disabled_path.exists() {
+                    fs::remove_file(&disabled_path).map_err(|e| {
+                        format!(
+                            "remove old disabled datapack '{}' failed: {e}",
+                            disabled_path.display()
+                        )
+                    })?;
+                }
+            }
+        }
+        _ => {}
+    }
+
     Ok(())
+}
+
+fn remove_lock_entries_matching<F>(
+    lock: &mut Lockfile,
+    instance_dir: &Path,
+    mut predicate: F,
+) -> Result<Vec<LockEntry>, String>
+where
+    F: FnMut(&LockEntry) -> bool,
+{
+    let mut removed: Vec<LockEntry> = Vec::new();
+    let mut retained: Vec<LockEntry> = Vec::with_capacity(lock.entries.len());
+    for entry in lock.entries.drain(..) {
+        if predicate(&entry) {
+            removed.push(entry);
+        } else {
+            retained.push(entry);
+        }
+    }
+    lock.entries = retained;
+    for old in &removed {
+        remove_lock_entry_files_if_unreferenced(lock, instance_dir, old)?;
+    }
+    Ok(removed)
+}
+
+fn lock_entries_conflict_for_duplicate_resolution(a: &LockEntry, b: &LockEntry) -> bool {
+    let a_type = normalize_lock_content_type(&a.content_type);
+    let b_type = normalize_lock_content_type(&b.content_type);
+    if a_type != b_type {
+        return false;
+    }
+
+    if !a.project_id.trim().is_empty() && a.project_id.eq_ignore_ascii_case(b.project_id.trim()) {
+        return true;
+    }
+
+    if a_type != "mods" {
+        return false;
+    }
+
+    let a_source = a.source.trim().to_ascii_lowercase();
+    let b_source = b.source.trim().to_ascii_lowercase();
+    if a_source == b_source {
+        return normalize_provider_match_key(&a.filename) == normalize_provider_match_key(&b.filename)
+            && !a.filename.trim().is_empty()
+            && !b.filename.trim().is_empty();
+    }
+
+    let a_keys = lock_entry_identity_keys(a);
+    let b_keys = lock_entry_identity_keys(b);
+    a_keys.iter().any(|key| b_keys.contains(key))
+}
+
+fn lock_entry_duplicate_resolution_rank(entry: &LockEntry) -> i32 {
+    provider_source_priority(&entry.source)
+}
+
+fn merge_lock_entry_metadata(target: &mut LockEntry, other: &LockEntry) {
+    target.enabled = target.enabled || other.enabled;
+    if target
+        .pinned_version
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        target.pinned_version = other
+            .pinned_version
+            .as_ref()
+            .filter(|value| !value.trim().is_empty())
+            .cloned();
+    }
+    if target.local_analysis.is_none() {
+        target.local_analysis = other.local_analysis.clone();
+    }
+    for (key, value) in &other.hashes {
+        if !value.trim().is_empty() {
+            target
+                .hashes
+                .entry(key.clone())
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    let mut candidates = lock_entry_provider_candidates(target);
+    candidates.extend(lock_entry_provider_candidates(other));
+    target.provider_candidates = compact_provider_candidates(candidates);
+}
+
+fn duplicate_entry_display_name(entry: &LockEntry) -> String {
+    lock_entry_provider_candidates(entry)
+        .into_iter()
+        .find_map(|candidate| {
+            let name = candidate.name.trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .unwrap_or_else(|| canonical_lock_entry_name(&entry.content_type, &entry.filename, &entry.name))
+}
+
+fn duplicate_entry_source_label(source: &str) -> &'static str {
+    match source.trim().to_ascii_lowercase().as_str() {
+        "modrinth" => "Modrinth",
+        "curseforge" => "CurseForge",
+        "github" => "GitHub",
+        _ => "another source",
+    }
+}
+
+fn validate_lock_entry_uniqueness(lock: &Lockfile, new_entry: &LockEntry) -> Result<(), String> {
+    let normalized = normalize_lock_content_type(&new_entry.content_type);
+    if normalized != "mods" {
+        return Ok(());
+    }
+
+    let new_rank = lock_entry_duplicate_resolution_rank(new_entry);
+    let blocked_by = lock.entries.iter().find(|entry| {
+        lock_entries_conflict_for_duplicate_resolution(entry, new_entry)
+            && lock_entry_duplicate_resolution_rank(entry) > new_rank
+    });
+    if let Some(existing) = blocked_by {
+        return Err(format!(
+            "{} is already installed from {}. Lower-priority duplicate installs are blocked.",
+            duplicate_entry_display_name(existing),
+            duplicate_entry_source_label(&existing.source),
+        ));
+    }
+
+    Ok(())
+}
+
+fn enforce_lock_entry_uniqueness(
+    lock: &mut Lockfile,
+    instance_dir: &Path,
+    new_entry: &mut LockEntry,
+) -> Result<(), String> {
+    validate_lock_entry_uniqueness(lock, new_entry)?;
+    let normalized = normalize_lock_content_type(&new_entry.content_type);
+    let exact_project_id = new_entry.project_id.trim().to_string();
+    if !exact_project_id.is_empty() {
+        let removed = remove_lock_entries_matching(lock, instance_dir, |entry| {
+            normalize_lock_content_type(&entry.content_type) == normalized
+                && entry.project_id.eq_ignore_ascii_case(&exact_project_id)
+        })?;
+        for old in &removed {
+            merge_lock_entry_metadata(new_entry, old);
+        }
+    }
+
+    if normalized == "mods" {
+        let removed = remove_lock_entries_matching(lock, instance_dir, |entry| {
+            lock_entries_conflict_for_duplicate_resolution(entry, new_entry)
+        })?;
+        for old in &removed {
+            merge_lock_entry_metadata(new_entry, old);
+        }
+    }
+
+    Ok(())
+}
+
+fn dedupe_installed_mod_entries(lock: &mut Lockfile, instance_dir: &Path) -> Result<bool, String> {
+    let mut changed = false;
+
+    'outer: loop {
+        for left_idx in 0..lock.entries.len() {
+            for right_idx in (left_idx + 1)..lock.entries.len() {
+                if !lock_entries_conflict_for_duplicate_resolution(
+                    &lock.entries[left_idx],
+                    &lock.entries[right_idx],
+                ) {
+                    continue;
+                }
+
+                let keep_left = lock_entry_duplicate_resolution_rank(&lock.entries[left_idx])
+                    >= lock_entry_duplicate_resolution_rank(&lock.entries[right_idx]);
+                let (keep_idx, remove_idx) = if keep_left {
+                    (left_idx, right_idx)
+                } else {
+                    (right_idx, left_idx)
+                };
+
+                let removed = lock.entries.remove(remove_idx);
+                let adjusted_keep_idx = if keep_idx > remove_idx {
+                    keep_idx - 1
+                } else {
+                    keep_idx
+                };
+                merge_lock_entry_metadata(&mut lock.entries[adjusted_keep_idx], &removed);
+                remove_lock_entry_files_if_unreferenced(lock, instance_dir, &removed)?;
+                changed = true;
+                continue 'outer;
+            }
+        }
+        break;
+    }
+
+    Ok(changed)
 }
 
 fn remove_replaced_entries_for_content(
@@ -11813,79 +12258,10 @@ fn remove_replaced_entries_for_content(
     content_type: &str,
 ) -> Result<(), String> {
     let normalized = normalize_lock_content_type(content_type);
-    let replaced: Vec<LockEntry> = lock
-        .entries
-        .iter()
-        .filter(|e| {
-            e.project_id == project_id && normalize_lock_content_type(&e.content_type) == normalized
-        })
-        .cloned()
-        .collect();
-    lock.entries.retain(|e| {
-        !(e.project_id == project_id && normalize_lock_content_type(&e.content_type) == normalized)
-    });
-
-    for old in replaced {
-        match normalized.as_str() {
-            "mods" => {
-                let (old_enabled, old_disabled) = mod_paths(instance_dir, &old.filename);
-                if old_enabled.exists() {
-                    fs::remove_file(&old_enabled).map_err(|e| {
-                        format!("remove old mod file '{}' failed: {e}", old.filename)
-                    })?;
-                }
-                if old_disabled.exists() {
-                    fs::remove_file(&old_disabled).map_err(|e| {
-                        format!(
-                            "remove old disabled mod file '{}' failed: {e}",
-                            old.filename
-                        )
-                    })?;
-                }
-            }
-            "resourcepacks" | "shaderpacks" => {
-                let (enabled_path, disabled_path) =
-                    content_paths_for_type(instance_dir, &normalized, &old.filename);
-                if enabled_path.exists() {
-                    fs::remove_file(&enabled_path).map_err(|e| {
-                        format!("remove old file '{}' failed: {e}", enabled_path.display())
-                    })?;
-                }
-                if disabled_path.exists() {
-                    fs::remove_file(&disabled_path).map_err(|e| {
-                        format!(
-                            "remove old disabled file '{}' failed: {e}",
-                            disabled_path.display()
-                        )
-                    })?;
-                }
-            }
-            "datapacks" => {
-                for world in old.target_worlds {
-                    let (enabled_path, disabled_path) =
-                        datapack_world_paths(instance_dir, &world, &old.filename);
-                    if enabled_path.exists() {
-                        fs::remove_file(&enabled_path).map_err(|e| {
-                            format!(
-                                "remove old datapack '{}' failed: {e}",
-                                enabled_path.display()
-                            )
-                        })?;
-                    }
-                    if disabled_path.exists() {
-                        fs::remove_file(&disabled_path).map_err(|e| {
-                            format!(
-                                "remove old disabled datapack '{}' failed: {e}",
-                                disabled_path.display()
-                            )
-                        })?;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
+    remove_lock_entries_matching(lock, instance_dir, |entry| {
+        normalize_lock_content_type(&entry.content_type) == normalized
+            && entry.project_id.eq_ignore_ascii_case(project_id.trim())
+    })?;
     Ok(())
 }
 
@@ -12354,16 +12730,17 @@ fn check_single_content_update_entry(
             return Ok((None, warnings));
         };
 
-        let latest_version_id = format!("gh_release:{}", selection.release.id);
         if github_release_selection_matches_current(
             &selection,
             &current_version_id,
             &current_version_number,
+            &entry.filename,
             &entry.hashes,
-        ) || latest_version_id == current_version_id.trim()
+        )
         {
             return Ok((None, warnings));
         }
+        let latest_version_id = format!("gh_release:{}", selection.release.id);
         let mut latest_hashes = extract_github_asset_digest(&selection.asset);
         if selection.has_checksum_sidecar {
             latest_hashes
@@ -13056,21 +13433,7 @@ fn try_fast_install_content_update(
         } else {
             vec![]
         };
-        write_download_to_content_targets(
-            &instance_dir,
-            &normalized,
-            &safe_filename,
-            &worlds,
-            &bytes,
-        )?;
-        remove_replaced_entries_for_content(
-            &mut lock,
-            &instance_dir,
-            &update.project_id,
-            &normalized,
-        )?;
-
-        let new_entry = LockEntry {
+        let mut new_entry = LockEntry {
             source: "modrinth".to_string(),
             project_id: update.project_id.clone(),
             version_id: latest_version_id.to_string(),
@@ -13084,14 +13447,14 @@ fn try_fast_install_content_update(
                 },
             ),
             version_number: latest_version_number.clone(),
-            filename: safe_filename,
+            filename: safe_filename.clone(),
             content_type: normalized.clone(),
             target_scope: if normalized == "datapacks" {
                 "world".to_string()
             } else {
                 "instance".to_string()
             },
-            target_worlds: worlds,
+            target_worlds: worlds.clone(),
             pinned_version: carried_pin.clone(),
             enabled: update.enabled,
             hashes: latest_hashes,
@@ -13111,9 +13474,18 @@ fn try_fast_install_content_update(
             }],
             local_analysis: None,
         };
+        validate_lock_entry_uniqueness(&lock, &new_entry)?;
+        write_download_to_content_targets(
+            &instance_dir,
+            &normalized,
+            &safe_filename,
+            &worlds,
+            &bytes,
+        )?;
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
         }
+        enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut new_entry)?;
         lock.entries.push(new_entry.clone());
         lock.entries
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -13201,35 +13573,27 @@ fn try_fast_install_content_update(
         } else {
             vec![]
         };
-        write_download_to_content_targets(
-            &instance_dir,
-            &normalized,
-            &safe_filename,
-            &worlds,
-            &bytes,
-        )?;
         let project_key = format!("cf:{mod_id}");
-        remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
         let fallback_name = if update.name.trim().is_empty() {
             format!("CurseForge {mod_id}")
         } else {
             update.name.clone()
         };
 
-        let new_entry = LockEntry {
+        let mut new_entry = LockEntry {
             source: "curseforge".to_string(),
             project_id: project_key,
             version_id: format!("cf_file:{}", latest_file_id),
             name: canonical_lock_entry_name(&normalized, &safe_filename, &fallback_name),
             version_number: latest_version_number.clone(),
-            filename: safe_filename,
+            filename: safe_filename.clone(),
             content_type: normalized.clone(),
             target_scope: if normalized == "datapacks" {
                 "world".to_string()
             } else {
                 "instance".to_string()
             },
-            target_worlds: worlds,
+            target_worlds: worlds.clone(),
             pinned_version: carried_pin.clone(),
             enabled: update.enabled,
             hashes: latest_hashes,
@@ -13249,9 +13613,18 @@ fn try_fast_install_content_update(
             }],
             local_analysis: None,
         };
+        validate_lock_entry_uniqueness(&lock, &new_entry)?;
+        write_download_to_content_targets(
+            &instance_dir,
+            &normalized,
+            &safe_filename,
+            &worlds,
+            &bytes,
+        )?;
         if normalized == "mods" && !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
         }
+        enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut new_entry)?;
         lock.entries.push(new_entry.clone());
         lock.entries
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -13384,17 +13757,7 @@ fn try_fast_install_content_update(
             .entry("sha256".to_string())
             .or_insert_with(|| sha256_bytes_hex(&bytes));
 
-        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &[], &bytes)?;
         let project_key = github_project_key(&owner, &repo_name);
-        remove_replaced_entries_for_content(&mut lock, &instance_dir, &project_key, &normalized)?;
-        if update.project_id.trim() != project_key {
-            remove_replaced_entries_for_content(
-                &mut lock,
-                &instance_dir,
-                &update.project_id,
-                &normalized,
-            )?;
-        }
         let fallback_name = if update.name.trim().is_empty() {
             if repo_full_name_hint
                 .as_ref()
@@ -13411,7 +13774,7 @@ fn try_fast_install_content_update(
             update.name.clone()
         };
 
-        let new_entry = LockEntry {
+        let mut new_entry = LockEntry {
             source: "github".to_string(),
             project_id: project_key.clone(),
             version_id: format!("gh_release:{latest_release_id}"),
@@ -13421,7 +13784,7 @@ fn try_fast_install_content_update(
             } else {
                 latest_version_number.clone()
             },
-            filename: safe_filename,
+            filename: safe_filename.clone(),
             content_type: normalized.clone(),
             target_scope: "instance".to_string(),
             target_worlds: vec![],
@@ -13448,9 +13811,12 @@ fn try_fast_install_content_update(
             }],
             local_analysis: None,
         };
+        validate_lock_entry_uniqueness(&lock, &new_entry)?;
+        write_download_to_content_targets(&instance_dir, &normalized, &safe_filename, &[], &bytes)?;
         if !new_entry.enabled {
             disable_mod_file(&instance_dir, &new_entry.filename)?;
         }
+        enforce_lock_entry_uniqueness(&mut lock, &instance_dir, &mut new_entry)?;
         lock.entries.push(new_entry.clone());
         lock.entries
             .sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -13869,14 +14235,28 @@ fn github_release_version_label(release: &GithubRelease) -> String {
     format!("release-{}", release.id)
 }
 
+fn github_asset_filename_hint(name: &str) -> String {
+    sanitize_filename(name)
+        .trim()
+        .trim_end_matches(".disabled")
+        .trim()
+        .to_ascii_lowercase()
+}
+
 fn github_release_selection_matches_current(
     selection: &GithubReleaseSelection,
     current_version_id: &str,
     current_version_number: &str,
+    current_filename: &str,
     current_hashes: &HashMap<String, String>,
 ) -> bool {
     let latest_version_id = format!("gh_release:{}", selection.release.id);
-    if latest_version_id.eq_ignore_ascii_case(current_version_id.trim()) {
+    let current_asset_hint = github_asset_filename_hint(current_filename);
+    let selected_asset_hint = github_asset_filename_hint(&selection.asset.name);
+    let asset_filename_matches =
+        !current_asset_hint.is_empty() && current_asset_hint == selected_asset_hint;
+
+    if latest_version_id.eq_ignore_ascii_case(current_version_id.trim()) && asset_filename_matches {
         return true;
     }
 
@@ -13886,6 +14266,7 @@ fn github_release_selection_matches_current(
         && latest_version_label
             .trim()
             .eq_ignore_ascii_case(current_version_number.trim())
+        && (current_asset_hint.is_empty() || asset_filename_matches)
     {
         return true;
     }
@@ -14254,8 +14635,9 @@ fn select_github_release_with_asset(
         query.trim()
     };
 
-    let collect_candidates = |allow_prerelease: bool| -> Vec<(i64, i64, GithubReleaseSelection)> {
-        let mut candidates: Vec<(i64, i64, GithubReleaseSelection)> = Vec::new();
+    let collect_candidates =
+        |allow_prerelease: bool| -> Vec<(i64, i64, i64, GithubReleaseSelection)> {
+            let mut candidates: Vec<(i64, i64, i64, GithubReleaseSelection)> = Vec::new();
         for release in releases {
             if release.draft || (release.prerelease && !allow_prerelease) {
                 continue;
@@ -14290,6 +14672,19 @@ fn select_github_release_with_asset(
                 ) {
                     continue;
                 }
+                let combined_text = format!(
+                    "{} {} {} {} {} {} {}",
+                    repo.name,
+                    repo.full_name,
+                    repo.description.clone().unwrap_or_default(),
+                    repo.topics.join(" "),
+                    release.tag_name,
+                    release.name.clone().unwrap_or_default(),
+                    asset.name
+                );
+                let version_rank =
+                    github_game_version_match_rank(required_game_version, &combined_text)
+                        .unwrap_or(0);
                 let mut asset_score = github_name_similarity_score(&asset.name, query_hint)
                     + github_name_similarity_score(&asset.name, &repo_hint);
                 if let Some(content_type) = asset.content_type.as_ref() {
@@ -14306,21 +14701,30 @@ fn select_github_release_with_asset(
                     asset: asset.clone(),
                     has_checksum_sidecar: checksum_present,
                 };
-                candidates.push((github_release_sort_key(release), asset_score, selection));
+                candidates.push((
+                    version_rank,
+                    github_release_sort_key(release),
+                    asset_score,
+                    selection,
+                ));
             }
         }
-        candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+        candidates.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.2.cmp(&a.2))
+        });
         candidates
     };
 
     let stable_candidates = collect_candidates(false);
     if let Some(best) = stable_candidates.into_iter().next() {
-        return Some(best.2);
+        return Some(best.3);
     }
     collect_candidates(true)
         .into_iter()
         .next()
-        .map(|item| item.2)
+        .map(|item| item.3)
 }
 
 fn github_select_release_with_repo_hints(
@@ -14872,26 +15276,49 @@ fn github_loader_filter_matches(
 }
 
 fn github_game_version_filter_matches(required_game_version: Option<&str>, text: &str) -> bool {
+    github_game_version_match_rank(required_game_version, text).is_some()
+}
+
+fn github_game_version_match_rank(required_game_version: Option<&str>, text: &str) -> Option<i64> {
     let Some(required) = required_game_version.map(|value| value.trim().to_ascii_lowercase())
     else {
-        return true;
+        return Some(0);
     };
     if required.is_empty() {
-        return true;
+        return Some(0);
     }
+
+    let required_parts = parse_mc_version_parts_loose(&required)?;
+    let mut saw_any_version = false;
+    let mut saw_minor_fallback = false;
+
     for token in text.split(|ch: char| !(ch.is_ascii_digit() || ch == '.')) {
         let normalized = token.trim_matches('.');
         if normalized.len() < 3 || !normalized.starts_with('1') {
             continue;
         }
-        if parse_mc_version_parts_loose(normalized).is_none() {
+        let Some(advertised_parts) = parse_mc_version_parts_loose(normalized) else {
+            continue;
+        };
+        saw_any_version = true;
+        if normalized.eq_ignore_ascii_case(&required) {
+            return Some(2);
+        }
+        if advertised_parts.0 != required_parts.0 || advertised_parts.1 != required_parts.1 {
             continue;
         }
-        if minecraft_version_matches_advertised(normalized, &required, true) {
-            return true;
+        if required_parts.2.is_none() || advertised_parts.2.is_none() {
+            saw_minor_fallback = true;
         }
     }
-    false
+
+    if saw_minor_fallback {
+        Some(1)
+    } else if saw_any_version {
+        None
+    } else {
+        None
+    }
 }
 
 fn github_category_filter_matches(
@@ -16680,32 +17107,20 @@ where
         vec![]
     };
     let post_process_started = Instant::now();
-    write_staged_download_to_content_targets(
-        instance_dir,
-        &normalized,
-        &safe_filename,
-        &worlds,
-        &tmp_path,
-    )?;
-    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
-    maybe_log_download_profile(project_id, &stream_result.profile);
-
-    remove_replaced_entries_for_content(lock, instance_dir, project_id, &normalized)?;
-
-    let new_entry = LockEntry {
+    let mut new_entry = LockEntry {
         source: "modrinth".to_string(),
         project_id: project_id.to_string(),
         version_id: version.id.clone(),
         name: canonical_lock_entry_name(&normalized, &safe_filename, &resolved_title),
         version_number: version.version_number.clone(),
-        filename: safe_filename,
+        filename: safe_filename.clone(),
         content_type: normalized.clone(),
         target_scope: if normalized == "datapacks" {
             "world".to_string()
         } else {
             "instance".to_string()
         },
-        target_worlds: worlds,
+        target_worlds: worlds.clone(),
         pinned_version: None,
         enabled: true,
         hashes: {
@@ -16729,6 +17144,17 @@ where
         }],
         local_analysis: None,
     };
+    validate_lock_entry_uniqueness(lock, &new_entry)?;
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &worlds,
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(project_id, &stream_result.profile);
+    enforce_lock_entry_uniqueness(lock, instance_dir, &mut new_entry)?;
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
 }
@@ -16807,19 +17233,7 @@ where
         vec![]
     };
     let post_process_started = Instant::now();
-    write_staged_download_to_content_targets(
-        instance_dir,
-        &normalized,
-        &safe_filename,
-        &worlds,
-        &tmp_path,
-    )?;
-    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
-    maybe_log_download_profile(&format!("cf:{mod_id}:{}", file.id), &stream_result.profile);
-
-    remove_replaced_entries_for_content(lock, instance_dir, &project_key, &normalized)?;
-
-    let new_entry = LockEntry {
+    let mut new_entry = LockEntry {
         source: "curseforge".to_string(),
         project_id: project_key,
         version_id: format!("cf_file:{}", file.id),
@@ -16837,14 +17251,14 @@ where
         } else {
             file.display_name.clone()
         },
-        filename: safe_filename,
+        filename: safe_filename.clone(),
         content_type: normalized.clone(),
         target_scope: if normalized == "datapacks" {
             "world".to_string()
         } else {
             "instance".to_string()
         },
-        target_worlds: worlds,
+        target_worlds: worlds.clone(),
         pinned_version: None,
         enabled: true,
         hashes: parse_cf_hashes(&file),
@@ -16867,6 +17281,17 @@ where
         }],
         local_analysis: None,
     };
+    validate_lock_entry_uniqueness(lock, &new_entry)?;
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &worlds,
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(&format!("cf:{mod_id}:{}", file.id), &stream_result.profile);
+    enforce_lock_entry_uniqueness(lock, instance_dir, &mut new_entry)?;
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
 }
@@ -16957,28 +17382,7 @@ where
         |downloaded_bytes, total_bytes| on_progress(downloaded_bytes, total_bytes),
     )?;
 
-    on_stage("installing", "Installing downloaded GitHub mod…", None);
-    let post_process_started = Instant::now();
-    write_staged_download_to_content_targets(
-        instance_dir,
-        &normalized,
-        &safe_filename,
-        &[],
-        &tmp_path,
-    )?;
-    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
-    maybe_log_download_profile(
-        &format!("gh:{owner}/{repo_name}:{}", selection.release.id),
-        &stream_result.profile,
-    );
-
-    on_stage("finalizing", "Updating installed content metadata…", None);
     let project_key = github_project_key(&owner, &repo_name);
-    remove_replaced_entries_for_content(lock, instance_dir, &project_key, &normalized)?;
-    if project_id.trim() != project_key {
-        remove_replaced_entries_for_content(lock, instance_dir, project_id, &normalized)?;
-    }
-
     let mut hashes = extract_github_asset_digest(&selection.asset);
     hashes.insert("sha256".to_string(), stream_result.sha256.clone());
     if !stream_result.sha512.trim().is_empty() {
@@ -17006,14 +17410,14 @@ where
     let version_number = github_release_version_label(&selection.release);
     let version_id = format!("gh_release:{}", selection.release.id);
 
-    let new_entry = LockEntry {
+    let mut new_entry = LockEntry {
         source: "github".to_string(),
         project_id: project_key.clone(),
         version_id: version_id.clone(),
         name: canonical_lock_entry_name(&normalized, &safe_filename, &resolved_name),
         version_number: version_number.clone(),
-        filename: safe_filename,
-        content_type: normalized,
+        filename: safe_filename.clone(),
+        content_type: normalized.clone(),
         target_scope: "instance".to_string(),
         target_worlds: vec![],
         pinned_version: None,
@@ -17031,6 +17435,24 @@ where
         }],
         local_analysis: None,
     };
+    validate_lock_entry_uniqueness(lock, &new_entry)?;
+    on_stage("installing", "Installing downloaded GitHub mod…", None);
+    let post_process_started = Instant::now();
+    write_staged_download_to_content_targets(
+        instance_dir,
+        &normalized,
+        &safe_filename,
+        &[],
+        &tmp_path,
+    )?;
+    stream_result.profile.post_process_ms = post_process_started.elapsed().as_millis();
+    maybe_log_download_profile(
+        &format!("gh:{owner}/{repo_name}:{}", selection.release.id),
+        &stream_result.profile,
+    );
+
+    on_stage("finalizing", "Updating installed content metadata…", None);
+    enforce_lock_entry_uniqueness(lock, instance_dir, &mut new_entry)?;
     lock.entries.push(new_entry.clone());
     Ok(new_entry)
 }
@@ -19380,6 +19802,7 @@ fn main() {
             commands::impls::read_local_image_data_url,
             commands::impls::pick_instance_icon_file,
             commands::impls::pick_external_open_path_grants,
+            commands::impls::grant_external_open_paths,
             commands::impls::pick_external_save_path_grant,
             commands::impls::detect_java_runtimes,
             commands::impls::delete_instance,
