@@ -15673,15 +15673,16 @@ export default function App() {
 
               <div className={`card instPanel ${instanceTab === "content" ? "instPanelContent" : ""}`}>
                 {instanceTab === "content" ? (
-                  <div className="instanceContentWrap">
+                  <div className={`instanceContentWrap ${instanceContentDropActive ? "dropActive" : ""}`}>
                     <div className={`instanceContentWorkspaceCard ${instanceContentDropActive ? "dropActive" : ""}`}>
                       {instanceContentDropActive ? (
                         <div className="instanceContentDropOverlay" aria-hidden="true">
-                          <div className="instanceContentDropOverlayFrame" />
+                          <div className="instanceContentDropOverlayFrame">
+                            <svg className="instanceContentDropOverlayFrameSvg" aria-hidden="true">
+                              <rect className="instanceContentDropOverlayFrameStroke" />
+                            </svg>
+                          </div>
                           <div className="instanceContentDropOverlayCard">
-                            <div className="instanceContentDropOverlayIcon">
-                              <Icon name="upload" size={20} />
-                            </div>
                             <div className="instanceContentDropOverlayEyebrow">Drop target</div>
                             <div className="instanceContentDropOverlayTitle">Drop files to import</div>
                             <div className="instanceContentDropOverlaySub">

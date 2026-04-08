@@ -74,6 +74,17 @@ mod modpack_tests {
     }
 
     #[test]
+    fn diff_entries_ignores_unchanged_entries() {
+        let current = vec![entry("modrinth", "same")];
+        let next = vec![entry("modrinth", "same")];
+
+        let (added, removed, overridden) = diff_entries(&current, &next);
+        assert!(added.is_empty());
+        assert!(removed.is_empty());
+        assert!(overridden.is_empty());
+    }
+
+    #[test]
     fn migration_converts_legacy_presets() {
         let payload = serde_json::json!({
             "presets": [

@@ -7358,6 +7358,10 @@ button, input, select { font-family: inherit; }
   flex-direction: column;
   gap: 10px;
 }
+
+.instanceContentWrap.dropActive{
+  border-radius: inherit;
+}
 .instanceContentTopRow{
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -18632,35 +18636,106 @@ body{
 
 .instanceContentDropOverlay{
   position: absolute;
-  inset: 0;
+  inset: 1px;
   z-index: 60;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 18px;
+  padding: 12px;
   pointer-events: none;
-  border-radius: inherit;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 22px;
+  border: 2px solid color-mix(in srgb, var(--surface) 78%, white 22%);
   background:
-    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent-soft) 20%, transparent), transparent 60%),
-    color-mix(in srgb, var(--surface) 86%, transparent);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+    radial-gradient(circle at 42% 44%, color-mix(in srgb, var(--accent-soft) 7%, transparent), transparent 48%),
+    linear-gradient(180deg, color-mix(in srgb, white 5%, transparent), transparent 22%, color-mix(in srgb, var(--surface) 3%, transparent) 100%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 4%, transparent), transparent 42%, color-mix(in srgb, white 4%, transparent) 100%),
+    color-mix(in srgb, var(--surface) 42%, transparent);
+  background-size: 150% 150%, 100% 100%, 100% 100%, 100% 100%;
+  background-position: 42% 44%, 50% 0%, 0% 0%, 0% 0%;
+  backdrop-filter: blur(7px) saturate(1.01);
+  -webkit-backdrop-filter: blur(7px) saturate(1.01);
+  box-shadow:
+    0 0 0 7px color-mix(in srgb, var(--surface) 95%, white 5%),
+    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.3) 30%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--stroke2) 8%, transparent);
+  animation: instanceDropOverlayBackdropDrift 6.4s ease-in-out infinite;
+}
+
+.instanceContentDropOverlay::before{
+  content: "";
+  position: absolute;
+  inset: -28%;
+  z-index: 0;
+  background:
+    linear-gradient(
+      115deg,
+      transparent 18%,
+      color-mix(in srgb, white 8%, transparent) 42%,
+      color-mix(in srgb, var(--accent-soft) 10%, transparent) 50%,
+      color-mix(in srgb, white 5%, transparent) 58%,
+      transparent 82%
+    );
+  opacity: 0.16;
+  filter: blur(42px);
+  transform: translate3d(-14%, 0, 0) rotate(8deg);
+  animation: instanceDropOverlayAmbientSweep 5.2s ease-in-out infinite;
+}
+
+.instanceContentDropOverlay::after{
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: 0;
+  border-radius: 17px;
+  background:
+    radial-gradient(circle at 24% 22%, color-mix(in srgb, white 8%, transparent), transparent 16%),
+    radial-gradient(circle at 78% 72%, color-mix(in srgb, var(--accent-soft) 8%, transparent), transparent 22%);
+  opacity: 0.14;
+  filter: blur(24px);
+  animation: instanceDropOverlayGlowDrift 7.6s ease-in-out infinite;
 }
 
 .instanceContentDropOverlayFrame{
   position: absolute;
-  inset: 14px;
+  inset: 0;
   border-radius: 22px;
-  border: 1.5px dashed color-mix(in srgb, var(--accent) 44%, var(--stroke2) 56%);
   background:
     linear-gradient(
       180deg,
-      color-mix(in srgb, var(--accent-soft) 22%, transparent),
-      color-mix(in srgb, var(--surface) 12%, transparent)
+      color-mix(in srgb, white 7%, transparent),
+      color-mix(in srgb, var(--accent-soft) 10%, transparent)
     );
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.52) 50%, transparent),
-    0 12px 28px rgba(17, 24, 39, 0.05);
+    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.46) 46%, transparent),
+    0 10px 24px rgba(17, 24, 39, 0.04);
+  animation: instanceDropOverlayFramePulse 4.2s ease-in-out infinite;
+}
+
+.instanceContentDropOverlayFrameSvg{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.instanceContentDropOverlayFrameStroke{
+  x: 0.75px;
+  y: 0.75px;
+  width: calc(100% - 1.5px);
+  height: calc(100% - 1.5px);
+  rx: 22px;
+  ry: 22px;
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 34%, var(--stroke2) 66%);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-dasharray: 10 4.5;
+  stroke-dashoffset: 0;
+  vector-effect: non-scaling-stroke;
+  animation: instanceDropOverlayDashFlow 1.4s linear infinite;
 }
 
 .instanceContentDropOverlayCard{
@@ -18679,26 +18754,10 @@ body{
     0 18px 38px rgba(17, 24, 39, 0.08),
     0 3px 10px rgba(17, 24, 39, 0.05);
   text-align: center;
-}
-
-.instanceContentDropOverlayIcon{
-  width: 46px;
-  height: 46px;
-  border-radius: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: color-mix(in srgb, var(--accent) 76%, var(--text) 24%);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 52%, white 48%), color-mix(in srgb, var(--accent-soft) 72%, transparent));
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,0.72),
-    0 8px 18px rgba(17, 24, 39, 0.06);
+  animation: instanceDropOverlayCardFloat 2.4s ease-in-out infinite;
 }
 
 .instanceContentDropOverlayEyebrow{
-  margin-top: 12px;
   font-size: 10px;
   font-weight: 780;
   letter-spacing: 0.14em;
@@ -18733,6 +18792,98 @@ body{
   font-weight: 700;
   letter-spacing: 0.01em;
   color: color-mix(in srgb, var(--muted) 80%, var(--text) 20%);
+}
+
+@keyframes instanceDropOverlayGlowDrift{
+  0%, 100%{
+    transform: translate3d(-1%, -1%, 0) scale(1);
+    opacity: 0.28;
+  }
+  50%{
+    transform: translate3d(1%, 1%, 0) scale(1.04);
+    opacity: 0.44;
+  }
+}
+
+@keyframes instanceDropOverlayBackdropDrift{
+  0%, 100%{
+    background-position: 38% 42%, 50% 0%, 0% 0%, 0% 0%;
+  }
+  50%{
+    background-position: 58% 56%, 50% 0%, 0% 0%, 0% 0%;
+  }
+}
+
+@keyframes instanceDropOverlayAmbientSweep{
+  0%, 100%{
+    transform: translate3d(-14%, -1%, 0) rotate(8deg);
+    opacity: 0.26;
+  }
+  50%{
+    transform: translate3d(14%, 1%, 0) rotate(8deg);
+    opacity: 0.46;
+  }
+}
+
+@keyframes instanceDropOverlayFramePulse{
+  0%, 100%{
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--stroke2) 70%);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.44) 44%, transparent),
+      0 10px 24px rgba(17, 24, 39, 0.04);
+  }
+  50%{
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--stroke2) 60%);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.5) 50%, transparent),
+      0 14px 30px rgba(17, 24, 39, 0.06);
+  }
+}
+
+@keyframes instanceDropOverlayDashFlow{
+  from{
+    stroke-dashoffset: 0;
+  }
+  to{
+    stroke-dashoffset: -14.5;
+  }
+}
+
+@keyframes instanceDropOverlaySweep{
+  0%, 100%{
+    background-position: 10% 50%;
+    opacity: 0.34;
+  }
+  50%{
+    background-position: 90% 50%;
+    opacity: 0.56;
+  }
+}
+
+@keyframes instanceDropOverlayCardFloat{
+  0%, 100%{
+    transform: translateY(0);
+    box-shadow:
+      0 18px 38px rgba(17, 24, 39, 0.08),
+      0 3px 10px rgba(17, 24, 39, 0.05);
+  }
+  50%{
+    transform: translateY(-4px);
+    box-shadow:
+      0 24px 46px rgba(17, 24, 39, 0.12),
+      0 6px 16px rgba(17, 24, 39, 0.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .instanceContentDropOverlay,
+  .instanceContentDropOverlay::before,
+  .instanceContentDropOverlay::after,
+  .instanceContentDropOverlayFrame,
+  .instanceContentDropOverlayFrameStroke,
+  .instanceContentDropOverlayCard{
+    animation: none;
+  }
 }
 
 .instanceContentResultsShell{
