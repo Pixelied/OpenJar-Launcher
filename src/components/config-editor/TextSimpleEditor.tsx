@@ -1,5 +1,5 @@
 import { useId, useMemo } from "react";
-import { getSuggestions } from "../lib/configSuggestions";
+import { getSuggestions } from "../../lib/configSuggestions";
 
 type ParsedEntry = {
   lineIndex: number;

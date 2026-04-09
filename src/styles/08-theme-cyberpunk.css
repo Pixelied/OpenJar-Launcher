@@ -1,0 +1,1133 @@
+/* ════════════════════════════════════════════════════════════
+   CYBERPUNK THEME — NEON NOIR v7
+   Palette:
+   --cp-pink    #ff2a6d   hot magenta  / alerts, borders
+   --cp-cyan    #05d9e8   electric cyan / primary text + glow
+   --cp-yellow  #d4f700   acid yellow  / meta / descriptions
+   --cp-amber   #ff9900   warm amber   / CTA accents
+   --cp-purple  #7b2fff   deep violet  / accent layers
+════════════════════════════════════════════════════════════ */
+
+/* ── Local font assets ────────────────────────────────────── */
+@font-face {
+  font-family: "Orbitron";
+  src: url("../assets/fonts/cyberpunk/Orbitron-400.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Orbitron";
+  src: url("../assets/fonts/cyberpunk/Orbitron-600.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Orbitron";
+  src: url("../assets/fonts/cyberpunk/Orbitron-700.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Orbitron";
+  src: url("../assets/fonts/cyberpunk/Orbitron-900.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Rajdhani";
+  src: url("../assets/fonts/cyberpunk/Rajdhani-400.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Rajdhani";
+  src: url("../assets/fonts/cyberpunk/Rajdhani-500.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Rajdhani";
+  src: url("../assets/fonts/cyberpunk/Rajdhani-600.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Rajdhani";
+  src: url("../assets/fonts/cyberpunk/Rajdhani-700.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Share Tech Mono";
+  src: url("../assets/fonts/cyberpunk/ShareTechMono-400.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+/* ════════════════════════════════════════════════════════════
+   CSS CUSTOM PROPERTIES
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] {
+  --cp-pink:        #ff2a6d;
+  --cp-cyan:        #05d9e8;
+  --cp-yellow:      #d4f700;
+  --cp-amber:       #ff9900;
+  --cp-purple:      #7b2fff;
+  --cp-surface:     #0a0510;
+  --cp-surface-2:   #0d0618;
+  --cp-text:        rgba(205,236,235,.92);
+  --cp-text-dim:    rgba(160,195,200,.65);
+  --cp-border:      rgba(255,42,109,.22);
+  --cp-border-cyan: rgba(5,217,232,.22);
+
+  /* Kill the deep-blue app accent tokens at the source */
+  --accent:            var(--cp-cyan) !important;
+  --accent-muted:      rgba(5,217,232,.18) !important;
+  --color-primary:     var(--cp-cyan) !important;
+  --color-secondary:   var(--cp-pink) !important;
+  --color-accent:      var(--cp-yellow) !important;
+  --color-surface:     #0a0510 !important;
+  --color-background:  #0a0510 !important;
+  --color-text:        rgba(205,236,235,.92) !important;
+  --blue-500:          var(--cp-cyan) !important;
+  --blue-600:          var(--cp-cyan) !important;
+  --indigo-500:        var(--cp-purple) !important;
+  --sky-500:           var(--cp-cyan) !important;
+  --primary:           var(--cp-cyan) !important;
+  --primary-foreground:#09050a !important;
+  --ring:              rgba(5,217,232,.45) !important;
+  --border:            rgba(255,42,109,.22) !important;
+  --muted:             rgba(13,6,20,.96) !important;
+  --muted-foreground:  rgba(160,195,200,.65) !important;
+  --popover:           #0d0618 !important;
+  --popover-foreground:rgba(205,236,235,.92) !important;
+  --card:              #0d0618 !important;
+  --card-foreground:   rgba(205,236,235,.92) !important;
+  --background:        #0a0510 !important;
+  --foreground:        rgba(205,236,235,.92) !important;
+  --success:           #39ff8f !important;
+  --warning:           #ff9900 !important;
+  --danger:            #ff2a6d !important;
+  --info:              var(--cp-cyan) !important;
+  --tw-ring-color:     rgba(5,217,232,.40) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   KEYFRAMES
+════════════════════════════════════════════════════════════ */
+@keyframes cp-flicker {
+  0%,18%,20%,22%,24%,52%,55%,100% { opacity:1; }
+  19%,21%,23%,53%,54%              { opacity:.45; }
+}
+@keyframes cp-rgb-shift {
+  0%   { text-shadow:-2px 0 #ff2a6d,  2px 0 #05d9e8; }
+  25%  { text-shadow: 2px 0 #ff2a6d, -2px 0 #d4f700; }
+  50%  { text-shadow:-1px 0 #05d9e8,  1px 0 #ff2a6d; }
+  75%  { text-shadow: 1px 0 #d4f700, -1px 0 #05d9e8; }
+  100% { text-shadow:-2px 0 #ff2a6d,  2px 0 #05d9e8; }
+}
+@keyframes cp-neon-flicker {
+  0%,100%{opacity:1} 41%{opacity:1} 42%{opacity:.62}
+  43%{opacity:1} 45%{opacity:.32} 46%{opacity:1}
+}
+@keyframes cp-border-breathe {
+  0%,100%{
+    border-color:rgba(255,42,109,.22);
+    box-shadow:0 0 8px rgba(255,42,109,.10),inset 0 0 6px rgba(5,217,232,.04);
+  }
+  50%{
+    border-color:rgba(5,217,232,.28);
+    box-shadow:0 0 16px rgba(5,217,232,.14),inset 0 0 10px rgba(255,42,109,.04);
+  }
+}
+@keyframes cp-alert-pulse {
+  0%,100%{ box-shadow:inset 0 0 0 1px rgba(5,217,232,.18),0 0 8px rgba(5,217,232,.05); }
+  50%    { box-shadow:inset 0 0 0 1px rgba(5,217,232,.36),0 0 18px rgba(5,217,232,.12); }
+}
+@keyframes cp-title-glitch {
+  0%,85%,100%{
+    text-shadow:0 0 12px rgba(5,217,232,.65),0 0 32px rgba(5,217,232,.26),0 0 64px rgba(5,217,232,.10);
+    transform:none;filter:none;
+  }
+  86%{ text-shadow:-3px 0 #ff2a6d,3px 0 #05d9e8;transform:translateX(-2px);filter:brightness(1.4); }
+  87%{ clip-path:inset(28% 0 52% 0);transform:translateX(4px) skewX(-3deg);text-shadow:4px 0 #ff2a6d,-4px 0 #d4f700; }
+  88%{ clip-path:inset(0);text-shadow:0 0 12px rgba(5,217,232,.65);transform:translateX(-1px); }
+  89%{ text-shadow:-2px 0 #05d9e8,2px 0 #ff2a6d;transform:skewX(1deg); }
+  90%{ clip-path:inset(60% 0 10% 0);transform:translateX(3px);text-shadow:#d4f700 0 0 8px;filter:brightness(1.2); }
+  91%{ clip-path:inset(0);transform:none;text-shadow:0 0 12px rgba(5,217,232,.65);filter:none; }
+}
+
+/* ════════════════════════════════════════════════════════════
+   GLOBAL RESET — border-radius + ring token only
+   NO transition or animation overrides here — that was v6's bug
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] * {
+  border-radius:0 !important;
+  font-family:'Rajdhani',system-ui,sans-serif;
+  cursor:crosshair !important;
+  --tw-ring-color:rgba(5,217,232,.40) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   BASE BACKGROUND
+   Target the root + every likely app-shell wrapper so the
+   deep navy bleed from the host theme can't show through.
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] body,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] #root,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] #app,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .app,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .appRoot,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .appWrapper,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .content,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .contentArea,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .mainContent,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .pageContent,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="appLayout"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="pageWrapper"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="mainWrapper"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="contentWrapper"] {
+  background:
+    radial-gradient(ellipse at  6%  6%,  rgba(255,42,109,.26), transparent 28%),
+    radial-gradient(ellipse at 94%  5%,  rgba(5,217,232,.18),  transparent 24%),
+    radial-gradient(ellipse at 72% 86%,  rgba(212,247,0,.10),  transparent 22%),
+    radial-gradient(ellipse at 12% 92%,  rgba(123,47,255,.14), transparent 20%),
+    radial-gradient(ellipse at 50% 50%,  rgba(255,153,0,.04),  transparent 46%),
+    linear-gradient(160deg,#070009 0%,#02060f 55%,#08020a 100%) !important;
+  color:var(--cp-text) !important;
+  font-family:'Rajdhani',system-ui,sans-serif !important;
+}
+
+/* ── CRT scanlines overlay ────────────────────────────────── */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .content::before {
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:9998;
+  background:
+    repeating-linear-gradient(180deg,
+      transparent 0,transparent 2px,
+      rgba(5,217,232,.012) 2px,rgba(5,217,232,.012) 3px),
+    linear-gradient(90deg,
+      transparent 11%,rgba(255,42,109,.055) 11.4%,transparent 11.8%,
+      transparent 37%,rgba(5,217,232,.040) 37.4%,transparent 37.8%,
+      transparent 63%,rgba(212,247,0,.030) 63.4%,transparent 63.8%,
+      transparent 81%,rgba(123,47,255,.040) 81.4%,transparent 81.8%);
+  mix-blend-mode:screen;opacity:.65;
+  animation:cp-flicker 14s infinite step-start;
+}
+
+/* ── Dot grid ─────────────────────────────────────────────── */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .content::after {
+  content:"";position:fixed;inset:0;pointer-events:none;z-index:9997;opacity:.04;
+  background:radial-gradient(circle,rgba(5,217,232,.85) 1px,transparent 1px);
+  background-size:48px 48px;mix-blend-mode:screen;
+}
+
+/* ════════════════════════════════════════════════════════════
+   TYPOGRAPHY
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h1,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h2,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h3,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h4,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h5 {
+  font-family:'Orbitron',monospace !important;
+  letter-spacing:.04em;
+}
+
+/* Large page titles */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryHeroTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeSpotlightTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .pageTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="HeroTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="heroTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="PageTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="pageTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h1 {
+  font-family:'Orbitron',monospace !important;
+  color:var(--cp-cyan) !important;
+  animation:cp-title-glitch 8s infinite, cp-neon-flicker 9s infinite;
+  letter-spacing:.05em;
+  text-shadow:0 0 12px rgba(5,217,232,.65),0 0 32px rgba(5,217,232,.26),0 0 64px rgba(5,217,232,.10);
+}
+
+/* Section headings */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h2,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SectionTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="sectionTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SidebarTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="sidebarTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="NavTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="navTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="GroupTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="groupTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="PanelTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="panelTitle"] {
+  font-family:'Orbitron',monospace !important;
+  color:var(--cp-cyan) !important;
+  text-shadow:0 0 10px rgba(5,217,232,.45),0 0 24px rgba(5,217,232,.18);
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+
+/* h3 */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h3,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="subTitle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SubTitle"] {
+  font-family:'Orbitron',monospace !important;
+  color:rgba(5,217,232,.82) !important;
+  text-shadow:0 0 8px rgba(5,217,232,.30);
+  text-transform:uppercase;
+  letter-spacing:.06em;
+}
+
+/* h4 */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] h4 {
+  font-family:'Orbitron',monospace !important;
+  color:var(--cp-yellow) !important;
+  text-shadow:0 0 6px rgba(212,247,0,.28);
+}
+
+/* Eyebrow / all-caps labels */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingTitle,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroEyebrow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .accountHeroEyebrow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryHeroEyebrow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .pageRouteEyebrow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceContentWorkspaceEyebrow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroSummaryLabel,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Eyebrow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="eyebrow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Label"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="label"] {
+  font-family:'Share Tech Mono',monospace !important;
+  color:var(--cp-pink) !important;
+  text-transform:uppercase;
+  letter-spacing:.14em;
+  font-size:.80em !important;
+  animation:cp-rgb-shift 4s linear infinite;
+}
+
+/* Sub / description text */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsSectionSub,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingSub,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroSummaryMeta,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="subText"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SubText"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="description"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Description"] {
+  color:rgba(212,247,0,.76) !important;
+  text-shadow:0 0 7px rgba(212,247,0,.22);
+}
+
+/* Stat / KPI values */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroSummaryValue,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryHeroStatValue,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .accountSummaryValue,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="kpiVal"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="statVal"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="KpiVal"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="StatVal"] {
+  font-family:'Orbitron',monospace !important;
+  color:var(--cp-cyan) !important;
+  text-shadow:0 0 14px rgba(5,217,232,.65),0 0 36px rgba(5,217,232,.28);
+  animation:cp-neon-flicker 7s infinite;
+}
+
+/* Body copy */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] p,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] span,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] li,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] td,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] th {
+  color:var(--cp-text);
+}
+
+/* Links */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] a {
+  color:var(--cp-cyan) !important;
+  text-decoration:none;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] a:hover {
+  color:var(--cp-yellow) !important;
+  text-shadow:0 0 8px rgba(212,247,0,.40);
+}
+
+/* Dividers */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] hr,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="divider"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="separator"] {
+  border-color:rgba(255,42,109,.18) !important;
+  box-shadow:0 1px 0 rgba(5,217,232,.08);
+}
+
+/* Code / mono */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] code,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] pre,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="mono"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Mono"] {
+  font-family:'Share Tech Mono',monospace !important;
+  color:var(--cp-yellow) !important;
+  background:rgba(212,247,0,.05) !important;
+  border-color:rgba(212,247,0,.18) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   NAV RAIL
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navRail {
+  background:linear-gradient(180deg,rgba(7,2,11,.99),rgba(3,5,13,.99)) !important;
+  border-right-color:rgba(255,42,109,.32) !important;
+  box-shadow:
+    inset -1px 0 0 rgba(255,42,109,.22),
+    inset -3px 0 14px rgba(255,42,109,.08),
+    inset  0  1px 0 rgba(5,217,232,.12),
+    20px 0 44px rgba(2,4,14,.62) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navBtn {
+  border-color:rgba(255,42,109,.12) !important;
+  color:rgba(150,168,190,.75) !important;
+  transition:background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease !important;
+  background:transparent !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navBtn:hover {
+  background:linear-gradient(180deg,rgba(44,8,20,.95),rgba(16,5,14,.95)) !important;
+  border-color:rgba(255,42,109,.50) !important;
+  color:var(--cp-cyan) !important;
+  box-shadow:inset 0 0 0 1px rgba(5,217,232,.16),0 0 24px rgba(255,42,109,.18) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navBtn.active {
+  background:linear-gradient(180deg,rgba(88,13,28,.98),rgba(46,8,20,.99)) !important;
+  border-color:rgba(255,42,109,.62) !important;
+  color:var(--cp-cyan) !important;
+  box-shadow:
+    inset 0 0 0 1px rgba(5,217,232,.38),
+    0 0 0 1px rgba(255,42,109,.26),
+    0 0 28px rgba(255,42,109,.22),
+    0 0 10px rgba(5,217,232,.15) !important;
+  animation:cp-neon-flicker 6s infinite;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navBtn svg,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .navBtn img,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="navIcon"] {
+  color:inherit !important;
+  fill:currentColor !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   SIDEBAR / DRAWERS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="sidebar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Sidebar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="drawer"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Drawer"] {
+  background:linear-gradient(180deg,rgba(10,4,16,.99),rgba(5,5,13,.99)) !important;
+  border-color:var(--cp-border) !important;
+  color:var(--cp-text) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   NOTIFICATION BARS / TOASTS / BANNERS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="updateBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="noticeBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="alertBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="bannerRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="infoBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toastBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toast"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Toast"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="snackbar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Snackbar"] {
+  background:
+    linear-gradient(90deg,rgba(5,217,232,.07) 0%,rgba(10,7,16,.97) 9%,rgba(7,5,12,.97) 100%) !important;
+  border-color:rgba(5,217,232,.26) !important;
+  color:var(--cp-text) !important;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%);
+  animation:cp-alert-pulse 4s ease-in-out infinite;
+}
+
+/* ════════════════════════════════════════════════════════════
+   CARDS, PANELS, MODALS — named classes
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .card,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .discoverWorkspace,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryTopRow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homePanel,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeLaunchAction,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeListRow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeKpi,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .resultCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceSideCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceModsRow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceContentMaintenancePanelPrimary,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceContentMaintenanceUtility,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsSidebar,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsRailButton,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroSummaryCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsSectionCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsAccountCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .accountCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .accountSummaryCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryHeroStat,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryStorageCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .storageSummaryCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .updatesListRow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .updatesScreenSummaryCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .updatesScreenItemCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .updatesScreenRuleCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .updatesScreenFactCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .dropPanel,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .modal,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .commandPalettePanel,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .msCodeDialog,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instanceSettingsModal,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .createInstanceModal {
+  background:linear-gradient(155deg,rgba(13,7,19,.97) 0%,rgba(6,6,14,.98) 100%) !important;
+  border-color:rgba(255,42,109,.22) !important;
+  color:var(--cp-text) !important;
+  box-shadow:
+    0 20px 44px rgba(2,5,16,.52),
+    0 0 0 1px rgba(5,217,232,.05),
+    inset 0  1px 0 rgba(5,217,232,.07),
+    inset 0 -1px 0 rgba(255,42,109,.05) !important;
+  animation:cp-border-breathe 5s ease-in-out infinite;
+  outline:1px solid rgba(5,217,232,.05);
+  outline-offset:3px;
+}
+
+/* Corner-clipped cards */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .card,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .instCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .resultCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsSectionCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeKpi,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeLaunchAction,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsHeroSummaryCard {
+  clip-path:polygon(0 0,calc(100% - 10px) 0,100% 10px,100% 100%,0 100%);
+}
+
+/* Hero / spotlight cards */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .libraryHeroCard,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .accountHero,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeSpotlight {
+  background:
+    radial-gradient(ellipse at  8% 10%,rgba(255,42,109,.22),transparent 32%),
+    radial-gradient(ellipse at 88% 14%,rgba(5,217,232,.16), transparent 26%),
+    radial-gradient(ellipse at 48% 88%,rgba(123,47,255,.12),transparent 28%),
+    linear-gradient(155deg,rgba(16,7,21,.98) 0%,rgba(5,6,14,.99) 100%) !important;
+  border-color:rgba(255,42,109,.28) !important;
+  box-shadow:
+    0 0 0 1px rgba(5,217,232,.08),
+    0 28px 56px rgba(2,4,13,.60),
+    inset 0 1px 0 rgba(5,217,232,.10) !important;
+}
+
+/* Wildcard card catch-all */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="card"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Card"] {
+  background:linear-gradient(155deg,rgba(13,7,19,.97) 0%,rgba(6,6,14,.98) 100%) !important;
+  border-color:rgba(255,42,109,.20) !important;
+  color:var(--cp-text) !important;
+}
+
+/* Summary / stat cards */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="summaryCard"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SummaryCard"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="atAGlance"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="AtAGlance"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="glanceCard"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="GlanceCard"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="statCard"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="StatCard"] {
+  background:linear-gradient(155deg,rgba(13,7,19,.97) 0%,rgba(6,6,14,.98) 100%) !important;
+  border-color:rgba(255,42,109,.20) !important;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%);
+}
+
+/* ════════════════════════════════════════════════════════════
+   MODAL OVERLAYS & BACKDROPS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="overlay"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Overlay"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="backdrop"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Backdrop"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="modalBg"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dimmer"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="scrim"] {
+  background:rgba(3,0,8,.78) !important;
+  backdrop-filter:blur(4px) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   DROPDOWN / CONTEXT MENUS / POPOVER
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dropdown"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Dropdown"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="popover"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Popover"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="contextMenu"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ContextMenu"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="menuList"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="MenuList"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="floatingMenu"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="flyout"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Flyout"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .dropPanel {
+  background:linear-gradient(155deg,rgba(14,7,20,.99) 0%,rgba(7,6,15,.99) 100%) !important;
+  border:1px solid rgba(255,42,109,.30) !important;
+  box-shadow:
+    0 12px 36px rgba(2,3,12,.70),
+    0 0 0 1px rgba(5,217,232,.06),
+    inset 0 1px 0 rgba(5,217,232,.08) !important;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%);
+  color:var(--cp-text) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="menuItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="MenuItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dropItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="DropItem"] {
+  color:var(--cp-text) !important;
+  background:transparent !important;
+  transition:background .12s ease, color .12s ease, border-color .12s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="menuItem"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="MenuItem"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dropItem"]:hover {
+  background:linear-gradient(90deg,rgba(5,217,232,.08) 0%,transparent 60%) !important;
+  color:var(--cp-cyan) !important;
+  border-left:2px solid var(--cp-cyan) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   SELECT / COMBOBOX
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] select,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="select"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Select"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="combobox"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Combobox"] {
+  background:linear-gradient(180deg,rgba(17,8,21,.97),rgba(8,8,16,.97)) !important;
+  border-color:rgba(255,42,109,.24) !important;
+  color:var(--cp-text) !important;
+  font-family:'Rajdhani',sans-serif !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] select:focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="select"]:focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Select"]:focus {
+  border-color:rgba(5,217,232,.55) !important;
+  box-shadow:0 0 0 2px rgba(5,217,232,.12) !important;
+  outline:none !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] select option {
+  background:rgba(10,5,16,.99) !important;
+  color:var(--cp-text) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   TABLE
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] table,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="table"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Table"] {
+  border-color:rgba(255,42,109,.18) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] thead,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tableHead"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="TableHead"] {
+  background:linear-gradient(90deg,rgba(255,42,109,.08) 0%,rgba(5,217,232,.04) 100%) !important;
+  border-bottom:1px solid rgba(255,42,109,.28) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] th {
+  font-family:'Share Tech Mono',monospace !important;
+  color:var(--cp-pink) !important;
+  text-transform:uppercase;
+  letter-spacing:.10em;
+  font-size:.82em !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] tr:nth-child(even) {
+  background:rgba(5,217,232,.025) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] tr:hover {
+  background:rgba(5,217,232,.05) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   ACCENT COLOR OPTION ROWS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentOption"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorOption"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="AccentOption"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ColorOption"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="AccentRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ColorRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="AccentItem"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ColorItem"] {
+  background:linear-gradient(135deg,rgba(13,7,19,.97),rgba(8,7,16,.97)) !important;
+  border:1px solid rgba(255,42,109,.22) !important;
+  color:var(--cp-text) !important;
+  font-family:'Share Tech Mono',monospace !important;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  font-size:.82em !important;
+  transition:background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease !important;
+  clip-path:polygon(0 0,calc(100% - 8px) 0,100% 8px,100% 100%,0 100%);
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentOption"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorOption"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentItem"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorItem"]:hover {
+  border-color:rgba(5,217,232,.40) !important;
+  background:linear-gradient(135deg,rgba(4,20,26,.97),rgba(6,12,20,.97)) !important;
+  box-shadow:0 0 12px rgba(5,217,232,.12),inset 0 0 0 1px rgba(5,217,232,.10) !important;
+  color:var(--cp-cyan) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentOption"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorOption"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentOption"][class*="selected"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="accentItem"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="colorItem"][class*="active"] {
+  border-color:rgba(5,217,232,.55) !important;
+  background:linear-gradient(135deg,rgba(4,22,28,.98),rgba(5,12,18,.98)) !important;
+  box-shadow:0 0 18px rgba(5,217,232,.18),inset 0 0 0 1px rgba(5,217,232,.20) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   SETTINGS SIDEBAR NAV
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsRailButton {
+  border-left:2px solid transparent !important;
+  transition:background .15s ease, border-color .15s ease, color .15s ease !important;
+  color:var(--cp-text-dim) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsRailButton:hover {
+  border-left-color:rgba(255,42,109,.55) !important;
+  background:linear-gradient(90deg,rgba(255,42,109,.06) 0%,transparent 55%) !important;
+  color:var(--cp-text) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .settingsRailButton.active {
+  border-left-color:var(--cp-pink) !important;
+  box-shadow:inset 3px 0 12px rgba(255,42,109,.10) !important;
+  background:linear-gradient(90deg,rgba(255,42,109,.10) 0%,transparent 60%) !important;
+  color:var(--cp-cyan) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   HOME SCREEN
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="panelHeader"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="sectionHeader"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="groupHeader"] {
+  font-family:'Orbitron',monospace !important;
+  color:var(--cp-cyan) !important;
+  text-shadow:0 0 8px rgba(5,217,232,.40);
+  letter-spacing:.05em;text-transform:uppercase;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeLaunchAction {
+  border-left:2px solid rgba(255,42,109,.32) !important;
+  border-top:1px solid rgba(5,217,232,.10) !important;
+  transition:background .18s ease, border-color .18s ease, box-shadow .18s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeLaunchAction:hover {
+  border-left-color:var(--cp-cyan) !important;
+  border-color:rgba(5,217,232,.36) !important;
+  background:linear-gradient(135deg,rgba(5,217,232,.05) 0%,rgba(12,7,18,.97) 28%) !important;
+  box-shadow:0 0 0 1px rgba(5,217,232,.12),inset 2px 0 14px rgba(5,217,232,.05),0 0 22px rgba(5,217,232,.08) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeListRow,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="listRow"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="listItem"] {
+  border-color:rgba(255,42,109,.15) !important;
+  background:linear-gradient(90deg,rgba(5,217,232,.025) 0%,transparent 18%) !important;
+  color:var(--cp-text) !important;
+  transition:background .14s ease, border-color .14s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .homeListRow:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="listRow"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="listItem"]:hover {
+  border-color:rgba(5,217,232,.26) !important;
+  background:linear-gradient(90deg,rgba(5,217,232,.06) 0%,transparent 26%) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   BUTTONS
+   KEY FIX: No catch-all `button` selector.
+   The v6 rule `button:not([class*="primary"])` matched every
+   button in the app and overrode their specific hover transitions
+   with a single flat rule that clobbered all other hover states.
+════════════════════════════════════════════════════════════ */
+
+/* Primary / CTA */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .btn.primary,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnPrimary"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btn-primary"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="primaryBtn"] {
+  font-family:'Rajdhani',sans-serif !important;
+  font-weight:700;letter-spacing:.10em;text-transform:uppercase;
+  background:linear-gradient(180deg,#ffe600 0%,#ff9900 52%,#ff4500 100%) !important;
+  border-color:var(--cp-pink) !important;
+  color:#09050a !important;text-shadow:none !important;
+  clip-path:polygon(0 0,calc(100% - 6px) 0,100% 6px,100% 100%,0 100%);
+  box-shadow:0 0 0 1px rgba(255,42,109,.50),0 0 32px rgba(255,69,0,.28),0 0 68px rgba(255,153,0,.10) !important;
+  transition:filter .12s ease, box-shadow .12s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .btn.primary:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnPrimary"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="primaryBtn"]:hover {
+  filter:brightness(1.10);
+  box-shadow:0 0 0 1px rgba(255,42,109,.70),0 0 50px rgba(255,69,0,.46),0 0 88px rgba(255,153,0,.18) !important;
+}
+
+/* Generic .btn — app's own hover classes still work fine */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .btn,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .dropBtn,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .menuSelectBtn {
+  font-family:'Rajdhani',sans-serif !important;
+  font-weight:600;letter-spacing:.06em;
+  border-color:rgba(255,42,109,.24) !important;
+  background:linear-gradient(180deg,rgba(17,8,21,.97),rgba(8,8,16,.97)) !important;
+  color:rgba(190,210,226,.90) !important;
+  transition:background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .btn:hover:not(.primary),
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .dropBtn:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .menuSelectBtn:hover {
+  border-color:rgba(5,217,232,.40) !important;
+  color:var(--cp-cyan) !important;
+  background:linear-gradient(180deg,rgba(4,20,24,.97),rgba(4,12,18,.97)) !important;
+  box-shadow:0 0 14px rgba(5,217,232,.10),inset 0 0 0 1px rgba(5,217,232,.08) !important;
+}
+
+/* Danger buttons */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnDanger"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btn-danger"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dangerBtn"] {
+  background:linear-gradient(180deg,rgba(80,5,22,.97),rgba(50,4,16,.97)) !important;
+  border-color:rgba(255,42,109,.55) !important;
+  color:rgba(255,120,160,.92) !important;
+  box-shadow:0 0 18px rgba(255,42,109,.16) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnDanger"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dangerBtn"]:hover {
+  background:linear-gradient(180deg,rgba(110,8,30,.98),rgba(70,6,22,.98)) !important;
+  box-shadow:0 0 28px rgba(255,42,109,.30) !important;
+  color:#fff !important;
+}
+
+/* Ghost / icon-only buttons */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="iconBtn"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ghostBtn"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnGhost"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="btnIcon"] {
+  background:transparent !important;
+  border-color:transparent !important;
+  color:var(--cp-text-dim) !important;
+  transition:background .12s ease, border-color .12s ease, color .12s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="iconBtn"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ghostBtn"]:hover {
+  color:var(--cp-cyan) !important;
+  background:rgba(5,217,232,.06) !important;
+  border-color:rgba(5,217,232,.22) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   INPUTS, TEXTAREAS, FORM FIELDS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .input,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .textarea,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .segmented,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .pill,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .chip,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] textarea,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="textField"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="TextField"] {
+  font-family:'Rajdhani',sans-serif !important;
+  border-color:rgba(255,42,109,.22) !important;
+  background:linear-gradient(180deg,rgba(17,8,21,.97),rgba(8,8,16,.97)) !important;
+  color:rgba(190,210,226,.90) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .input:focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .textarea:focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] textarea:focus,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="textField"]:focus {
+  border-color:rgba(5,217,232,.55) !important;
+  box-shadow:0 0 0 2px rgba(5,217,232,.11),0 0 16px rgba(5,217,232,.13) !important;
+  outline:none !important;
+  color:var(--cp-yellow) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .input::placeholder,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .textarea::placeholder,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input::placeholder,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] textarea::placeholder {
+  color:rgba(5,217,232,.26) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input[type="range"] {
+  accent-color:var(--cp-cyan) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input[type="checkbox"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] input[type="radio"] {
+  accent-color:var(--cp-cyan) !important;
+}
+
+/* Active pills */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .btn.stateful.active,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .segBtn.active,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] .pill.active {
+  background:linear-gradient(180deg,rgba(94,10,32,.99),rgba(48,6,20,.99)) !important;
+  border-color:rgba(255,42,109,.56) !important;
+  color:var(--cp-cyan) !important;
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,0 100%);
+  box-shadow:inset 0 0 0 1px rgba(5,217,232,.26),0 0 20px rgba(255,42,109,.20),0 0 7px rgba(5,217,232,.13) !important;
+  animation:cp-neon-flicker 5s infinite;
+}
+
+/* Focus ring */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] :focus-visible {
+  outline:1px solid rgba(5,217,232,.55) !important;
+  outline-offset:2px;
+  box-shadow:0 0 0 3px rgba(5,217,232,.12) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   TOGGLE / SWITCH — rebuilt from scratch
+   Removed the broken `[class*="handle"]` catch-all that was
+   turning the thumb bright cyan even in the off state and
+   mangling other handle-like elements.
+════════════════════════════════════════════════════════════ */
+
+/* Track — off */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Toggle"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="switchTrack"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SwitchTrack"] {
+  border-color:rgba(255,42,109,.36) !important;
+  background:rgba(20,8,28,.90) !important;
+  transition:background .2s ease, border-color .2s ease, box-shadow .2s ease !important;
+}
+
+/* Track — on */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggle"][class*="on"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggle"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggle"][class*="checked"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Toggle"][class*="on"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Toggle"][class*="checked"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="switchTrack"][class*="on"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="switchTrack"][class*="checked"] {
+  background:linear-gradient(90deg,rgba(60,8,20,.96),rgba(5,60,68,.80)) !important;
+  border-color:rgba(5,217,232,.55) !important;
+  box-shadow:0 0 14px rgba(5,217,232,.28) !important;
+}
+
+/* Thumb/knob — off: white pill */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggleThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ToggleThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="switchThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SwitchThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="toggleKnob"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ToggleKnob"] {
+  background:rgba(200,220,220,.90) !important;
+  box-shadow:0 1px 3px rgba(0,0,0,.40) !important;
+  transition:background .2s ease, box-shadow .2s ease !important;
+}
+
+/* Thumb/knob — on: cyan glow */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="on"] > [class*="toggleThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="checked"] > [class*="toggleThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="on"] > [class*="switchThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="checked"] > [class*="switchThumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="on"] > [class*="toggleKnob"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="checked"] > [class*="toggleKnob"] {
+  background:var(--cp-cyan) !important;
+  box-shadow:0 0 8px rgba(5,217,232,.70) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   BADGES / TAGS / VERSION PILLS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="badge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="versionPill"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="version-tag"] {
+  font-family:'Share Tech Mono',monospace !important;
+  background:rgba(5,217,232,.07) !important;
+  border:1px solid rgba(5,217,232,.24) !important;
+  color:rgba(5,217,232,.82) !important;
+  letter-spacing:.08em;font-size:.80em !important;padding:1px 5px !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="statusBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="countBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="idleBadge"] {
+  font-family:'Share Tech Mono',monospace !important;
+  background:rgba(212,247,0,.07) !important;
+  border:1px solid rgba(212,247,0,.22) !important;
+  color:rgba(212,247,0,.80) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="successBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="onlineBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="activeBadge"] {
+  background:rgba(57,255,143,.07) !important;
+  border:1px solid rgba(57,255,143,.28) !important;
+  color:rgba(57,255,143,.88) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="warningBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="alertBadge"] {
+  background:rgba(255,153,0,.07) !important;
+  border:1px solid rgba(255,153,0,.28) !important;
+  color:rgba(255,153,0,.88) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="errorBadge"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="dangerBadge"] {
+  background:rgba(255,42,109,.07) !important;
+  border:1px solid rgba(255,42,109,.32) !important;
+  color:rgba(255,42,109,.90) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   PROGRESS BARS / LOADING
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="progress"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Progress"] {
+  background:rgba(5,217,232,.08) !important;
+  border:1px solid rgba(5,217,232,.16) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="progressBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="ProgressBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="progressFill"] {
+  background:linear-gradient(90deg,var(--cp-cyan),var(--cp-pink)) !important;
+  box-shadow:0 0 8px rgba(5,217,232,.40) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="spinner"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Spinner"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="loader"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Loader"] {
+  border-color:rgba(5,217,232,.18) !important;
+  border-top-color:var(--cp-cyan) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   ICONS — force inherit to stop blue SVG leakage
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] svg[class*="icon"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="icon"] > svg,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Icon"] > svg {
+  color:inherit !important;
+  fill:currentColor !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   TABS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tab"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Tab"] {
+  color:var(--cp-text-dim) !important;
+  border-color:transparent !important;
+  background:transparent !important;
+  font-family:'Rajdhani',sans-serif !important;
+  font-weight:600;letter-spacing:.06em;
+  transition:color .14s ease, border-color .14s ease !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tab"]:hover,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Tab"]:hover {
+  color:var(--cp-cyan) !important;
+  border-bottom-color:rgba(5,217,232,.30) !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tab"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Tab"][class*="active"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tab"][aria-selected="true"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Tab"][aria-selected="true"] {
+  color:var(--cp-cyan) !important;
+  border-bottom:2px solid var(--cp-cyan) !important;
+  text-shadow:0 0 8px rgba(5,217,232,.50);
+}
+
+/* ════════════════════════════════════════════════════════════
+   TOOLTIPS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="tooltip"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Tooltip"] {
+  background:linear-gradient(135deg,rgba(16,7,22,.98),rgba(8,6,16,.98)) !important;
+  border:1px solid rgba(5,217,232,.30) !important;
+  color:var(--cp-cyan) !important;
+  font-family:'Share Tech Mono',monospace !important;
+  font-size:.78em !important;
+  box-shadow:0 4px 18px rgba(0,0,0,.55),0 0 12px rgba(5,217,232,.12) !important;
+  clip-path:polygon(0 0,calc(100% - 5px) 0,100% 5px,100% 100%,0 100%);
+}
+
+/* ════════════════════════════════════════════════════════════
+   SEARCH BAR
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="searchBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SearchBar"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="searchInput"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SearchInput"] {
+  background:linear-gradient(180deg,rgba(17,8,21,.97),rgba(8,8,16,.97)) !important;
+  border-color:rgba(255,42,109,.24) !important;
+  color:var(--cp-text) !important;
+  font-family:'Share Tech Mono',monospace !important;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="searchBar"]:focus-within,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="SearchBar"]:focus-within {
+  border-color:rgba(5,217,232,.50) !important;
+  box-shadow:0 0 0 2px rgba(5,217,232,.10),0 0 20px rgba(5,217,232,.12) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   BREADCRUMBS / ROUTE PATHS
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="breadcrumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Breadcrumb"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="routePath"],
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="pageRoute"] {
+  font-family:'Share Tech Mono',monospace !important;
+  color:var(--cp-text-dim) !important;
+  letter-spacing:.06em;
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="breadcrumb"] > *:last-child,
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] [class*="Breadcrumb"] > *:last-child {
+  color:var(--cp-yellow) !important;
+}
+
+/* ════════════════════════════════════════════════════════════
+   SCROLLBAR + SELECTION
+════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::-webkit-scrollbar { width:5px;height:5px; }
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::-webkit-scrollbar-track { background:rgba(3,1,6,.88); }
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::-webkit-scrollbar-thumb {
+  background:linear-gradient(180deg,var(--cp-pink),var(--cp-purple));
+  box-shadow:0 0 8px rgba(255,42,109,.55);
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::-webkit-scrollbar-thumb:hover {
+  background:linear-gradient(180deg,var(--cp-cyan),var(--cp-pink));
+}
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::-webkit-scrollbar-corner { background:transparent; }
+:root[data-theme="dark"][data-theme-variant="cyberpunk"] ::selection {
+  background:rgba(5,217,232,.24);
+  color:var(--cp-yellow);
+}

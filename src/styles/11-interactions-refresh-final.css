@@ -1,0 +1,268 @@
+/* Final non-cyberpunk interaction takeover.
+   This deliberately mirrors the late, forceful behavior of ui-refresh.css
+   so older hover ownership stops leaking through. */
+
+:root[data-theme="light"] .btn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .btn,
+:root[data-theme="light"] .dropBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .dropBtn,
+:root[data-theme="light"] .menuSelectBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .menuSelectBtn,
+:root[data-theme="light"] .pill,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .pill,
+:root[data-theme="light"] .input,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .input,
+:root[data-theme="light"] .textarea,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .textarea {
+  transition: all 240ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .navBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .navBtn {
+  transition: all 240ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .btn.primary,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .btn.primary {
+  transition: all 240ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .instCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCard {
+  transition: all 280ms cubic-bezier(.2,.8,.2,1) !important;
+  position: relative;
+  overflow: hidden;
+}
+
+:root[data-theme="light"] .instCard::after,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCard::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 260ms ease !important;
+  pointer-events: none;
+  background: radial-gradient(
+    circle 200px at var(--mouse-x, 50%) var(--mouse-y, 50%),
+    color-mix(in srgb, var(--accent-soft) 18%, transparent),
+    transparent 70%
+  );
+}
+
+:root[data-theme="light"] .instCardIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCardIcon {
+  transition: all 340ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .resultCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .resultCard {
+  transition: all 240ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .resultIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .resultIcon {
+  transition: all 360ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .instanceModsRow,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceModsRow {
+  transition: all 220ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .instanceModIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceModIcon {
+  transition: all 300ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .homeKpi,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeKpi,
+:root[data-theme="light"] .libraryHeroStat,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryHeroStat,
+:root[data-theme="light"] .settingsHeroSummaryCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsHeroSummaryCard,
+:root[data-theme="light"] .accountSummaryCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .accountSummaryCard,
+:root[data-theme="light"] .homeLaunchAction,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeLaunchAction,
+:root[data-theme="light"] .homeListRow,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeListRow,
+:root[data-theme="light"] .libraryStorageCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryStorageCard,
+:root[data-theme="light"] .settingsRailButton,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsRailButton,
+:root[data-theme="light"] .settingsAccountCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsAccountCard,
+:root[data-theme="light"] .storageSummaryCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .storageSummaryCard,
+:root[data-theme="light"] .storageBreakdownRow,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .storageBreakdownRow,
+:root[data-theme="light"] .librarySideCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .librarySideCard,
+:root[data-theme="light"] .instanceSideCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSideCard,
+:root[data-theme="light"] .homePanel,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homePanel,
+:root[data-theme="light"] .settingsSectionCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsSectionCard,
+:root[data-theme="light"] .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .navIcon,
+:root[data-theme="light"] .homeLaunchAction svg,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeLaunchAction svg {
+  transition: all 240ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .navBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .navBtn:hover {
+  background: color-mix(in srgb, var(--accent-soft) 36%, var(--panel2) 64%) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 50%, transparent) !important;
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent-soft) 30%, transparent) !important;
+  transform: translateY(-1px) scale(1.06) !important;
+}
+
+:root[data-theme="light"] .btn.primary:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .btn.primary:hover {
+  transform: translateY(-2px) scale(1.02) !important;
+  box-shadow:
+    0 10px 32px color-mix(in srgb, var(--accent-soft-2) 62%, transparent),
+    0 4px 10px rgba(0,0,0,0.15),
+    inset 0 1px 0 rgba(255,255,255,0.22) !important;
+}
+
+:root[data-theme="light"] .btn.primary:active,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .btn.primary:active {
+  transform: translateY(0) scale(0.98) !important;
+}
+
+:root[data-theme="light"] .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="light"] .dropBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .dropBtn:hover,
+:root[data-theme="light"] .menuSelectBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .menuSelectBtn:hover,
+:root[data-theme="light"] .pill:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .pill:hover {
+  transform: translateY(-1px) scale(1.01) !important;
+  background: color-mix(in srgb, var(--interactive-hover-bg) 74%, var(--accent-soft) 26%) !important;
+  border-color: color-mix(in srgb, var(--control-border-hover) 70%, var(--accent-ring) 30%) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+:root[data-theme="light"] .instCard:hover::after,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCard:hover::after {
+  opacity: 1;
+}
+
+:root[data-theme="light"] .instCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCard:hover {
+  transform: translateY(-3px) scale(1.005) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 48%, var(--stroke2)) !important;
+  box-shadow:
+    0 16px 40px rgba(0,0,0,0.12),
+    0 4px 12px rgba(0,0,0,0.08) !important;
+}
+
+:root[data-theme="light"] .instCard:hover .instCardIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instCard:hover .instCardIcon {
+  transform: rotate(-6deg) scale(1.08) !important;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.2) !important;
+}
+
+:root[data-theme="light"] .resultCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .resultCard:hover {
+  transform: translateY(-3px) !important;
+  box-shadow:
+    0 14px 36px rgba(0,0,0,0.10),
+    0 4px 12px rgba(0,0,0,0.06) !important;
+}
+
+:root[data-theme="light"] .resultCard:hover .resultIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .resultCard:hover .resultIcon {
+  transform: scale(1.06) rotate(-4deg) !important;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18) !important;
+}
+
+:root[data-theme="light"] .instanceModsRow:not(.disabled):hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceModsRow:not(.disabled):hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.08) !important;
+}
+
+:root[data-theme="light"] .instanceModsRow:not(.disabled):hover .instanceModIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceModsRow:not(.disabled):hover .instanceModIcon {
+  transform: scale(1.06) rotate(-3deg) !important;
+}
+
+:root[data-theme="light"] .homeKpi:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeKpi:hover,
+:root[data-theme="light"] .libraryHeroStat:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryHeroStat:hover,
+:root[data-theme="light"] .settingsHeroSummaryCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsHeroSummaryCard:hover,
+:root[data-theme="light"] .accountSummaryCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .accountSummaryCard:hover {
+  transform: translateY(-2px) scale(1.015) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 46%, var(--stroke2)) !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.08) !important;
+}
+
+:root[data-theme="light"] .homeLaunchAction:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeLaunchAction:hover {
+  transform: translateY(-2px) scale(1.01) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 38%, var(--stroke2)) !important;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.08) !important;
+}
+
+:root[data-theme="light"] .homeLaunchAction:hover svg,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeLaunchAction:hover svg {
+  transform: scale(1.12) !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .homeListRow:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeListRow:hover,
+:root[data-theme="light"] .libraryStorageCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryStorageCard:hover,
+:root[data-theme="light"] .settingsRailButton:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsRailButton:hover,
+:root[data-theme="light"] .settingsAccountCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsAccountCard:hover,
+:root[data-theme="light"] .storageSummaryCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .storageSummaryCard:hover,
+:root[data-theme="light"] .storageBreakdownRow:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .storageBreakdownRow:hover {
+  transform: translateY(-2px) scale(1.01) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 38%, var(--stroke2)) !important;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.08) !important;
+}
+
+:root[data-theme="light"] .librarySideCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .librarySideCard:hover,
+:root[data-theme="light"] .instanceSideCard:hover {
+  border-color: color-mix(in srgb, var(--accent-ring) 34%, var(--stroke2)) !important;
+}
+
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSideCard:hover,
+:root[data-theme="light"] .homePanel:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homePanel:hover,
+:root[data-theme="light"] .settingsSectionCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsSectionCard:hover {
+  border-color: color-mix(in srgb, var(--accent-ring) 28%, var(--stroke2)) !important;
+}
+
+:root[data-theme="light"] .input:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .input:focus,
+:root[data-theme="light"] .textarea:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .textarea:focus {
+  border-color: color-mix(in srgb, var(--accent-ring) 68%, var(--accent)) !important;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%) !important;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent-ring) 56%, transparent),
+    0 0 16px color-mix(in srgb, var(--accent-soft) 28%, transparent) !important;
+}
+
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) ::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 44%, transparent);
+  background-clip: padding-box;
+}

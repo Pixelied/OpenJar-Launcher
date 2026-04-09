@@ -1,0 +1,257 @@
+/* Restore the pre-refresh hover system in the hand-tuned zones the user wants kept. */
+
+:root[data-theme="light"] .navBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .navBtn{
+  transition: all 200ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .btn,
+:root[data-theme="light"] .discoverPage .dropBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .dropBtn,
+:root[data-theme="light"] .discoverPage .menuSelectBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .menuSelectBtn,
+:root[data-theme="light"] .discoverPage .segBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .segBtn,
+:root[data-theme="light"] .discoverPage .pill,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .pill,
+:root[data-theme="light"] .discoverPage .input,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .input,
+:root[data-theme="light"] .discoverPage .textarea,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .textarea,
+:root[data-theme="light"] .instanceLayout .btn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .btn,
+:root[data-theme="light"] .instanceLayout .dropBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .dropBtn,
+:root[data-theme="light"] .instanceLayout .menuSelectBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .menuSelectBtn,
+:root[data-theme="light"] .instanceLayout .segBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .segBtn,
+:root[data-theme="light"] .instanceLayout .pill,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .pill,
+:root[data-theme="light"] .instanceLayout .input,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .input,
+:root[data-theme="light"] .instanceLayout .textarea,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .textarea,
+:root[data-theme="light"] .instanceSettingsModal .btn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .btn,
+:root[data-theme="light"] .instanceSettingsModal .dropBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .dropBtn,
+:root[data-theme="light"] .instanceSettingsModal .menuSelectBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .menuSelectBtn,
+:root[data-theme="light"] .instanceSettingsModal .segBtn,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .segBtn,
+:root[data-theme="light"] .instanceSettingsModal .pill,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .pill,
+:root[data-theme="light"] .instanceSettingsModal .input,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .input,
+:root[data-theme="light"] .instanceSettingsModal .textarea,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .textarea{
+  transition: all 200ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .discoverPage .resultCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .resultCard,
+:root[data-theme="light"] .instanceLayout .instanceSideCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceSideCard{
+  transition: all 200ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCard{
+  transition: all 220ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceModsRow,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceModsRow{
+  transition: all 180ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .discoverPage .resultIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .resultIcon{
+  transition: all 300ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCardIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCardIcon{
+  transition: all 280ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceModIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceModIcon{
+  transition: all 250ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .btn .navIcon,
+:root[data-theme="light"] .instanceLayout .btn .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .btn .navIcon,
+:root[data-theme="light"] .instanceSettingsModal .btn .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .btn .navIcon{
+  transition: all 280ms cubic-bezier(.2,.8,.2,1) !important;
+}
+
+:root[data-theme="light"] .navBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .navBtn:hover{
+  transform: translateY(var(--hover-lift-soft)) scale(var(--hover-scale-soft)) !important;
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--panel2) 72%) !important;
+  border-color: color-mix(in srgb, var(--accent-ring) 44%, transparent) !important;
+  box-shadow: var(--shadow-xs) !important;
+  color: var(--text) !important;
+  z-index: calc(var(--z-dropdown) + 8) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="light"] .discoverPage .dropBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .dropBtn:hover,
+:root[data-theme="light"] .discoverPage .menuSelectBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .menuSelectBtn:hover,
+:root[data-theme="light"] .discoverPage .segBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .segBtn:hover,
+:root[data-theme="light"] .discoverPage .pill:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .pill:hover,
+:root[data-theme="light"] .instanceLayout .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="light"] .instanceLayout .dropBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .dropBtn:hover,
+:root[data-theme="light"] .instanceLayout .menuSelectBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .menuSelectBtn:hover,
+:root[data-theme="light"] .instanceLayout .segBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .segBtn:hover,
+:root[data-theme="light"] .instanceLayout .pill:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .pill:hover,
+:root[data-theme="light"] .instanceSettingsModal .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .btn:not(.primary):not(:disabled):hover,
+:root[data-theme="light"] .instanceSettingsModal .dropBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .dropBtn:hover,
+:root[data-theme="light"] .instanceSettingsModal .menuSelectBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .menuSelectBtn:hover,
+:root[data-theme="light"] .instanceSettingsModal .segBtn:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .segBtn:hover,
+:root[data-theme="light"] .instanceSettingsModal .pill:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .pill:hover{
+  transform: translateY(var(--hover-lift)) scale(var(--hover-scale-soft)) !important;
+  background: color-mix(in srgb, var(--interactive-hover-bg) 74%, var(--accent-soft) 26%) !important;
+  border-color: color-mix(in srgb, var(--control-border-hover) 70%, var(--accent-ring) 30%) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn.primary:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .btn.primary:hover,
+:root[data-theme="light"] .instanceLayout .btn.primary:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .btn.primary:hover,
+:root[data-theme="light"] .instanceSettingsModal .btn.primary:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .btn.primary:hover{
+  background: var(--btn-primary-bg-hover) !important;
+  border-color: var(--btn-primary-border-hover) !important;
+  box-shadow:
+    0 12px 28px color-mix(in srgb, var(--accent-soft-2) 54%, transparent),
+    var(--shadow-xs) !important;
+  transform: translateY(-2px) scale(1.02) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn.primary:hover,
+:root[data-theme="light"] .instanceLayout .btn.primary:hover,
+:root[data-theme="light"] .instanceSettingsModal .btn.primary:hover{
+  box-shadow:
+    0 10px 22px rgba(18, 24, 32, 0.07),
+    var(--shadow-xs) !important;
+}
+
+:root[data-theme="light"] .discoverPage .btn:hover .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .btn:hover .navIcon,
+:root[data-theme="light"] .instanceLayout .btn:hover .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .btn:hover .navIcon,
+:root[data-theme="light"] .instanceSettingsModal .btn:hover .navIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .btn:hover .navIcon{
+  transform: translateY(var(--hover-lift-soft)) !important;
+  opacity: 1 !important;
+}
+
+:root[data-theme="light"] .discoverPage .input:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .input:focus,
+:root[data-theme="light"] .discoverPage .textarea:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .textarea:focus,
+:root[data-theme="light"] .instanceLayout .input:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .input:focus,
+:root[data-theme="light"] .instanceLayout .textarea:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .textarea:focus,
+:root[data-theme="light"] .instanceSettingsModal .input:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .input:focus,
+:root[data-theme="light"] .instanceSettingsModal .textarea:focus,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceSettingsModal .textarea:focus{
+  border-color: var(--accent) !important;
+  background: color-mix(in srgb, var(--surface) 94%, var(--accent-soft) 6%) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-ring) 70%, transparent) !important;
+}
+
+:root[data-theme="light"] .discoverPage .resultCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .resultCard:hover{
+  transform: translateY(-2px) !important;
+  background: color-mix(in srgb, var(--card-bg) 92%, var(--surface-2) 8%) !important;
+  border-color: color-mix(in srgb, var(--stroke2) 82%, transparent) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+:root[data-theme="light"] .discoverPage .resultCard:hover .resultIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .discoverPage .resultCard:hover .resultIcon{
+  transform: scale(1.04) rotate(-3deg) !important;
+  border-color: var(--stroke2) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--stroke2) 20%, transparent),
+    var(--shadowSoft) !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCard,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCard{
+  overflow: visible !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCard::after,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCard::after{
+  content: none !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCard:hover{
+  transform: translateY(var(--hover-lift-soft)) !important;
+  border-color: color-mix(in srgb, var(--stroke2) 92%, transparent) !important;
+  background: color-mix(in srgb, var(--surface) 90%, var(--accent-soft) 10%) !important;
+  box-shadow: var(--shadowSoft) !important;
+}
+
+:root[data-theme="light"] .libraryGrid .instCard:hover .instCardIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryGrid .instCard:hover .instCardIcon{
+  transform: rotate(-8deg) scale(1.04) !important;
+  box-shadow: var(--shadowSoft) !important;
+  border-color: var(--stroke2) !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceModsRow:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceModsRow:hover{
+  transform: translateY(-2px) !important;
+  border-color: color-mix(in srgb, var(--stroke2) 82%, transparent) !important;
+  background: color-mix(in srgb, var(--surface) 99%, var(--surface-2) 1%) !important;
+  box-shadow: var(--shadow-xs) !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceModsRow:hover .instanceModIcon,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceModsRow:hover .instanceModIcon{
+  border-color: var(--stroke2) !important;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%) !important;
+  box-shadow: var(--shadow-xs) !important;
+  transform: none !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceModsRow:hover .instanceModIcon img,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceModsRow:hover .instanceModIcon img{
+  transform: scale(1.02) !important;
+}
+
+:root[data-theme="light"] .instanceLayout .instanceSideCard:hover,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instanceLayout .instanceSideCard:hover{
+  border-color: color-mix(in srgb, var(--stroke2) 64%, transparent) !important;
+  background: color-mix(in srgb, var(--surface) 93%, var(--surface-2) 7%) !important;
+  box-shadow: none !important;
+}

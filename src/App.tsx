@@ -194,29 +194,23 @@ import {
   type ProjectVersion,
 } from "./modrinth";
 import { IdleAnimation, NameTagObject, SkinViewer } from "skinview3d";
-import ModpacksConfigEditor from "./pages/ModpacksConfigEditor";
-import LibraryRoute from "./pages/LibraryRoute";
-import SkinsRoute, { MinecraftBreakOverlay, SKINS_PAGE_RUIN_FRAGMENTS } from "./pages/SkinsRoute";
-import DiscoverRoute from "./pages/DiscoverRoute";
-import ModpacksRoute from "./pages/ModpacksRoute";
-import AccountRoute from "./pages/AccountRoute";
-import SettingsRoute from "./pages/SettingsRoute";
-import ModpackMaker from "./pages/ModpackMaker";
-import InstanceModpackCard from "./components/InstanceModpackCard";
-import DependencyBadge from "./components/DependencyBadge";
-import CommandPalette, { type CommandPaletteItem } from "./components/CommandPalette";
-import Icon, { type IconName } from "./components/app-shell/Icon";
-import NavButton from "./components/app-shell/NavButton";
-import Modal from "./components/app-shell/Modal";
-import GlobalTooltipLayer from "./components/app-shell/GlobalTooltipLayer";
-import Dropdown from "./components/app-shell/controls/Dropdown";
-import MultiSelectDropdown from "./components/app-shell/controls/MultiSelectDropdown";
-import MenuSelect from "./components/app-shell/controls/MenuSelect";
-import ActionMenu from "./components/app-shell/controls/ActionMenu";
-import SegmentedControl from "./components/app-shell/controls/SegmentedControl";
-import ActivityFeed from "./components/activity/ActivityFeed";
-import FullHistoryView from "./components/activity/FullHistoryView";
-import type { RecentActivityFeedEntry, RecentActivityFilter } from "./components/activity/types";
+import {
+  AccountRoute,
+  DiscoverRoute,
+  LibraryRoute,
+  ModpackMaker,
+  ModpacksConfigEditor,
+  ModpacksRoute,
+  SettingsRoute,
+  SkinsRoute,
+  MinecraftBreakOverlay,
+  SKINS_PAGE_RUIN_FRAGMENTS,
+} from "./pages";
+import { DependencyBadge } from "./components/content";
+import { CommandPalette, GlobalTooltipLayer, Icon, Modal, NavButton, type CommandPaletteItem, type IconName } from "./components/app-shell";
+import { ActionMenu, Dropdown, MenuSelect, MultiSelectDropdown, SegmentedControl } from "./components/app-shell/controls";
+import { ActivityFeed, FullHistoryView, type RecentActivityFeedEntry, type RecentActivityFilter } from "./components/activity";
+import { InstanceModpackCard } from "./components/instance";
 import {
   analyzeLogLines,
   analyzeLogText,
@@ -3209,7 +3203,7 @@ function isDensityPreset(value: string | null): value is DensityPreset {
 }
 
 type UiSettingsSnapshot = {
-  theme: "dark" | "light";
+  theme: UiTheme;
   accentPreset: AccentPreset;
   accentStrength: AccentStrength;
   motionPreset: MotionPreset;
@@ -3217,8 +3211,30 @@ type UiSettingsSnapshot = {
 };
 
 const UI_SETTINGS_STORAGE_KEY = "mpm.ui.settings.v2";
+const THEME_TRANSITION_MS = 460;
 
-function defaultUiTheme(): "dark" | "light" {
+type UiTheme = "dark" | "light" | "pastel" | "cyberpunk";
+
+function isUiTheme(value: string | null | undefined): value is UiTheme {
+  return value === "dark" || value === "light" || value === "pastel" || value === "cyberpunk";
+}
+
+function resolveThemeMode(theme: UiTheme): "dark" | "light" {
+  return theme === "dark" || theme === "cyberpunk" ? "dark" : "light";
+}
+
+function resolveThemeVariant(theme: UiTheme): "pastel" | "cyberpunk" | null {
+  if (theme === "pastel") return "pastel";
+  if (theme === "cyberpunk") return "cyberpunk";
+  return null;
+}
+
+function normalizeStoredTheme(value: string | null | undefined, fallback: UiTheme): UiTheme {
+  if (value === "paper") return "cyberpunk";
+  return isUiTheme(value) ? value : fallback;
+}
+
+function defaultUiTheme(): UiTheme {
   if (typeof window === "undefined") return "dark";
   try {
     return window.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
@@ -3244,8 +3260,7 @@ function readUiSettingsSnapshot(): UiSettingsSnapshot {
     const raw = localStorage.getItem(UI_SETTINGS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const theme =
-        parsed?.theme === "dark" || parsed?.theme === "light" ? parsed.theme : fallback.theme;
+      const theme = normalizeStoredTheme(String(parsed?.theme ?? ""), fallback.theme);
       const accentPreset = isAccentPreset(String(parsed?.accentPreset ?? ""))
         ? parsed.accentPreset
         : fallback.accentPreset;
@@ -3267,8 +3282,7 @@ function readUiSettingsSnapshot(): UiSettingsSnapshot {
     const legacyMotion = localStorage.getItem("mpm.motionPreset");
     const legacyDensity = localStorage.getItem("mpm.densityPreset");
     return {
-      theme:
-        legacyTheme === "dark" || legacyTheme === "light" ? legacyTheme : fallback.theme,
+      theme: normalizeStoredTheme(legacyTheme, fallback.theme),
       accentPreset: isAccentPreset(legacyAccent) ? legacyAccent : fallback.accentPreset,
       accentStrength: isAccentStrength(legacyAccentStrength)
         ? legacyAccentStrength
@@ -3729,17 +3743,53 @@ function LazyInstalledModIcon({
 export default function App() {
   // theme
   const [uiSettingsSeed] = useState<UiSettingsSnapshot>(() => readUiSettingsSnapshot());
-  const [theme, setTheme] = useState<"dark" | "light">(uiSettingsSeed.theme);
+  const [theme, setTheme] = useState<UiTheme>(uiSettingsSeed.theme);
   const [accentPreset, setAccentPreset] = useState<AccentPreset>(uiSettingsSeed.accentPreset);
   const [accentStrength, setAccentStrength] = useState<AccentStrength>(
     uiSettingsSeed.accentStrength
   );
   const [motionPreset, setMotionPreset] = useState<MotionPreset>(uiSettingsSeed.motionPreset);
   const [densityPreset, setDensityPreset] = useState<DensityPreset>(uiSettingsSeed.densityPreset);
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    document.documentElement.style.colorScheme = theme;
+  const themeTransitionTimeoutRef = useRef<number | null>(null);
+  const hasAppliedThemeRef = useRef(false);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    const mode = resolveThemeMode(theme);
+    const variant = resolveThemeVariant(theme);
+    const applyThemeAttributes = () => {
+      root.setAttribute("data-theme", mode);
+      if (variant) {
+        root.setAttribute("data-theme-variant", variant);
+      } else {
+        root.removeAttribute("data-theme-variant");
+      }
+      root.style.colorScheme = mode;
+    };
+
+    if (!hasAppliedThemeRef.current) {
+      applyThemeAttributes();
+      hasAppliedThemeRef.current = true;
+      return;
+    }
+
+    root.setAttribute("data-theme-transition", "active");
+    applyThemeAttributes();
+    if (themeTransitionTimeoutRef.current != null) {
+      window.clearTimeout(themeTransitionTimeoutRef.current);
+    }
+    themeTransitionTimeoutRef.current = window.setTimeout(() => {
+      root.removeAttribute("data-theme-transition");
+      themeTransitionTimeoutRef.current = null;
+    }, THEME_TRANSITION_MS);
   }, [theme]);
+  useEffect(() => {
+    return () => {
+      if (themeTransitionTimeoutRef.current != null) {
+        window.clearTimeout(themeTransitionTimeoutRef.current);
+      }
+      document.documentElement.removeAttribute("data-theme-transition");
+    };
+  }, []);
   useEffect(() => {
     document.documentElement.setAttribute("data-accent", accentPreset);
   }, [accentPreset]);

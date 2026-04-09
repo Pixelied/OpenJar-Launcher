@@ -1,0 +1,36 @@
+:root[data-theme="light"][data-theme-variant="pastel"]{
+  --bg: #f0ece8;
+  --panel: #f5f2ee;
+  --panel2: #faf8f6;
+  --surface: #faf8f6;
+  --surface-2: #f0ece8;
+  --page-bg: #f0ece8;
+  --card-bg: #ffffff;
+  --section-bg: #f5f2ee;
+  --btn-neutral-bg: #ffffff;
+  --dropdown-bg-soft-solid: #f5f2ee;
+  --stroke: rgba(62, 50, 38, 0.10);
+  --stroke2: rgba(62, 50, 38, 0.16);
+  --control-border: rgba(62, 50, 38, 0.12);
+  --control-border-hover: rgba(62, 50, 38, 0.22);
+  --interactive-hover-bg: #f5f0eb;
+  --interactive-hover-border: rgba(62, 50, 38, 0.22);
+  --text: rgba(32, 28, 24, 0.97);
+  --muted: rgba(92, 82, 72, 0.78);
+  --muted2: rgba(122, 110, 99, 0.64);
+  --dropdown-bg-solid: #faf8f6;
+  --shadow: 0 18px 38px rgba(62, 50, 38, 0.08);
+  --shadowSoft: 0 10px 24px rgba(62, 50, 38, 0.06);
+  --shadow-xs: 0 4px 12px rgba(62, 50, 38, 0.05);
+  --shadow-sm: 0 10px 22px rgba(62, 50, 38, 0.065);
+}
+
+:root[data-theme="light"][data-theme-variant="pastel"] .content{
+  background: #f0ece8 !important;
+}
+
+:root[data-theme="light"][data-theme-variant="pastel"] .navRail{
+  background: #faf8f6 !important;
+  border-right-color: rgba(62, 50, 38, 0.10) !important;
+  box-shadow: inset -1px 0 0 rgba(62, 50, 38, 0.06) !important;
+}

@@ -12,7 +12,7 @@ import type {
   ModpackSpec,
   ResolutionPlan,
   ResolutionSettings,
-} from "../types";
+} from "../../types";
 import {
   applyUpdateModpackFromInstance,
   applyModpackPlan,
@@ -36,7 +36,7 @@ import {
   seedDevModpackData,
   updateAllInstanceContent,
   upsertModpackSpec,
-} from "../tauri";
+} from "../../tauri";
 
 type Props = {
   instances: Instance[];

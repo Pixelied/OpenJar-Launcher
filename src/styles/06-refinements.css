@@ -1,0 +1,5127 @@
+/* --- Editorial desktop refresh: typography + flatter surfaces --- */
+:root{
+  --font-body: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-display: "Avenir Next", "Segoe UI Variable Display", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-label: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-mono: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+}
+
+body{
+  font-family: var(--font-body);
+  letter-spacing: -0.012em;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button,
+input,
+select,
+textarea{
+  font-family: inherit;
+}
+
+.h1,
+.h2,
+.h3,
+.discoverWorkspaceTitle,
+.settingsSidebarTitle,
+.accountHeroName,
+.instTitle,
+.projectHeroTitle,
+.resultTitle,
+.instCardTitle{
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.h1{
+  font-size: clamp(1.65rem, 1.18rem + 0.72vw, 2.15rem);
+  line-height: 0.98;
+}
+
+.h2{
+  font-size: clamp(1.18rem, 1.02rem + 0.3vw, 1.48rem);
+  line-height: 1.02;
+}
+
+.h3{
+  font-size: 1rem;
+  line-height: 1.08;
+}
+
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow,
+.settingsSidebarLabel,
+.libraryHeroStatLabel,
+.accountSummaryLabel,
+.accountSectionTitle,
+.settingsHeroSummaryLabel{
+  font-family: var(--font-label);
+  letter-spacing: 0.16em;
+}
+
+.settingTitle,
+.settingsSectionTitle,
+.homePanelTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.instanceSectionTitle,
+.settingsRailButtonTitle{
+  letter-spacing: -0.022em;
+}
+
+.content{
+  padding: 18px 26px 26px;
+}
+
+:root:not([data-theme="light"]) .content{
+  background:
+    radial-gradient(1080px 700px at 0% -8%, color-mix(in srgb, var(--accent-soft) 16%, transparent), transparent 56%),
+    radial-gradient(820px 420px at 100% 0%, color-mix(in srgb, var(--accent-soft-2) 10%, transparent), transparent 62%),
+    linear-gradient(180deg, #0b1017 0%, #0d121a 100%);
+}
+
+:root[data-theme="light"] .content{
+  background: var(--surface-2) !important;
+}
+
+.navRail{
+  padding: 16px 10px;
+}
+
+:root:not([data-theme="light"]) .navRail{
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #121824 86%, #070b11 14%), color-mix(in srgb, #0e141d 92%, #070b11 8%));
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--stroke2) 52%, transparent);
+}
+
+.navDivider{
+  width: 28px;
+  opacity: 0.56;
+}
+
+.navBtn{
+  border-radius: 13px;
+}
+
+.btn,
+.input,
+.segmented{
+  border-radius: 13px;
+}
+
+.btn{
+  font-size: 13px;
+  font-weight: 820;
+  letter-spacing: -0.012em;
+  box-shadow: none;
+}
+
+.btn.primary{
+  box-shadow: none;
+}
+
+.input{
+  font-weight: 720;
+}
+
+.chip{
+  font-weight: 820;
+  letter-spacing: 0.01em;
+}
+
+.card{
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .card{
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, #101621 4%), color-mix(in srgb, var(--surface-2) 94%, #0d131d 6%));
+  box-shadow: none;
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.instanceSideCard{
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.settingsSidebar,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.instanceSideCard,
+.homePanel{
+  background: color-mix(in srgb, var(--surface) 93%, var(--surface-2) 7%);
+  border-color: color-mix(in srgb, var(--stroke2) 64%, transparent);
+}
+
+.discoverWorkspace,
+.libraryTopRow,
+.settingsSidebar,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.homePanel{
+  position: relative;
+}
+
+.discoverWorkspace::before,
+.libraryTopRow::before,
+.settingsSidebar::before,
+.settingsHeroCard::before,
+.settingsSectionCard::before,
+.accountCard::before,
+.homePanel::before{
+  content: "";
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  top: 0;
+  height: 1px;
+  background: color-mix(in srgb, var(--accent-ring) 34%, var(--stroke));
+  opacity: 0.9;
+}
+
+.homePanel{
+  padding: 16px 16px 14px;
+}
+
+.homePanelHead{
+  padding-bottom: 12px;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.resultCard,
+.instCard,
+.settingsRailButton,
+.settingsAccountCard,
+.libraryStorageCard{
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.resultCard,
+.instCard,
+.settingsRailButton,
+.settingsAccountCard,
+.libraryStorageCard{
+  background: color-mix(in srgb, var(--surface) 89%, var(--surface-2) 11%);
+  border-color: color-mix(in srgb, var(--stroke2) 58%, transparent);
+}
+
+.topRow{
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.resultCard,
+.instCard{
+  padding: 15px 16px;
+}
+
+.resultIcon,
+.instCardIcon,
+.settingsRailButtonIcon{
+  border-radius: 12px;
+}
+
+.resultIcon,
+.instCardIcon{
+  border-color: color-mix(in srgb, var(--stroke2) 56%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 76%, transparent);
+}
+
+.libraryHeroCard,
+.settingsHeroCard,
+.accountHero{
+  padding: 22px 22px 18px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 97%, transparent), color-mix(in srgb, var(--surface-2) 95%, transparent));
+  border-color: color-mix(in srgb, var(--stroke2) 72%, transparent);
+}
+
+.accountHeroLead{
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.libraryHeroStats,
+.settingsHeroSummaryGrid,
+.accountSummaryStrip{
+  gap: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 56%, transparent);
+  padding-top: 14px;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.accountSummaryCard{
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 14px 0 16px;
+  min-height: 0;
+}
+
+.libraryHeroStats > :first-child,
+.settingsHeroSummaryGrid > :first-child,
+.accountSummaryStrip > :first-child{
+  border-left: 0;
+  padding-left: 0;
+}
+
+.libraryHeroStatValue,
+.accountSummaryValue{
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+}
+
+.librarySideCard,
+.accountSectionBlock,
+.settingsSectionCard .settingStack > div,
+.settingsFoldSection{
+  border-radius: 0;
+  border-width: 1px 0 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.librarySideCard{
+  padding: 14px 0 0;
+}
+
+.settingsSectionCard{
+  padding: 20px 20px 16px;
+}
+
+.settingsSectionCard .settingStack{
+  gap: 0;
+  margin-top: 12px;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 14px 0;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.settingsFoldSection{
+  margin-top: 10px;
+}
+
+.settingsFoldSummary{
+  padding: 12px 0;
+}
+
+.settingsFoldBody{
+  padding: 12px 0 2px;
+}
+
+.settingsSidebar{
+  padding: 20px 18px 18px;
+  border-radius: 18px;
+}
+
+.settingsRailList{
+  gap: 4px;
+}
+
+.settingsRailButton{
+  padding: 10px 0;
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settingsRailButton:last-child{
+  border-bottom: 0;
+}
+
+.settingsRailButtonIcon{
+  background: color-mix(in srgb, var(--surface) 56%, var(--surface-2) 44%);
+}
+
+.settingsRailButton.active{
+  background: transparent;
+  box-shadow: none;
+}
+
+.settingsHeroSummaryValue{
+  font-family: var(--font-display);
+}
+
+.accountCard{
+  padding: 18px 18px 16px;
+}
+
+.accountSectionBlock{
+  padding: 12px 0 0;
+}
+
+.accountProfileSplit{
+  gap: 18px;
+}
+
+.accountGrid{
+  gap: 16px;
+}
+
+.instanceSidePane{
+  gap: 6px;
+}
+
+.instanceSideCard{
+  padding: 14px 0 0;
+  border-width: 1px 0 0;
+  background: transparent;
+}
+
+.instanceSideCard:first-child{
+  border-top: 0;
+  padding-top: 0;
+}
+
+.activityHeadMeta{
+  padding: 12px 0 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.instanceSectionHeader,
+.homePanelHead{
+  align-items: flex-end;
+}
+
+@media (max-width: 820px){
+  .content{
+    padding: 14px 18px 22px;
+  }
+
+  .libraryHeroCard,
+  .settingsHeroCard,
+  .accountHero,
+  .settingsSectionCard,
+  .accountCard{
+    padding-inline: 16px;
+  }
+
+  .libraryHeroStat,
+  .settingsHeroSummaryCard,
+  .accountSummaryCard{
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+}
+
+/* --- Modern correction pass: remove editorial/heritage cues --- */
+:root{
+  --font-body: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-display: "Avenir Next", "Segoe UI Variable Display", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-label: "Avenir Next", "Segoe UI Variable Text", "Helvetica Neue", "Arial Nova", sans-serif;
+  --font-mono: "SFMono-Regular", "Consolas", "Menlo", "Monaco", monospace;
+}
+
+body{
+  letter-spacing: -0.008em;
+}
+
+.h1,
+.h2,
+.h3,
+.discoverWorkspaceTitle,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.settingsSidebarTitle,
+.accountHeroName,
+.instTitle,
+.projectHeroTitle,
+.resultTitle,
+.instCardTitle,
+.settingsSectionTitle,
+.settingsHeroSummaryValue{
+  font-weight: 680;
+  letter-spacing: -0.032em;
+}
+
+.instPageTop .instTitle{
+  font-weight: 900;
+  letter-spacing: -0.042em;
+}
+
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow,
+.settingsSidebarLabel,
+.libraryHeroStatLabel,
+.accountSummaryLabel,
+.accountSectionTitle,
+.settingsHeroSummaryLabel{
+  letter-spacing: 0.11em;
+  font-weight: 780;
+}
+
+.btn,
+.input,
+.segmented,
+.card,
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.resultCard,
+.instCard{
+  border-radius: 12px;
+}
+
+:root[data-theme="light"] .content{
+  background: #eeeeee;
+}
+
+:root[data-theme="light"] .navRail{
+  background: #ffffff;
+  border-right-color: rgba(120, 120, 120, 0.14);
+  box-shadow: inset -1px 0 0 rgba(120, 120, 120, 0.08);
+}
+
+.discoverWorkspace::before,
+.libraryTopRow::before,
+.settingsSidebar::before,
+.settingsHeroCard::before,
+.settingsSectionCard::before,
+.accountCard::before,
+.homePanel::before{
+  opacity: 0;
+}
+
+:root[data-theme="light"] .discoverWorkspace,
+:root[data-theme="light"] .libraryTopRow,
+:root[data-theme="light"] .settingsSidebar,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .settingsSectionCard,
+:root[data-theme="light"] .accountCard,
+:root[data-theme="light"] .homePanel,
+:root[data-theme="light"] .resultCard,
+:root[data-theme="light"] .instCard,
+:root[data-theme="light"] .libraryStorageCard{
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  border-color: rgba(119, 133, 153, 0.16);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-theme="light"] .libraryHeroCard,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .accountHero{
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  border-color: rgba(120, 120, 120, 0.16);
+}
+
+.settingsRailButton{
+  padding: 11px 0;
+}
+
+:root[data-theme="light"] .settingsRailButton{
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: transparent;
+}
+
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.homeRowMeta{
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+/* --- Motion restore: keep updated visuals, bring back the older interaction feel --- */
+.resultCard{
+  border-radius: 20px;
+}
+
+.resultIcon{
+  border-radius: 16px;
+}
+
+.btn.primary{
+  box-shadow:
+    0 10px 24px color-mix(in srgb, var(--accent-soft) 44%, transparent),
+    0 1px 2px rgba(18, 24, 32, 0.08);
+}
+
+:root[data-theme="light"] .btn.primary{
+  box-shadow:
+    0 8px 18px rgba(18, 24, 32, 0.05),
+    0 1px 2px rgba(18, 24, 32, 0.06);
+}
+/* --- Discover segmented control shape alignment --- */
+.discoverPage .segmented{
+  border-radius: 18px;
+  padding: 5px;
+}
+
+.discoverPage .segmentedIndicator,
+.discoverPage .segmentedIndicator::before,
+.discoverPage .segBtn{
+  border-radius: 15px;
+}
+
+/* --- Global corner system normalization --- */
+:root{
+  --corner-modal: 20px;
+  --corner-panel: 18px;
+  --corner-row: 16px;
+  --corner-control: 13px;
+  --corner-soft: 15px;
+}
+
+.modal,
+.msCodeDialog,
+.commandPalettePanel{
+  border-radius: var(--corner-modal);
+}
+
+.card,
+.discoverWorkspace,
+.libraryTopRow,
+.libraryHeroCard,
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.homePanel,
+.storageManagerHero,
+.storageManagerRail,
+.storagePaneCard,
+.projectHeroCard,
+.instanceContentWorkspaceCard,
+.instanceContentResultsShell,
+.updatesScreenSummaryCard{
+  border-radius: var(--corner-panel);
+}
+
+.resultCard,
+.instCard,
+.instanceModsRow,
+.homeLaunchAction,
+.homeListRow,
+.libraryStorageCard,
+.storageSummaryCard,
+.storageRailItem,
+.storageBreakdownRow,
+.storageEntryRow,
+.storageRecommendationRow,
+.storageInstanceOverviewRow,
+.instanceContentMaintenanceBar,
+.instanceContentMaintenancePanel,
+.instanceContentControlCard,
+.instanceContentToolsPane,
+.updatesListRow,
+.updatesScreenRuleCard,
+.updatesScreenItemCard,
+.updatesScreenAppliedInstance,
+.settingsAccountCard,
+.accountAuthBanner,
+.errorBox,
+.warningBox,
+.noticeBox,
+.topStatusBanner.warningBox,
+.topStatusBanner.errorBox,
+.topStatusBanner.noticeBox,
+.commandPaletteItem,
+.commandPaletteEmpty,
+.emptyInline,
+.configInlinePanel,
+.configSimpleRow,
+.configInspectorRows,
+.configInspectorPreview,
+.configNestedDetails{
+  border-radius: var(--corner-row);
+}
+
+.btn,
+.input,
+.dropBtn,
+.menuSelectBtn,
+.dropMiniBtn,
+.iconBtn,
+.instanceActionIconBtn,
+.fullHistoryModal .iconBtn,
+.storageManagerModal .iconBtn,
+.instanceSettingsModal .iconBtn,
+.resultIcon,
+.instCardIcon,
+.settingsRailButtonIcon,
+.accountAvatarWrap,
+.instHeroIcon,
+.commandPaletteItem,
+.menuItem,
+.dropPanel.menuSelectCompactPanel,
+.dropPanel.menuSelectCompactPanel .menuItem{
+  border-radius: var(--corner-control);
+}
+
+.segmented{
+  border-radius: var(--corner-panel);
+}
+
+.segmentedIndicator,
+.segmentedIndicator::before,
+.segBtn{
+  border-radius: var(--corner-soft);
+}
+
+.dropPanel{
+  border-radius: var(--corner-panel);
+}
+
+/* --- Page header authority pass --- */
+.homeSpotlightTitle,
+.h1,
+.libraryHeroTitle,
+.accountHeroName{
+  font-family: var(--font-display);
+  font-weight: 740;
+  letter-spacing: -0.05em;
+  line-height: 0.93;
+  text-wrap: balance;
+}
+
+.h1{
+  font-size: clamp(2.15rem, 1.55rem + 1.2vw, 3rem);
+  margin-bottom: 2px;
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.5rem, 1.9rem + 1.75vw, 3.95rem);
+  max-width: 14ch;
+}
+
+.libraryHeroTitle,
+.accountHeroName{
+  font-size: clamp(2rem, 1.45rem + 0.95vw, 2.65rem);
+}
+
+.settingsHeroTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 1.35rem + 0.7vw, 2.25rem);
+  font-weight: 720;
+  letter-spacing: -0.04em;
+  line-height: 0.98;
+  text-wrap: balance;
+}
+
+.instanceSectionTitle,
+.homePanelTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle{
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.018em;
+  line-height: 1.15;
+}
+
+/* --- Unified page header + wrap cleanup pass --- */
+.homeKicker,
+.mpmEyebrow,
+.libraryHeroEyebrow,
+.settingsHeroEyebrow,
+.accountHeroEyebrow,
+.settingsSidebarEyebrow{
+  font-family: var(--font-label);
+  font-size: 11px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.homeSpotlightTitle,
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-family: var(--font-display);
+  font-weight: 735;
+  letter-spacing: -0.048em;
+  line-height: 0.94;
+  text-wrap: balance;
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.95rem, 1.48rem + 0.9vw, 2.55rem);
+}
+
+.mpmEditorHeader .h2{
+  font-size: clamp(1.7rem, 1.4rem + 0.5vw, 2rem);
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.5rem, 1.95rem + 1.55vw, 3.7rem);
+  max-width: 16ch;
+}
+
+.homeSpotlightSub,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub{
+  font-size: 14px;
+  line-height: 1.58;
+  text-wrap: pretty;
+}
+
+.homeSpotlightSub,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead{
+  max-width: 58ch;
+}
+
+.discoverWorkspaceTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 1.1rem + 0.4vw, 1.65rem);
+  font-weight: 700;
+  letter-spacing: -0.032em;
+  line-height: 1.03;
+  text-wrap: balance;
+  max-width: none;
+}
+
+.homePanelTitle,
+.instanceSectionTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.mpmPanelTitle{
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.016em;
+  line-height: 1.16;
+}
+
+.mpmPanelSub,
+.compactEmptyText,
+.emptySub,
+.homeRowMeta{
+  text-wrap: pretty;
+}
+
+/* --- Surface rebalance: restore meaningful cards, reduce low-value nesting --- */
+.libraryHeroStats,
+.settingsHeroSummaryGrid,
+.accountSummaryStrip{
+  gap: 10px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.accountSummaryCard{
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  padding: 12px 14px;
+}
+
+.libraryHeroStats > :first-child,
+.settingsHeroSummaryGrid > :first-child,
+.accountSummaryStrip > :first-child{
+  border-left: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  padding-left: 14px;
+}
+
+.librarySideCard,
+.accountSectionBlock,
+.settingsSectionCard .settingStack > div,
+.settingsFoldSection,
+.instanceSideCard,
+.activityHeadMeta{
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  box-shadow: none;
+}
+
+.librarySideCard{
+  padding: 16px;
+}
+
+.settingsSectionCard .settingStack{
+  gap: 10px;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 14px;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 54%, transparent);
+  padding-top: 14px;
+}
+
+.settingsFoldSummary{
+  padding: 12px 14px;
+}
+
+.settingsFoldBody{
+  padding: 12px 14px 14px;
+}
+
+.instanceSidePane{
+  gap: 10px;
+}
+
+.instanceSideCard{
+  padding: 13px 14px;
+}
+
+.instanceSideCard.activityFeedCard{
+  padding: 18px 18px 16px;
+}
+
+.activityHeadMeta{
+  padding: 14px 16px;
+}
+
+.homeLaunchAction,
+.homeListRow,
+.libraryStorageCard,
+.settingsAccountCard{
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border-color: color-mix(in srgb, var(--stroke2) 42%, transparent);
+  box-shadow: none;
+}
+
+/* --- Discover title emphasis pass --- */
+.resultTitle{
+  font-family: var(--font-body);
+  font-size: 1.06rem;
+  font-weight: 760;
+  letter-spacing: -0.018em;
+  line-height: 1.08;
+  text-wrap: balance;
+}
+
+/* --- Instance content surface cleanup: reduce nested cards --- */
+.instPanelContent{
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+}
+
+.instanceContentWorkspaceCard{
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0 0 6px;
+  gap: 12px;
+}
+
+.instanceContentMaintenanceGrid{
+  gap: 18px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 44%, transparent);
+}
+
+.instanceContentMaintenancePanel{
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  gap: 10px;
+}
+
+.instanceContentMaintenancePanelHead{
+  gap: 5px;
+}
+
+.instanceContentUpdateRow,
+.instanceSnapshotRow{
+  padding-top: 2px;
+}
+
+.instanceContentResultsShell{
+  padding: 10px 0 0;
+  margin-bottom: 0;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 44%, transparent);
+  border-radius: 0;
+  background: transparent;
+  gap: 10px;
+}
+
+/* --- Desktop system pass: calmer hierarchy + one clear workspace surface --- */
+:root{
+  --workspace-card-radius: 22px;
+  --workspace-card-border: color-mix(in srgb, var(--stroke2) 58%, transparent);
+  --workspace-card-bg: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  --ui-page-title-weight: 800;
+  --ui-page-title-tracking: -0.04em;
+  --ui-subpage-title-weight: 760;
+}
+
+.btn{
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.btn.primary{
+  font-weight: 680;
+}
+
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-size: 13px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.input,
+.textarea{
+  font-weight: 620;
+}
+
+.chip{
+  font-size: 10.5px;
+  font-weight: 635;
+  letter-spacing: 0.01em;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 82%, transparent);
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  color: color-mix(in srgb, var(--text) 68%, var(--muted) 32%);
+}
+
+.chip.subtle{
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.72rem, 1.42rem + 0.45vw, 2.08rem);
+  font-weight: 800;
+  letter-spacing: -0.038em;
+  line-height: 0.98;
+}
+
+.homeSpotlightTitle{
+  font-size: clamp(2.16rem, 1.74rem + 1vw, 2.9rem);
+  font-weight: 800;
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+}
+
+.pageRouteEyebrow,
+.instanceContentWorkspaceEyebrow,
+.updatesScreenSummaryEyebrow,
+.updatesScreenRuleLabel,
+.quickPlayLabel,
+.instanceSessionLabel{
+  font-weight: 740;
+  letter-spacing: 0.11em;
+}
+
+.pageRouteHeader > .p,
+.p,
+.settingSub,
+.instanceContentWorkspaceSub,
+.updatesScreenSectionSub,
+.quickPlaySub,
+.instanceSessionSub,
+.updatesListMeta,
+.instanceModsNameMeta{
+  font-weight: 520;
+  color: var(--muted);
+}
+
+.settingTitle,
+.librarySideTitle,
+.activityHeaderTitle,
+.instanceContentMaintenanceTitle,
+.instanceModsNameTitle{
+  font-weight: 820;
+  letter-spacing: -0.018em;
+}
+
+.pill{
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.h1 + .p,
+.homeSpotlightTitle + .homeSpotlightSub,
+.libraryHeroTitle + .libraryHeroSub,
+.settingsHeroTitle + .settingsHeroSub,
+.accountHeroName + .accountHeroLead{
+  margin-top: 6px;
+}
+
+.p,
+.libraryHeroSub,
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.homeSpotlightSub{
+  font-size: 13.5px;
+  font-weight: 640;
+  line-height: 1.48;
+}
+
+.instanceContentWorkspaceEyebrow,
+.updatesScreenRuleLabel{
+  letter-spacing: 0.11em;
+}
+
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle{
+  font-family: var(--font-display);
+  font-size: clamp(1.34rem, 1.2rem + 0.28vw, 1.56rem);
+  font-weight: 715;
+  letter-spacing: -0.032em;
+  line-height: 1.02;
+  margin-top: 2px;
+}
+
+.instanceContentWorkspaceSub,
+.discoverWorkspaceSub{
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 630;
+  line-height: 1.42;
+}
+
+.homePanelTitle,
+.instanceSectionTitle,
+.settingsRailButtonTitle,
+.libraryGroupHeader,
+.activityHeaderTitle,
+.mpmPanelTitle,
+.instanceContentMaintenanceTitle{
+  font-family: var(--font-body);
+  font-size: 0.98rem;
+  font-weight: 740;
+  letter-spacing: -0.014em;
+  line-height: 1.18;
+}
+
+.resultDesc,
+.instanceContentMaintenanceSub,
+.updatesListMeta,
+.instanceModsNameMeta,
+.activitySub{
+  font-weight: 640;
+}
+
+.resultMetaRow{
+  font-weight: 560;
+}
+
+.instanceModsNameTitle{
+  font-size: 14px;
+  font-weight: 780;
+  letter-spacing: -0.014em;
+}
+
+.resultCard,
+.instanceModsRow,
+.updatesListRow{
+  border-radius: 18px;
+  border-color: color-mix(in srgb, var(--stroke2) 48%, transparent);
+  box-shadow: none;
+}
+
+.instPanelContent{
+  border: 1px solid var(--workspace-card-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--workspace-card-bg) 100%, white 0%), color-mix(in srgb, var(--surface) 98%, transparent));
+  box-shadow: none;
+  border-radius: var(--workspace-card-radius);
+}
+
+.instanceContentWrap{
+  padding: 18px 18px 16px;
+  gap: 12px;
+}
+
+.instanceContentWorkspaceCard{
+  padding: 0;
+  gap: 10px;
+}
+
+.instanceContentMaintenanceGrid{
+  gap: 16px;
+  padding-top: 10px;
+}
+
+.instanceContentResultsShell{
+  padding-top: 12px;
+  gap: 12px;
+}
+
+.discoverWorkspace{
+  border-radius: var(--workspace-card-radius);
+  border-color: var(--workspace-card-border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--workspace-card-bg) 100%, white 0%), color-mix(in srgb, var(--surface) 98%, transparent));
+}
+
+/* --- Cross-page cleanup pass from screenshot audit --- */
+:root{
+  --ui-title-tight-gap: 4px;
+  --ui-section-gap: 12px;
+  --ui-soft-panel-bg: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  --ui-soft-panel-border: color-mix(in srgb, var(--stroke2) 46%, transparent);
+  --ui-row-border: color-mix(in srgb, var(--stroke2) 40%, transparent);
+}
+
+.h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.skinsRefSectionTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.mpmHeaderBlock .h2{
+  font-weight: 700;
+}
+
+.h1{
+  font-size: clamp(1.9rem, 1.55rem + 0.52vw, 2.28rem);
+}
+
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle{
+  font-size: clamp(1.24rem, 1.12rem + 0.22vw, 1.42rem);
+  margin-top: var(--ui-title-tight-gap);
+}
+
+.settingsHeroTitle,
+.accountHeroName,
+.libraryHeroTitle{
+  margin-top: var(--ui-title-tight-gap);
+}
+
+.settingsHeroSub,
+.accountHeroLead,
+.accountHeroSub,
+.libraryHeroSub,
+.discoverWorkspaceSub,
+.instanceContentWorkspaceSub,
+.skinsLibrarySub,
+.accountSkinSub,
+.storageSectionSub,
+.storagePaneHeader .muted,
+.settingsSidebarIntro{
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.42;
+  font-weight: 620;
+}
+
+.settingsShell{
+  gap: 18px;
+}
+
+.settingsSidebar{
+  padding: 16px 14px;
+  border-radius: 20px;
+  gap: 12px;
+}
+
+.settingsSidebarHeader{
+  gap: 6px;
+}
+
+.settingsRailList{
+  gap: 0;
+}
+
+.settingsRailButton{
+  border-width: 0 0 1px;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 2px;
+  transform: none;
+}
+
+.settingsRailButton:last-child{
+  border-bottom: 0;
+}
+
+.settingsRailButton.active{
+  transform: none;
+  box-shadow: none;
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent-ring) 30%, var(--ui-row-border));
+}
+
+.settingsRailButtonIcon{
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 10px;
+}
+
+.settingsHeroCard,
+.settingsSectionCard,
+.accountHero,
+.accountCard,
+.libraryHeroCard,
+.libraryTopRow,
+.updatesScreenSummaryCard,
+.discoverWorkspace,
+.storageManagerHero{
+  border-radius: 20px;
+  box-shadow: none;
+}
+
+.settingsHeroCard,
+.settingsSectionCard,
+.accountCard,
+.libraryTopRow,
+.updatesScreenSummaryCard{
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.settingsHeroCard{
+  padding: 18px;
+  gap: 12px;
+}
+
+.settingsHeroSummaryGrid{
+  gap: 8px;
+}
+
+.settingsHeroSummaryCard{
+  border-radius: 14px;
+  padding: 10px 12px;
+  min-height: 0;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+}
+
+.settingsHeroSummaryValue{
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.settingsSectionCard{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.settingsSectionCard .settingStack{
+  margin-top: 10px;
+  gap: 0;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 12px 0;
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  padding-top: 6px;
+  border-top: 0;
+}
+
+.settingsFoldSection{
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settingsFoldSummary,
+.settingsFoldBody{
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.settingsSectionCard .accentPicker{
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settingsSectionCard .accentChoice{
+  border-radius: 14px;
+}
+
+.settingsModeToggle{
+  border-radius: 14px;
+  padding: 4px;
+}
+
+.accountHero{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.accountSummaryStrip{
+  gap: 8px;
+}
+
+.accountSummaryCard{
+  min-height: 0;
+  padding: 10px 12px 12px;
+  border-radius: 14px;
+}
+
+.accountSummaryValue{
+  margin-top: 4px;
+  font-size: 18px;
+  font-weight: 760;
+}
+
+.accountCard{
+  padding: 14px 16px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.accountSectionBlock{
+  border-width: 1px 0 0;
+  border-radius: 0;
+  padding: 10px 0 0;
+  background: transparent;
+}
+
+.accountProfileSplit{
+  gap: 12px;
+}
+
+.accountSkinsStudioLibrary{
+  margin-top: 0;
+  gap: 14px;
+}
+
+.accountSkinViewerPane,
+.accountSkinLibrarySection{
+  border-radius: 16px;
+  background: var(--ui-soft-panel-bg);
+  box-shadow: none;
+}
+
+.accountSkinHeading,
+.skinsRefSectionTitle{
+  font-size: clamp(1.55rem, 1.28rem + 0.46vw, 1.92rem);
+  font-weight: 740;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+}
+
+.accountSkinNamePlate,
+.skinsLibrarySelection{
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+.skinsLibrarySelection strong{
+  font-size: 12.5px;
+  font-weight: 760;
+}
+
+.skinsRefSavedGrid,
+.skinsRefDefaultGrid{
+  gap: 8px;
+}
+
+.skinsLibraryRef .accountSkinChoiceCard,
+.accountSkinAddCardRef{
+  border-radius: 16px;
+  box-shadow: none;
+}
+
+.skinsLibraryRef .accountSkinChoiceCard:hover,
+.accountSkinChoiceCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.skinsLibraryRef .accountSkinChoiceThumb{
+  overflow: hidden;
+}
+
+.accountSkinChoiceLabel{
+  font-size: 12.5px;
+  font-weight: 760;
+}
+
+.accountSkinChoiceMeta{
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.updatesScreenSummaryCard{
+  padding: 16px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.updatesScreenRuleCard,
+.updatesScreenItemCard,
+.updatesScreenAppliedInstance{
+  border-radius: 16px;
+  box-shadow: none;
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.libraryHeroCard{
+  padding: 16px 18px;
+}
+
+.libraryHeroStats{
+  gap: 8px;
+}
+
+.libraryHeroStat{
+  padding: 10px 12px;
+  border-radius: 14px;
+}
+
+.libraryTopRow{
+  padding: 14px;
+}
+
+.instCard,
+.resultCard,
+.instanceModsRow{
+  border-radius: 16px;
+}
+
+.instCard{
+  padding: 14px 16px;
+}
+
+.instCardTitle,
+.storageRecommendationTitle,
+.storageEntryLabel,
+.instanceModsNameTitle{
+  font-weight: 760;
+}
+
+.librarySideCard{
+  border-radius: 18px;
+}
+
+.storageManagerModal{
+  max-height: min(92vh, 980px);
+}
+
+.storageManagerModal .modalBody{
+  padding: 14px 16px 16px;
+}
+
+.storageManagerBody{
+  gap: 12px;
+  max-height: min(82vh, 860px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+
+.storageManagerHero{
+  padding: 16px 18px;
+  background: var(--ui-soft-panel-bg);
+}
+
+.storageManagerTotal{
+  font-size: clamp(22px, 1.8vw, 28px);
+  font-weight: 780;
+}
+
+.storageSummaryStrip{
+  gap: 8px;
+}
+
+.storageSummaryCard{
+  border-radius: 14px;
+  padding: 10px 12px;
+  box-shadow: none;
+}
+
+.storageSummaryValue{
+  font-size: 16px;
+  font-weight: 760;
+}
+
+.storageManagerLayout{
+  gap: 12px;
+  align-items: start;
+}
+
+.storageManagerRail{
+  padding: 8px;
+  border-radius: 18px;
+  box-shadow: none;
+}
+
+.storageRailItem{
+  border-radius: 14px;
+  padding: 10px 11px;
+}
+
+.storageManagerPane{
+  max-height: none;
+  overflow: visible;
+}
+
+.storagePaneHeader{
+  gap: 10px;
+}
+
+.storagePaneTitle{
+  font-size: 18px;
+  font-weight: 760;
+  margin-bottom: 2px;
+}
+
+.storagePaneGrid{
+  gap: 12px;
+}
+
+.storagePaneCard{
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: none;
+  background: var(--ui-soft-panel-bg);
+}
+
+.storagePaneCard .storageEntryList,
+.storagePaneCard .storageRecommendationList,
+.storagePaneCard .storageInstanceOverviewList{
+  max-height: none;
+  overflow: visible;
+}
+
+.storageBreakdownRow,
+.storageEntryRow,
+.storageRecommendationRow,
+.storageInstanceOverviewRow{
+  border-radius: 14px;
+  box-shadow: none;
+}
+
+.storageEntryRow:hover,
+.storageRecommendationRow:hover,
+.storageInstanceOverviewRow:hover{
+  box-shadow: none;
+}
+
+.discoverWorkspace{
+  padding: 14px 14px 12px;
+}
+
+.discoverWorkspaceTop{
+  gap: 8px;
+}
+
+.resultCard{
+  padding: 14px 14px;
+  gap: 14px;
+}
+
+.resultDesc{
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
+.resultMetaRow{
+  margin-top: 8px;
+  gap: 6px 8px;
+  font-size: 11.5px;
+}
+
+.resultMetaText{
+  color: color-mix(in srgb, var(--muted) 80%, var(--text) 20%);
+  font-weight: 560;
+  letter-spacing: 0;
+}
+
+.resultMetaStrong{
+  font-weight: 800;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.discoverMetaChip{
+  font-weight: 620;
+}
+
+.projectModal .modalBody,
+.discoverProjectModal .modalBody,
+.modal .modalBody{
+  overscroll-behavior: contain;
+}
+
+.creatorStudioIntro .h1,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-size: clamp(1.62rem, 1.34rem + 0.44vw, 1.98rem);
+}
+
+.creatorStudioIntro .p{
+  margin-top: 6px;
+}
+
+.mpmWorkspaceCard,
+.mpmHeaderBlock,
+.mpmEditorHeader,
+.configEditorWorkspace,
+.configEditorPanel,
+.configInspectorPane,
+.mpmLayersPanel,
+.mpmEntriesPanel,
+.mpmInspectorPanel{
+  box-shadow: none;
+}
+
+.mpmLayersPanel,
+.mpmEntriesPanel,
+.mpmInspectorPanel,
+.configEditorPanel,
+.configInspectorPane{
+  border-radius: 18px;
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+}
+
+.mpmLayerCard,
+.mpmEntryRow,
+.configFileRow{
+  border-radius: 14px;
+}
+
+/* --- Discover cleanup pass: calmer, cleaner list + sidebar layout --- */
+.discoverLayout{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 16px;
+  align-items: start;
+}
+
+.discoverMain{
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.discoverSidebar{
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.discoverSidebarSection{
+  padding: 16px 14px 14px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 56%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+.discoverSidebarTitle{
+  font-size: 11px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.discoverSidebarBody{
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.discoverSidebarFooter{
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 20%, transparent);
+}
+
+.discoverSidebarNotice{
+  margin-top: 0;
+}
+
+.discoverSidebar .dropBtn,
+.discoverSidebar .menuSelectBtn,
+.discoverSidebar .dropdown .dropBtn{
+  min-height: 40px;
+  padding-inline: 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 99%, var(--surface-2) 1%);
+  border-color: color-mix(in srgb, var(--stroke) 46%, transparent);
+  font-size: 12.5px;
+  font-weight: 640;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  box-shadow: none;
+}
+
+.discoverSidebar .dropBtn.value,
+.discoverSidebar .menuSelectBtn.value{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
+
+.discoverCheckboxRow{
+  width: 100%;
+  justify-self: stretch;
+  align-self: stretch;
+  margin-top: 0;
+  min-height: 40px;
+  padding: 0 10px;
+  border-radius: 14px;
+  border-color: color-mix(in srgb, var(--stroke) 28%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 48%, transparent);
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  font-size: 12.5px;
+  font-weight: 720;
+}
+
+.discoverCheckboxRow:hover{
+  background: color-mix(in srgb, var(--surface-2) 68%, transparent);
+  border-color: color-mix(in srgb, var(--stroke) 40%, transparent);
+}
+
+.discoverCheckboxRow .checkbox{
+  width: 17px;
+  height: 17px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface) 86%, var(--surface-2) 14%);
+}
+
+.discoverClearBtn{
+  justify-self: stretch;
+  width: 100%;
+  padding-inline: 14px;
+  min-height: 40px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  font-weight: 720;
+  background: transparent;
+  border-color: color-mix(in srgb, var(--stroke) 34%, transparent);
+  box-shadow: none;
+}
+
+.discoverClearBtn:hover{
+  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
+}
+
+.discoverWorkspace{
+  margin-top: 0;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 56%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+.discoverWorkspaceTop{
+  align-items: center;
+  gap: 10px;
+}
+
+.discoverWorkspaceStats{
+  gap: 6px;
+}
+
+.discoverWorkspaceStats .chip{
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+}
+
+.discoverTypeRow{
+  margin-top: 12px;
+}
+
+.discoverTypeRow .segmented{
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  border: 1px solid color-mix(in srgb, var(--stroke) 44%, transparent);
+  box-shadow: none;
+}
+
+.discoverTypeRow .segBtn{
+  min-height: 36px;
+  padding-inline: 14px;
+  font-weight: 740;
+}
+
+.discoverTypeRow .segmentedIndicator,
+.discoverTypeRow .segmentedIndicator::before{
+  background: color-mix(in srgb, var(--surface) 98%, transparent);
+  box-shadow: none;
+}
+
+.discoverSearchRow{
+  margin-top: 12px;
+  gap: 10px;
+}
+
+.discoverSearchInput.input{
+  min-height: 44px;
+  border-radius: 14px;
+  background: #fff;
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
+  box-shadow: none;
+}
+
+.discoverSearchActions{
+  gap: 10px;
+}
+
+.discoverSearchActions .menuSelectBtn,
+.discoverSearchActions .dropBtn{
+  min-height: 44px;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.discoverRefineRail .dropBtn,
+.discoverRefineRail .dropBtn.value{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
+
+.discoverRefineRail .dropBtn > div,
+.discoverRefineRail .dropBtn.value > div{
+  font-weight: 760;
+}
+
+.discoverSearchBtn{
+  min-height: 44px;
+  min-width: 104px;
+  border-radius: 14px;
+  border-color: color-mix(in srgb, var(--stroke) 62%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  color: var(--text);
+  box-shadow: none;
+}
+
+.discoverSearchBtn:hover{
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+}
+
+.resultsGrid{
+  margin-top: 0;
+  gap: 12px;
+}
+
+.resultCard{
+  padding: 14px 16px;
+  gap: 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 52%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  box-shadow: none;
+}
+
+.resultIcon{
+  width: 68px;
+  height: 68px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface-2) 74%, transparent);
+  border-color: color-mix(in srgb, var(--stroke) 44%, transparent);
+}
+
+.resultBody{
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+
+.resultTitle{
+  font-size: 17px;
+  font-weight: 740;
+  letter-spacing: -0.028em;
+}
+
+.resultDesc{
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  font-size: 13.5px;
+  line-height: 1.28;
+}
+
+.resultMetaRow{
+  margin-top: 8px;
+  gap: 6px;
+  font-size: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.resultMetaText{
+  font-size: 12px;
+}
+
+.resultMetaPrimary{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.resultArrowGlyph{
+  font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-size: 0.98em;
+  font-weight: 900;
+  line-height: 1;
+  display: inline-block;
+  transform: translateY(-0.02em);
+}
+
+.resultHeartGlyph{
+  font-family: system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-size: 0.98em;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-block;
+  transform: translateY(-0.01em);
+}
+
+.discoverMetaChip{
+  background: color-mix(in srgb, var(--surface-2) 72%, transparent);
+  border-color: color-mix(in srgb, var(--stroke) 40%, transparent);
+}
+
+.resultActions{
+  align-self: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.resultActions .btn{
+  min-width: 104px;
+  min-height: 38px;
+  border-radius: 12px;
+  padding-inline: 12px;
+}
+
+.discoverActionBtn{
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
+  color: color-mix(in srgb, var(--text) 88%, var(--muted) 12%);
+  box-shadow: none;
+}
+
+.discoverActionBtn:hover{
+  background: color-mix(in srgb, var(--interactive-hover-bg) 80%, var(--accent-soft) 20%);
+  border-color: color-mix(in srgb, var(--control-border-hover) 72%, var(--accent-ring) 28%);
+  box-shadow: none;
+}
+
+.discoverViewBtn{
+  min-width: 78px !important;
+}
+
+.discoverAddBtn{
+  min-width: 142px !important;
+}
+
+.discoverInstallBtn{
+  border-color: color-mix(in srgb, var(--stroke2) 72%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  color: color-mix(in srgb, var(--text) 92%, var(--muted) 8%);
+  box-shadow: none;
+}
+
+.discoverInstallBtn .btnIcon{
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+
+.discoverInstallBtn .btnIcon .navIcon{
+  width: 15px;
+  height: 15px;
+}
+
+.discoverInstallBtn:hover{
+  background: color-mix(in srgb, var(--interactive-hover-bg) 84%, var(--accent-soft) 16%);
+  box-shadow: none;
+}
+
+.discoverAddTray{
+  border-color: color-mix(in srgb, var(--stroke) 52%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+.discoverAddTraySticky{
+  box-shadow: 0 12px 28px rgba(18, 24, 32, 0.05);
+}
+
+.discoverAddTrayTitle{
+  color: var(--text);
+}
+
+.discoverAddTraySub{
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.discoverAddTrayItem{
+  border-color: color-mix(in srgb, var(--stroke) 44%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 66%, transparent);
+}
+
+.pager{
+  margin-top: 2px;
+  justify-content: flex-end;
+  padding: 2px 2px 0;
+}
+
+@media (max-width: 1120px){
+  .discoverLayout{
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .discoverSidebar{
+    position: static;
+    order: -1;
+  }
+}
+
+@media (max-width: 820px){
+  .discoverWorkspaceTop,
+  .discoverSearchRow,
+  .discoverSearchActions{
+    align-items: stretch;
+  }
+
+  .discoverSearchActions{
+    width: 100%;
+  }
+
+  .resultCard{
+    flex-direction: column;
+  }
+
+  .resultActions{
+    margin-left: 0;
+    justify-content: flex-start;
+    align-self: auto;
+  }
+}
+
+/* --- Page title hierarchy reset: top-level headers should lead --- */
+:root{
+  --ui-page-title-size: clamp(2.2rem, 1.86rem + 0.76vw, 2.88rem);
+  --ui-page-title-weight: 860;
+  --ui-page-title-tracking: -0.045em;
+  --ui-subpage-title-size: clamp(1.22rem, 1.12rem + 0.24vw, 1.42rem);
+  --ui-subpage-title-weight: 770;
+}
+
+.page > .h1,
+.accountPage > .h1,
+.discoverPage > .h1,
+.pageRouteHeader > .h1,
+.settingsSidebarTitle,
+.libraryHeroTitle,
+.homeSpotlightTitle,
+.creatorStudioIntro .h1{
+  font-size: var(--ui-page-title-size);
+  font-weight: var(--ui-page-title-weight);
+  letter-spacing: var(--ui-page-title-tracking);
+  line-height: 0.96;
+}
+
+.homeSpotlightTitle{
+  max-width: 16ch;
+}
+
+.settingsHeroTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle,
+.skinsRefSectionTitle,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-size: var(--ui-subpage-title-size);
+  font-weight: var(--ui-subpage-title-weight);
+  letter-spacing: -0.032em;
+  line-height: 1.03;
+}
+
+:root{
+  --page-section-gap: 10px;
+}
+
+.pageRouteStack{
+  display: grid;
+  gap: var(--page-section-gap);
+}
+
+.pageRouteHeader{
+  display: grid;
+  gap: 4px;
+  margin-bottom: 0;
+}
+
+.pageRouteEyebrow{
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsMain > .pageRouteHeader,
+.accountPage > .pageRouteHeader,
+.discoverPage > .pageRouteHeader,
+.pageRouteStack > .pageRouteHeader,
+.creatorStudioRoute > .pageRouteHeader,
+.libraryMainPane > .pageRouteHeader{
+  margin-bottom: 0;
+}
+
+.pageRouteHeader > .p{
+  max-width: 76ch;
+  margin-top: 2px;
+}
+
+.libraryHeroTitle{
+  font-size: clamp(2.1rem, 1.82rem + 0.48vw, 2.44rem);
+  font-weight: 830;
+  letter-spacing: -0.042em;
+  line-height: 0.98;
+}
+
+.pageRouteHeader > .h1{
+  text-wrap: balance;
+}
+
+.libraryHeroCard,
+.settingsHeroCard,
+.accountHero,
+.updatesScreenSummaryCard,
+.updatesScreenItemCard,
+.libraryTopRow,
+.librarySideCard,
+.discoverWorkspace,
+.instCard,
+.resultCard{
+  background: var(--ui-soft-panel-bg);
+  border-color: var(--ui-soft-panel-border);
+  box-shadow: none;
+}
+
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.updatesScreenRuleCard,
+.storageSummaryCard,
+.storagePaneCard{
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  border-color: color-mix(in srgb, var(--stroke2) 42%, transparent);
+  box-shadow: none;
+}
+
+/* --- Desktop UI cleanup pass: calmer hierarchy, fewer loud surfaces --- */
+.modalOverlay{
+  background: rgba(14, 18, 24, 0.22);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.modal,
+.instanceSettingsModal,
+.createInstanceModal{
+  border-radius: 24px;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 92%, transparent);
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+}
+
+.modalHeader{
+  padding: 18px 20px 14px;
+}
+
+.modalTitle{
+  font-size: 22px;
+  font-weight: 860;
+  letter-spacing: -0.03em;
+}
+
+.iconBtn{
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, var(--surface-2) 12%);
+}
+
+.chip{
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0.02em;
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 72%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  color: color-mix(in srgb, var(--text) 70%, var(--muted) 30%);
+}
+
+.chip.subtle{
+  background: transparent;
+  color: var(--muted);
+}
+
+.pillRow{
+  gap: 8px;
+}
+
+.pill{
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 780;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+  border-color: color-mix(in srgb, var(--ui-soft-panel-border) 72%, transparent);
+}
+
+.pageRouteHeader{
+  gap: 5px;
+  margin-bottom: 0;
+}
+
+.pageRouteHeaderSplit{
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.pageRouteHeaderCopy{
+  min-width: 0;
+  flex: 1 1 460px;
+  display: grid;
+  gap: 5px;
+}
+
+.pageRouteHeaderActions{
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pageRouteHeaderProminent{
+  align-items: flex-start;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+.pageRouteHeaderProminent .pageRouteHeaderCopy{
+  gap: 6px;
+}
+
+.pageRouteHeaderProminent > .pageRouteHeaderCopy > .h1{
+  font-size: clamp(2.45rem, 2.06rem + 0.82vw, 3.02rem);
+  font-weight: 860;
+  letter-spacing: -0.055em;
+  line-height: 0.92;
+}
+
+.pageRouteHeaderProminent > .pageRouteHeaderCopy > .p{
+  max-width: 56ch;
+}
+
+.pageRouteHeaderProminent .pageRouteHeaderActions{
+  align-self: center;
+}
+
+.pageRouteHeader > .h1{
+  line-height: 0.94;
+}
+
+.pageRouteHeader > .p{
+  max-width: 70ch;
+  margin-top: 1px;
+}
+
+.settingsSidebar{
+  padding: 8px 13px 14px;
+  gap: 12px;
+}
+
+.settingsSidebarHeader{
+  gap: 6px;
+}
+
+.settingsSidebarIntro{
+  max-width: 28ch;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settingsMain{
+  gap: var(--page-section-gap);
+}
+
+.settingsHeroCard{
+  padding: 13px 15px;
+  gap: 10px;
+  border-radius: 17px;
+}
+
+.settingsHeroLead{
+  display: grid;
+  gap: 3px;
+  max-width: 48ch;
+}
+
+.settingsHeroLeadLabel{
+  font-size: 10px;
+  font-weight: 880;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsHeroLeadText{
+  font-size: 12px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.settingsHeroSummaryGrid{
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 7px;
+}
+
+.settingsHeroSummaryCard{
+  min-height: 70px;
+  padding: 9px 10px;
+  border-radius: 11px;
+}
+
+.settingsHeroSummaryLabel{
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.settingsHeroSummaryValue{
+  font-size: 14.5px;
+  font-weight: 820;
+  line-height: 1.1;
+}
+
+.settingsHeroSummaryMeta{
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+}
+
+.creatorStudioRoute{
+  gap: var(--page-section-gap);
+}
+
+.mpmHomeStack{
+  display: grid;
+  gap: 14px;
+}
+
+.creatorStudioHeaderActions .segmented{
+  padding: 4px;
+  border-radius: 16px;
+}
+
+.creatorStudioPanelWrap{
+  margin-top: 0;
+}
+
+.configWorkspace{
+  gap: 12px;
+}
+
+.configWorkspaceHeader{
+  padding: 14px 16px;
+  gap: 12px;
+  border-radius: 18px;
+}
+
+.configHeaderEyebrow{
+  margin-bottom: 4px;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.configHeaderTitle{
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.08;
+}
+
+.configHeaderControlGrid{
+  gap: 8px 10px;
+}
+
+.configHeaderMetaText,
+.configHeaderStatusText{
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.configHeaderStatusStrip{
+  margin-top: 0;
+}
+
+.mpmHomeCard{
+  padding: 14px 16px;
+}
+
+.mpmHomeHeader{
+  gap: 10px;
+}
+
+.mpmEyebrow{
+  font-size: 10px;
+  font-weight: 860;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.mpmHeaderBlock .h2{
+  font-size: clamp(1.24rem, 1.12rem + 0.34vw, 1.46rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.028em;
+}
+
+.mpmHomeSummaryText{
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 760;
+  color: var(--muted);
+}
+
+.mpmHomeSpecCard{
+  border-radius: 14px !important;
+  padding: 11px 12px !important;
+}
+
+.mpmHomeSpecCard:hover{
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.discoverWorkspace{
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.discoverWorkspaceTop{
+  gap: 8px 12px;
+}
+
+.discoverAddTray{
+  padding: 10px 12px;
+  border-radius: 16px;
+}
+
+.resultCard{
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+.libraryMainPane{
+  gap: var(--page-section-gap);
+}
+
+.libraryHeroCard{
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.libraryHeroStats{
+  gap: 8px;
+}
+
+.libraryHeroStat{
+  min-height: 72px;
+  padding: 10px 11px;
+  border-radius: 13px;
+}
+
+.libraryHeroStatLabel{
+  font-size: 10px;
+}
+
+.libraryHeroStatValue{
+  font-size: 20px;
+  font-weight: 820;
+}
+
+.libraryHeroStatMeta{
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.libraryTopRow{
+  padding: 12px;
+  border-radius: 16px;
+}
+
+.instCard{
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+
+/* Final typography consistency pass
+   Keeps page headers strong, controls readable, and metadata quiet. */
+:root{
+  --ui-page-title-weight: 800;
+  --ui-page-title-tracking: -0.04em;
+  --ui-subpage-title-weight: 760;
+}
+
+.h1,
+.pageRouteHeader > .h1,
+.libraryHeroTitle,
+.settingsHeroTitle,
+.accountHeroName,
+.homeSpotlightTitle{
+  font-weight: var(--ui-page-title-weight);
+  letter-spacing: var(--ui-page-title-tracking);
+}
+
+.h2,
+.sectionHead,
+.settingsHeroTitle,
+.discoverWorkspaceTitle,
+.instanceContentWorkspaceTitle,
+.projectHeroTitle,
+.skinsRefSectionTitle,
+.mpmHeaderBlock .h2,
+.mpmEditorHeader .h2{
+  font-weight: var(--ui-subpage-title-weight);
+  letter-spacing: -0.03em;
+}
+
+.p,
+.pageRouteHeader > .p,
+.muted,
+.settingSub,
+.instanceContentWorkspaceSub,
+.updatesScreenSectionSub,
+.quickPlaySub,
+.instanceSessionSub,
+.updatesListMeta,
+.instanceModsNameMeta,
+.homeRowMeta{
+  color: var(--muted);
+  font-weight: 520;
+}
+
+.pageRouteEyebrow,
+.instanceContentWorkspaceEyebrow,
+.updatesScreenSummaryEyebrow,
+.updatesScreenRuleLabel,
+.quickPlayLabel,
+.instanceSessionLabel,
+.accountSummaryLabel{
+  font-weight: 740;
+  letter-spacing: 0.11em;
+}
+
+.settingTitle,
+.librarySideTitle,
+.activityHeaderTitle,
+.homePanelTitle,
+.accountSectionTitle,
+.instanceContentMaintenanceTitle,
+.instanceModsNameTitle{
+  font-weight: 820;
+  letter-spacing: -0.018em;
+}
+
+.btn,
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-size: 13px;
+  letter-spacing: -0.01em;
+}
+
+.btn{
+  font-weight: 640;
+}
+
+.btn.primary{
+  font-weight: 680;
+}
+
+.dropBtn,
+.menuSelectBtn,
+.segBtn{
+  font-weight: 640;
+}
+
+.input,
+.textarea{
+  font-weight: 620;
+}
+
+.chip{
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.005em;
+  color: color-mix(in srgb, var(--text) 62%, var(--muted) 38%);
+}
+
+.chip.subtle{
+  color: color-mix(in srgb, var(--muted) 94%, var(--text) 6%);
+}
+
+.pill{
+  font-size: 12px;
+  font-weight: 620;
+  letter-spacing: -0.005em;
+}
+
+.librarySideCard{
+  border-radius: 16px;
+}
+
+.accountPage{
+  display: grid;
+  gap: var(--page-section-gap);
+}
+
+.accountHero{
+  margin-top: 0;
+  padding: 16px;
+  gap: 14px;
+  border-radius: 18px;
+  grid-template-columns: 64px minmax(0, 1fr);
+}
+
+.accountAvatarWrap{
+  width: 64px;
+  height: 64px;
+  border-radius: 15px;
+}
+
+.accountHeroEyebrow{
+  font-size: 10px;
+  letter-spacing: 0.16em;
+}
+
+.accountHeroLead{
+  font-size: 13px;
+  max-width: 58ch;
+}
+
+.accountSummaryStrip{
+  margin-top: 0;
+  gap: 8px;
+}
+
+.accountSummaryCard{
+  min-height: 70px;
+  padding: 10px 11px 12px;
+  border-radius: 12px;
+}
+
+.accountSummaryLabel{
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.accountSummaryValue{
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.accountCard{
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.accountDiagRow,
+.accountAccountRow,
+.accountAssetRow{
+  padding-block: 10px;
+}
+
+.instanceSettingsModal{
+  border-radius: 24px;
+}
+
+.instanceSettingsModal .modalHeader{
+  padding: 16px 18px 14px;
+}
+
+.instanceSettingsModal .instSettingsNav{
+  padding: 14px 10px;
+}
+
+.instanceSettingsModal .instSettingsNavItem{
+  min-height: 44px;
+  border-radius: 12px;
+  font-size: 13px;
+}
+
+.instanceSettingsModal .instSettingsBody{
+  padding: 18px 20px 22px;
+  gap: 16px;
+}
+
+.instanceSettingsModal .sectionHead{
+  font-size: 20px;
+  font-weight: 860;
+  letter-spacing: -0.03em;
+}
+
+.instanceSettingsModal .settingCard{
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: none;
+}
+
+.createInstanceModal{
+  width: 900px;
+  max-width: min(940px, 96vw);
+}
+
+.createInstanceModal .iconBox{
+  border-radius: 18px;
+}
+
+/* Final cross-page polish: align the busiest desktop surfaces to the calmer
+   instance-settings hierarchy without broad global overrides. */
+
+.discoverAddTrayTitle{
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.discoverAddTraySub{
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.resultTitle{
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: -0.018em;
+}
+
+.resultDesc{
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.42;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.resultMetaRow{
+  font-size: 11.5px;
+  font-weight: 560;
+  color: color-mix(in srgb, var(--muted) 82%, var(--text) 18%);
+}
+
+.librarySideTitle{
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -0.012em;
+}
+
+.libraryRecentName,
+.libraryAccountName{
+  font-weight: 760;
+}
+
+.libraryRecentMeta,
+.libraryAccountId{
+  font-weight: 540;
+}
+
+.libraryRunRow{
+  font-weight: 660;
+}
+
+.quickPlayLabel{
+  font-weight: 720;
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
+}
+
+.quickPlaySub{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.instanceModsHeaderRow{
+  font-weight: 760;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.instanceModsNameTitle{
+  font-size: 14.5px;
+  font-weight: 760;
+}
+
+.instanceModsNameMeta{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.updatesListName{
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.updatesListMeta{
+  font-weight: 540;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+/* Light theme: keep the surface hierarchy flat and alternating. */
+:root[data-theme="light"] .discoverWorkspace,
+:root[data-theme="light"] .libraryTopRow,
+:root[data-theme="light"] .settingsSidebar,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .settingsSectionCard,
+:root[data-theme="light"] .accountCard,
+:root[data-theme="light"] .homePanel{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .libraryHeroCard,
+:root[data-theme="light"] .settingsHeroCard,
+:root[data-theme="light"] .accountHero{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .homeLaunchAction,
+:root[data-theme="light"] .homeListRow,
+:root[data-theme="light"] .resultCard,
+:root[data-theme="light"] .instCard,
+:root[data-theme="light"] .settingsRailButton,
+:root[data-theme="light"] .settingsAccountCard,
+:root[data-theme="light"] .libraryStorageCard{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .homeSpotlight{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .homeKpi{
+  background: #f7f7f7;
+  border-color: rgba(120, 120, 120, 0.14);
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .homeKpiCustomize{
+  background: #f7f7f7;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .homeKpiCustomize.active{
+  background: #ffffff;
+  border-color: color-mix(in srgb, rgba(120, 120, 120, 0.14) 56%, var(--accent-ring) 44%);
+}
+
+:root[data-theme="light"] .resultIcon,
+:root[data-theme="light"] .instCardIcon,
+:root[data-theme="light"] .settingsRailButtonIcon{
+  background: #eeeeee;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .accountAvatarWrap{
+  background: #eeeeee;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+/* Final instance content toolbar + release-check cleanup */
+.instTabsRow{
+  justify-content: flex-start;
+  gap: 14px;
+}
+
+.instTabsActions{
+  margin-left: auto;
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  width: auto;
+}
+
+.instTabsActionCluster{
+  width: max-content;
+  max-width: 100%;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: max-content;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.instTabsActionCluster > *{
+  flex: 0 0 auto;
+  margin: 0 !important;
+}
+
+.instTabsActionCluster .actionMenu{
+  width: auto;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.instTabsActionCluster > .btn,
+.instTabsActionCluster > .dropdown{
+  width: auto;
+  min-width: 0;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.instanceReleaseCheckCard{
+  display: grid;
+  gap: 8px;
+  width: min(100%, 980px);
+  max-width: 100%;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  align-self: flex-start;
+}
+
+.instanceReleaseCheckHead{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.instanceReleaseCheckEyebrow{
+  font-size: 9.5px;
+  font-weight: 780;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 92%, var(--text) 8%);
+}
+
+.instanceReleaseCheckTitle{
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 1.18;
+  font-weight: 800;
+  letter-spacing: -0.016em;
+  color: var(--text);
+}
+
+.instanceReleaseCheckHead .chip{
+  align-self: flex-start;
+  background: transparent;
+  padding: 3px 9px;
+  font-size: 10.5px;
+  font-weight: 680;
+}
+
+.instanceReleaseCheckList{
+  display: grid;
+  gap: 0;
+}
+
+.instanceReleaseCheckRow{
+  display: grid;
+  gap: 5px;
+  padding: 9px 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 28%, transparent);
+}
+
+.instanceReleaseCheckRow:first-child{
+  padding-top: 0;
+  border-top: 0;
+}
+
+.instanceReleaseCheckRowTop{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 16px;
+}
+
+.instanceReleaseCheckRowMain{
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.instanceReleaseCheckRowTitle{
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  font-weight: 780;
+  letter-spacing: -0.014em;
+  color: var(--text);
+}
+
+.instanceReleaseCheckBadges{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.instanceReleaseCheckBadges .chip{
+  padding: 2px 7px;
+  background: transparent;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.instanceReleaseCheckVersion{
+  align-self: start;
+  white-space: nowrap;
+  text-align: right;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted) 28%);
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 36%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+}
+
+.instanceReleaseCheckMeta{
+  max-width: 64ch;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+  font-size: 11px;
+  line-height: 1.34;
+}
+
+.instanceReleaseCheckMore{
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 24%, transparent);
+  font-size: 11.5px;
+}
+
+
+@media (max-width: 980px){
+  .instanceReleaseCheckRowTop{
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .instanceReleaseCheckVersion{
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 980px){
+  .instTabsRow{
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .instTabsActions{
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .instTabsActionCluster{
+    width: 100%;
+    display: flex;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* Final release-check row spacing */
+.updatesListRow{
+  padding: 10px 12px;
+  border-radius: 13px;
+}
+
+.updatesListTop{
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px 16px;
+}
+
+.updatesListName{
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.updatesListTitle{
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.2;
+  font-weight: 790;
+  letter-spacing: -0.012em;
+}
+
+.updatesListBadges{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.updatesListBadges .chip{
+  padding: 2px 7px;
+  font-size: 9.5px;
+  font-weight: 650;
+}
+
+.updatesListVersion{
+  padding-top: 0;
+  align-self: start;
+  text-align: right;
+  font-size: 11.5px;
+  line-height: 1.2;
+}
+
+.updatesListMeta{
+  margin-top: 6px;
+  max-width: 70ch;
+  padding-right: 4px;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .updatesListVersion{
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+/* Final instance release-check tuning */
+.instanceContentResultsShell{
+  gap: 8px;
+  padding-top: 6px;
+  margin-bottom: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 34%, transparent);
+}
+
+.updatesList{
+  margin-top: 6px;
+  gap: 6px;
+}
+
+.updatesListRow{
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+}
+
+.updatesListTop{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 14px;
+}
+
+.updatesListName{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 12.5px;
+  line-height: 1.22;
+  font-weight: 780;
+}
+
+.updatesListName .chip{
+  padding: 2px 7px;
+  font-size: 9.75px;
+  font-weight: 660;
+}
+
+.updatesListVersion{
+  flex: 0 0 auto;
+  padding-top: 1px;
+  color: color-mix(in srgb, var(--text) 74%, var(--muted) 26%);
+  font-size: 11.5px;
+  line-height: 1.2;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.updatesListMeta{
+  margin-top: 4px;
+  max-width: 72ch;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
+  font-size: 11px;
+  line-height: 1.32;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .updatesListVersion{
+    white-space: normal;
+  }
+}
+
+.instanceContentWorkspaceCard.dropActive{
+  position: relative;
+  z-index: 40;
+  border-color: color-mix(in srgb, var(--accent) 24%, var(--stroke) 76%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-ring) 22%, transparent);
+}
+
+.instanceContentDropOverlay{
+  position: absolute;
+  inset: 1px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  pointer-events: none;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 22px;
+  border: 2px solid color-mix(in srgb, var(--surface) 78%, white 22%);
+  background:
+    radial-gradient(circle at 42% 44%, color-mix(in srgb, var(--accent-soft) 7%, transparent), transparent 48%),
+    linear-gradient(180deg, color-mix(in srgb, white 5%, transparent), transparent 22%, color-mix(in srgb, var(--surface) 3%, transparent) 100%),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 4%, transparent), transparent 42%, color-mix(in srgb, white 4%, transparent) 100%),
+    color-mix(in srgb, var(--surface) 42%, transparent);
+  background-size: 150% 150%, 100% 100%, 100% 100%, 100% 100%;
+  background-position: 42% 44%, 50% 0%, 0% 0%, 0% 0%;
+  backdrop-filter: blur(7px) saturate(1.01);
+  -webkit-backdrop-filter: blur(7px) saturate(1.01);
+  box-shadow:
+    0 0 0 7px color-mix(in srgb, var(--surface) 95%, white 5%),
+    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.3) 30%, transparent),
+    0 0 0 1px color-mix(in srgb, var(--stroke2) 8%, transparent);
+  animation: instanceDropOverlayBackdropDrift 6.4s ease-in-out infinite;
+}
+
+.instanceContentDropOverlay::before{
+  content: "";
+  position: absolute;
+  inset: -28%;
+  z-index: 0;
+  background:
+    linear-gradient(
+      115deg,
+      transparent 18%,
+      color-mix(in srgb, white 8%, transparent) 42%,
+      color-mix(in srgb, var(--accent-soft) 10%, transparent) 50%,
+      color-mix(in srgb, white 5%, transparent) 58%,
+      transparent 82%
+    );
+  opacity: 0.16;
+  filter: blur(42px);
+  transform: translate3d(-14%, 0, 0) rotate(8deg);
+  animation: instanceDropOverlayAmbientSweep 5.2s ease-in-out infinite;
+}
+
+.instanceContentDropOverlay::after{
+  content: "";
+  position: absolute;
+  inset: 6px;
+  z-index: 0;
+  border-radius: 17px;
+  background:
+    radial-gradient(circle at 24% 22%, color-mix(in srgb, white 8%, transparent), transparent 16%),
+    radial-gradient(circle at 78% 72%, color-mix(in srgb, var(--accent-soft) 8%, transparent), transparent 22%);
+  opacity: 0.14;
+  filter: blur(24px);
+  animation: instanceDropOverlayGlowDrift 7.6s ease-in-out infinite;
+}
+
+.instanceContentDropOverlayFrame{
+  position: absolute;
+  inset: 0;
+  border-radius: 22px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, white 7%, transparent),
+      color-mix(in srgb, var(--accent-soft) 10%, transparent)
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.46) 46%, transparent),
+    0 10px 24px rgba(17, 24, 39, 0.04);
+  animation: instanceDropOverlayFramePulse 4.2s ease-in-out infinite;
+}
+
+.instanceContentDropOverlayFrameSvg{
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.instanceContentDropOverlayFrameStroke{
+  x: 0.75px;
+  y: 0.75px;
+  width: calc(100% - 1.5px);
+  height: calc(100% - 1.5px);
+  rx: 22px;
+  ry: 22px;
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 34%, var(--stroke2) 66%);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-dasharray: 10 4.5;
+  stroke-dashoffset: 0;
+  vector-effect: non-scaling-stroke;
+  animation: instanceDropOverlayDashFlow 1.4s linear infinite;
+}
+
+.instanceContentDropOverlayCard{
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  gap: 0;
+  max-width: 440px;
+  padding: 18px 22px 16px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 2%), color-mix(in srgb, var(--accent-soft) 8%, var(--surface) 92%));
+  box-shadow:
+    0 18px 38px rgba(17, 24, 39, 0.08),
+    0 3px 10px rgba(17, 24, 39, 0.05);
+  text-align: center;
+  animation: instanceDropOverlayCardFloat 2.4s ease-in-out infinite;
+}
+
+.instanceContentDropOverlayEyebrow{
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--muted) 88%, var(--text) 12%);
+}
+
+.instanceContentDropOverlayTitle{
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.022em;
+  color: var(--text);
+}
+
+.instanceContentDropOverlaySub{
+  margin-top: 6px;
+  max-width: 34ch;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 620;
+  color: var(--muted);
+}
+
+.instanceContentDropOverlayHint{
+  margin-top: 12px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+  background: color-mix(in srgb, var(--surface) 86%, var(--surface-2) 14%);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--muted) 80%, var(--text) 20%);
+}
+
+@keyframes instanceDropOverlayGlowDrift{
+  0%, 100%{
+    transform: translate3d(-1%, -1%, 0) scale(1);
+    opacity: 0.28;
+  }
+  50%{
+    transform: translate3d(1%, 1%, 0) scale(1.04);
+    opacity: 0.44;
+  }
+}
+
+@keyframes instanceDropOverlayBackdropDrift{
+  0%, 100%{
+    background-position: 38% 42%, 50% 0%, 0% 0%, 0% 0%;
+  }
+  50%{
+    background-position: 58% 56%, 50% 0%, 0% 0%, 0% 0%;
+  }
+}
+
+@keyframes instanceDropOverlayAmbientSweep{
+  0%, 100%{
+    transform: translate3d(-14%, -1%, 0) rotate(8deg);
+    opacity: 0.26;
+  }
+  50%{
+    transform: translate3d(14%, 1%, 0) rotate(8deg);
+    opacity: 0.46;
+  }
+}
+
+@keyframes instanceDropOverlayFramePulse{
+  0%, 100%{
+    border-color: color-mix(in srgb, var(--accent) 30%, var(--stroke2) 70%);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.44) 44%, transparent),
+      0 10px 24px rgba(17, 24, 39, 0.04);
+  }
+  50%{
+    border-color: color-mix(in srgb, var(--accent) 40%, var(--stroke2) 60%);
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, rgba(255,255,255,0.5) 50%, transparent),
+      0 14px 30px rgba(17, 24, 39, 0.06);
+  }
+}
+
+@keyframes instanceDropOverlayDashFlow{
+  from{
+    stroke-dashoffset: 0;
+  }
+  to{
+    stroke-dashoffset: -14.5;
+  }
+}
+
+@keyframes instanceDropOverlaySweep{
+  0%, 100%{
+    background-position: 10% 50%;
+    opacity: 0.34;
+  }
+  50%{
+    background-position: 90% 50%;
+    opacity: 0.56;
+  }
+}
+
+@keyframes instanceDropOverlayCardFloat{
+  0%, 100%{
+    transform: translateY(0);
+    box-shadow:
+      0 18px 38px rgba(17, 24, 39, 0.08),
+      0 3px 10px rgba(17, 24, 39, 0.05);
+  }
+  50%{
+    transform: translateY(-4px);
+    box-shadow:
+      0 24px 46px rgba(17, 24, 39, 0.12),
+      0 6px 16px rgba(17, 24, 39, 0.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce){
+  .instanceContentDropOverlay,
+  .instanceContentDropOverlay::before,
+  .instanceContentDropOverlay::after,
+  .instanceContentDropOverlayFrame,
+  .instanceContentDropOverlayFrameStroke,
+  .instanceContentDropOverlayCard{
+    animation: none;
+  }
+}
+
+.instanceContentResultsShell{
+  gap: 8px;
+  padding-top: 8px;
+  margin-bottom: 0;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 36%, transparent);
+}
+
+.updatesList{
+  margin-top: 6px;
+  gap: 8px;
+}
+
+.updatesListRow{
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.updatesListTop{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.updatesListName{
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.updatesListVersion{
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted) 22%);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.updatesListMeta{
+  margin-top: 5px;
+  max-width: 76ch;
+}
+
+@media (max-width: 980px){
+  .updatesListTop{
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .updatesListVersion{
+    white-space: normal;
+  }
+}
+
+/* Create instance: two-step flow */
+.createEntryScreen{
+  display: grid;
+  gap: 16px;
+}
+
+.createEntryIntro{
+  display: grid;
+  gap: 4px;
+}
+
+.createEntryEyebrow{
+  font-size: 12px;
+  font-weight: 860;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.createEntryLead,
+.createEntryFoot{
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.createEntryList{
+  display: grid;
+  gap: 10px;
+}
+
+.createModeCard{
+  width: 100%;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 90%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.createModeCard:hover{
+  transform: translateY(-1px);
+  border-color: var(--control-border-hover);
+  background: var(--interactive-hover-bg);
+}
+
+.createModeCardIcon{
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 84%, transparent);
+  background: color-mix(in srgb, var(--surface) 90%, var(--surface-2) 10%);
+  color: var(--muted);
+}
+
+.createModeCardCopy{
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.createModeCardTitle{
+  font-size: 15px;
+  font-weight: 820;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.createModeCardText{
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.createModeCardChevron{
+  font-size: 24px;
+  line-height: 1;
+  color: var(--muted2);
+}
+
+.createDetailsScreen{
+  display: grid;
+  gap: 16px;
+}
+
+.createDetailsTop{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.createVisualRail{
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.createVisualMeta{
+  display: grid;
+  gap: 4px;
+}
+
+.createVisualTitle{
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.createVisualText{
+  font-size: 12.5px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.createLoaderVersionCard{
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+}
+
+.createLoaderVersionModes{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.createLoaderModeBtn{
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--control-border) 88%, transparent);
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 760;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.createLoaderModeBtn:hover{
+  transform: translateY(-1px);
+  border-color: var(--control-border-hover);
+  color: var(--text);
+}
+
+.createLoaderModeBtn.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 78%, var(--control-border));
+  background: color-mix(in srgb, var(--accent-soft-2) 58%, var(--surface) 42%);
+  color: var(--accent-text);
+}
+
+.createLoaderVersionHelp{
+  font-size: 12px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.createInstanceModal .launcherCreateToolbar{
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 860px){
+  .createModeCard{
+    grid-template-columns: 46px minmax(0, 1fr) auto;
+    padding: 12px 14px;
+  }
+
+  .createModeCardIcon{
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+  }
+
+  .createDetailsTop{
+    align-items: flex-start;
+  }
+}
+
+/* Final dark-mode refinement pass */
+:root:not([data-theme="light"]){
+  --bg: #181b20;
+  --bg2: rgba(255,255,255,0.04);
+  --panel: #1f232a;
+  --panel2: #262b33;
+  --surface: #262b33;
+  --surface-2: #20242b;
+  --page-bg: #181b20;
+  --card-bg: #242930;
+  --section-bg: #20242b;
+  --btn-neutral-bg: #2b3039;
+  --control-border: rgba(255,255,255,0.08);
+  --control-border-hover: rgba(255,255,255,0.15);
+  --interactive-hover-bg: #2e343d;
+  --interactive-hover-border: rgba(255,255,255,0.18);
+  --stroke: rgba(255,255,255,0.05);
+  --stroke2: rgba(255,255,255,0.10);
+  --text: rgba(244, 246, 249, 0.96);
+  --muted: rgba(194, 199, 208, 0.78);
+  --muted2: rgba(153, 160, 171, 0.70);
+  --shadow: 0 22px 60px rgba(0, 0, 0, 0.40);
+  --shadowSoft: 0 12px 28px rgba(0, 0, 0, 0.22);
+  --shadow-xs: 0 8px 18px rgba(0, 0, 0, 0.14);
+  --shadow-sm: 0 14px 30px rgba(0, 0, 0, 0.20);
+  --dropdown-bg-solid: #242a32;
+  --dropdown-bg-soft-solid: #2a3039;
+}
+
+:root:not([data-theme="light"]) .content{
+  background: var(--page-bg);
+}
+
+:root:not([data-theme="light"]) .navRail{
+  background: #20242b;
+  border-right-color: rgba(255,255,255,0.06);
+  box-shadow: inset -1px 0 0 rgba(255,255,255,0.04);
+}
+
+:root:not([data-theme="light"]) .card,
+:root:not([data-theme="light"]) .discoverWorkspace,
+:root:not([data-theme="light"]) .libraryTopRow,
+:root:not([data-theme="light"]) .homePanel,
+:root:not([data-theme="light"]) .homeSpotlight,
+:root:not([data-theme="light"]) .resultCard,
+:root:not([data-theme="light"]) .instCard,
+:root:not([data-theme="light"]) .instPageTop,
+:root:not([data-theme="light"]) .instanceSectionShell,
+:root:not([data-theme="light"]) .instanceSideCard,
+:root:not([data-theme="light"]) .settingsSidebar,
+:root:not([data-theme="light"]) .settingsHeroCard,
+:root:not([data-theme="light"]) .settingsSectionCard,
+:root:not([data-theme="light"]) .accountCard,
+:root:not([data-theme="light"]) .accountHero,
+:root:not([data-theme="light"]) .createInstanceModal{
+  background: color-mix(in srgb, var(--surface) 92%, #2b313a 8%);
+  border-color: rgba(255,255,255,0.07);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .btn,
+:root:not([data-theme="light"]) .dropBtn,
+:root:not([data-theme="light"]) .menuSelectBtn,
+:root:not([data-theme="light"]) .input,
+:root:not([data-theme="light"]) .textarea{
+  background: #2b3039;
+  border-color: rgba(255,255,255,0.08);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .btn.primary{
+  background: color-mix(in srgb, var(--accent-solid) 92%, #2b3039 8%);
+  border-color: color-mix(in srgb, var(--accent-solid) 84%, rgba(255,255,255,0.08) 16%);
+}
+
+:root:not([data-theme="light"]) .chip,
+:root:not([data-theme="light"]) .pill{
+  background: #2c3139;
+  border-color: rgba(255,255,255,0.08);
+}
+
+:root:not([data-theme="light"]) .discoverSidebarSection{
+  background: #20252c;
+  border-color: rgba(255,255,255,0.06);
+}
+
+:root:not([data-theme="light"]) .discoverSidebarNotice.warningBox,
+:root:not([data-theme="light"]) .topStatusBanner.warningBox{
+  color: rgba(247, 220, 177, 0.94);
+  border-color: rgba(200, 135, 56, 0.72);
+  background: rgba(85, 57, 27, 0.70);
+}
+
+:root:not([data-theme="light"]) .instPageTop,
+:root:not([data-theme="light"]) .instanceContentWorkspaceCard,
+:root:not([data-theme="light"]) .instanceContentMaintenancePanelPrimary,
+:root:not([data-theme="light"]) .instanceContentMaintenanceUtility,
+:root:not([data-theme="light"]) .updatesCard,
+:root:not([data-theme="light"]) .updatesListRow{
+  background: #21262d;
+  border-color: rgba(255,255,255,0.06);
+}
+
+:root:not([data-theme="light"]) .homeKpi,
+:root:not([data-theme="light"]) .libraryHeroStat,
+:root:not([data-theme="light"]) .settingsHeroSummaryCard,
+:root:not([data-theme="light"]) .accountSummaryCard{
+  background: #2a2f37;
+  border-color: rgba(255,255,255,0.07);
+  box-shadow: none;
+}
+
+:root:not([data-theme="light"]) .resultIcon,
+:root:not([data-theme="light"]) .instCardIcon,
+:root:not([data-theme="light"]) .instHeroIcon,
+:root:not([data-theme="light"]) .settingsRailButtonIcon{
+  background: #2d333c;
+  border-color: rgba(255,255,255,0.08);
+}
+
+:root[data-theme="light"] .instanceSideCard,
+:root[data-theme="light"] .activityHeadMeta,
+:root[data-theme="light"] .homeControlBar,
+:root[data-theme="light"] .homeCustomizePanel,
+:root[data-theme="light"] .commandPalettePanel,
+:root[data-theme="light"] .msCodeDialog,
+:root[data-theme="light"] .modal,
+:root[data-theme="light"] .instanceSettingsModal,
+:root[data-theme="light"] .createInstanceModal,
+:root[data-theme="light"] .dropPanel{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .modalOverlay{
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* Logs workspace cleanup: keep the viewer intact, improve the surrounding chrome. */
+.instanceSectionShell{
+  gap: 16px;
+}
+
+.instanceLogsModeRow{
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--stroke2) 44%, transparent);
+}
+
+.instanceLogsShell{
+  margin-top: 0;
+  gap: 18px;
+  align-items: start;
+}
+
+.instanceLogsMain{
+  gap: 12px;
+}
+
+.instanceLogsToolbar{
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--stroke2) 54%, var(--stroke));
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+.instanceLogsQuickFilters{
+  padding: 10px 14px 0;
+  margin-top: -2px;
+}
+
+.instanceLogsMetaStrip{
+  padding: 0 14px 2px;
+}
+
+.instanceLogsViewer{
+  border-radius: 18px;
+  min-height: 360px;
+}
+
+.instanceLogSuspects{
+  border-radius: 18px;
+  padding: 14px;
+  gap: 10px;
+}
+
+.instanceAnalyzeWrap{
+  margin-top: 0;
+  gap: 16px;
+}
+
+.instanceAnalyzeInput{
+  border-style: solid;
+  border-radius: 18px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+.instanceAnalyzeResults{
+  gap: 12px;
+}
+
+.instanceAnalyzeCard{
+  border-radius: 16px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+}
+
+:root[data-theme="light"] .instanceSectionShell{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .instanceLogsToolbar,
+:root[data-theme="light"] .instanceLogSuspects,
+:root[data-theme="light"] .instanceAnalyzeInput,
+:root[data-theme="light"] .instanceAnalyzeCard{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+  box-shadow: none;
+}
+
+:root[data-theme="light"] .instanceLogsViewer{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+/* Nested card-on-card hover treatment only. */
+.homeLaunchAction,
+.homeListRow,
+.settingsAccountCard,
+.libraryStorageCard,
+.libraryHeroStat,
+.settingsHeroSummaryCard,
+.accountSummaryCard,
+.storageSummaryCard,
+.storageBreakdownRow{
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    box-shadow 180ms var(--ease),
+    background 180ms var(--ease);
+}
+
+/* Focused UI fixes from screenshot review. */
+.updatesScreenFactCard,
+.updatesScreenRuleCard,
+.updatesScreenAppliedInstance,
+.preflightPermissionRow{
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    box-shadow 180ms var(--ease),
+    background 180ms var(--ease);
+}
+
+.updatesScreenFactCard:hover,
+.updatesScreenRuleCard:hover,
+.updatesScreenAppliedInstance:hover,
+.preflightPermissionRow:hover{
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--stroke2) 70%, var(--accent-ring) 30%);
+  box-shadow: var(--shadow-xs);
+}
+
+.settingsSidebar{
+  padding: 16px;
+  border-radius: 20px;
+  gap: 14px;
+}
+
+.settingsRailList{
+  gap: 8px;
+}
+
+.settingsRailButton{
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 74%, transparent);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  padding: 12px;
+  box-shadow: none;
+}
+
+/* Final Settings polish pass:
+   restore ranking after later global overrides and keep the page dense but calm. */
+.settingsShell{
+  gap: 18px;
+}
+
+.settingsSidebar{
+  padding: 8px 13px 14px;
+  border-radius: 18px;
+  gap: 12px;
+}
+
+.settingsSidebarIntro{
+  max-width: 27ch;
+  margin-top: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 560;
+}
+
+.settingsRailList{
+  gap: 6px;
+}
+
+.settingsRailButton{
+  border: 1px solid color-mix(in srgb, var(--stroke) 74%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  padding: 9px 10px;
+}
+
+.settingsRailButton:last-child{
+  border-bottom: 1px solid color-mix(in srgb, var(--stroke) 74%, transparent);
+}
+
+.settingsHeroCard{
+  padding: 13px 15px;
+  gap: 10px;
+  border-radius: 18px;
+}
+
+.settingsHeroLead{
+  gap: 3px;
+  max-width: 48ch;
+}
+
+.settingsHeroLeadText{
+  font-size: 12px;
+  line-height: 1.42;
+  font-weight: 560;
+}
+
+.settingsHeroSummaryGrid{
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 7px;
+}
+
+.settingsHeroSummaryCard{
+  min-height: 70px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+}
+
+.settingsHeroSummaryGrid > :first-child{
+  border-left: 1px solid color-mix(in srgb, var(--stroke) 76%, transparent);
+  padding-left: 10px;
+}
+
+.settingsHeroSummaryLabel{
+  font-size: 10px;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+}
+
+.settingsHeroSummaryValue{
+  font-size: 14.5px;
+  font-weight: 820;
+  line-height: 1.1;
+}
+
+.settingsHeroSummaryMeta{
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.settingsLayout{
+  gap: 14px;
+}
+
+.settingsCol{
+  gap: 12px;
+}
+
+.settingsSectionCard{
+  padding: 15px 16px 14px;
+  border-radius: 18px;
+  box-shadow: 0 10px 28px color-mix(in srgb, #000 4%, transparent);
+}
+
+.settingsSectionSub{
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 560;
+  line-height: 1.4;
+}
+
+.settingsPage .settingTitle{
+  font-size: 0.98rem;
+  font-weight: 780;
+}
+
+.settingsPage .settingSub{
+  font-size: 12.5px;
+  font-weight: 560;
+  line-height: 1.42;
+}
+
+.settingsSectionCard .settingStack{
+  margin-top: 10px;
+  gap: 8px;
+}
+
+.settingsSectionCard .settingStack > div{
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 94%, var(--surface-2) 6%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 18%, transparent);
+}
+
+.settingsSectionCard .settingStack > div:first-child{
+  border-top: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
+  padding-top: 11px;
+}
+
+.settingsFoldSection{
+  margin-top: 6px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 78%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 92%, var(--surface-2) 8%);
+  overflow: hidden;
+}
+
+.settingsFoldSummary{
+  padding: 10px 12px;
+}
+
+.settingsFoldTitle{
+  font-size: 12.5px;
+  font-weight: 860;
+}
+
+.settingsFoldMeta{
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.settingsFoldBody{
+  padding: 10px 12px 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.settingsSectionCard .row{
+  margin-top: 8px;
+  gap: 8px;
+}
+
+.settingsSectionCard .btn{
+  min-height: 36px;
+}
+
+.settingsModeToggle .segBtn{
+  min-height: 32px;
+}
+
+.settingsSectionCard .input{
+  margin-top: 6px;
+}
+
+.settingsInlineBadges{
+  margin-top: 6px;
+}
+
+.githubTokenTextarea{
+  margin-top: 6px;
+  resize: vertical;
+  min-height: 84px;
+  line-height: 1.45;
+}
+
+.githubTokenReadyHint{
+  margin-top: 6px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.settingsSectionCard .settingListMini{
+  max-height: 192px;
+}
+
+.settingsAccountList{
+  margin-top: 8px;
+  gap: 6px;
+}
+
+.settingsAccountCard{
+  padding: 10px 11px;
+  border-radius: 14px;
+}
+
+.settingsAccountActions{
+  gap: 8px;
+}
+
+.settingsAccountManagePanel{
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.settingsAccountManageHint,
+.settingsInlineStatus,
+.settingsEmptyStateHint,
+.settingsReleaseNotesExcerpt{
+  font-size: 11.5px;
+  line-height: 1.42;
+  color: var(--muted);
+}
+
+.settingsInlineStatus{
+  margin-top: 4px;
+}
+
+.settingsEmptyStateHint,
+.settingsReleaseNotesExcerpt{
+  margin-top: 6px;
+}
+
+.settingsStatusStack{
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.settingsSectionCard .noticeBox,
+.settingsSectionCard .warningBox,
+.settingsSectionCard .errorBox{
+  margin-top: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.preflightPermissionsList{
+  margin-top: 6px !important;
+  gap: 6px;
+}
+
+.preflightPermissionRow{
+  padding: 7px 8px;
+  border-radius: 10px;
+}
+
+.settingsRailButton.active{
+  border-color: color-mix(in srgb, var(--accent-ring) 76%, transparent);
+  background: color-mix(in srgb, var(--surface) 74%, var(--accent-soft) 26%);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 52%, transparent),
+    var(--shadow-xs);
+}
+
+.settingsRailButtonIcon{
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 70%, var(--surface-2) 30%);
+}
+
+.settingsRailButton.active .settingsRailButtonIcon{
+  background: color-mix(in srgb, var(--surface) 28%, var(--accent-soft) 72%);
+}
+
+.instanceLogSuspectsHead{
+  align-items: center;
+}
+
+.instanceLogSuspectsSub{
+  line-height: 1.4;
+}
+
+.instanceLogSuspectList{
+  gap: 8px;
+}
+
+.instanceLogSuspectItem{
+  border-radius: 14px;
+  min-height: 44px;
+  padding: 10px 11px;
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    box-shadow 180ms var(--ease),
+    background 180ms var(--ease);
+}
+
+.instanceLogSuspectItem:hover{
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent-ring) 48%, var(--stroke2));
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent-soft) 12%);
+  box-shadow: var(--shadow-xs);
+}
+
+.instanceLogSuspectItem > :first-child{
+  font-size: 12.5px;
+  font-weight: 640;
+  line-height: 1.28;
+}
+
+.instanceLogSuspectItem.on{
+  border-color: color-mix(in srgb, var(--accent-ring) 78%, transparent);
+  background: color-mix(in srgb, var(--surface) 76%, var(--accent-soft) 24%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ring) 46%, transparent);
+}
+
+.instCard{
+  transition:
+    transform 160ms var(--ease),
+    border-color 160ms var(--ease),
+    background 180ms var(--ease),
+    box-shadow 180ms var(--ease);
+  transform-origin: center center;
+  will-change: transform, box-shadow;
+}
+
+.libraryGrid .instCard{
+  animation: none;
+}
+
+.skinsRouteLayoutRef .accountSkinHeading,
+.skinsRouteLayoutRef .skinsRefSectionTitle{
+  font-size: clamp(1.55rem, 1.28rem + 0.46vw, 1.92rem);
+  font-weight: 740;
+  letter-spacing: -0.03em;
+  line-height: 0.98;
+}
+
+/* Current Instance polish pass:
+   keep the layout, reduce clutter, and make the work surface feel more
+   deliberate than dashboard-like. */
+.instHeroPrimaryActions{
+  box-shadow: none;
+}
+
+.instHeroPrimaryActions .dropdown{
+  min-width: 134px;
+}
+
+.instHeroTools .btn{
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  border-color: color-mix(in srgb, var(--stroke2) 48%, transparent);
+}
+
+.instTabsRow{
+  margin-bottom: 12px;
+}
+
+.instTabsActions{
+  gap: 8px;
+}
+
+.instTabsActions .btn,
+.instTabsActions .dropBtn{
+  min-height: 36px;
+  border-radius: 12px;
+}
+
+.instTabsActions .btn:not(.primary),
+.instTabsActions .dropBtn{
+  background: color-mix(in srgb, var(--surface) 97%, var(--surface-2) 3%);
+  border-color: color-mix(in srgb, var(--stroke2) 46%, transparent);
+}
+
+.installAction{
+  min-width: 0;
+  padding-inline: 14px;
+}
+
+.instanceContentWrap{
+  padding: 16px 16px 14px;
+  gap: 10px;
+}
+
+.instanceContentWorkspaceHead{
+  gap: 10px;
+}
+
+.instanceContentWorkspaceTitle{
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.instanceContentWorkspaceSub{
+  font-size: 12.5px;
+  font-weight: 560;
+  max-width: 56ch;
+}
+
+.instanceContentWorkspaceStats .chip{
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 86%, var(--text) 14%);
+}
+
+.instanceContentMaintenancePanelPrimary{
+  padding: 0;
+  border-radius: 0;
+  border: 0;
+  background: transparent;
+  gap: 4px;
+  padding-bottom: 4px;
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 18px;
+  row-gap: 4px;
+}
+
+.instanceContentMaintenancePanelPrimary .instanceContentMaintenanceTitle{
+  font-size: 15px;
+}
+
+.instanceContentMaintenancePanelPrimary .instanceContentMaintenanceSub{
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.instanceContentMaintenanceUtility{
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--stroke2) 34%, transparent);
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+  align-items: center;
+  column-gap: 18px;
+  row-gap: 4px;
+}
+
+.instanceContentMaintenanceUtility .instanceSnapshotRollbackBtn{
+  min-height: 34px;
+  padding-inline: 12px;
+}
+
+.instanceContentResultsShell{
+  gap: 6px;
+  padding-top: 2px;
+  margin-top: 0;
+  border-top: 2px solid color-mix(in srgb, var(--stroke2) 42%, transparent);
+}
+
+.updatesCardHead .chip{
+  background: transparent;
+}
+
+.updatesListName{
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.updatesListName .chip{
+  margin-left: 0 !important;
+}
+
+.updatesListMeta{
+  font-size: 11.5px;
+  line-height: 1.38;
+}
+
+.instCardTitle{
+  font-weight: 840;
+}
+
+.instCardSub{
+  font-weight: 600;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
+}
+
+.instCardMeta .chip{
+  font-weight: 620;
+  color: color-mix(in srgb, var(--text) 66%, var(--muted) 34%);
+}
+
+.instanceModsHeaderRow{
+  top: -2px;
+  border-bottom: 0;
+  box-shadow: none;
+}
+
+.instanceModsRow{
+  border-radius: 18px;
+}
+
+.instanceModsNameTitle{
+  font-size: 14.5px;
+  font-weight: 800;
+}
+
+.instanceModsNameMeta,
+.instanceModsVersionMeta{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+}
+
+.instanceModsFilenamePrimary{
+  color: color-mix(in srgb, var(--text) 88%, var(--muted) 12%);
+}
+
+.instanceActionToggleBtn.enabled{
+  color: color-mix(in srgb, rgba(22,163,74,0.74) 44%, var(--accent-solid) 56%);
+}
+
+.instanceSideCard > .librarySideTitle{
+  margin-bottom: 10px;
+}
+
+.activityHeadMeta{
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+  box-shadow: none;
+}
+
+.activitySub{
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activityActions{
+  gap: 8px;
+}
+
+.instanceSessionValue,
+.libraryAccountName{
+  font-size: 15px;
+  font-weight: 820;
+}
+
+.instanceSessionSub,
+.libraryAccountId,
+.quickPlaySub{
+  font-size: 12px;
+}
+
+.libraryQuickActions .btn .navIcon{
+  width: 15px;
+  height: 15px;
+}
+
+.quickPlayField .input,
+.quickPlayBind .dropBtn{
+  min-height: 38px;
+  border-radius: 12px;
+}
+
+.instanceContentMaintenancePanel,
+.instanceContentMaintenanceUtility,
+.updatesListRow{
+  transition: border-color 140ms var(--ease), background 140ms var(--ease);
+}
+
+.instanceContentMaintenancePanel:hover,
+.instanceContentMaintenanceUtility:hover,
+.updatesListRow:hover{
+  transform: none;
+  box-shadow: none;
+}
+
+.instanceContentUpdateRow{
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.instanceContentUpdateActions{
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+
+.instanceContentMaintenancePanelHead{
+  min-width: 0;
+}
+
+.instanceContentUpdateRow .instanceContentControlHint,
+.instanceContentMaintenanceMeta{
+  margin-left: 0;
+  max-width: none;
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
+}
+
+.instanceContentMaintenanceUtilityCopy{
+  flex: 0 1 320px;
+  gap: 2px;
+}
+
+.instanceSnapshotInline{
+  width: 100%;
+  max-width: none;
+  justify-content: stretch;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.instanceSnapshotInline .dropBtn{
+  height: 34px;
+  min-height: 34px;
+  padding-inline: 12px;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.instanceContentMaintenanceStack{
+  gap: 8px;
+  padding: 0;
+  margin-bottom: 0;
+}
+
+.instanceContentMaintenanceTitle{
+  font-size: 14px;
+  font-weight: 820;
+  letter-spacing: -0.016em;
+}
+
+.instanceContentMaintenanceSub,
+.instanceContentUtilityText{
+  font-size: 11.5px;
+  line-height: 1.36;
+}
+
+.instanceContentMaintenancePanelPrimary .instanceContentMaintenanceSub,
+.instanceContentUtilityText{
+  max-width: 34ch;
+}
+
+.instanceContentMaintenanceUtility .instanceContentUtilityText{
+  max-width: 32ch;
+}
+
+.instanceSnapshotMenuPanel{
+  padding: 6px;
+}
+
+.instanceSnapshotMenuPanel .dropPanelBody{
+  display: grid;
+  gap: 4px;
+}
+
+.instanceSnapshotMenuPanel .menuItem{
+  min-height: 42px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.014em;
+  gap: 10px;
+}
+
+.instanceSnapshotMenuPanel .menuItem > :first-child{
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.instanceSnapshotMenuPanel .menuCheck{
+  width: 16px;
+  flex-basis: 16px;
+}
+
+.instanceContentFilterRow + .instanceContentMaintenanceStack{
+  margin-top: 2px;
+}
+
+.instanceContentUtilityLabel{
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+}
+
+.instanceContentFilterRow{
+  gap: 8px;
+  align-items: center;
+}
+
+.instanceContentFilterRow .dropBtn,
+.instanceContentFilterRow .menuSelectBtn,
+.instanceContentClearBtn{
+  min-height: 38px;
+  border-radius: 12px;
+}
+
+.instanceContentClearBtn{
+  padding-inline: 14px;
+}
+
+.activityHeadMetaCopy{
+  gap: 4px;
+}
+
+.activityFiltersCompactSingle .dropdown.menuSelect.compact .dropBtn{
+  min-height: 30px;
+  padding: 3px 14px;
+  font-size: 10.5px;
+  font-weight: 820;
+  border-color: color-mix(in srgb, var(--stroke2) 58%, transparent);
+  background: color-mix(in srgb, var(--surface) 98%, var(--surface-2) 2%);
+}
+
+.activityFiltersCompactSingle .dropdown.menuSelect.compact .dropBtn:hover{
+  background: color-mix(in srgb, var(--surface) 95%, var(--surface-2) 5%);
+}
+
+@media (max-width: 1180px){
+  .instanceContentMaintenancePanelPrimary,
+  .instanceContentMaintenanceUtility{
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+    column-gap: 0;
+  }
+
+  .instanceContentUpdateActions{
+    flex-wrap: wrap;
+  }
+
+  .instanceContentMaintenanceUtility{
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+
+  .instanceSnapshotInline{
+    justify-self: stretch;
+    max-width: none;
+  }
+}
+
+:root[data-theme="light"] .instPageTop{
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .instanceContentMaintenancePanelPrimary,
+:root[data-theme="light"] .updatesListRow,
+:root[data-theme="light"] .instanceSideCard,
+:root[data-theme="light"] .activityHeadMeta{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+:root[data-theme="light"] .instanceModsRow{
+  background: #ffffff;
+  border-color: rgba(120, 120, 120, 0.14);
+}
+
+/* Updates Available compact polish:
+   keep the page structure, but make it read like a desktop tool instead of
+   a roomy admin surface. */
+.updatesScreenSummaryCard{
+  padding: 14px 16px;
+  border-radius: 18px;
+  gap: 0;
+}
+
+.updatesScreenSummaryHeader{
+  gap: 12px 14px;
+}
+
+.updatesScreenSummaryMain{
+  flex: 1 1 420px;
+}
+
+.updatesScreenSummaryTitleRow{
+  margin-top: 3px;
+  gap: 8px;
+}
+
+.updatesScreenSummaryTitle{
+  font-size: 16px;
+  font-weight: 780;
+  line-height: 1.02;
+}
+
+.updatesScreenSummaryActions{
+  gap: 6px;
+  align-self: flex-start;
+}
+
+.updatesScreenSummaryActions .btn{
+  min-height: 36px;
+  padding-inline: 12px;
+  border-radius: 12px;
+}
+
+.updatesScreenActionState{
+  font-size: 11px;
+}
+
+.updatesScreenFactsGrid{
+  margin-top: 10px;
+  gap: 8px;
+}
+
+.updatesScreenFactCard{
+  padding: 9px 10px;
+  border-radius: 13px;
+}
+
+.updatesScreenFactValue{
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.32;
+}
+
+.updatesScreenRuleGrid{
+  margin-top: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.updatesScreenRuleCard{
+  padding: 10px 11px;
+  border-radius: 14px;
+}
+
+.updatesScreenRuleHelp{
+  margin-top: 4px;
+  margin-bottom: 7px;
+  font-size: 11.5px;
+  line-height: 1.38;
+}
+
+.updatesScreenRuleCard .dropBtn,
+.updatesScreenRuleCard .menuSelectBtn{
+  min-height: 36px;
+  border-radius: 12px;
+  font-size: 12.5px;
+}
+
+.updatesScreenStatsRow{
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.updatesScreenStatsText{
+  font-size: 11.5px;
+}
+
+.updatesScreenSectionCard{
+  padding: 12px 14px;
+  border-radius: 18px;
+}
+
+.updatesScreenSectionHead{
+  gap: 2px;
+}
+
+.updatesScreenSectionSub{
+  font-size: 11.5px;
+  line-height: 1.36;
+}
+
+.updatesScreenRecentList{
+  margin-top: 8px;
+  gap: 8px;
+}
+
+.updatesScreenRecentRow{
+  padding: 9px 11px;
+  border-radius: 13px;
+}
+
+.updatesScreenRecentHead{
+  gap: 8px;
+}
+
+.updatesScreenList{
+  gap: 10px;
+}
+
+.updatesScreenItemCard{
+  padding: 12px 13px;
+  border-radius: 16px;
+}
+
+.updatesScreenItemHead{
+  gap: 8px 12px;
+}
+
+.updatesScreenItemTitle{
+  font-size: 14px;
+  font-weight: 780;
+}
+
+.updatesScreenItemMetaRow{
+  margin-top: 6px;
+  gap: 6px;
+}
+
+.chip.updatesScreenChip{
+  padding: 2px 6px;
+  font-size: 9px;
+}
+
+.updatesScreenItemActions{
+  gap: 6px;
+}
+
+.updatesScreenItemActions .btn{
+  min-height: 34px;
+  border-radius: 12px;
+  padding-inline: 11px;
+}
+
+.updatesScreenAppliedInstance{
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.updatesScreenAppliedNames{
+  margin-top: 6px;
+  gap: 3px 10px;
+}
+
+.updatesScreenAppliedName{
+  font-size: 11.5px;
+}
+
+.updatesList{
+  margin-top: 6px;
+  gap: 5px;
+}
+
+.updatesListRow{
+  padding: 8px 10px;
+  border-radius: 12px;
+}
+
+.updatesListName{
+  font-size: 12.5px;
+  gap: 5px;
+}
+
+.updatesListMeta{
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.34;
+}
+
+.updatesScreenInlineMeta{
+  font-size: 10.75px;
+}
+
+.updatesScreenItemCard .noticeBox,
+.updatesScreenItemCard .errorBox{
+  margin-top: 6px !important;
+  padding: 8px 10px;
+  border-radius: 12px;
+  font-size: 11.5px;
+  line-height: 1.34;
+}
+
+.updatesScreenItemCard .noticeBox{
+  color: color-mix(in srgb, var(--muted) 84%, var(--text) 16%);
+  background: color-mix(in srgb, var(--surface) 96%, var(--surface-2) 4%);
+  border-color: color-mix(in srgb, var(--stroke2) 46%, transparent);
+}
+
+@media (max-width: 960px){
+  .updatesScreenRuleGrid{
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

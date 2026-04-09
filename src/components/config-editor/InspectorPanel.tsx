@@ -3,7 +3,7 @@ import {
   getAtPath,
   type JsonPath,
   valueKind,
-} from "../pages/configEditorHelpers";
+} from "./helpers";
 
 function previewValue(value: unknown) {
   if (typeof value === "string") return value.length > 180 ? `${value.slice(0, 180)}...` : value;

@@ -1,5 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+const SEGMENTED_STRETCH_MS = 420;
+
 export default function SegmentedControl({
   value,
   options,
@@ -68,7 +70,7 @@ export default function SegmentedControl({
         stretchResetRef.current = window.setTimeout(() => {
           setStretchDirection(null);
           stretchResetRef.current = null;
-        }, 260);
+        }, SEGMENTED_STRETCH_MS);
       }
       setIndicator((prev) => {
         if (

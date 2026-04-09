@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import Icon, { type IconName } from "./app-shell/Icon";
+import Icon, { type IconName } from "./Icon";
 
 export type CommandPaletteItem = {
   id: string;

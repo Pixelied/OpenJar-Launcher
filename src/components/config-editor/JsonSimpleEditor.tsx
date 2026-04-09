@@ -9,8 +9,8 @@ import {
   setAtPath,
   type JsonPath,
   valueKind,
-} from "../pages/configEditorHelpers";
-import { getSuggestions } from "../lib/configSuggestions";
+} from "./helpers";
+import { getSuggestions } from "../../lib/configSuggestions";
 
 type AddFieldType = "string" | "number" | "boolean" | "object" | "array";
 

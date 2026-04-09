@@ -1,10 +1,8 @@
-import Icon from "../components/app-shell/Icon";
-import MenuSelect from "../components/app-shell/controls/MenuSelect";
-import SegmentedControl from "../components/app-shell/controls/SegmentedControl";
-import { LocalImage } from "../components/app-shell/AsyncImage";
-import { formatBytes, formatDate, formatDateTime, parseDateLike } from "../app/utils/format";
-import { launchStageBadgeLabel, relativeTimeFromMs, type LibraryGroupBy } from "../app/routeSupport";
-import type { Instance } from "../types";
+import { Icon, LocalImage } from "../../components/app-shell";
+import { MenuSelect, SegmentedControl } from "../../components/app-shell/controls";
+import { formatBytes, formatDate, formatDateTime, parseDateLike } from "../../app/utils/format";
+import { launchStageBadgeLabel, relativeTimeFromMs, type LibraryGroupBy } from "../../app/routeSupport";
+import type { Instance } from "../../types";
 
 export type LibraryRouteProps = {
   instanceLastRunMetadataById: any;

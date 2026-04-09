@@ -8,7 +8,7 @@ import type {
   Instance,
   InstanceModpackStatus,
   LayerDiffResult,
-} from "../types";
+} from "../../types";
 import {
   applyUpdateModpackFromInstance,
   createFriendLinkSession,
@@ -28,7 +28,7 @@ import {
   syncFriendLinkSelected,
   realignInstanceToModpack,
   rollbackInstanceToLastModpackSnapshot,
-} from "../tauri";
+} from "../../tauri";
 
 type FriendSyncPolicy = "manual" | "ask" | "auto_metadata" | "auto_all";
 type FriendAllowlistPreset = "mods_only" | "mods_plus_configs" | "everything" | "custom";

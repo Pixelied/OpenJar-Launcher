@@ -1,16 +1,11 @@
 import { useEffect } from "react";
-import Icon from "../components/app-shell/Icon";
-import Modal from "../components/app-shell/Modal";
-import Dropdown from "../components/app-shell/controls/Dropdown";
-import MenuSelect from "../components/app-shell/controls/MenuSelect";
-import MultiSelectDropdown from "../components/app-shell/controls/MultiSelectDropdown";
-import SegmentedControl from "../components/app-shell/controls/SegmentedControl";
-import ModpackMaker from "./ModpackMaker";
-import ModpacksConfigEditor from "./ModpacksConfigEditor";
-import { LocalImage, RemoteImage } from "../components/app-shell/AsyncImage";
-import { formatBytes, formatCompact, formatDate, formatDateTime, humanizeToken, parseDateLike } from "../app/utils/format";
-import { getAppLanguageOption, type AppLanguage } from "../lib/i18n";
-import type { DiscoverContentType, Instance, LaunchMethod, LaunchPermissionChecklistItem } from "../types";
+import { Icon, LocalImage, Modal, RemoteImage } from "../../components/app-shell";
+import { Dropdown, MenuSelect, MultiSelectDropdown, SegmentedControl } from "../../components/app-shell/controls";
+import ModpackMaker from "../modpacks/ModpackMaker";
+import ModpacksConfigEditor from "../modpacks/ModpacksConfigEditor";
+import { formatBytes, formatCompact, formatDate, formatDateTime, humanizeToken, parseDateLike } from "../../app/utils/format";
+import { getAppLanguageOption, type AppLanguage } from "../../lib/i18n";
+import type { DiscoverContentType, Instance, LaunchMethod, LaunchPermissionChecklistItem } from "../../types";
 import {
   ACCENT_OPTIONS,
   ACCENT_STRENGTH_OPTIONS,
@@ -44,7 +39,7 @@ import {
   type DensityPreset,
   type MotionPreset,
   type SettingsMode,
-} from "../app/routeSupport";
+} from "../../app/routeSupport";
 
 export type DiscoverRouteProps = {
   discoverAddContext: any;

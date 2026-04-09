@@ -3,7 +3,7 @@ import {
   applySuggestionAtCursor,
   getSuggestions,
   type ConfigSuggestion,
-} from "../lib/configSuggestions";
+} from "../../lib/configSuggestions";
 
 function measureTextWidth(text: string, font: string) {
   const canvas = document.createElement("canvas");

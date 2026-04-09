@@ -5,7 +5,7 @@ import type {
   InstanceConfigFileEntry,
   InstanceWorld,
   WorldConfigFileEntry,
-} from "../types";
+} from "../../types";
 import {
   listInstanceConfigFileBackups,
   listInstanceConfigFiles,
@@ -17,41 +17,42 @@ import {
   restoreInstanceConfigFileBackup,
   writeInstanceConfigFile,
   writeWorldConfigFile,
-} from "../tauri";
-import AdvancedEditor from "../components/AdvancedEditor";
-import ConfigEditorTopBar from "../components/ConfigEditorTopBar";
-import ConfigFileList, { type ConfigFileListItem } from "../components/ConfigFileList";
-import InspectorPanel from "../components/InspectorPanel";
-import InstancePickerDropdown from "../components/InstancePickerDropdown";
-import JsonSimpleEditor from "../components/JsonSimpleEditor";
-import NewFileModal from "../components/NewFileModal";
-import ServersDatSimpleEditor from "../components/ServersDatSimpleEditor";
-import TextSimpleEditor from "../components/TextSimpleEditor";
+} from "../../tauri";
 import {
+  AdvancedEditor,
   asPrettyJson,
+  ConfigEditorTopBar,
+  ConfigFileList,
+  type ConfigFileListItem,
   describePath,
   fileGroupForPath,
   fileTypeForPath,
   getEffectiveFileContent,
   hasUnsavedDraft,
+  InspectorPanel,
   isJsonFilePath,
+  JsonSimpleEditor,
+  NewFileModal,
   parseJsonWithError,
   SERVERS_DAT_PATH,
+  ServersDatSimpleEditor,
+  TextSimpleEditor,
   type ConfigFileRecord,
   type JsonParseIssue,
   type JsonPath,
-} from "./configEditorHelpers";
+} from "../../components/config-editor";
+import { InstancePickerDropdown } from "../../components/instance";
 import {
   formatConfigContent,
   getFormatterSupport,
-} from "../lib/configFormatting";
+} from "../../lib/configFormatting";
 import {
   applySafeFixes,
   collectConfigIssues,
   getConfigDocForPath,
   groupIssuesByPath,
   type ConfigIssue,
-} from "../lib/configIntelligence";
+} from "../../lib/configIntelligence";
 
 type EditorMode = "simple" | "advanced";
 type EditorScope = "instance" | "world";

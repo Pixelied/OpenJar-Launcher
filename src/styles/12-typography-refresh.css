@@ -1,0 +1,57 @@
+:root:not([data-theme-variant="cyberpunk"]) .homeSpotlightTitle {
+  font-family: "Minecraft", var(--font-display) !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  font-size: clamp(2rem, 1.6rem + 1.2vw, 3rem) !important;
+  line-height: 1.1 !important;
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.12);
+}
+
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .homeSpotlightTitle {
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.35);
+}
+
+:root:not([data-theme-variant="cyberpunk"]) .homeKpiValue,
+:root:not([data-theme-variant="cyberpunk"]) .libraryHeroStatValue,
+:root:not([data-theme-variant="cyberpunk"]) .accountSummaryValue {
+  font-family: "Minecraft", var(--font-display) !important;
+  font-weight: 400 !important;
+  letter-spacing: 0.02em !important;
+}
+
+:root:not([data-theme-variant="cyberpunk"]) .libraryHeroTitle,
+:root:not([data-theme-variant="cyberpunk"]) .settingsHeroTitle {
+  font-family: "Minecraft", var(--font-display) !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  font-size: clamp(1.8rem, 1.4rem + 0.8vw, 2.4rem) !important;
+  line-height: 1.1 !important;
+}
+
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .libraryHeroTitle,
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .settingsHeroTitle {
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.3);
+}
+
+:root:not([data-theme-variant="cyberpunk"]) .homeKicker,
+:root:not([data-theme-variant="cyberpunk"]) .discoverWorkspaceEyebrow,
+:root:not([data-theme-variant="cyberpunk"]) .libraryHeroEyebrow,
+:root:not([data-theme-variant="cyberpunk"]) .settingsHeroEyebrow,
+:root:not([data-theme-variant="cyberpunk"]) .accountHeroEyebrow,
+:root:not([data-theme-variant="cyberpunk"]) .pageRouteEyebrow,
+:root:not([data-theme-variant="cyberpunk"]) .instanceContentWorkspaceEyebrow {
+  font-family: "Minecraft", var(--font-label) !important;
+  font-weight: 400 !important;
+  font-size: 11px !important;
+  letter-spacing: 0.18em !important;
+}
+
+:root:not([data-theme-variant="cyberpunk"]) .instTitle {
+  font-family: "Minecraft", var(--font-display) !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+}
+
+:root[data-theme="dark"]:not([data-theme-variant="cyberpunk"]) .instTitle {
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.25);
+}

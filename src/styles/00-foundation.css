@@ -1,0 +1,733 @@
+@font-face{
+  font-family: "Minecraft";
+  src: url("../assets/minecraft.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root{
+  --bg: #0b1017;
+  --bg2: rgba(144, 166, 204, 0.06);
+  --panel: #111823;
+  --panel2: #16202d;
+  --surface: var(--panel2);
+  --surface-2: var(--panel);
+  --page-bg: var(--bg);
+  --card-bg: var(--panel2);
+  --section-bg: var(--surface-2);
+  --btn-neutral-bg: #1a2431;
+  --control-border: rgba(190, 203, 224, 0.16);
+  --control-border-hover: rgba(214, 223, 238, 0.26);
+  --btn-primary-bg: var(--accent-solid);
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 84%, #141922 16%);
+  --btn-primary-text: var(--accent-on-solid, #fff);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--accent-solid) 90%, #ffffff 10%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 82%, #111827 18%);
+  --interactive-hover-bg: #202b39;
+  --interactive-hover-border: rgba(223, 231, 244, 0.30);
+  --border: var(--stroke);
+  --stroke: rgba(196, 209, 228, 0.07);
+  --stroke2: rgba(196, 209, 228, 0.14);
+  --text: rgba(243, 247, 253, 0.97);
+  --muted: rgba(183, 194, 210, 0.80);
+  --muted2: rgba(145, 158, 177, 0.68);
+  --shadow: 0 26px 74px rgba(3, 8, 18, 0.54);
+  --shadowSoft: 0 16px 40px rgba(3, 8, 18, 0.28);
+  --shadow-xs: 0 8px 18px rgba(2, 8, 18, 0.18);
+  --shadow-sm: 0 14px 30px rgba(3, 8, 18, 0.24);
+  --radius-xl: 22px;
+  --radius-lg: 18px;
+  --radius-md: 14px;
+  --radius-sm: 12px;
+  --ease: cubic-bezier(.2,.8,.2,1);
+  --theme-transition-duration: 420ms;
+  --theme-transition-ease: cubic-bezier(.22,.84,.24,1);
+  --dur-fast: 160ms;
+  --dur-med: 240ms;
+  --dur-slow: 420ms;
+  --hover-lift: -2px;
+  --hover-lift-soft: -1px;
+  --hover-scale-soft: 1.01;
+  --hover-scale-strong: 1.018;
+  --gear-spin-angle: 124deg;
+  --gear-spin-duration: 760ms;
+  --motion-page-enter-y: 10px;
+  --motion-panel-enter-y: 6px;
+  --motion-panel-enter-scale: 0.994;
+  --motion-modal-enter-y: 8px;
+  --motion-modal-enter-scale: 0.985;
+  --motion-seg-stretch: 1.09;
+  --density-control-h: 42px;
+  --density-control-pad-y: 10px;
+  --density-control-pad-x: 14px;
+  --density-input-pad-y: 11px;
+  --density-input-pad-x: 12px;
+  --density-panel-pad: 20px;
+  --density-card-pad: 18px;
+  --density-gap: 16px;
+  --z-tooltip: 3340;
+  --z-modal: 3000;
+  --z-dropdown: 3300;
+  --z-danger: 3600;
+  --tooltipBg: color-mix(in srgb, var(--surface) 92%, #0d141f 8%);
+  --tooltipText: color-mix(in srgb, var(--text) 96%, #ffffff 4%);
+  --dropdown-bg-solid: #141c27;
+  --dropdown-bg-soft-solid: #182230;
+  --accent-base: rgba(166, 176, 193, 0.76);
+  --accent-strong-base: rgba(222, 230, 242, 0.98);
+  --accent-soft-base: rgba(136, 151, 176, 0.18);
+  --accent-soft-2-base: rgba(136, 151, 176, 0.26);
+  --accent-ring-base: rgba(136, 151, 176, 0.34);
+  --accent-text-base: rgba(239, 244, 252, 0.98);
+  --accent-solid-base: #818c9d;
+  --accent-on-solid-base: #ffffff;
+  --accent: var(--accent-base);
+  --accent-strong: var(--accent-strong-base);
+  --accent-soft: var(--accent-soft-base);
+  --accent-soft-2: var(--accent-soft-2-base);
+  --accent-ring: var(--accent-ring-base);
+  --accent-text: var(--accent-text-base);
+  --accent-solid: var(--accent-solid-base);
+  --accent-on-solid: var(--accent-on-solid-base);
+}
+
+:root[data-theme-transition="active"],
+:root[data-theme-transition="active"] body,
+:root[data-theme-transition="active"] .content,
+:root[data-theme-transition="active"] .navRail,
+:root[data-theme-transition="active"] .card,
+:root[data-theme-transition="active"] .discoverWorkspace,
+:root[data-theme-transition="active"] .libraryTopRow,
+:root[data-theme-transition="active"] .homePanel,
+:root[data-theme-transition="active"] .homeSpotlight,
+:root[data-theme-transition="active"] .homeLaunchAction,
+:root[data-theme-transition="active"] .homeListRow,
+:root[data-theme-transition="active"] .homeKpi,
+:root[data-theme-transition="active"] .resultCard,
+:root[data-theme-transition="active"] .instCard,
+:root[data-theme-transition="active"] .instPageTop,
+:root[data-theme-transition="active"] .instanceSectionShell,
+:root[data-theme-transition="active"] .instanceSideCard,
+:root[data-theme-transition="active"] .instanceModsRow,
+:root[data-theme-transition="active"] .instanceContentMaintenancePanelPrimary,
+:root[data-theme-transition="active"] .instanceContentMaintenanceUtility,
+:root[data-theme-transition="active"] .settingsSidebar,
+:root[data-theme-transition="active"] .settingsRailButton,
+:root[data-theme-transition="active"] .settingsHeroCard,
+:root[data-theme-transition="active"] .settingsSectionCard,
+:root[data-theme-transition="active"] .settingsHeroSummaryCard,
+:root[data-theme-transition="active"] .settingsAccountCard,
+:root[data-theme-transition="active"] .accountCard,
+:root[data-theme-transition="active"] .accountHero,
+:root[data-theme-transition="active"] .accountSummaryCard,
+:root[data-theme-transition="active"] .libraryHeroCard,
+:root[data-theme-transition="active"] .libraryHeroStat,
+:root[data-theme-transition="active"] .libraryStorageCard,
+:root[data-theme-transition="active"] .storageSummaryCard,
+:root[data-theme-transition="active"] .btn,
+:root[data-theme-transition="active"] .dropBtn,
+:root[data-theme-transition="active"] .menuSelectBtn,
+:root[data-theme-transition="active"] .input,
+:root[data-theme-transition="active"] .textarea,
+:root[data-theme-transition="active"] .chip,
+:root[data-theme-transition="active"] .pill,
+:root[data-theme-transition="active"] .dropPanel,
+:root[data-theme-transition="active"] .modal,
+:root[data-theme-transition="active"] .commandPalettePanel,
+:root[data-theme-transition="active"] .msCodeDialog,
+:root[data-theme-transition="active"] .instanceSettingsModal,
+:root[data-theme-transition="active"] .createInstanceModal,
+:root[data-theme-transition="active"] .updatesListRow,
+:root[data-theme-transition="active"] .updatesScreenSummaryCard,
+:root[data-theme-transition="active"] .updatesScreenItemCard,
+:root[data-theme-transition="active"] .updatesScreenRuleCard,
+:root[data-theme-transition="active"] .updatesScreenFactCard,
+:root[data-theme-transition="active"] .resultIcon,
+:root[data-theme-transition="active"] .instCardIcon,
+:root[data-theme-transition="active"] .settingsRailButtonIcon{
+  transition-property: background, background-color, border-color, color, box-shadow, fill, stroke, outline-color, text-decoration-color;
+  transition-duration: var(--theme-transition-duration);
+  transition-timing-function: var(--theme-transition-ease);
+}
+
+:root:not([data-theme="light"]) .navRail{
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel2) 90%, #0c1118 10%), color-mix(in srgb, var(--panel) 94%, #0a0f16 6%));
+  border-right-color: color-mix(in srgb, var(--stroke2) 78%, transparent);
+  box-shadow:
+    inset -1px 0 0 color-mix(in srgb, var(--stroke2) 62%, transparent),
+    inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+:root:not([data-theme="light"]) .card{
+  border-color: color-mix(in srgb, var(--stroke2) 72%, var(--stroke));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 96%, rgba(255,255,255,0.04) 4%), color-mix(in srgb, var(--card-bg) 92%, var(--surface-2) 8%));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.03),
+    var(--shadow-xs);
+}
+
+:root:not([data-theme="light"]) .btn{
+  border-color: color-mix(in srgb, var(--control-border) 92%, transparent);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--btn-neutral-bg) 98%, rgba(255,255,255,0.035) 2%), color-mix(in srgb, var(--btn-neutral-bg) 92%, var(--panel) 8%));
+  color: color-mix(in srgb, var(--text) 94%, #ffffff 6%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.028);
+}
+
+:root:not([data-theme="light"]) .btn:hover{
+  background: var(--interactive-hover-bg);
+  border-color: var(--control-border-hover);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    var(--shadow-xs);
+}
+
+:root:not([data-theme="light"]) .btn.danger{
+  color: #fca5a5;
+  border-color: #ef4444;
+  background: transparent;
+}
+
+:root:not([data-theme="light"]) .btn.warning{
+  color: rgba(248, 209, 132, 0.98);
+  border-color: rgba(217, 154, 72, 0.50);
+  background: rgba(120, 78, 26, 0.12);
+}
+
+:root:not([data-theme="light"]) .input{
+  border-color: color-mix(in srgb, var(--stroke2) 68%, var(--stroke));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, #111722 6%), color-mix(in srgb, var(--surface) 88%, #0f1520 12%));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.024);
+}
+
+:root:not([data-theme="light"]) .chip{
+  border-color: color-mix(in srgb, var(--stroke2) 78%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 84%, #121a25 16%);
+  color: color-mix(in srgb, var(--text) 84%, var(--muted) 16%);
+}
+
+:root:not([data-theme="light"]) .instanceModsRow{
+  border-color: color-mix(in srgb, var(--stroke2) 58%, var(--stroke));
+  background: color-mix(in srgb, var(--panel2) 76%, var(--panel) 24%);
+}
+
+:root:not([data-theme="light"]) .activityRow{
+  border-color: transparent;
+  background: var(--surface);
+}
+
+:root:not([data-theme="light"]) .instanceProviderBadge.warning{
+  color: rgba(253, 230, 138, 0.96);
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.11);
+}
+
+:root:not([data-theme="light"]) .instanceProviderBadgeIcon{
+  border-color: rgba(253, 230, 138, 0.26);
+  background: rgba(17, 24, 39, 0.2);
+  color: rgba(253, 230, 138, 0.98);
+}
+
+:root:not([data-theme="light"]) .instWarningsOnlyChip{
+  border-color: color-mix(in srgb, var(--stroke2) 82%, transparent);
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 78%, var(--muted) 22%);
+}
+
+:root:not([data-theme="light"]) .instWarningsOnlyChip.active{
+  border-color: rgba(245, 158, 11, 0.62);
+  background: transparent;
+  color: rgba(253, 230, 138, 0.98);
+}
+
+:root:not([data-theme="light"]) .accountStatusBadge.tone-error,
+:root:not([data-theme="light"]) .accountStatusText.tone-error{
+  color: rgba(252, 165, 165, 0.98);
+}
+
+:root:not([data-theme="light"]) .accountStatusBadge.tone-warn,
+:root:not([data-theme="light"]) .accountStatusText.tone-warn{
+  color: rgba(253, 186, 116, 0.98);
+}
+
+:root:not([data-theme="light"]) .accountStatusBadge.tone-ok,
+:root:not([data-theme="light"]) .accountStatusText.tone-ok{
+  color: rgba(134, 239, 172, 0.98);
+}
+
+:root[data-theme="light"]{
+  --bg: #eeeeee;
+  --bg2: rgba(112, 112, 112, 0.06);
+  --panel: #f3f3f3;
+  --panel2: #f7f7f7;
+  --page-bg: #eeeeee;
+  --card-bg: #ffffff;
+  --section-bg: #eeeeee;
+  --btn-neutral-bg: #ffffff;
+  --control-border: rgba(68, 76, 88, 0.18);
+  --control-border-hover: rgba(68, 76, 88, 0.28);
+  --btn-primary-bg: color-mix(in srgb, var(--surface) 72%, var(--accent-soft-2) 28%);
+  --btn-primary-border: color-mix(in srgb, var(--accent-ring) 72%, var(--stroke));
+  --btn-primary-text: color-mix(in srgb, var(--accent-text) 90%, var(--text) 10%);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--surface) 62%, var(--accent-soft-2) 38%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-ring) 82%, var(--stroke2));
+  --interactive-hover-bg: #ececec;
+  --interactive-hover-border: rgba(68, 76, 88, 0.24);
+  --stroke: rgba(62, 68, 79, 0.15);
+  --stroke2: rgba(62, 68, 79, 0.24);
+  --text: rgba(24, 27, 31, 0.97);
+  --muted: rgba(77, 84, 94, 0.76);
+  --muted2: rgba(104, 110, 121, 0.62);
+  --shadow: 0 16px 34px rgba(18, 24, 32, 0.08);
+  --shadowSoft: 0 8px 20px rgba(18, 24, 32, 0.06);
+  --tooltipBg: color-mix(in srgb, var(--surface) 94%, #ffffff 6%);
+  --tooltipText: color-mix(in srgb, var(--text) 97%, #000000 3%);
+  --dropdown-bg-solid: #f7f7f7;
+  --dropdown-bg-soft-solid: #efefef;
+  --surface: #ffffff;
+  --surface-2: #eeeeee;
+  --border: var(--stroke);
+  --shadow-xs: 0 2px 8px rgba(18, 24, 32, 0.045);
+  --shadow-sm: 0 8px 18px rgba(18, 24, 32, 0.065);
+  --light-neutral-accent-base: rgba(128, 132, 140, 0.50);
+  --light-neutral-accent-strong-base: rgba(104, 109, 118, 0.80);
+  --light-neutral-accent-soft-base: rgba(125, 132, 146, 0.08);
+  --light-neutral-accent-soft-2-base: rgba(125, 132, 146, 0.14);
+  --light-neutral-accent-ring-base: rgba(125, 132, 146, 0.18);
+  --light-neutral-accent-text-base: rgba(58, 63, 72, 0.94);
+  --accent-base: rgba(130, 132, 138, 0.74);
+  --accent-strong-base: rgba(102, 105, 111, 0.94);
+  --accent-soft-base: rgba(124, 132, 149, 0.14);
+  --accent-soft-2-base: rgba(124, 132, 149, 0.22);
+  --accent-ring-base: rgba(124, 132, 149, 0.28);
+  --accent-text-base: rgba(58, 61, 68, 0.96);
+  --accent-solid-base: #8a8f97;
+  --accent-on-solid-base: #ffffff;
+  --accent: var(--accent-base);
+  --accent-strong: var(--accent-strong-base);
+  --accent-soft: var(--accent-soft-base);
+  --accent-soft-2: var(--accent-soft-2-base);
+  --accent-ring: var(--accent-ring-base);
+  --accent-text: var(--accent-text-base);
+  --accent-solid: var(--accent-solid-base);
+  --accent-on-solid: var(--accent-on-solid-base);
+}
+
+:root[data-theme="dark"][data-theme-variant="cyberpunk"]{
+  --bg: #070913;
+  --bg2: rgba(79, 243, 255, 0.12);
+  --panel: #0d1220;
+  --panel2: #111729;
+  --page-bg: #060811;
+  --card-bg: #0f1525;
+  --section-bg: #0d1220;
+  --btn-neutral-bg: #12192b;
+  --control-border: rgba(79, 243, 255, 0.16);
+  --control-border-hover: rgba(255, 74, 211, 0.24);
+  --btn-primary-bg: color-mix(in srgb, var(--surface) 78%, var(--accent-soft-2) 22%);
+  --btn-primary-border: color-mix(in srgb, var(--accent-ring) 64%, var(--stroke));
+  --btn-primary-text: color-mix(in srgb, var(--accent-text) 92%, var(--text) 8%);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--surface) 70%, var(--accent-soft-2) 30%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-ring) 78%, var(--stroke2));
+  --interactive-hover-bg: rgba(79, 243, 255, 0.10);
+  --interactive-hover-border: rgba(255, 74, 211, 0.26);
+  --stroke: rgba(85, 104, 150, 0.28);
+  --stroke2: rgba(79, 243, 255, 0.20);
+  --text: rgba(229, 246, 255, 0.97);
+  --muted: rgba(138, 161, 186, 0.82);
+  --muted2: rgba(107, 127, 150, 0.72);
+  --shadow: 0 18px 38px rgba(3, 8, 18, 0.48);
+  --shadowSoft: 0 10px 24px rgba(3, 8, 18, 0.34);
+  --tooltipBg: color-mix(in srgb, var(--surface) 92%, #ffffff 8%);
+  --tooltipText: color-mix(in srgb, var(--text) 96%, #000000 4%);
+  --dropdown-bg-solid: #11192b;
+  --dropdown-bg-soft-solid: #0d1424;
+  --surface: #10182a;
+  --surface-2: #0b1120;
+  --border: var(--stroke);
+  --shadow-xs: 0 4px 12px rgba(5, 11, 24, 0.34);
+  --shadow-sm: 0 10px 22px rgba(5, 11, 24, 0.42);
+  --light-neutral-accent-base: rgba(79, 243, 255, 0.62);
+  --light-neutral-accent-strong-base: rgba(126, 250, 255, 0.92);
+  --light-neutral-accent-soft-base: rgba(79, 243, 255, 0.14);
+  --light-neutral-accent-soft-2-base: rgba(255, 74, 211, 0.18);
+  --light-neutral-accent-ring-base: rgba(79, 243, 255, 0.30);
+  --light-neutral-accent-text-base: rgba(197, 250, 255, 0.96);
+}
+
+:root[data-theme="dark"][data-theme-variant="cyberpunk"][data-accent="neutral"]{
+  --accent-base: var(--light-neutral-accent-base);
+  --accent-strong-base: var(--light-neutral-accent-strong-base);
+  --accent-soft-base: var(--light-neutral-accent-soft-base);
+  --accent-soft-2-base: var(--light-neutral-accent-soft-2-base);
+  --accent-ring-base: var(--light-neutral-accent-ring-base);
+  --accent-text-base: var(--light-neutral-accent-text-base);
+  --accent-solid-base: #4ef5ff;
+  --accent-on-solid-base: #041116;
+}
+
+:root[data-theme="light"][data-accent="neutral"]{
+  --accent-base: var(--light-neutral-accent-base);
+  --accent-strong-base: var(--light-neutral-accent-strong-base);
+  --accent-soft-base: var(--light-neutral-accent-soft-base);
+  --accent-soft-2-base: var(--light-neutral-accent-soft-2-base);
+  --accent-ring-base: var(--light-neutral-accent-ring-base);
+  --accent-text-base: var(--light-neutral-accent-text-base);
+  --accent-solid-base: #e7e7e7;
+  --accent-on-solid-base: #2a2a2a;
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 76%, rgba(73, 80, 92, 0.24));
+  --btn-primary-bg-hover: color-mix(in srgb, var(--accent-solid) 88%, #ffffff 12%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 78%, rgba(60, 67, 78, 0.28));
+}
+
+:root[data-accent="blue"]{
+  --accent-base: rgba(78, 141, 255, 0.82);
+  --accent-strong-base: rgba(140, 186, 255, 0.98);
+  --accent-soft-base: rgba(78, 141, 255, 0.24);
+  --accent-soft-2-base: rgba(78, 141, 255, 0.34);
+  --accent-ring-base: rgba(78, 141, 255, 0.36);
+  --accent-text-base: rgba(216, 233, 255, 0.98);
+  --accent-solid-base: #2f73ec;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-theme="light"][data-accent="blue"]{
+  --accent-base: rgba(70, 121, 216, 0.72);
+  --accent-strong-base: rgba(49, 95, 184, 0.88);
+  --accent-soft-base: rgba(78, 141, 255, 0.14);
+  --accent-soft-2-base: rgba(78, 141, 255, 0.22);
+  --accent-ring-base: rgba(78, 141, 255, 0.30);
+  --accent-text-base: rgba(50, 83, 138, 0.96);
+  --accent-solid-base: #2f70e5;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-accent="emerald"]{
+  --accent-base: rgba(50, 186, 130, 0.86);
+  --accent-strong-base: rgba(142, 239, 197, 0.98);
+  --accent-soft-base: rgba(50, 186, 130, 0.24);
+  --accent-soft-2-base: rgba(50, 186, 130, 0.34);
+  --accent-ring-base: rgba(50, 186, 130, 0.38);
+  --accent-text-base: rgba(223, 255, 242, 0.98);
+  --accent-solid-base: #1a8f62;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-theme="light"][data-accent="emerald"]{
+  --accent-base: rgba(40, 142, 104, 0.72);
+  --accent-strong-base: rgba(26, 114, 80, 0.88);
+  --accent-soft-base: rgba(50, 186, 130, 0.14);
+  --accent-soft-2-base: rgba(50, 186, 130, 0.22);
+  --accent-ring-base: rgba(50, 186, 130, 0.30);
+  --accent-text-base: rgba(31, 94, 70, 0.96);
+  --accent-solid-base: #17885b;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-accent="amber"]{
+  --accent-base: rgba(236, 167, 59, 0.86);
+  --accent-strong-base: rgba(255, 215, 141, 0.98);
+  --accent-soft-base: rgba(236, 167, 59, 0.24);
+  --accent-soft-2-base: rgba(236, 167, 59, 0.34);
+  --accent-ring-base: rgba(236, 167, 59, 0.38);
+  --accent-text-base: rgba(255, 244, 224, 0.98);
+  --accent-solid-base: #be7b1a;
+  --accent-on-solid-base: #1f1606;
+}
+
+:root[data-theme="light"][data-accent="amber"]{
+  --accent-base: rgba(184, 125, 26, 0.72);
+  --accent-strong-base: rgba(145, 95, 10, 0.88);
+  --accent-soft-base: rgba(236, 167, 59, 0.16);
+  --accent-soft-2-base: rgba(236, 167, 59, 0.24);
+  --accent-ring-base: rgba(236, 167, 59, 0.32);
+  --accent-text-base: rgba(111, 74, 14, 0.96);
+  --accent-solid-base: #b67416;
+  --accent-on-solid-base: #1f1606;
+}
+
+:root[data-accent="rose"]{
+  --accent-base: rgba(230, 92, 137, 0.86);
+  --accent-strong-base: rgba(255, 172, 203, 0.98);
+  --accent-soft-base: rgba(230, 92, 137, 0.24);
+  --accent-soft-2-base: rgba(230, 92, 137, 0.34);
+  --accent-ring-base: rgba(230, 92, 137, 0.38);
+  --accent-text-base: rgba(255, 230, 240, 0.98);
+  --accent-solid-base: #c74a77;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-theme="light"][data-accent="rose"]{
+  --accent-base: rgba(191, 72, 118, 0.72);
+  --accent-strong-base: rgba(151, 46, 85, 0.88);
+  --accent-soft-base: rgba(230, 92, 137, 0.14);
+  --accent-soft-2-base: rgba(230, 92, 137, 0.22);
+  --accent-ring-base: rgba(230, 92, 137, 0.30);
+  --accent-text-base: rgba(118, 48, 72, 0.96);
+  --accent-solid-base: #bf3f6f;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-accent="violet"]{
+  --accent-base: rgba(145, 110, 255, 0.84);
+  --accent-strong-base: rgba(204, 182, 255, 0.98);
+  --accent-soft-base: rgba(145, 110, 255, 0.24);
+  --accent-soft-2-base: rgba(145, 110, 255, 0.34);
+  --accent-ring-base: rgba(145, 110, 255, 0.38);
+  --accent-text-base: rgba(236, 228, 255, 0.98);
+  --accent-solid-base: #7c59de;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-theme="light"][data-accent="violet"]{
+  --accent-base: rgba(114, 84, 205, 0.72);
+  --accent-strong-base: rgba(88, 58, 173, 0.88);
+  --accent-soft-base: rgba(145, 110, 255, 0.14);
+  --accent-soft-2-base: rgba(145, 110, 255, 0.22);
+  --accent-ring-base: rgba(145, 110, 255, 0.30);
+  --accent-text-base: rgba(79, 58, 136, 0.96);
+  --accent-solid-base: #7250d2;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-accent="teal"]{
+  --accent-base: rgba(43, 184, 196, 0.84);
+  --accent-strong-base: rgba(156, 240, 246, 0.98);
+  --accent-soft-base: rgba(43, 184, 196, 0.24);
+  --accent-soft-2-base: rgba(43, 184, 196, 0.34);
+  --accent-ring-base: rgba(43, 184, 196, 0.38);
+  --accent-text-base: rgba(222, 254, 255, 0.98);
+  --accent-solid-base: #1e92a1;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-theme="light"][data-accent="teal"]{
+  --accent-base: rgba(28, 143, 156, 0.72);
+  --accent-strong-base: rgba(16, 110, 121, 0.88);
+  --accent-soft-base: rgba(43, 184, 196, 0.14);
+  --accent-soft-2-base: rgba(43, 184, 196, 0.22);
+  --accent-ring-base: rgba(43, 184, 196, 0.30);
+  --accent-text-base: rgba(29, 86, 94, 0.96);
+  --accent-solid-base: #188d9b;
+  --accent-on-solid-base: #ffffff;
+}
+
+:root[data-accent-strength="subtle"]{
+  --accent: color-mix(in srgb, var(--accent-base) 46%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent-strong-base) 56%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent-soft-base) 26%, transparent);
+  --accent-soft-2: color-mix(in srgb, var(--accent-soft-2-base) 30%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent-ring-base) 36%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent-text-base) 72%, var(--text) 28%);
+}
+
+:root[data-accent-strength="normal"]{
+  --accent: color-mix(in srgb, var(--accent-base) 78%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent-strong-base) 88%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent-soft-base) 74%, transparent);
+  --accent-soft-2: color-mix(in srgb, var(--accent-soft-2-base) 78%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent-ring-base) 80%, transparent);
+  --accent-text: color-mix(in srgb, var(--accent-text-base) 90%, var(--text) 10%);
+}
+
+:root[data-accent-strength="vivid"]{
+  --accent: color-mix(in srgb, var(--accent-base) 88%, var(--accent-strong-base) 12%);
+  --accent-strong: color-mix(in srgb, var(--accent-strong-base) 96%, var(--accent-base) 4%);
+  --accent-soft: color-mix(in srgb, var(--accent-soft-base) 54%, var(--accent-base) 46%);
+  --accent-soft-2: color-mix(in srgb, var(--accent-soft-2-base) 56%, var(--accent-base) 44%);
+  --accent-ring: color-mix(in srgb, var(--accent-ring-base) 58%, var(--accent-base) 42%);
+  --accent-text: color-mix(in srgb, var(--accent-text-base) 96%, var(--text) 4%);
+}
+
+:root[data-accent-strength="max"]{
+  --accent: var(--accent-solid);
+  --accent-strong: var(--accent-solid);
+  --accent-soft: color-mix(in srgb, var(--accent-soft-base) 48%, var(--accent-base) 52%);
+  --accent-soft-2: color-mix(in srgb, var(--accent-soft-2-base) 50%, var(--accent-base) 50%);
+  --accent-ring: color-mix(in srgb, var(--accent-ring-base) 40%, var(--accent-solid) 60%);
+  --accent-text: color-mix(in srgb, var(--accent-text-base) 98%, var(--text) 2%);
+  --btn-primary-bg: var(--accent-solid);
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 82%, #1f2937 18%);
+  --btn-primary-text: var(--accent-on-solid);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--accent-solid) 92%, #ffffff 8%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 78%, #111827 22%);
+}
+
+:root[data-theme="light"][data-accent-strength="subtle"]{
+  --btn-primary-bg: color-mix(in srgb, var(--surface) 98%, var(--accent-solid) 2%);
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 18%, var(--stroke));
+  --btn-primary-text: color-mix(in srgb, var(--accent-solid) 44%, var(--text) 56%);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--surface) 95%, var(--accent-solid) 5%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 26%, var(--stroke2));
+}
+
+:root[data-theme="light"][data-accent-strength="normal"]{
+  --btn-primary-bg: color-mix(in srgb, var(--surface) 88%, var(--accent-solid) 12%);
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 40%, var(--stroke));
+  --btn-primary-text: color-mix(in srgb, var(--accent-solid) 58%, var(--text) 42%);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--surface) 82%, var(--accent-solid) 18%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 52%, var(--stroke2));
+}
+
+:root[data-theme="light"][data-accent-strength="vivid"]{
+  --btn-primary-bg: color-mix(in srgb, var(--surface) 72%, var(--accent-solid) 28%);
+  --btn-primary-border: color-mix(in srgb, var(--accent-solid) 62%, var(--stroke2));
+  --btn-primary-text: color-mix(in srgb, var(--accent-solid) 78%, var(--text) 22%);
+  --btn-primary-bg-hover: color-mix(in srgb, var(--surface) 64%, var(--accent-solid) 36%);
+  --btn-primary-border-hover: color-mix(in srgb, var(--accent-solid) 74%, var(--stroke2));
+}
+
+:root[data-theme="light"][data-accent="neutral"][data-accent-strength="subtle"]{
+  --accent-base: rgba(238, 238, 238, 0.96);
+  --accent-strong-base: rgba(228, 228, 228, 0.98);
+  --accent-soft-base: rgba(238, 238, 238, 0.34);
+  --accent-soft-2-base: rgba(228, 228, 228, 0.44);
+  --accent-ring-base: rgba(188, 188, 188, 0.28);
+  --accent-text-base: rgba(102, 102, 102, 0.96);
+  --accent-solid-base: #ececec;
+}
+
+:root[data-theme="light"][data-accent="neutral"][data-accent-strength="normal"]{
+  --accent-base: rgba(224, 224, 224, 0.96);
+  --accent-strong-base: rgba(208, 208, 208, 0.98);
+  --accent-soft-base: rgba(224, 224, 224, 0.30);
+  --accent-soft-2-base: rgba(212, 212, 212, 0.40);
+  --accent-ring-base: rgba(170, 170, 170, 0.30);
+  --accent-text-base: rgba(90, 90, 90, 0.96);
+  --accent-solid-base: #dddddd;
+}
+
+:root[data-theme="light"][data-accent="neutral"][data-accent-strength="vivid"]{
+  --accent-base: rgba(204, 204, 204, 0.98);
+  --accent-strong-base: rgba(184, 184, 184, 0.98);
+  --accent-soft-base: rgba(204, 204, 204, 0.28);
+  --accent-soft-2-base: rgba(190, 190, 190, 0.38);
+  --accent-ring-base: rgba(152, 152, 152, 0.32);
+  --accent-text-base: rgba(76, 76, 76, 0.98);
+  --accent-solid-base: #c8c8c8;
+}
+
+:root[data-theme="light"][data-accent="neutral"][data-accent-strength="max"]{
+  --accent-base: rgba(170, 170, 170, 0.98);
+  --accent-strong-base: rgba(146, 146, 146, 0.98);
+  --accent-soft-base: rgba(170, 170, 170, 0.24);
+  --accent-soft-2-base: rgba(158, 158, 158, 0.34);
+  --accent-ring-base: rgba(126, 126, 126, 0.36);
+  --accent-text-base: rgba(58, 58, 58, 0.98);
+  --accent-solid-base: #a8a8a8;
+}
+
+:root[data-motion="calm"]{
+  --dur-fast: 200ms;
+  --dur-med: 300ms;
+  --dur-slow: 520ms;
+  --hover-lift: -1px;
+  --hover-lift-soft: -0.5px;
+  --hover-scale-soft: 1.004;
+  --hover-scale-strong: 1.009;
+  --gear-spin-angle: 86deg;
+  --gear-spin-duration: 980ms;
+  --motion-page-enter-y: 6px;
+  --motion-panel-enter-y: 4px;
+  --motion-panel-enter-scale: 0.997;
+  --motion-modal-enter-y: 6px;
+  --motion-modal-enter-scale: 0.99;
+  --motion-seg-stretch: 1.04;
+}
+
+:root[data-motion="standard"]{
+  --dur-fast: 160ms;
+  --dur-med: 240ms;
+  --dur-slow: 420ms;
+  --hover-lift: -2px;
+  --hover-lift-soft: -1px;
+  --hover-scale-soft: 1.01;
+  --hover-scale-strong: 1.018;
+  --gear-spin-angle: 124deg;
+  --gear-spin-duration: 760ms;
+  --motion-page-enter-y: 10px;
+  --motion-panel-enter-y: 6px;
+  --motion-panel-enter-scale: 0.994;
+  --motion-modal-enter-y: 8px;
+  --motion-modal-enter-scale: 0.985;
+  --motion-seg-stretch: 1.09;
+}
+
+:root[data-motion="expressive"]{
+  --dur-fast: 145ms;
+  --dur-med: 220ms;
+  --dur-slow: 400ms;
+  --hover-lift: -3px;
+  --hover-lift-soft: -1.5px;
+  --hover-scale-soft: 1.014;
+  --hover-scale-strong: 1.026;
+  --gear-spin-angle: 164deg;
+  --gear-spin-duration: 620ms;
+  --motion-page-enter-y: 14px;
+  --motion-panel-enter-y: 9px;
+  --motion-panel-enter-scale: 0.988;
+  --motion-modal-enter-y: 10px;
+  --motion-modal-enter-scale: 0.978;
+  --motion-seg-stretch: 1.13;
+}
+
+/* Keep the shared app hover language aligned with the refresh pacing.
+   Cyberpunk owns its own faster interaction timing in its theme layer. */
+:root:not([data-theme-variant="cyberpunk"]){
+  --dur-fast: 250ms;
+  --dur-med: 360ms;
+  --dur-slow: 560ms;
+}
+
+:root:not([data-theme-variant="cyberpunk"])[data-motion="calm"]{
+  --dur-fast: 270ms;
+  --dur-med: 400ms;
+  --dur-slow: 620ms;
+}
+
+:root:not([data-theme-variant="cyberpunk"])[data-motion="standard"]{
+  --dur-fast: 250ms;
+  --dur-med: 360ms;
+  --dur-slow: 560ms;
+}
+
+:root:not([data-theme-variant="cyberpunk"])[data-motion="expressive"]{
+  --dur-fast: 230ms;
+  --dur-med: 340ms;
+  --dur-slow: 520ms;
+}
+
+:root[data-density="compact"]{
+  --density-control-h: 38px;
+  --density-control-pad-y: 8px;
+  --density-control-pad-x: 12px;
+  --density-input-pad-y: 9px;
+  --density-input-pad-x: 11px;
+  --density-panel-pad: 16px;
+  --density-card-pad: 14px;
+  --density-gap: 12px;
+}
+
+:root[data-density="comfortable"]{
+  --density-control-h: 42px;
+  --density-control-pad-y: 10px;
+  --density-control-pad-x: 14px;
+  --density-input-pad-y: 11px;
+  --density-input-pad-x: 12px;
+  --density-panel-pad: 20px;
+  --density-card-pad: 18px;
+  --density-gap: 16px;
+}
+
+*{ box-sizing:border-box; }
+html, body { margin:0; padding:0; height:100%; }
+body{
+  background: var(--page-bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+button, input, select { font-family: inherit; }
